@@ -106,12 +106,13 @@ export async function refundPayment(
   if (payment.status !== "CAPTURED" || !payment.providerPaymentId) {
     throw new RefundNotAllowedError("Only captured payments can be refunded");
   }
+  const providerPaymentId = payment.providerPaymentId;
 
   if (payment.refundStatus === "requested") {
     if (Date.now() - payment.updatedAt.getTime() < CLAIM_STALE_MS) {
       throw new RefundNotAllowedError("A refund for this payment is already in progress. Wait for Razorpay to confirm it.");
     }
-    await reconcile(payment.id, payment.providerPaymentId, deps);
+    await reconcile(payment.id, providerPaymentId, deps);
     payment = (await find())!;
     if (payment.status === "REFUNDED") throw new RefundNotAllowedError("This payment was already refunded in full");
   }
@@ -137,7 +138,7 @@ export async function refundPayment(
   let refund: RazorpayRefund;
   try {
     refund = await deps.createRefund({
-      providerPaymentId: payment.providerPaymentId,
+      providerPaymentId,
       amountMinor,
       receipt: `rf_${payment.id}_${(payment.refundAmountMinor ?? 0) + amountMinor}`,
       notes: { paymentId: payment.id, bookingId: payment.bookingId, reason: (opts.reason ?? "").slice(0, 200) },
