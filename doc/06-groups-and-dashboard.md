@@ -4,9 +4,9 @@
 Support small group sessions and give influencers control.
 
 ## Tasks
-- [ ] Group services: capacity, one shared Meet event per session
-- [ ] Seat counting inside a transaction so the session never oversells
-- [ ] Add each paid attendee to the same Calendar event and send the same link
+- [x] Group services: capacity, one shared Meet event per session
+- [x] Seat counting inside a transaction so the session never oversells
+- [x] Add each paid attendee to the same Calendar event and send the same link
 - [ ] Dashboard: upcoming sessions, past sessions, earnings, message status
 - [ ] Manage services and availability, block dates
 - [ ] Manual actions: resend link, cancel, reschedule

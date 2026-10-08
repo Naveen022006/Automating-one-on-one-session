@@ -1,6 +1,8 @@
 # Session Automation
 
 See `doc/` for the plan. Phases 1 (booking and slots), 2 (Razorpay payments) and 3 (Google Meet links) are implemented.
+Phase 6 is in progress: group sessions now share one Google Meet event (one event per session, every paid attendee
+added to it and given the same link); the dashboard and manual actions are still to come.
 
 ## Run locally
 1. Start Postgres and Redis, and set `DATABASE_URL` / `REDIS_URL` in `.env` (see `.env.example`).
