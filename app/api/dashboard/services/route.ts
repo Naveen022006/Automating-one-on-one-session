@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { verifyDashboardToken } from "@/lib/dashboard";
 import { prisma } from "@/lib/db";
+import { activeSeatWhere } from "@/lib/holds";
 
 // Influencer-authenticated via the signed dashboard token (same purpose as the dashboard page). Every mutation
 // verifies the token first and that the targeted service belongs to that influencer; otherwise 403/404. Request
@@ -73,8 +74,43 @@ export async function PATCH(req: Request) {
 
   const body = parsed.data;
   // Ownership check: the service must belong to this influencer, else 404.
-  const existing = await prisma.service.findFirst({ where: { id: body.serviceId, influencerId }, select: { id: true } });
+  const existing = await prisma.service.findFirst({
+    where: { id: body.serviceId, influencerId },
+    select: { id: true, type: true, capacity: true },
+  });
   if (!existing) return NextResponse.json({ error: "Service not found" }, { status: 404 });
+
+  // The hold path (lib/holds.ts) and the shared-group-event path (lib/meeting.ts) both read the CURRENT
+  // service.capacity/type and assume they cannot retroactively invalidate seats already sold. So a capacity
+  // shrink below the seats already taken on a live session, or a type flip while sessions already exist, would
+  // break that invariant (a previously-valid group would look oversold, and in-flight bookings would switch
+  // event-id scheme). Guard both before applying any change.
+  const changingType = body.type !== undefined && body.type !== existing.type;
+  const loweringCapacity = body.capacity !== undefined && body.capacity < existing.capacity;
+
+  if (changingType || loweringCapacity) {
+    const now = new Date();
+    // Max active seats across all of this service's sessions. A session with no live bookings is harmless.
+    const sessions = await prisma.session.findMany({
+      where: { serviceId: existing.id },
+      select: { id: true, _count: { select: { bookings: { where: activeSeatWhere(now) } } } },
+    });
+    const liveSessions = sessions.filter((s) => s._count.bookings > 0);
+    const maxActiveSeats = liveSessions.reduce((m, s) => Math.max(m, s._count.bookings), 0);
+
+    if (changingType && liveSessions.length > 0) {
+      return NextResponse.json(
+        { error: "Cannot change the service type while it has sessions with live bookings" },
+        { status: 409 },
+      );
+    }
+    if (loweringCapacity && body.capacity! < maxActiveSeats) {
+      return NextResponse.json(
+        { error: `Capacity cannot be lowered below ${maxActiveSeats}; that many seats are already booked on a session` },
+        { status: 409 },
+      );
+    }
+  }
 
   await prisma.service.update({
     where: { id: existing.id },
