@@ -33,11 +33,29 @@ model Influencer {
   timezone  String   @default("Asia/Kolkata")
   createdAt DateTime @default(now()) @map("created_at")
 
-  services    Service[]
-  rules       AvailabilityRule[]
-  googleToken GoogleToken?
+  services     Service[]
+  rules        AvailabilityRule[]
+  blockedDates BlockedDate[]
+  googleToken  GoogleToken?
 
   @@map("influencers")
+}
+
+// A day the influencer is unavailable (holiday, leave...). Slots are never generated for a blocked day and
+// holds for it are refused. The `date` is a calendar day (midnight UTC) matched against a slot's day in the
+// influencer's timezone. One row per influencer per day.
+model BlockedDate {
+  id           String   @id @default(cuid())
+  influencerId String   @map("influencer_id")
+  date         DateTime @db.Date
+  reason       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@unique([influencerId, date])
+  @@index([influencerId])
+  @@map("blocked_dates")
 }
 
 enum GoogleTokenStatus {

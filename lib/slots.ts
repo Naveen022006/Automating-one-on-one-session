@@ -15,12 +15,17 @@ export function isValidTimezone(tz: string): boolean {
  * Candidate slot start times (UTC) whose start falls in [from, to).
  * Slots are back-to-back, `durationMin` long, and must fit inside a rule window.
  * Rules are evaluated in their own timezone, so DST shifts are handled.
+ *
+ * `blockedDates` is an optional set of "YYYY-MM-DD" calendar days the influencer has blocked off; a rule day
+ * whose date (in the rule's own timezone) is in the set produces no slots. Passing the blocked days in keeps
+ * this function pure and unit-testable - the query layer loads them from the DB and hands them over.
  */
 export function generateSlots(
   rules: Rule[],
   durationMin: number,
   from: Date,
   to: Date,
+  blockedDates: ReadonlySet<string> = new Set(),
 ): Date[] {
   const out = new Map<number, Date>();
   for (const rule of rules) {
@@ -31,6 +36,8 @@ export function generateSlots(
     for (; day <= last; day = day.plus({ days: 1 })) {
       if (day.weekday !== rule.weekday) continue;
       const date = day.toISODate();
+      // A blocked day yields no slots, so customers cannot book it.
+      if (date && blockedDates.has(date)) continue;
       const windowStart = DateTime.fromISO(`${date}T${rule.startTime}`, { zone });
       const windowEnd = DateTime.fromISO(`${date}T${rule.endTime}`, { zone });
       if (!windowStart.isValid || !windowEnd.isValid) continue;
@@ -47,8 +54,28 @@ export function generateSlots(
   return [...out.values()].sort((a, b) => a.getTime() - b.getTime());
 }
 
-export function isSlotStart(rules: Rule[], durationMin: number, start: Date): boolean {
-  return generateSlots(rules, durationMin, start, new Date(start.getTime() + 1)).length === 1;
+export function isSlotStart(
+  rules: Rule[],
+  durationMin: number,
+  start: Date,
+  blockedDates: ReadonlySet<string> = new Set(),
+): boolean {
+  return generateSlots(rules, durationMin, start, new Date(start.getTime() + 1), blockedDates).length === 1;
+}
+
+/**
+ * The set of "YYYY-MM-DD" strings covered by the given blocked dates. A BlockedDate is stored as a calendar
+ * day at UTC midnight, and the influencer's availability rules are keyed by the influencer's own timezone
+ * (which the blocked day is expressed in too), so reading the stored value back in UTC recovers the right
+ * "YYYY-MM-DD" to compare against generateSlots' rule-timezone day. Keeps the day-math pure and testable.
+ */
+export function blockedDaySet(dates: Date[]): Set<string> {
+  const out = new Set<string>();
+  for (const d of dates) {
+    const iso = DateTime.fromJSDate(d, { zone: "utc" }).toISODate();
+    if (iso) out.add(iso);
+  }
+  return out;
 }
 
 /** UTC bounds of calendar day `date` ("YYYY-MM-DD") as seen in timezone `tz`. */
