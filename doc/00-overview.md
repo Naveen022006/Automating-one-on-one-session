@@ -65,5 +65,6 @@ APP_URL=
 4. `04-messaging.md`
 5. `05-reminders-and-retries.md`
 6. `06-groups-and-dashboard.md`
+7. `07-product-ui-auth-and-integrations.md`
 
 Start the WhatsApp template approval and DLT registration during Phase 1 — they take days.
