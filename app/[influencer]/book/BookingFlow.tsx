@@ -79,6 +79,9 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
   const [paying, setPaying] = useState(false);
   // "confirming" = checkout reported success; we wait for the server (webhook) to confirm before showing it.
   const [payState, setPayState] = useState<"idle" | "confirming" | "confirmed" | "failed">("idle");
+  // Populated once the server knows the meeting link (set by the Phase 3 create-meeting job). Shown on
+  // the confirmation screen so a WhatsApp/SMS failure never blocks the customer.
+  const [meetLink, setMeetLink] = useState<string | null>(null);
 
   useEffect(() => {
     if (!service) return;
@@ -114,6 +117,7 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
         const r = await fetch(`/api/bookings/${hold.bookingId}`);
         const data = await r.json();
         if (stopped) return;
+        if (data.meetLink) setMeetLink(data.meetLink);
         if (["PAID", "SCHEDULED", "COMPLETED"].includes(data.status)) return setPayState("confirmed");
         if (data.status === "FAILED") return setPayState("failed");
       } catch {
@@ -207,6 +211,13 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
             ? "You're booked. Your meeting link will be sent to your WhatsApp and email."
             : "This usually takes a few seconds."}
         </p>
+        {meetLink && (
+          <p>
+            <a href={meetLink} target="_blank" rel="noopener noreferrer">
+              Join your meeting
+            </a>
+          </p>
+        )}
         <p className="muted">Booking reference: {hold.bookingId}</p>
       </div>
     );
