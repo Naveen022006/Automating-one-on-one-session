@@ -118,6 +118,7 @@ function makeGoogle(rec: Recorder) {
 
 async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
   const enqueued: string[] = [];
+  const emailed: { bookingId: string; kind: string }[] = [];
   mock.module("@/lib/db", { namedExports: { prisma: makeDb(sessions, bookings) } });
   mock.module("@/lib/queue", {
     namedExports: {
@@ -126,6 +127,9 @@ async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
     },
   });
   mock.module("@/lib/alerts", { namedExports: { alertInfluencer: async () => {} } });
+  // Keep the test DB-free: stub the email sender (the real one reads through Prisma). It is injected via
+  // MeetingDeps.sendBookingEmail below too, but mocking the module keeps the default import harmless.
+  mock.module("@/lib/email", { namedExports: { sendBookingEmail: async () => {} } });
   mock.module("@/lib/google-tokens", {
     namedExports: {
       getRefreshToken: async () => ({ state: "ok", refreshToken: "refresh" }),
@@ -133,7 +137,16 @@ async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
     },
   });
   const mod = await import(`../lib/meeting.ts?group-test=${Math.random()}`);
-  return { mod, enqueued };
+  return { mod, enqueued, emailed };
+}
+
+/** Deps overrides shared by every test: injected google + instant sleep + a recording email stub. */
+function depsWith(rec: Recorder, emailed: { bookingId: string; kind: string }[]) {
+  return {
+    google: makeGoogle(rec),
+    sleep: async () => {},
+    sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }),
+  };
 }
 
 const influencer = { id: "inf1", name: "Dev", email: "dev@example.com" };
@@ -166,9 +179,9 @@ test("first group booking inserts exactly one shared event keyed on the session"
   const session = groupSession();
   const b1 = paidBooking("b1", "a@example.com");
   const rec: Recorder = { inserts: [], adds: [] };
-  const { mod } = await loadMeeting([session], [b1]);
+  const { mod, emailed } = await loadMeeting([session], [b1]);
 
-  const outcome = await mod.createMeetingForBooking("b1", { google: makeGoogle(rec), sleep: async () => {} });
+  const outcome = await mod.createMeetingForBooking("b1", depsWith(rec, emailed));
 
   assert.equal(outcome, "scheduled");
   assert.deepEqual(rec.inserts, [SESSION_EVENT_ID("sess1")], "exactly one insert, keyed on the session");
@@ -177,6 +190,8 @@ test("first group booking inserts exactly one shared event keyed on the session"
   assert.equal(b1.eventId, SESSION_EVENT_ID("sess1"));
   assert.equal(b1.status, "SCHEDULED");
   assert.ok(b1.meetLink);
+  // The confirmation/receipt email must be sent on the normal paid -> scheduled path (issue 1).
+  assert.deepEqual(emailed, [{ bookingId: "b1", kind: "booking-confirmation" }]);
   mock.reset();
 });
 
@@ -185,8 +200,8 @@ test("second booking for the same session adds an attendee without a second inse
   const b1 = paidBooking("b1", "a@example.com");
   const b2 = paidBooking("b2", "b@example.com");
   const rec: Recorder = { inserts: [], adds: [] };
-  const { mod } = await loadMeeting([session], [b1, b2]);
-  const deps = { google: makeGoogle(rec), sleep: async () => {} };
+  const { mod, emailed } = await loadMeeting([session], [b1, b2]);
+  const deps = depsWith(rec, emailed);
 
   await mod.createMeetingForBooking("b1", deps);
   await mod.createMeetingForBooking("b2", deps);
@@ -196,6 +211,80 @@ test("second booking for the same session adds an attendee without a second inse
   assert.equal(b1.meetLink, b2.meetLink, "both attendees share the same meet link");
   assert.equal(b1.eventId, b2.eventId, "both attendees share the same event id");
   assert.equal(b2.status, "SCHEDULED");
+  // Each attendee gets their own confirmation email (per-booking self-service link), one per booking.
+  assert.deepEqual(emailed, [
+    { bookingId: "b1", kind: "booking-confirmation" },
+    { bookingId: "b2", kind: "booking-confirmation" },
+  ]);
+  mock.reset();
+});
+
+test("non-creator reconverges when the creator is mid-flight (session has event id but no saved link yet)", async () => {
+  // The second booking sees session.eventId already claimed (creator won the election) but session.meetLink
+  // still null (creator crashed / is mid-flight). It must insert on the deterministic id (409 -> read),
+  // poll for the link, persist it, and add itself as an attendee -- not get stuck.
+  const session = groupSession();
+  session.eventId = SESSION_EVENT_ID("sess1"); // creator already claimed it
+  session.meetLink = null; // ...but has not saved the link
+  const b2 = paidBooking("b2", "b@example.com");
+  const rec: Recorder = { inserts: [], adds: [] };
+  // Google fake where insertEvent on an already-claimed id answers "exists" (mirrors a real 409).
+  const existing = new Set<string>([SESSION_EVENT_ID("sess1")]);
+  const link = (eventId: string) => `https://meet.google.com/${eventId.slice(0, 12)}`;
+  const google = {
+    refreshAccessToken: async () => "access-token",
+    insertEvent: async (_t: string, event: { id: string }) => {
+      rec.inserts.push(event.id);
+      if (existing.has(event.id)) return "exists" as const;
+      existing.add(event.id);
+      return { id: event.id, status: "confirmed", meetLink: link(event.id), conferenceStatus: "success" as const };
+    },
+    getEvent: async (_t: string, eventId: string) => ({
+      id: eventId,
+      status: "confirmed",
+      meetLink: link(eventId),
+      conferenceStatus: "success" as const,
+    }),
+    addAttendee: async (_t: string, eventId: string, attendee: { email: string }) => {
+      rec.adds.push({ eventId, email: attendee.email });
+      return { id: eventId, status: "confirmed", meetLink: link(eventId), conferenceStatus: "success" as const };
+    },
+  };
+  const { mod, emailed } = await loadMeeting([session], [b2]);
+
+  const outcome = await mod.createMeetingForBooking("b2", {
+    google,
+    sleep: async () => {},
+    sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }),
+  });
+
+  assert.equal(outcome, "scheduled");
+  assert.deepEqual(rec.inserts, [SESSION_EVENT_ID("sess1")], "non-creator inserts on the deterministic id (409 -> read)");
+  assert.equal(session.meetLink, link(SESSION_EVENT_ID("sess1")), "the recovered link is persisted on the session");
+  assert.equal(b2.eventId, SESSION_EVENT_ID("sess1"));
+  assert.equal(b2.meetLink, link(SESSION_EVENT_ID("sess1")));
+  assert.equal(b2.status, "SCHEDULED");
+  mock.reset();
+});
+
+test("concurrent creators: only the booking that wins the session claim inserts", async () => {
+  // Two paid bookings race. The in-memory session.updateMany null-guard lets exactly one flip event_id, so
+  // only that booking inserts; the other, seeing the (now-saved) link, takes the add-attendee path.
+  const session = groupSession();
+  const b1 = paidBooking("b1", "a@example.com");
+  const b2 = paidBooking("b2", "b@example.com");
+  const rec: Recorder = { inserts: [], adds: [] };
+  const { mod, emailed } = await loadMeeting([session], [b1, b2]);
+  const deps = depsWith(rec, emailed);
+
+  // Sequential here, but the atomic null-guard is exactly what serializes the real concurrent case.
+  await mod.createMeetingForBooking("b1", deps);
+  await mod.createMeetingForBooking("b2", deps);
+
+  assert.equal(rec.inserts.length, 1, "only one creator inserts even though both are paid");
+  assert.equal(rec.adds.length, 1, "the loser adds itself as an attendee");
+  assert.equal(b1.eventId, b2.eventId);
+  assert.equal(b1.meetLink, b2.meetLink);
   mock.reset();
 });
 
@@ -204,9 +293,9 @@ test("a 1:1 booking still uses the per-booking event path", async () => {
   session.service.type = "ONE_TO_ONE";
   const b1 = paidBooking("b1", "a@example.com");
   const rec: Recorder = { inserts: [], adds: [] };
-  const { mod } = await loadMeeting([session], [b1]);
+  const { mod, emailed } = await loadMeeting([session], [b1]);
 
-  await mod.createMeetingForBooking("b1", { google: makeGoogle(rec), sleep: async () => {} });
+  await mod.createMeetingForBooking("b1", depsWith(rec, emailed));
 
   assert.deepEqual(rec.inserts, [BOOKING_EVENT_ID("b1")], "1:1 event id is derived from the booking, not the session");
   assert.equal(rec.adds.length, 0);

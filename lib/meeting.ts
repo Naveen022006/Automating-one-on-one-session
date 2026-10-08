@@ -9,6 +9,7 @@ import {
   type CalendarEvent,
   type GoogleClient,
 } from "@/lib/google";
+import { sendBookingEmail } from "@/lib/email";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
 import { createMessage } from "@/lib/messages";
 import { enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
@@ -16,12 +17,18 @@ import { enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
 const CONFIRMATION_TEMPLATE = "booking-confirmation";
 
 /**
- * Records that the booking confirmation was handed to the messaging queue, then enqueues it. Best-effort and
- * non-throwing (via createMessage): recording must never fail the create-meeting job. The row is 'queued'
- * because the real WhatsApp/email delivery worker is Phase 4; the dashboard shows it as the latest status.
+ * Records that the booking confirmation was handed to the messaging queue, sends the customer their
+ * confirmation/receipt email (which carries the signed self-service link), then enqueues the WhatsApp
+ * message. Best-effort and non-throwing (createMessage and sendBookingEmail both swallow their own errors):
+ * recording/emailing must never fail the create-meeting job. The WhatsApp row is 'queued' because the real
+ * delivery worker is Phase 4; the dashboard shows it as the latest status.
  */
 async function enqueueConfirmation(deps: MeetingDeps, bookingId: string): Promise<void> {
   await createMessage({ bookingId, channel: "whatsapp", template: CONFIRMATION_TEMPLATE, status: "queued" });
+  // The confirmation email is the only organic delivery of the self-service link, so it must go out on the
+  // normal paid -> scheduled path, not only from the resend/reschedule actions. sendBookingEmail is itself
+  // best-effort (records an 'email' Message row and never throws), so a broken email channel cannot fail the job.
+  await deps.sendBookingEmail(bookingId, CONFIRMATION_TEMPLATE);
   await deps.enqueueSendMessage(bookingId);
 }
 
@@ -38,6 +45,7 @@ export type MeetingOutcome = "scheduled" | "already-scheduled" | "skipped";
 export interface MeetingDeps {
   google: GoogleClient;
   enqueueSendMessage: (bookingId: string) => Promise<void>;
+  sendBookingEmail: typeof sendBookingEmail;
   alert: typeof alertInfluencer;
   sleep: (ms: number) => Promise<void>;
 }
@@ -45,6 +53,7 @@ export interface MeetingDeps {
 const defaultDeps: MeetingDeps = {
   google: defaultGoogle,
   enqueueSendMessage: (id) => enqueueSendMessage(id),
+  sendBookingEmail,
   alert: alertInfluencer,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
