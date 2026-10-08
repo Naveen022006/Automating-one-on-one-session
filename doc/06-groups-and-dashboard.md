@@ -22,7 +22,8 @@ Support small group sessions and give influencers control.
   the Google connect link. There is no login yet, so possession of the link authorises viewing; an
   invalid/expired `?t=` token returns 403 before any data is loaded.
 - Shows upcoming sessions, past sessions, earnings (sum of CAPTURED payments, total and per service), and the
-  latest message status per booking, plus the shared group meet link.
+  latest message status **per channel** per booking (so a later queued WhatsApp row never hides an earlier
+  failed email on the same booking), plus the shared group meet link.
 - The client component also carries the signed token so the influencer management and manual actions below can
   call back without re-minting it.
 
@@ -36,6 +37,9 @@ Support small group sessions and give influencers control.
 - Every mutating route verifies the **dashboard** token (same purpose as the dashboard page) and that the
   targeted service/rule/date belongs to that influencer, returning 403 (bad token) or 404 (not theirs). Bodies
   are validated with zod, matching `app/api/checkout` and `app/api/bookings/hold`.
+- Editing a service cannot retroactively break the seat invariant the hold path relies on: the services PATCH
+  route rejects (409) lowering `capacity` below the seats already sold on a live session, and rejects changing
+  the service `type` while it still has sessions with live bookings.
 - A `BlockedDate` (influencer + calendar day, stored at UTC midnight) produces **no** slots: `generateSlots` /
   `isSlotStart` take a set of blocked `YYYY-MM-DD` days (kept pure and unit-tested), and both `/api/slots` and
   the hold validation load the influencer's blocked days and pass them in, so a blocked day cannot be booked.
@@ -53,17 +57,23 @@ Support small group sessions and give influencers control.
   - `cancelBooking` — set `CANCELLED`, update the Calendar event (**1:1** → delete it; **GROUP** → remove only
     that attendee from the shared event, deleting it only when the last attendee leaves, preserving the
     shared-event invariant), re-notify, and flag the payment `needsRefund` if it was `CAPTURED`.
-  - `rescheduleBooking` — move the session to the new time and PATCH the Calendar event start/end
-    (`updateEvent`, `sendUpdates=all`), then re-notify.
+  - `rescheduleBooking` — validate the new time the same way the hold path does (it must be a real slot start
+    from the influencer's availability rules and not on a blocked day; `validateRescheduleTime` is pure and
+    unit-tested), move the session to the new time under a `FOR UPDATE` lock that re-checks the session still
+    fits the service capacity, PATCH the Calendar event start/end (`updateEvent`, `sendUpdates=all`), then
+    re-notify. For a GROUP this moves the whole shared session, so each live attendee is re-notified with their
+    own self-service link (one confirmation email per booking, by design).
 - `lib/google.ts` gained `updateEvent` (events.patch new times), `removeAttendee` (drop one attendee from the
   shared event) and `deleteEvent`, all reusing `classifyCalendarError`. Calendar failures are best-effort: the
   DB change lands, the influencer is alerted, and a reconnect-needed failure returns `202` with a warning.
 
 ## Email receipt/confirmation
 - `lib/email.ts` `sendBookingEmail(bookingId, kind)` renders a confirmation/receipt and records a `Message`
-  row. Delivery is still a **structured-log stub** (no real SMTP): email and WhatsApp/SMS delivery remain
-  stubbed pending Phases 4 (messaging) and 5 (reminders). The `Message` model gives the dashboard real
-  per-booking message status to display in the meantime.
+  row. It is sent on the normal paid → scheduled path (`enqueueConfirmation` in `lib/meeting.ts`), not only
+  from resend/reschedule, so every customer who books and pays organically receives the confirmation email
+  carrying their signed self-service link. Delivery is still a **structured-log stub** (no real SMTP): email
+  and WhatsApp/SMS delivery remain stubbed pending Phases 4 (messaging) and 5 (reminders). The `Message` model
+  gives the dashboard real per-booking message status to display in the meantime.
 
 ## Done when
 Five customers can book one group session, all get the same link, and the influencer sees them in the dashboard.
