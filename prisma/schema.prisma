@@ -33,10 +33,36 @@ model Influencer {
   timezone  String   @default("Asia/Kolkata")
   createdAt DateTime @default(now()) @map("created_at")
 
-  services Service[]
-  rules    AvailabilityRule[]
+  services    Service[]
+  rules       AvailabilityRule[]
+  googleToken GoogleToken?
 
   @@map("influencers")
+}
+
+enum GoogleTokenStatus {
+  ACTIVE
+  // Google rejected the refresh token (revoked, expired, scope removed). Meetings cannot be created
+  // for this influencer until they go through the connect flow again.
+  RECONNECT_NEEDED
+}
+
+// The influencer's own Google OAuth grant. Meet links must be created with it: a service account
+// cannot create Meet links for personal Gmail accounts. The refresh token is stored AES-256-GCM encrypted.
+model GoogleToken {
+  id                String            @id @default(cuid())
+  influencerId      String            @unique @map("influencer_id")
+  refreshTokenEnc   String            @map("refresh_token_enc")
+  scope             String
+  status            GoogleTokenStatus @default(ACTIVE)
+  reconnectReason   String?           @map("reconnect_reason")
+  reconnectNeededAt DateTime?         @map("reconnect_needed_at")
+  connectedAt       DateTime          @default(now()) @map("connected_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@map("google_tokens")
 }
 
 model Service {
@@ -101,6 +127,12 @@ model Booking {
   whatsappE164  String        @map("whatsapp_e164")
   whatsappOptIn Boolean       @default(false) @map("whatsapp_opt_in")
   customerTz    String?       @map("customer_tz")
+  // Set by the create-meeting job. The Calendar event id is derived from the booking id, so it is
+  // recoverable even if the job dies between creating the event and saving it here.
+  eventId       String?       @map("event_id")
+  meetLink      String?       @map("meet_link")
+  // Last create-meeting failure, cleared on success. Lets the dashboard show why a paid booking has no link yet.
+  lastError     String?       @map("last_error")
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
