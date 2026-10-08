@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { before, mock, test } from "node:test";
 import type { Rule } from "../lib/slots";
 
 /**
@@ -17,7 +17,12 @@ const monday: Rule = { weekday: 1, startTime: "10:00", endTime: "12:00", timezon
 
 // The pure helper does not touch the DB, but importing lib/manage pulls in @/lib/db at module load, so this
 // (like tests/group-meeting.test.ts) resolves only where node_modules + the @/* alias exist (CI).
-const { validateRescheduleTime } = await import("../lib/manage");
+// Imported lazily inside each test (no top-level await: tsx runs these tests as CommonJS).
+const validateRescheduleTime: typeof import("../lib/manage").validateRescheduleTime = (args) => loaded!(args);
+let loaded: typeof import("../lib/manage").validateRescheduleTime | null = null;
+before(async () => {
+  ({ validateRescheduleTime: loaded } = await import("../lib/manage"));
+});
 
 test("validateRescheduleTime rejects a past time", async () => {
   const reason = validateRescheduleTime({

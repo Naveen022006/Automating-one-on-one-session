@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { before, mock, test } from "node:test";
 
 /**
  * Refunds against an in-memory payments + refunds store (the DB module is mocked once for the file; Razorpay is
@@ -91,10 +91,19 @@ const db = {
   },
 };
 
-mock.module("@/lib/db", { namedExports: { prisma: db } });
-mock.module("@/lib/alerts", { namedExports: { alertInfluencer: async () => {} } });
-const { refundPayment, applyRefundWebhook, RefundPendingError, CLAIM_STALE_MS } = await import("../lib/refunds");
-const { RazorpayHttpError } = await import("../lib/payments");
+// Loaded in before() (no top-level await: tsx runs these tests as CommonJS).
+let refundPayment: typeof import("../lib/refunds").refundPayment;
+let applyRefundWebhook: typeof import("../lib/refunds").applyRefundWebhook;
+let RefundPendingError: typeof import("../lib/refunds").RefundPendingError;
+let CLAIM_STALE_MS: number;
+let RazorpayHttpError: typeof import("../lib/payments").RazorpayHttpError;
+
+before(async () => {
+  mock.module("@/lib/db", { namedExports: { prisma: db } });
+  mock.module("@/lib/alerts", { namedExports: { alertInfluencer: async () => {} } });
+  ({ refundPayment, applyRefundWebhook, RefundPendingError, CLAIM_STALE_MS } = await import("../lib/refunds"));
+  ({ RazorpayHttpError } = await import("../lib/payments"));
+});
 
 function reset(over: Partial<PaymentRow> = {}) {
   state.refunds = [];
