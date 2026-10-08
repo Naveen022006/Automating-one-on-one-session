@@ -2,8 +2,10 @@ import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 import { expireStaleHolds } from "../lib/holds";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
-import { MEETING_QUEUE, redisConnection } from "../lib/queue";
+import { reportMessageFailure } from "../lib/messaging";
+import { MEETING_QUEUE, MESSAGE_QUEUE, redisConnection } from "../lib/queue";
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
+import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 
 const INTERVAL_MS = 30_000;
 
@@ -21,6 +23,7 @@ void tick();
 const timer = setInterval(tick, INTERVAL_MS);
 
 let meetings: Worker<CreateMeetingData> | undefined;
+let messages: Worker<SendMessageData> | undefined;
 
 if (!process.env.REDIS_URL) {
   console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting jobs will not be processed");
@@ -42,6 +45,23 @@ if (!process.env.REDIS_URL) {
   });
   console.log(`[worker] processing "${MEETING_QUEUE}" queue`);
 
+  messages = new Worker<SendMessageData>(MESSAGE_QUEUE, handleSendMessage, {
+    connection: redisConnection(),
+    concurrency: 5,
+  });
+  messages.on("error", (e) => console.error("[worker] messages queue error", e));
+  messages.on("failed", (job, err) => {
+    if (!job) return;
+    // Only act once the retries are exhausted and the error was transient (not wrapped UnrecoverableError).
+    const exhausted = job.attemptsMade >= (job.opts.attempts ?? 1);
+    if (!exhausted || err instanceof UnrecoverableError) return;
+    console.error(`[worker] send-message gave up on booking ${job.data.bookingId} (${job.data.template})`, err);
+    void reportMessageFailure(job.data.bookingId, job.data.template, err.message).catch((e) =>
+      console.error("[worker] could not record message failure", e),
+    );
+  });
+  console.log(`[worker] processing "${MESSAGE_QUEUE}" queue`);
+
   // Recover paid bookings that never got a link (lost enqueue, retries exhausted while Google was down).
   requeuePendingMeetings()
     .then((n) => n > 0 && console.log(`[worker] re-queued ${n} paid booking(s) without a meeting`))
@@ -52,6 +72,7 @@ async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
   clearInterval(timer);
   await meetings?.close();
+  await messages?.close();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));

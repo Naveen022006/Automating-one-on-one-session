@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { buildConnectUrl } from "@/lib/google-tokens";
 
-export type InfluencerAlertKind = "google-reconnect-needed" | "meeting-creation-failed";
+export type InfluencerAlertKind = "google-reconnect-needed" | "meeting-creation-failed" | "message-delivery-failed";
 
 export interface InfluencerAlert {
   kind: InfluencerAlertKind;

@@ -138,6 +138,7 @@ model Booking {
 
   session  Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   payments Payment[]
+  messages Message[]
 
   @@index([sessionId, status])
   @@index([status, holdExpiresAt])
@@ -170,6 +171,39 @@ model Payment {
 
   @@index([bookingId])
   @@map("payments")
+}
+
+enum MessageChannel {
+  WHATSAPP
+  SMS
+}
+
+// Lifecycle: PENDING -> SENT -> DELIVERED (via a provider status webhook, Phase 4) ; FAILED on give-up.
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+// One outbound customer message (confirmation, reminder, cancellation...). The (booking, template) pair is
+// kept unique so a retried send-message job records against the same row instead of creating duplicates.
+model Message {
+  id         String         @id @default(cuid())
+  bookingId  String         @map("booking_id")
+  channel    MessageChannel
+  template   String
+  status     MessageStatus  @default(PENDING)
+  providerId String?        @map("provider_id")
+  error      String?
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, template])
+  @@index([bookingId])
+  @@map("messages")
 }
 
 // One row per provider event id; the unique key is what makes webhook handling idempotent.

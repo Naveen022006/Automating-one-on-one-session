@@ -44,6 +44,18 @@ export interface GoogleClient {
   /** Resolves "exists" when an event with this id is already on the calendar. */
   insertEvent(accessToken: string, event: NewEvent): Promise<CalendarEvent | "exists">;
   getEvent(accessToken: string, eventId: string): Promise<CalendarEvent | null>;
+  /** Patches an existing event (reschedule / retitle); notifies attendees. */
+  updateEvent(accessToken: string, eventId: string, patch: EventPatch): Promise<CalendarEvent>;
+  /** Deletes an event (cancel). A 404/410 means it is already gone, which is treated as success. */
+  deleteEvent(accessToken: string, eventId: string): Promise<void>;
+}
+
+/** Fields that can be changed on an existing event. Any omitted field is left untouched. */
+export interface EventPatch {
+  start?: Date;
+  end?: Date;
+  summary?: string;
+  description?: string;
 }
 
 function env(name: string): string {
@@ -201,6 +213,41 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
         throw classifyCalendarError(res.status, reason, message);
       }
       return toCalendarEvent((await res.json()) as RawEvent);
+    },
+
+    async updateEvent(accessToken, eventId, patch) {
+      const body: Record<string, unknown> = {};
+      if (patch.start) body.start = { dateTime: patch.start.toISOString(), timeZone: "UTC" };
+      if (patch.end) body.end = { dateTime: patch.end.toISOString(), timeZone: "UTC" };
+      if (patch.summary !== undefined) body.summary = patch.summary;
+      if (patch.description !== undefined) body.description = patch.description;
+      const res = await call(
+        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+        {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const { reason, message } = await readError(res);
+        throw classifyCalendarError(res.status, reason, message);
+      }
+      return toCalendarEvent((await res.json()) as RawEvent);
+    },
+
+    async deleteEvent(accessToken, eventId) {
+      const res = await call(
+        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      // Already gone (never created, or deleted earlier): the cancel has effectively succeeded.
+      if (res.ok || res.status === 404 || res.status === 410) return;
+      const { reason, message } = await readError(res);
+      throw classifyCalendarError(res.status, reason, message);
     },
   };
 }
