@@ -3,9 +3,10 @@ import { UnrecoverableError, Worker } from "bullmq";
 import { expireStaleHolds } from "../lib/holds";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
 import { reportMessageFailure } from "../lib/messaging";
-import { MEETING_QUEUE, MESSAGE_QUEUE, redisConnection } from "../lib/queue";
+import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from "../lib/queue";
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
+import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 
 const INTERVAL_MS = 30_000;
 
@@ -24,6 +25,7 @@ const timer = setInterval(tick, INTERVAL_MS);
 
 let meetings: Worker<CreateMeetingData> | undefined;
 let messages: Worker<SendMessageData> | undefined;
+let reminders: Worker<SendReminderData> | undefined;
 
 if (!process.env.REDIS_URL) {
   console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting jobs will not be processed");
@@ -62,6 +64,26 @@ if (!process.env.REDIS_URL) {
   });
   console.log(`[worker] processing "${MESSAGE_QUEUE}" queue`);
 
+  reminders = new Worker<SendReminderData>(REMINDER_QUEUE, handleSendReminder, {
+    connection: redisConnection(),
+    concurrency: 5,
+  });
+  reminders.on("error", (e) => console.error("[worker] reminders queue error", e));
+  reminders.on("failed", (job, err) => {
+    if (!job) return;
+    // Only act once the retries are exhausted and the error was transient (not wrapped UnrecoverableError).
+    const exhausted = job.attemptsMade >= (job.opts.attempts ?? 1);
+    if (!exhausted || err instanceof UnrecoverableError) return;
+    // The reminder is delivered through the messaging layer, so the final failure is a message delivery
+    // failure: mark the Message row FAILED, flag booking.lastError for the dashboard, and alert the influencer.
+    const template = `reminder-${job.data.kind}`;
+    console.error(`[worker] send-reminder gave up on booking ${job.data.bookingId} (${template})`, err);
+    void reportMessageFailure(job.data.bookingId, template, err.message).catch((e) =>
+      console.error("[worker] could not record reminder failure", e),
+    );
+  });
+  console.log(`[worker] processing "${REMINDER_QUEUE}" queue`);
+
   // Recover paid bookings that never got a link (lost enqueue, retries exhausted while Google was down).
   requeuePendingMeetings()
     .then((n) => n > 0 && console.log(`[worker] re-queued ${n} paid booking(s) without a meeting`))
@@ -73,6 +95,7 @@ async function shutdown(signal: string) {
   clearInterval(timer);
   await meetings?.close();
   await messages?.close();
+  await reminders?.close();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));

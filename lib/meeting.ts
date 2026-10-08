@@ -10,7 +10,7 @@ import {
   type GoogleClient,
 } from "@/lib/google";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
-import { enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
+import { enqueueReminders, enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
 
 /**
  * The influencer must act (connect / reconnect Google) before this booking can get a link.
@@ -25,6 +25,7 @@ export type MeetingOutcome = "scheduled" | "already-scheduled" | "skipped";
 export interface MeetingDeps {
   google: GoogleClient;
   enqueueSendMessage: (bookingId: string) => Promise<void>;
+  enqueueReminders: (bookingId: string, startTime: Date) => Promise<void>;
   alert: typeof alertInfluencer;
   sleep: (ms: number) => Promise<void>;
 }
@@ -32,6 +33,7 @@ export interface MeetingDeps {
 const defaultDeps: MeetingDeps = {
   google: defaultGoogle,
   enqueueSendMessage: (id) => enqueueSendMessage(id),
+  enqueueReminders: (id, startTime) => enqueueReminders(id, startTime),
   alert: alertInfluencer,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
@@ -177,7 +179,10 @@ export async function createMeetingForBooking(
     return "skipped";
   }
 
+  // Only now that the booking is actually SCHEDULED do we schedule the confirmation and the reminders.
+  // Reminders are never enqueued at PAID/enqueue time; the delayed jobs re-read status when they fire.
   await deps.enqueueSendMessage(booking.id);
+  await deps.enqueueReminders(booking.id, session.startTime);
   return "scheduled";
 }
 
