@@ -138,6 +138,7 @@ model Booking {
 
   session  Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   payments Payment[]
+  messages Message[]
 
   @@index([sessionId, status])
   @@index([status, holdExpiresAt])
@@ -170,6 +171,40 @@ model Payment {
 
   @@index([bookingId])
   @@map("payments")
+}
+
+enum MessageChannel {
+  WHATSAPP
+  SMS
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+// One row per message send attempt. The message job tries WhatsApp first and
+// falls back to SMS, recording every attempt here. The delivery-status webhook
+// looks rows up by providerMessageId to advance status (SENT -> DELIVERED/READ).
+model Message {
+  id                String         @id @default(cuid())
+  bookingId         String         @map("booking_id")
+  channel           MessageChannel
+  template          String
+  status            MessageStatus  @default(PENDING)
+  providerMessageId String?        @map("provider_message_id")
+  error             String?
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([providerMessageId])
+  @@map("messages")
 }
 
 // One row per provider event id; the unique key is what makes webhook handling idempotent.

@@ -2,8 +2,9 @@ import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 import { expireStaleHolds } from "../lib/holds";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
-import { MEETING_QUEUE, redisConnection } from "../lib/queue";
+import { MEETING_QUEUE, MESSAGE_QUEUE, redisConnection } from "../lib/queue";
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
+import { processSendMessage } from "./jobs/sendMessage";
 
 const INTERVAL_MS = 30_000;
 
@@ -21,9 +22,10 @@ void tick();
 const timer = setInterval(tick, INTERVAL_MS);
 
 let meetings: Worker<CreateMeetingData> | undefined;
+let messages: Worker | undefined;
 
 if (!process.env.REDIS_URL) {
-  console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting jobs will not be processed");
+  console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting/message jobs will not be processed");
 } else {
   meetings = new Worker<CreateMeetingData>(MEETING_QUEUE, handleCreateMeeting, {
     connection: redisConnection(),
@@ -42,6 +44,15 @@ if (!process.env.REDIS_URL) {
   });
   console.log(`[worker] processing "${MEETING_QUEUE}" queue`);
 
+  // The messages worker sends the booking confirmation (WhatsApp first, SMS fallback). It is only
+  // ever enqueued by the create-meeting job, after the Meet link is set, so the link is present.
+  messages = new Worker(MESSAGE_QUEUE, processSendMessage, { connection: redisConnection() });
+  messages.on("error", (e) => console.error("[worker] messages queue error", e));
+  messages.on("failed", (job, err) =>
+    console.error(`[worker] send-message ${job?.id} failed:`, err?.message),
+  );
+  console.log(`[worker] processing "${MESSAGE_QUEUE}" queue`);
+
   // Recover paid bookings that never got a link (lost enqueue, retries exhausted while Google was down).
   requeuePendingMeetings()
     .then((n) => n > 0 && console.log(`[worker] re-queued ${n} paid booking(s) without a meeting`))
@@ -51,7 +62,7 @@ if (!process.env.REDIS_URL) {
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
   clearInterval(timer);
-  await meetings?.close();
+  await Promise.all([meetings?.close(), messages?.close()]);
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));
