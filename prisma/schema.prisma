@@ -266,6 +266,9 @@ model Booking {
   // Set when the customer's personal data was erased on request (name/email/phone replaced). Payments are kept
   // for accounting.
   redactedAt    DateTime?     @map("redacted_at")
+  // The service's cancellation policy when the customer booked (Phase 7). Later policy edits never change what an
+  // existing booking was sold under. Null for bookings made before this column existed (use the service's policy).
+  refundPolicy  RefundPolicy? @map("refund_policy")
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
@@ -297,18 +300,39 @@ model Payment {
   // Set when money was captured but the booking could not be honoured (needs a manual/automatic refund).
   needsRefund       Boolean       @default(false) @map("needs_refund")
   failureReason     String?       @map("failure_reason")
-  // Razorpay refund (Phase 7). refundStatus mirrors Razorpay's refund status ("pending" | "processed" | "failed").
-  refundId          String?       @unique @map("refund_id")
+  // Refund summary (Phase 7), derived from the `refunds` rows: total refunded (pending or processed, not failed),
+  // the latest refund's status ("requested" while a Razorpay call is in flight or unconfirmed, then "pending" |
+  // "processed" | "failed"), and when the last refund was issued. The payment becomes REFUNDED once the total
+  // reaches the amount paid; partial refunds leave it CAPTURED.
   refundStatus      String?       @map("refund_status")
   refundAmountMinor Int?          @map("refund_amount_minor")
   refundedAt        DateTime?     @map("refunded_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
-  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  refunds Refund[]
 
   @@index([bookingId])
   @@map("payments")
+}
+
+// One Razorpay refund against a payment (a payment can have several partial refunds). Keyed by Razorpay's refund
+// id so webhooks and reconciliation upsert the same row.
+model Refund {
+  id               String   @id @default(cuid())
+  paymentId        String   @map("payment_id")
+  providerRefundId String   @unique @map("provider_refund_id")
+  amountMinor      Int      @map("amount_minor")
+  // "pending" | "processed" | "failed"
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@map("refunds")
 }
 
 // Delivery channels. WHATSAPP/SMS are the real customer-messaging channels (Phase 4/5); EMAIL and LOG are

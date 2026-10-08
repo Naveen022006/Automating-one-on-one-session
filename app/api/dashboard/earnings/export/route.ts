@@ -32,7 +32,7 @@ export async function GET(req: Request) {
   const rows: (string | number | null)[][] = [
     ["paid_at", "booking_id", "customer", "service", "session_start_utc", "currency", "amount", "refunded", "net", "status", "payment_reference"],
     ...payments.map((p) => {
-      const refunded = p.status === "REFUNDED" ? (p.refundAmountMinor ?? p.amountMinor) : 0;
+      const refunded = p.refundAmountMinor ?? (p.status === "REFUNDED" ? p.amountMinor : 0);
       return [
         p.createdAt.toISOString(),
         p.booking.id,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normaliseIp } from "../lib/rate-limit/client-ip";
+import { clientIp, normaliseIp } from "../lib/rate-limit/client-ip";
 import { FailoverStore, MemoryStore, consume, evaluate, rateLimitHeaders, windowStartFor, type RateLimitStore } from "../lib/rate-limit/core";
 import { GLOBAL_API_RULE, matchRouteRule, scaled } from "../lib/rate-limit/policies";
 import { PostgresStore, RedisStore } from "../lib/rate-limit/stores";
@@ -136,4 +136,24 @@ test("client IPs are normalised; IPv6 is grouped by /64", () => {
   assert.equal(normaliseIp("2001:db8:abcd:12:1:2:3:4"), "2001:db8:abcd:12::/64");
   assert.equal(normaliseIp("2001:db8:abcd:12::99"), "2001:db8:abcd:12::/64");
   assert.equal(normaliseIp("[2001:db8::1]"), "2001:db8:0:0::/64");
+});
+
+test("client IP comes only from headers a client cannot forge", () => {
+  const prev = process.env.CLIENT_IP_HEADER;
+  try {
+    delete process.env.CLIENT_IP_HEADER;
+    // Default: the right-most X-Forwarded-For entry (appended by our own proxy); client-supplied entries and
+    // client-settable headers are ignored.
+    const spoofed = new Headers({ "x-forwarded-for": "1.1.1.1, 2.2.2.2, 203.0.113.9", "cf-connecting-ip": "9.9.9.9", "x-real-ip": "8.8.8.8" });
+    assert.equal(clientIp(spoofed), "203.0.113.9");
+    assert.equal(clientIp(new Headers({ "x-real-ip": "8.8.8.8" })), "unknown", "x-real-ip is not trusted unless configured");
+
+    process.env.CLIENT_IP_HEADER = "cf-connecting-ip";
+    assert.equal(clientIp(spoofed), "9.9.9.9", "the configured platform header is trusted exclusively");
+    process.env.CLIENT_IP_HEADER = "x-forwarded-for";
+    assert.equal(clientIp(spoofed), "203.0.113.9");
+  } finally {
+    if (prev === undefined) delete process.env.CLIENT_IP_HEADER;
+    else process.env.CLIENT_IP_HEADER = prev;
+  }
 });

@@ -21,13 +21,18 @@ export async function POST(req: Request) {
   if (!parsed.ok) return parsed.response;
   const { email, password, next } = parsed.data;
 
-  const limited = await enforce(IDENTITY_RULES.loginEmail, email, "Too many sign-in attempts for this account. Try again in 15 minutes or reset your password.");
+  const ip = clientIp(req.headers);
+  const limited = await enforce(
+    IDENTITY_RULES.loginEmail,
+    `${email}|${ip}`,
+    "Too many sign-in attempts. Try again in 15 minutes or reset your password.",
+  );
   if (limited) return limited;
 
   const result = await authenticate(email, password);
   if (!result) return jsonError("That email and password do not match.", 401);
 
-  const token = await createSession(result.userId, requestMeta(req, clientIp(req.headers)));
+  const token = await createSession(result.userId, requestMeta(req, ip));
   const user = await prisma.user.findUnique({
     where: { id: result.userId },
     select: { influencer: { select: { onboardedAt: true } } },

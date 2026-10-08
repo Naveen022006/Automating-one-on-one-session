@@ -20,6 +20,11 @@ export class AccountError extends Error {
 export const VERIFY_TTL_MS = 24 * 3_600_000;
 export const RESET_TTL_MS = 3_600_000;
 
+/** Prisma's unique-constraint error (P2002), without importing the generated client's error classes. */
+export function isUniqueViolation(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { code?: string }).code === "P2002";
+}
+
 export function normaliseEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -94,16 +99,23 @@ export async function registerAccount(input: {
   if (slugOwner) throw new AccountError("This booking page address is taken. Please choose another.", "slug", 409);
 
   const passwordHash = await hashPassword(input.password);
-  const user = await prisma.$transaction(async (tx) => {
-    const influencer = await tx.influencer.create({
-      data: { slug, name, email, timezone: input.timezone, onboardedAt: null },
-      select: { id: true },
+  let user: { id: string };
+  try {
+    user = await prisma.$transaction(async (tx) => {
+      const influencer = await tx.influencer.create({
+        data: { slug, name, email, timezone: input.timezone, onboardedAt: null },
+        select: { id: true },
+      });
+      return tx.user.create({
+        data: { email, passwordHash, termsAcceptedAt: new Date(), influencerId: influencer.id },
+        select: { id: true },
+      });
     });
-    return tx.user.create({
-      data: { email, passwordHash, termsAcceptedAt: new Date(), influencerId: influencer.id },
-      select: { id: true },
-    });
-  });
+  } catch (e) {
+    // Two registrations racing for the same email or slug: the unique index decides; report it as a conflict.
+    if (isUniqueViolation(e)) throw new AccountError("That email or booking page address was just taken. Please try again.", undefined, 409);
+    throw e;
+  }
 
   await issueVerification(user.id, email, name);
   return { userId: user.id };
@@ -225,6 +237,8 @@ export async function changePassword(
     where: { id: user.id },
     data: { passwordHash: await hashPassword(newPassword), passwordChangedAt: new Date() },
   });
+  // Outstanding reset links must not be able to undo the change.
+  await prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
   await revokeAllSessions(user.id, currentSessionId);
   await sendAccountEmail({ email: user.email, name: user.influencer.name }, passwordChangedMessage(user.influencer.name), "password-changed");
 }

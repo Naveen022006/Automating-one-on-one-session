@@ -35,7 +35,8 @@ add per-email/per-booking limits. All limits live in `lib/rate-limit/policies.ts
 - Storage: Redis (atomic Lua sliding window). If Redis is missing or down, limits fall back to the Postgres table
   `rate_limit_buckets`, so they keep working on the database alone. `RATE_LIMIT_STORE` forces one store.
 - Responses: `429` with `Retry-After` and `RateLimit-Limit/Remaining/Reset` headers.
-- Production: set `CLIENT_IP_HEADER` to the header your platform sets with the real client IP.
+- Production: set `CLIENT_IP_HEADER` to the header your platform sets with the real client IP. Without it the
+  right-most `X-Forwarded-For` entry is used; client-settable headers are never trusted by default.
 - Database protection: connection pool size, wait timeout and per-statement timeout (`DATABASE_*` in `.env.example`).
 
 ## Integrations

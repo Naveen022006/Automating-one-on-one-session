@@ -20,6 +20,8 @@ export interface ManageBookingData {
   startTime: string;
   meetLink: string | null;
   canManage: boolean;
+  /** False for group sessions and inside a 24-hour notice window. */
+  canReschedule: boolean;
   refundPolicyText: string;
   cancelRefundText: string | null;
 }
@@ -88,7 +90,7 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok && res.status !== 202) throw new Error(result.error ?? "Something went wrong. Please try again.");
-      return result as { warning?: string; refund?: { eligible: boolean } };
+      return result as { warning?: string; refund?: { eligible: boolean; issued: "yes" | "pending" | "no" } };
     } catch (e) {
       setError((e as Error).message);
       return null;
@@ -104,9 +106,11 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
     setStatus("CANCELLED");
     setMode("view");
     setNotice(
-      result.refund?.eligible
-        ? "Your booking is cancelled. Your refund is being processed and usually arrives within 5-7 working days."
-        : "Your booking is cancelled. A confirmation is on its way to your email.",
+      !result.refund?.eligible
+        ? "Your booking is cancelled. A confirmation is on its way to your email."
+        : result.refund.issued === "no"
+          ? "Your booking is cancelled. You are due a full refund; the host has been notified and will issue it."
+          : "Your booking is cancelled. Your refund is on its way and usually arrives within 5-7 working days.",
     );
   }
 
@@ -166,7 +170,7 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
         ) : mode === "view" ? (
           <div className="stack">
             <div className="grid grid--2">
-              {data.serviceType !== "GROUP" && (
+              {data.canReschedule && (
                 <button type="button" className="option" onClick={() => setMode("reschedule")} disabled={busy}>
                   <IconCalendarClock />
                   <span className="stack stack--sm">
@@ -183,8 +187,12 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
                 </span>
               </button>
             </div>
-            {data.serviceType === "GROUP" && (
-              <p className="subtle">Rescheduling a group session is arranged by the host for everyone; contact them if the time does not work for you.</p>
+            {!data.canReschedule && (
+              <p className="subtle">
+                {data.serviceType === "GROUP"
+                  ? "Rescheduling a group session is arranged by the host for everyone; contact them if the time does not work for you."
+                  : "This session is less than 24 hours away, so it can no longer be rescheduled online. Contact the host if you need to change it."}
+              </p>
             )}
           </div>
         ) : (

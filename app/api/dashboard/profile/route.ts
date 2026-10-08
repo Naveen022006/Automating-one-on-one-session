@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { isSlugAvailable } from "@/lib/auth/accounts";
+import { isSlugAvailable, isUniqueViolation } from "@/lib/auth/accounts";
 import { requireApiAuth } from "@/lib/auth/session";
 import { slugProblem } from "@/lib/auth/slug";
 import { prisma } from "@/lib/db";
@@ -32,16 +32,22 @@ export async function PATCH(req: Request) {
     if (!(await isSlugAvailable(body.slug, auth.influencerId))) return jsonError("This address is taken.", 409, { field: "slug" });
   }
 
-  await prisma.influencer.update({
-    where: { id: auth.influencerId },
-    data: {
-      ...(body.name !== undefined ? { name: body.name } : {}),
-      ...(body.bio !== undefined ? { bio: body.bio || null } : {}),
-      ...(body.photoUrl !== undefined ? { photoUrl: body.photoUrl || null } : {}),
-      ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
-      ...(body.slug !== undefined ? { slug: body.slug } : {}),
-      ...(body.notifyByEmail !== undefined ? { notifyByEmail: body.notifyByEmail } : {}),
-    },
-  });
+  try {
+    await prisma.influencer.update({
+      where: { id: auth.influencerId },
+      data: {
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.bio !== undefined ? { bio: body.bio || null } : {}),
+        ...(body.photoUrl !== undefined ? { photoUrl: body.photoUrl || null } : {}),
+        ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
+        ...(body.slug !== undefined ? { slug: body.slug } : {}),
+        ...(body.notifyByEmail !== undefined ? { notifyByEmail: body.notifyByEmail } : {}),
+      },
+    });
+  } catch (e) {
+    // Another influencer claimed the same slug between the availability check and this update.
+    if (isUniqueViolation(e)) return jsonError("This address was just taken.", 409, { field: "slug" });
+    throw e;
+  }
   return NextResponse.json({ ok: true });
 }

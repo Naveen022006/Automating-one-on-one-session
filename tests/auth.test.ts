@@ -65,6 +65,9 @@ test("post-login redirects stay on this site", () => {
   assert.equal(safeNextPath("https://evil.example"), "/dashboard");
   assert.equal(safeNextPath("//evil.example"), "/dashboard");
   assert.equal(safeNextPath("/\\evil.example"), "/dashboard");
+  assert.equal(safeNextPath("/\t/evil.example"), "/dashboard", "browsers strip tabs: /<TAB>/evil would become //evil");
+  assert.equal(safeNextPath("/%09/evil.example"), "/%09/evil.example", "an encoded tab stays a harmless path");
+  assert.equal(safeNextPath("/a\\b"), "/dashboard");
   assert.equal(safeNextPath(undefined, "/x"), "/x");
 });
 

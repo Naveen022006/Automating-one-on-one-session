@@ -4,7 +4,7 @@ import { AccountError, changePassword } from "@/lib/auth/accounts";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { markReauthenticated, requireApiAuth } from "@/lib/auth/session";
 import { jsonError, parseJson } from "@/lib/http";
-import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
+import { clientIp, enforce, IDENTITY_RULES } from "@/lib/rate-limit";
 
 const schema = z.object({
   currentPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
@@ -16,7 +16,7 @@ export async function POST(req: Request) {
   if (auth instanceof NextResponse) return auth;
   const parsed = await parseJson(req, schema);
   if (!parsed.ok) return parsed.response;
-  const limited = await enforce(IDENTITY_RULES.loginEmail, auth.email, "Too many attempts. Try again in 15 minutes.");
+  const limited = await enforce(IDENTITY_RULES.reauthUser, `${auth.userId}|${clientIp(req.headers)}`, "Too many attempts. Try again in 15 minutes.");
   if (limited) return limited;
   try {
     await changePassword(auth.userId, auth.sessionId, parsed.data.currentPassword, parsed.data.newPassword);

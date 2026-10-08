@@ -1,20 +1,31 @@
 /**
- * Best-effort client IP from request headers. Next.js does not expose the socket address, so the IP comes from
- * the headers set by the platform in front of the app:
- *   - CLIENT_IP_HEADER (if set) is trusted exclusively, e.g. "cf-connecting-ip" behind Cloudflare or
- *     "x-real-ip" on Vercel. Set this in production so a client cannot spoof its IP with a forged header.
- *   - otherwise: cf-connecting-ip, x-real-ip, then the FIRST x-forwarded-for entry.
- * IPv6 addresses are reduced to their /64 prefix, because one subscriber usually controls a whole /64 and could
- * otherwise rotate addresses to dodge limits.
+ * Client IP for rate limiting. Next.js does not expose the socket address, so the IP comes from a header set by
+ * the platform in front of the app, and only from headers a client cannot forge:
+ *
+ *   - CLIENT_IP_HEADER (recommended in production): the ONE header your platform sets, e.g. "cf-connecting-ip"
+ *     behind Cloudflare or "x-real-ip" / "x-forwarded-for" on Vercel. It is trusted exclusively. For
+ *     x-forwarded-for the right-most entry is used (the one appended by your own proxy).
+ *   - Unset: the right-most X-Forwarded-For entry, which is appended by the proxy directly in front of the app;
+ *     anything a client puts in the header ends up to its left and is ignored. Client-settable headers such as
+ *     cf-connecting-ip or x-real-ip are NOT trusted by default, because without that platform in front a client
+ *     could send a new value on every request and get a fresh rate-limit bucket each time.
+ *
+ * IPv6 addresses are reduced to their /64 prefix, because one subscriber usually controls a whole /64.
  */
+let warned = false;
+
 export function clientIp(headers: Headers): string {
   const configured = process.env.CLIENT_IP_HEADER?.trim().toLowerCase();
-  const candidates = configured ? [configured] : ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"];
-  for (const name of candidates) {
-    const raw = headers.get(name);
-    if (!raw) continue;
-    const first = raw.split(",")[0]?.trim();
-    if (first) return normaliseIp(first);
+  const name = configured || "x-forwarded-for";
+  const raw = headers.get(name);
+  if (raw) {
+    const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+    const pick = name === "x-forwarded-for" ? parts[parts.length - 1] : parts[0];
+    if (pick) return normaliseIp(pick);
+  }
+  if (!warned && process.env.NODE_ENV === "production") {
+    warned = true;
+    console.warn(`[rate-limit] no client IP in "${name}"; all such requests share one bucket. Set CLIENT_IP_HEADER.`);
   }
   return "unknown";
 }

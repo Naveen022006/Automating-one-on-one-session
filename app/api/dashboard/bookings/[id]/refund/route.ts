@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
-import { RefundError, RefundNotAllowedError, refundPayment } from "@/lib/refunds";
+import { RefundError, RefundNotAllowedError, RefundPendingError, refundPayment } from "@/lib/refunds";
 
 const schema = z.object({
   /** Partial refund in minor units; omitted = the full captured amount. */
@@ -37,6 +37,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   } catch (e) {
     if (e instanceof RefundNotAllowedError) return jsonError(e.message, 409);
     if (e instanceof RefundError) return jsonError(`Razorpay did not accept the refund: ${e.message}`, 502);
+    if (e instanceof RefundPendingError) return NextResponse.json({ ok: true, pending: true, warning: e.message }, { status: 202 });
     throw e;
   }
 }

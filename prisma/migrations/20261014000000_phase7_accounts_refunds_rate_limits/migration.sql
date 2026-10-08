@@ -17,16 +17,32 @@ UPDATE "influencers" SET "onboarded_at" = "created_at" WHERE "onboarded_at" IS N
 -- AlterTable: per-service cancellation refund policy
 ALTER TABLE "services" ADD COLUMN "refund_policy" "RefundPolicy" NOT NULL DEFAULT 'FULL';
 
--- AlterTable: customer data erasure marker
+-- AlterTable: customer data erasure marker, and the refund policy the booking was sold under
 ALTER TABLE "bookings" ADD COLUMN "redacted_at" TIMESTAMP(3);
+ALTER TABLE "bookings" ADD COLUMN "refund_policy" "RefundPolicy";
 
--- AlterTable: Razorpay refunds
+-- AlterTable: refund summary on payments (derived from the refunds table)
 ALTER TABLE "payments"
-  ADD COLUMN "refund_id" TEXT,
   ADD COLUMN "refund_status" TEXT,
   ADD COLUMN "refund_amount_minor" INTEGER,
   ADD COLUMN "refunded_at" TIMESTAMP(3);
-CREATE UNIQUE INDEX "payments_refund_id_key" ON "payments"("refund_id");
+
+-- CreateTable: one row per Razorpay refund
+CREATE TABLE "refunds" (
+    "id" TEXT NOT NULL,
+    "payment_id" TEXT NOT NULL,
+    "provider_refund_id" TEXT NOT NULL,
+    "amount_minor" INTEGER NOT NULL,
+    "status" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "refunds_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "refunds_provider_refund_id_key" ON "refunds"("provider_refund_id");
+CREATE INDEX "refunds_payment_id_idx" ON "refunds"("payment_id");
+ALTER TABLE "refunds" ADD CONSTRAINT "refunds_payment_id_fkey"
+  FOREIGN KEY ("payment_id") REFERENCES "payments"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AlterTable: which Google account a calendar connection belongs to
 ALTER TABLE "google_tokens" ADD COLUMN "google_email" TEXT;

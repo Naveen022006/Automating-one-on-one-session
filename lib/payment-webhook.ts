@@ -8,7 +8,7 @@ export interface RazorpayWebhook {
   event: string;
   payload?: {
     payment?: { entity?: RazorpayPaymentEntity };
-    refund?: { entity?: { id: string; payment_id: string; status?: string } };
+    refund?: { entity?: { id: string; payment_id: string; amount?: number; status?: string } };
   };
 }
 interface RazorpayPaymentEntity {

@@ -55,7 +55,11 @@ async function handleApi(req: NextRequest): Promise<NextResponse> {
   const ip = clientIp(req.headers);
   const rule = matchRouteRule(method, pathname);
   const cookie = sessionCookie(req);
-  const routeId = rule?.by === "session-or-ip" && cookie ? sessionKey(cookie) : `ip:${ip}`;
+  // Signed-in users behind one shared IP (an office, a carrier NAT) get their own bucket; a cookie that is not
+  // even shaped like our session token is ignored, and the IP is always part of the key, so inventing cookies
+  // cannot escape the IP's limits (the global per-IP rule applies regardless).
+  const routeId =
+    rule?.by === "session-or-ip" && cookie && /^[A-Za-z0-9_-]{43}$/.test(cookie) ? `ip:${ip}:${sessionKey(cookie)}` : `ip:${ip}`;
   const [global, route] = await Promise.all([
     hit(GLOBAL_API_RULE, `ip:${ip}`),
     rule ? hit(rule, routeId) : Promise.resolve(null),

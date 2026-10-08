@@ -15,7 +15,8 @@ import { rearmMessage } from "@/lib/messaging";
 import { createMessage } from "@/lib/messages";
 import { cancelReminders, enqueueReminders, enqueueSendMessage } from "@/lib/queue";
 import { describeRefundPolicy, refundDecision, type CancelActor, type RefundPolicy } from "@/lib/refund-policy";
-import { refundPayment } from "@/lib/refunds";
+import { RefundPendingError, refundPayment } from "@/lib/refunds";
+import { NOTICE_MS } from "@/lib/refund-policy";
 import { blockedDaySet, isSlotStart, type Rule } from "@/lib/slots";
 
 export { SELF_SERVICE_PURPOSE, buildSelfServiceUrl, verifySelfServiceToken } from "@/lib/self-service";
@@ -138,7 +139,8 @@ export interface CancelOptions {
 }
 
 export interface CancelResult {
-  refund: { eligible: boolean; reason: string; issued: boolean };
+  /** issued: "yes" (refunded now), "pending" (sent to Razorpay, not yet confirmed), "no" (flagged or not due). */
+  refund: { eligible: boolean; reason: string; issued: "yes" | "pending" | "no" };
 }
 
 /**
@@ -169,7 +171,14 @@ export async function cancelBooking(
   const { service } = session;
   const influencerId = service.influencer.id;
   const isGroup = service.type === "GROUP";
-  const policy = ((service as { refundPolicy?: RefundPolicy }).refundPolicy ?? "FULL") as RefundPolicy;
+  // A customer cannot cancel (and claim a refund for) a session that has already started.
+  if (actor === "customer" && session.startTime.getTime() <= Date.now()) {
+    throw new BookingNotManageableError("This session has already started, so it can no longer be cancelled online. Please contact the host.");
+  }
+  // The policy the customer booked under; older bookings without a snapshot use the service's current policy.
+  const policy = ((booking as { refundPolicy?: RefundPolicy | null }).refundPolicy ??
+    (service as { refundPolicy?: RefundPolicy }).refundPolicy ??
+    "FULL") as RefundPolicy;
   const decision = refundDecision({ policy, actor, sessionStart: session.startTime });
   const hasCapturedPayment = (booking.payments ?? []).length > 0;
 
@@ -205,14 +214,18 @@ export async function cancelBooking(
   await step("cancel reminders", () => deps.cancelReminders(booking.id));
 
   // 4) Refund: issue it automatically if configured, otherwise flag it for the influencer.
-  let issued = false;
+  let issued: CancelResult["refund"]["issued"] = "no";
   if (decision.refund && hasCapturedPayment) {
-    if (process.env.AUTO_REFUND_ON_CANCEL === "true") {
+    if (autoRefundOnCancel()) {
       for (const p of booking.payments) {
         try {
           await deps.refundPayment(p.id, { reason: decision.reason });
-          issued = true;
+          if (issued === "no") issued = "yes";
         } catch (e) {
+          if (e instanceof RefundPendingError) {
+            issued = "pending";
+            continue;
+          }
           await deps.alert(influencerId, {
             kind: "refund-failed",
             detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -229,17 +242,27 @@ export async function cancelBooking(
     }
   }
 
-  // 5) Tell the customer. The cancellation template is the one message allowed for a CANCELLED booking.
+  // 5) Tell the customer what actually happened to their money. The cancellation template is the one message
+  //    allowed for a CANCELLED booking.
   const refundNote = !hasCapturedPayment
     ? null
-    : decision.refund
-      ? "You will be refunded in full to your original payment method. Refunds usually arrive within 5-7 working days."
-      : `No refund is due under this session's policy: ${describeRefundPolicy(policy)}`;
+    : !decision.refund
+      ? `No refund is due under this session's policy: ${describeRefundPolicy(policy)}`
+      : issued === "yes"
+        ? "Your refund has been issued to your original payment method. It usually arrives within 5-7 working days."
+        : issued === "pending"
+          ? "Your refund is being processed to your original payment method. It usually arrives within 5-7 working days."
+          : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
   await deps.sendBookingEmail(booking.id, "booking-cancelled", { refundNote });
   await createMessage({ bookingId: booking.id, channel: "whatsapp", template: CANCELLATION_TEMPLATE, status: "queued" });
   await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));
 
   return { refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued } };
+}
+
+/** AUTO_REFUND_ON_CANCEL=true makes eligible cancellations refund immediately through Razorpay. */
+export function autoRefundOnCancel(): boolean {
+  return process.env.AUTO_REFUND_ON_CANCEL === "true";
 }
 
 /**
@@ -251,6 +274,7 @@ export async function rescheduleBooking(
   bookingId: string,
   newStart: Date,
   overrides: Partial<ManageDeps> = {},
+  opts: { actor?: CancelActor } = {},
 ): Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
   const booking = await loadBooking(bookingId);
@@ -261,6 +285,20 @@ export async function rescheduleBooking(
 
   const { session } = booking;
   const { service } = session;
+  if (opts.actor === "customer") {
+    if (service.type === "GROUP") {
+      throw new BookingNotManageableError("Group sessions can only be moved by the host. Please contact them, or cancel your seat.");
+    }
+    const msToStart = session.startTime.getTime() - Date.now();
+    if (msToStart <= 0) throw new BookingNotManageableError("This session has already started, so it can no longer be moved online.");
+    // Under the 24-hour notice policy a late reschedule would let the customer move the session out of the notice
+    // window and then cancel for a refund, so customers cannot reschedule inside the window either.
+    const policy =
+      (booking as { refundPolicy?: RefundPolicy | null }).refundPolicy ?? (service as { refundPolicy?: RefundPolicy }).refundPolicy;
+    if (policy === "NOTICE_24H" && msToStart < NOTICE_MS) {
+      throw new BookingNotManageableError("Sessions can only be rescheduled online at least 24 hours in advance. Please contact the host.");
+    }
+  }
   const influencerId = service.influencer.id;
   const newEnd = new Date(newStart.getTime() + service.durationMin * 60_000);
   if (session.startTime.getTime() === newStart.getTime()) return; // already there (idempotent re-run)

@@ -93,6 +93,7 @@ export async function POST(req: Request) {
       whatsappE164,
       whatsappOptIn: body.whatsappOptIn,
       customerTz: body.tz,
+      refundPolicy: service.refundPolicy,
     });
     return NextResponse.json(
       {

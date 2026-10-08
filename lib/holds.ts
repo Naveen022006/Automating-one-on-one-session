@@ -34,6 +34,8 @@ export interface HoldInput {
   whatsappE164: string;
   whatsappOptIn: boolean;
   customerTz?: string;
+  /** Snapshot of the service's cancellation policy at booking time. */
+  refundPolicy?: "FULL" | "NOTICE_24H" | "NONE";
 }
 
 /**
@@ -75,6 +77,7 @@ export async function createHold(input: HoldInput) {
         whatsappE164: input.whatsappE164,
         whatsappOptIn: input.whatsappOptIn,
         customerTz: input.customerTz,
+        refundPolicy: input.refundPolicy,
       },
     });
   });

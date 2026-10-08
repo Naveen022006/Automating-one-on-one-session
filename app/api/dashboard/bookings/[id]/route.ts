@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireApiAuth } from "@/lib/auth/session";
+import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { getBookingDetail } from "@/lib/dashboard-data";
 import { prisma } from "@/lib/db";
 import {
@@ -8,6 +8,7 @@ import {
   ManageBlockedError,
   ManageRejectedError,
   RescheduleNotAllowedError,
+  autoRefundOnCancel,
   cancelBooking,
   rescheduleBooking,
   resendBookingLink,
@@ -54,6 +55,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (parsed.data.action === "resend") {
       await resendBookingLink(booking.id);
     } else if (parsed.data.action === "cancel") {
+      // With automatic refunds on, a cancel moves money, so it needs the same recent password entry as a refund.
+      if (autoRefundOnCancel() && (await hasCapturedPayment(booking.id))) {
+        const recent = await requireRecentAuth();
+        if (recent instanceof NextResponse) return recent;
+      }
       const result = await cancelBooking(booking.id, { actor: "influencer", reason: parsed.data.reason });
       return NextResponse.json({ ok: true, refund: result.refund });
     } else {
@@ -72,4 +78,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     console.error("[dashboard:booking-action] failed", e);
     return NextResponse.json({ error: "Action failed" }, { status: 500 });
   }
+}
+
+async function hasCapturedPayment(bookingId: string): Promise<boolean> {
+  return (await prisma.payment.count({ where: { bookingId, status: "CAPTURED" } })) > 0;
 }

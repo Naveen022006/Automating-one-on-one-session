@@ -316,11 +316,18 @@ Built on one branch (`phase-7-product-ui-auth-integrations`) with one commit per
 the parts that depend on each other (auth ↔ dashboard ↔ design system) land together. Split it if you prefer.
 
 ### Part A: integrations
-- [x] Razorpay refunds: dashboard **Refund** action (`POST /api/dashboard/bookings/[id]/refund`, full or partial),
-      `lib/refunds.ts` claims the payment first so double clicks cannot refund twice; `refund.processed` /
-      `refund.failed` webhooks update the payment (subscribe to them in Razorpay). Payment moves to `REFUNDED`.
-- [x] Cancellation refund policy per service (`FULL`, `NOTICE_24H`, `NONE`; host cancels always refund).
-      `AUTO_REFUND_ON_CANCEL=true` refunds eligible cancels immediately; otherwise they are flagged and alerted.
+- [x] Razorpay refunds: dashboard **Refund** action (`POST /api/dashboard/bookings/[id]/refund`, full or partial).
+      One `refunds` row per Razorpay refund; the payment keeps a running total and becomes `REFUNDED` only when fully
+      refunded. `lib/refunds.ts` claims the payment before calling Razorpay (no double refunds); a definite 4xx
+      releases the claim, an unclear outcome (timeout/5xx) keeps it until the webhook or a reconciliation
+      (`GET /payments/:id/refunds`, after 10 minutes) settles it. Webhooks (`refund.processed`, `refund.failed`)
+      are matched by refund id, so a late event for an old refund can never undo a newer one.
+- [x] Cancellation refund policy per service (`FULL`, `NOTICE_24H`, `NONE`; host cancels always refund),
+      snapshotted on the booking at hold time so later edits do not change what a customer bought. Customers cannot
+      cancel or reschedule after the session started, nor reschedule inside a 24-hour notice window (which would
+      dodge the policy). `AUTO_REFUND_ON_CANCEL=true` refunds eligible cancels immediately (and then an influencer
+      cancel needs a recent password entry, like the Refund button); otherwise they are flagged and alerted. The
+      cancellation email states what actually happened to the money.
 - [x] Google: "Connect Google Calendar" button (session-authenticated `/api/google/connect`), status
       Connected as `<email>` / Reconnect needed (reason) / Disconnect (revokes at Google). The CLI connect link and
       `npm run dashboard:link` are removed. 60-minute group warning in the service form and API.
@@ -366,7 +373,11 @@ influencer's login and use the same code path as the dashboard.
   the database alone; if both fail the request is allowed and the error logged. The worker sweeps expired rows.
 - The database is also protected by pool limits: `DATABASE_POOL_MAX`, connection wait timeout and a per-statement
   timeout (`lib/db.ts`).
-- Set `CLIENT_IP_HEADER` in production (e.g. `cf-connecting-ip`, `x-real-ip`) so clients cannot spoof their IP.
+- Client IP: only headers a client cannot forge are used. By default the right-most `X-Forwarded-For` entry (the
+  one appended by your proxy); set `CLIENT_IP_HEADER` to your platform's header (`cf-connecting-ip` behind
+  Cloudflare, `x-real-ip` on Vercel) in production. Per-email login limits are keyed by email + IP so a stranger
+  cannot lock an influencer out; password re-entry has its own per-user bucket.
+- Signed-in limits are keyed by IP + session (a forged cookie cannot escape the IP's limits).
 
 ### Parts C–E: design system, public pages, dashboard
 - [x] Tokens in `app/styles/tokens.css` (single source; AA contrast checked), Newsreader + Inter via `next/font`,

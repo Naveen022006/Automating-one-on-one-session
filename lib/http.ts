@@ -21,12 +21,22 @@ export function jsonError(message: string, status: number, extra: Record<string,
   return NextResponse.json({ error: message, ...extra }, { status });
 }
 
-/** Only same-site relative paths are allowed as post-login redirects (no open redirect). */
+/**
+ * Only same-site relative paths are allowed as post-login redirects (no open redirect). Control characters and
+ * backslashes are rejected outright (browsers strip tabs/newlines and treat "\\" as "/", which turns "/\t/evil.com"
+ * or "/\\evil.com" into a protocol-relative URL), and the result must resolve to this app's own origin.
+ */
 export function safeNextPath(next: unknown, fallback = "/dashboard"): string {
-  if (typeof next !== "string") return fallback;
-  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return fallback;
-  if (/[\r\n]/.test(next)) return fallback;
-  return next.slice(0, 500);
+  if (typeof next !== "string" || next.length > 500) return fallback;
+  if (!next.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(next)) return fallback;
+  const base = "https://app.invalid";
+  try {
+    const url = new URL(next, base);
+    if (url.origin !== base) return fallback;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return fallback;
+  }
 }
 
 export function requestMeta(req: Request, ip: string): { userAgent: string | null; ip: string } {

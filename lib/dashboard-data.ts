@@ -215,7 +215,7 @@ export async function earningsPayments(influencerId: string, from: Date | null, 
     currency: p.currency,
     serviceId: p.booking.session.service.id,
     serviceTitle: p.booking.session.service.title,
-    refundedMinor: p.status === "REFUNDED" ? (p.refundAmountMinor ?? p.amountMinor) : 0,
+    refundedMinor: p.refundAmountMinor ?? (p.status === "REFUNDED" ? p.amountMinor : 0),
   }));
 }
 
@@ -336,7 +336,8 @@ export async function getBookingDetail(influencerId: string, bookingId: string) 
       serviceTitle: b.session.service.title,
       serviceType: b.session.service.type,
       durationMin: b.session.service.durationMin,
-      refundPolicy: b.session.service.refundPolicy,
+      // The policy the customer booked under (snapshot), falling back to the service's for older bookings.
+      refundPolicy: b.refundPolicy ?? b.session.service.refundPolicy,
     },
     payments: b.payments.map((p) => ({
       id: p.id,

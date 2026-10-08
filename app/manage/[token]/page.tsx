@@ -38,7 +38,9 @@ export default async function ManagePage({ params }: { params: Promise<{ token: 
 
   const { session } = booking;
   const { service } = session;
-  const decision = refundDecision({ policy: service.refundPolicy, actor: "customer", sessionStart: session.startTime });
+  const policy = booking.refundPolicy ?? service.refundPolicy;
+  const decision = refundDecision({ policy, actor: "customer", sessionStart: session.startTime });
+  const msToStart = session.startTime.getTime() - Date.now();
   const data: ManageBookingData = {
     token,
     serviceId: service.id,
@@ -50,8 +52,9 @@ export default async function ManagePage({ params }: { params: Promise<{ token: 
     status: booking.status,
     startTime: session.startTime.toISOString(),
     meetLink: booking.meetLink ?? session.meetLink,
-    canManage: (booking.status === "PAID" || booking.status === "SCHEDULED") && session.startTime > new Date(),
-    refundPolicyText: describeRefundPolicy(service.refundPolicy),
+    canManage: (booking.status === "PAID" || booking.status === "SCHEDULED") && msToStart > 0,
+    canReschedule: service.type !== "GROUP" && !(policy === "NOTICE_24H" && msToStart < 24 * 3_600_000),
+    refundPolicyText: describeRefundPolicy(policy),
     cancelRefundText:
       booking.payments.length === 0
         ? null

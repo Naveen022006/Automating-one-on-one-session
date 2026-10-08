@@ -163,6 +163,8 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
 
   const live = detail && (detail.status === "PAID" || detail.status === "SCHEDULED");
   const captured = detail?.payments.find((p) => p.status === "CAPTURED") ?? null;
+  const refundable = captured ? captured.amountMinor - (captured.refundAmountMinor ?? 0) : 0;
+  const refundInFlight = captured?.refundStatus === "requested";
 
   return (
     <Drawer
@@ -188,9 +190,14 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                 <IconCalendarX size={16} /> Cancel
               </Button>
             )}
-            {captured && (
-              <Button variant="danger" onClick={() => (setRefundAmount((captured.amountMinor / 100).toFixed(2)), setDialog("refund"))}>
-                <IconUndo size={16} /> Refund
+            {captured && refundable > 0 && (
+              <Button
+                variant="danger"
+                disabled={refundInFlight}
+                title={refundInFlight ? "Waiting for Razorpay to confirm the last refund" : undefined}
+                onClick={() => (setRefundAmount((refundable / 100).toFixed(2)), setDialog("refund"))}
+              >
+                <IconUndo size={16} /> {captured.refundAmountMinor ? "Refund the rest" : "Refund"}
               </Button>
             )}
           </>
@@ -270,7 +277,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                   <dt>Status</dt>
                   <dd>
                     <StatusPill kind="payment" status={p.status} />
-                    {p.refundStatus && p.status === "REFUNDED" && <span className="subtle"> · Razorpay: {p.refundStatus}</span>}
+                    {p.refundStatus && <span className="subtle"> · Refund: {p.refundStatus === "requested" ? "awaiting Razorpay" : p.refundStatus}</span>}
                   </dd>
                   {p.refundAmountMinor !== null && (
                     <>
@@ -360,19 +367,23 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
               confirmLabel="Issue refund"
               onConfirm={() => {
                 const minor = Math.round(Number(refundAmount) * 100);
-                if (!Number.isFinite(minor) || minor <= 0 || minor > captured.amountMinor) {
-                  toast("Enter an amount up to the amount paid.", "error");
+                if (!Number.isFinite(minor) || minor <= 0 || minor > refundable) {
+                  toast("Enter an amount up to what is left to refund.", "error");
                   return;
                 }
                 void run(
                   "refund",
                   `/api/dashboard/bookings/${detail.id}/refund`,
-                  { amountMinor: minor === captured.amountMinor ? undefined : minor },
+                  { amountMinor: minor === refundable ? undefined : minor },
                   "Refund issued.",
                 );
               }}
             >
-              <Field id="refund-amount" label={`Amount (${captured.currency})`} help={`Paid: ${money(captured.amountMinor, captured.currency)}. Partial refunds are allowed.`}>
+              <Field
+                id="refund-amount"
+                label={`Amount (${captured.currency})`}
+                help={`Paid ${money(captured.amountMinor, captured.currency)}${captured.refundAmountMinor ? `, already refunded ${money(captured.refundAmountMinor, captured.currency)}` : ""}. Partial refunds are allowed.`}
+              >
                 <Input id="refund-amount" inputMode="decimal" value={refundAmount} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRefundAmount(e.target.value)} />
               </Field>
             </ConfirmDialog>

@@ -42,6 +42,19 @@ export async function createOrder(input: {
   return (await res.json()) as RazorpayOrder;
 }
 
+/** Razorpay answered with a non-2xx status. A 4xx (except 408/429) is a definite rejection; anything else is not. */
+export class RazorpayHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+  get definiteRejection(): boolean {
+    return this.status >= 400 && this.status < 500 && this.status !== 408 && this.status !== 429;
+  }
+}
+
 export interface RazorpayRefund {
   id: string;
   payment_id: string;
@@ -73,9 +86,24 @@ export async function createRefund(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Razorpay refund failed (${res.status}): ${body.slice(0, 300)}`);
+    throw new RazorpayHttpError(res.status, `Razorpay refund failed (${res.status}): ${body.slice(0, 300)}`);
   }
   return (await res.json()) as RazorpayRefund;
+}
+
+/** All refunds of a payment, used to reconcile a refund call whose outcome was not confirmed (timeout, 5xx). */
+export async function listRefunds(providerPaymentId: string, fetchFn: typeof fetch = fetch): Promise<RazorpayRefund[]> {
+  const auth = Buffer.from(`${razorpayKeyId()}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
+  const res = await fetchFn(`${RAZORPAY_API}/payments/${encodeURIComponent(providerPaymentId)}/refunds?count=100`, {
+    headers: { Authorization: `Basic ${auth}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new RazorpayHttpError(res.status, `Razorpay refund lookup failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { items?: RazorpayRefund[] };
+  return data.items ?? [];
 }
 
 /** Verifies the `x-razorpay-signature` header (HMAC-SHA256 hex of the exact raw body), in constant time. */

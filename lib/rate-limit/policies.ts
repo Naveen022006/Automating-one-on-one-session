@@ -56,7 +56,13 @@ export const ROUTE_RULES: RouteRule[] = [
 
 /** Identity-based limits enforced inside route handlers once the body is parsed. */
 export const IDENTITY_RULES = {
-  loginEmail: { name: "auth-login-email", limit: 5, windowMs: 15 * MIN },
+  /**
+   * Keyed by email AND client IP, so a stranger hammering someone's email from their own IP cannot lock the real
+   * owner out; distributed guessing is still capped by the per-IP rule and the hashing cost.
+   */
+  loginEmail: { name: "auth-login-email-ip", limit: 5, windowMs: 15 * MIN },
+  /** Password re-entry for sensitive actions / change password, keyed by user id + IP (separate from login). */
+  reauthUser: { name: "auth-reauth-user-ip", limit: 10, windowMs: 15 * MIN },
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },
