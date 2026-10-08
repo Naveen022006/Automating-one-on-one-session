@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ServiceType {
+  ONE_TO_ONE
+  GROUP
+}
+
+// Lifecycle: HELD -> PENDING_PAYMENT -> PAID -> SCHEDULED -> COMPLETED
+// Side exits: EXPIRED, CANCELLED, FAILED
+enum BookingStatus {
+  HELD
+  PENDING_PAYMENT
+  PAID
+  SCHEDULED
+  COMPLETED
+  EXPIRED
+  CANCELLED
+  FAILED
+}
+
+model Influencer {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  email     String   @unique
+  timezone  String   @default("Asia/Kolkata")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  services Service[]
+  rules    AvailabilityRule[]
+
+  @@map("influencers")
+}
+
+model Service {
+  id           String      @id @default(cuid())
+  influencerId String      @map("influencer_id")
+  title        String
+  description  String?
+  durationMin  Int         @map("duration_min")
+  priceMinor   Int         @map("price_minor") // smallest currency unit (paise/cents)
+  currency     String      @default("INR")
+  type         ServiceType @default(ONE_TO_ONE)
+  capacity     Int         @default(1)
+  active       Boolean     @default(true)
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  sessions   Session[]
+
+  @@index([influencerId])
+  @@map("services")
+}
+
+// Weekly recurring availability. weekday is ISO: 1 = Monday ... 7 = Sunday.
+// startTime / endTime are wall-clock "HH:mm" in `timezone`.
+model AvailabilityRule {
+  id           String @id @default(cuid())
+  influencerId String @map("influencer_id")
+  weekday      Int
+  startTime    String @map("start_time")
+  endTime      String @map("end_time")
+  timezone     String
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([influencerId, weekday])
+  @@map("availability_rules")
+}
+
+// One occurrence of a service at a given instant. 1:1 services have capacity 1;
+// group services share one session across many bookings (Phase 6 builds on this).
+model Session {
+  id        String   @id @default(cuid())
+  serviceId String   @map("service_id")
+  startTime DateTime @map("start_time") // UTC
+  endTime   DateTime @map("end_time") // UTC
+  createdAt DateTime @default(now()) @map("created_at")
+
+  service  Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@unique([serviceId, startTime])
+  @@map("sessions")
+}
+
+model Booking {
+  id              String        @id @default(cuid())
+  sessionId       String        @map("session_id")
+  status          BookingStatus @default(HELD)
+  holdExpiresAt   DateTime?     @map("hold_expires_at")
+  customerName    String        @map("customer_name")
+  customerEmail   String        @map("customer_email")
+  whatsappE164    String        @map("whatsapp_e164")
+  whatsappOptIn   Boolean       @default(false) @map("whatsapp_opt_in")
+  customerTz      String?       @map("customer_tz")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([status, holdExpiresAt])
+  @@map("bookings")
+}
