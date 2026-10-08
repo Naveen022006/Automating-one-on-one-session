@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyDashboardToken } from "@/lib/dashboard";
+import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { activeSeatWhere } from "@/lib/holds";
 
-// Influencer-authenticated via the signed dashboard token (same purpose as the dashboard page). Every mutation
-// verifies the token first and that the targeted service belongs to that influencer; otherwise 403/404. Request
+// Influencer-authenticated via the login session (lib/auth/session.ts). Every mutation requires a session first
+// and that the targeted service belongs to that influencer; otherwise 401/404. Request
 // bodies are validated with zod and named errors are mapped to status, matching app/api/checkout/route.ts and
 // app/api/bookings/hold/route.ts.
 
 const createSchema = z.object({
-  token: z.string().min(1),
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).optional(),
   durationMin: z.number().int().positive().max(24 * 60),
@@ -19,10 +18,10 @@ const createSchema = z.object({
   type: z.enum(["ONE_TO_ONE", "GROUP"]).optional(),
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
+  refundPolicy: z.enum(["FULL", "NOTICE_24H", "NONE"]).optional(),
 });
 
 const updateSchema = z.object({
-  token: z.string().min(1),
   serviceId: z.string().min(1),
   title: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(2000).nullable().optional(),
@@ -32,15 +31,27 @@ const updateSchema = z.object({
   type: z.enum(["ONE_TO_ONE", "GROUP"]).optional(),
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
+  refundPolicy: z.enum(["FULL", "NOTICE_24H", "NONE"]).optional(),
 });
 
+/**
+ * Free Gmail accounts end group Google Meet calls (3+ participants) at 60 minutes. Returned as a warning (not an
+ * error) because Google Workspace accounts do not have the limit.
+ */
+function meetLimitWarning(type: string | undefined, durationMin: number | undefined): string | null {
+  return type === "GROUP" && (durationMin ?? 0) > 60
+    ? "Free Gmail accounts end group Meet calls after 60 minutes. Use a Google Workspace account or keep group sessions to 60 minutes."
+    : null;
+}
+
 export async function POST(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const body = parsed.data;
   const type = body.type ?? "ONE_TO_ONE";
@@ -58,25 +69,27 @@ export async function POST(req: Request) {
       type,
       capacity,
       active: body.active ?? true,
+      refundPolicy: body.refundPolicy ?? "FULL",
     },
     select: { id: true },
   });
-  return NextResponse.json({ serviceId: service.id }, { status: 201 });
+  return NextResponse.json({ serviceId: service.id, warning: meetLimitWarning(type, body.durationMin) }, { status: 201 });
 }
 
 export async function PATCH(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = updateSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const body = parsed.data;
   // Ownership check: the service must belong to this influencer, else 404.
   const existing = await prisma.service.findFirst({
     where: { id: body.serviceId, influencerId },
-    select: { id: true, type: true, capacity: true },
+    select: { id: true, type: true, capacity: true, durationMin: true },
   });
   if (!existing) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
@@ -123,7 +136,11 @@ export async function PATCH(req: Request) {
       ...(body.type !== undefined ? { type: body.type } : {}),
       ...(body.capacity !== undefined ? { capacity: body.capacity } : {}),
       ...(body.active !== undefined ? { active: body.active } : {}),
+      ...(body.refundPolicy !== undefined ? { refundPolicy: body.refundPolicy } : {}),
     },
   });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    warning: meetLimitWarning(body.type ?? existing.type, body.durationMin ?? existing.durationMin),
+  });
 }

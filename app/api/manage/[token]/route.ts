@@ -8,6 +8,7 @@ import {
   cancelBooking,
   rescheduleBooking,
 } from "@/lib/manage";
+import { prisma } from "@/lib/db";
 import { verifySelfServiceToken } from "@/lib/self-service";
 
 // Customer self-service actions on their OWN booking. Gated by the self-service token (NOT the dashboard
@@ -31,9 +32,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
 
+  if (parsed.data.action === "reschedule") {
+    // Rescheduling a GROUP booking moves the shared session for every attendee, so only the host may do it.
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { session: { select: { service: { select: { type: true } } } } },
+    });
+    if (booking?.session.service.type === "GROUP") {
+      return NextResponse.json(
+        { error: "Group sessions can only be moved by the host. Please contact them, or cancel your seat." },
+        { status: 409 },
+      );
+    }
+  }
+
   try {
     if (parsed.data.action === "cancel") {
-      await cancelBooking(bookingId);
+      // A customer cancel: the refund follows the service's cancellation policy (lib/refunds.ts).
+      const result = await cancelBooking(bookingId, { actor: "customer" });
+      return NextResponse.json({ ok: true, refund: result.refund });
     } else {
       await rescheduleBooking(bookingId, new Date(parsed.data.startTime));
     }

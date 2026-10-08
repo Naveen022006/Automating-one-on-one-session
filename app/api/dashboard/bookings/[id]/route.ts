@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyDashboardToken } from "@/lib/dashboard";
+import { requireApiAuth } from "@/lib/auth/session";
+import { getBookingDetail } from "@/lib/dashboard-data";
 import { prisma } from "@/lib/db";
 import {
   BookingNotManageableError,
@@ -12,24 +13,35 @@ import {
   resendBookingLink,
 } from "@/lib/manage";
 
-// Influencer manual actions on one booking, gated by the signed dashboard token. The booking must belong to
-// the influencer the token authorises (otherwise 404). Named errors from lib/manage.ts map to HTTP status
-// exactly like app/api/checkout/route.ts.
+// Influencer manual actions on one booking, gated by the login session. The booking must belong to the logged-in
+// influencer (otherwise 404). Named errors from lib/manage.ts map to HTTP status exactly like
+// app/api/checkout/route.ts. A cancel from here is an influencer cancel, so the customer is refunded in full.
 
 const bodySchema = z.discriminatedUnion("action", [
-  z.object({ token: z.string().min(1), action: z.literal("resend") }),
-  z.object({ token: z.string().min(1), action: z.literal("cancel") }),
-  z.object({ token: z.string().min(1), action: z.literal("reschedule"), startTime: z.iso.datetime() }),
+  z.object({ action: z.literal("resend") }),
+  z.object({ action: z.literal("cancel"), reason: z.string().trim().max(500).optional() }),
+  z.object({ action: z.literal("reschedule"), startTime: z.iso.datetime() }),
 ]);
 
+// Booking detail for the sessions drawer (customer, payment, message history per channel, Meet link).
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const { id } = await params;
+  const detail = await getBookingDetail(auth.influencerId, id);
+  if (!detail) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  return NextResponse.json(detail);
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const { id } = await params;
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   // Ownership: the booking must sit under one of this influencer's services.
   const booking = await prisma.booking.findFirst({
@@ -42,7 +54,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (parsed.data.action === "resend") {
       await resendBookingLink(booking.id);
     } else if (parsed.data.action === "cancel") {
-      await cancelBooking(booking.id);
+      const result = await cancelBooking(booking.id, { actor: "influencer", reason: parsed.data.reason });
+      return NextResponse.json({ ok: true, refund: result.refund });
     } else {
       await rescheduleBooking(booking.id, new Date(parsed.data.startTime));
     }

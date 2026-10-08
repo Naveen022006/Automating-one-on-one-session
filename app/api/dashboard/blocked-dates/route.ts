@@ -1,22 +1,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyDashboardToken } from "@/lib/dashboard";
+import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 
-// Block / unblock calendar days for the influencer the dashboard token authorises. A blocked day produces no
-// slots (see lib/slots.ts) and cannot be held. Every mutation verifies the token first and that the blocked
+// Block / unblock calendar days for the logged-in influencer. A blocked day produces no
+// slots (see lib/slots.ts) and cannot be held. Every mutation requires a session first and that the blocked
 // date belongs to that influencer (403/404).
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const createSchema = z.object({
-  token: z.string().min(1),
   date: z.string().regex(DATE),
   reason: z.string().trim().max(200).optional(),
 });
 
 const deleteSchema = z.object({
-  token: z.string().min(1),
   // Accept either the row id or the date, so the UI can unblock by whichever it has.
   blockedDateId: z.string().min(1).optional(),
   date: z.string().regex(DATE).optional(),
@@ -28,12 +26,13 @@ function toUtcMidnight(date: string): Date {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const date = toUtcMidnight(parsed.data.date);
   if (Number.isNaN(date.getTime())) return NextResponse.json({ error: "Invalid date" }, { status: 400 });
@@ -49,12 +48,13 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = deleteSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success || (!parsed.data.blockedDateId && !parsed.data.date)) {
     return NextResponse.json({ error: "Provide blockedDateId or date" }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const where = parsed.data.blockedDateId
     ? { id: parsed.data.blockedDateId, influencerId }

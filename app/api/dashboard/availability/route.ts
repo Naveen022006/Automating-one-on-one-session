@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyDashboardToken } from "@/lib/dashboard";
+import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { isValidTimezone } from "@/lib/slots";
 
-// Create / update / delete weekly availability rules for the influencer the dashboard token authorises.
-// Every mutation verifies the token first and that the rule belongs to that influencer (403/404).
+// Create / update / delete weekly availability rules for the logged-in influencer. Every mutation requires a
+// session (401) and that the rule belongs to that influencer (404).
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const createSchema = z.object({
-  token: z.string().min(1),
   weekday: z.number().int().min(1).max(7), // ISO: 1=Mon ... 7=Sun
   startTime: z.string().regex(TIME),
   endTime: z.string().regex(TIME),
@@ -18,7 +17,6 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
-  token: z.string().min(1),
   ruleId: z.string().min(1),
   weekday: z.number().int().min(1).max(7).optional(),
   startTime: z.string().regex(TIME).optional(),
@@ -26,15 +24,16 @@ const updateSchema = z.object({
   timezone: z.string().min(1).optional(),
 });
 
-const deleteSchema = z.object({ token: z.string().min(1), ruleId: z.string().min(1) });
+const deleteSchema = z.object({ ruleId: z.string().min(1) });
 
 export async function POST(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const body = parsed.data;
   if (!isValidTimezone(body.timezone)) return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
@@ -56,12 +55,13 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = updateSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const body = parsed.data;
   const existing = await prisma.availabilityRule.findFirst({
@@ -83,12 +83,13 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  const influencerId = auth.influencerId;
   const parsed = deleteSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
-  const influencerId = verifyDashboardToken(parsed.data.token);
-  if (!influencerId) return NextResponse.json({ error: "Invalid or expired dashboard link" }, { status: 403 });
 
   const existing = await prisma.availabilityRule.findFirst({
     where: { id: parsed.data.ruleId, influencerId },

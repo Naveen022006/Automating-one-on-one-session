@@ -8,6 +8,9 @@ import {
   SlotUnavailableError,
 } from "@/lib/holds";
 import { toE164 } from "@/lib/phone";
+import { signBookingPollToken } from "@/lib/self-service";
+import { publicInfluencerWhere } from "@/lib/public";
+import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
 import { blockedDaySet, isSlotStart, isValidTimezone } from "@/lib/slots";
 
 const bodySchema = z.object({
@@ -20,12 +23,24 @@ const bodySchema = z.object({
   tz: z.string().optional(),
 });
 
+function safePollToken(bookingId: string): string | null {
+  try {
+    return signBookingPollToken(bookingId);
+  } catch {
+    return null; // APP_SECRET unset: the confirmation page simply shows no manage link
+  }
+}
+
 export async function POST(req: Request) {
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
   const body = parsed.data;
+
+  // Per-IP limits run in proxy.ts; this one stops a single email from squatting many seats.
+  const limited = await enforce(IDENTITY_RULES.holdEmail, body.email, "Too many holds for this email. Please finish paying for the slot you already chose, or try again in a few minutes.");
+  if (limited) return limited;
 
   const whatsappE164 = toE164(body.whatsapp);
   if (!whatsappE164) {
@@ -39,7 +54,7 @@ export async function POST(req: Request) {
   }
 
   const service = await prisma.service.findFirst({
-    where: { id: body.serviceId, active: true },
+    where: { id: body.serviceId, active: true, influencer: publicInfluencerWhere },
     include: { influencer: { include: { rules: true } } },
   });
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
@@ -80,7 +95,12 @@ export async function POST(req: Request) {
       customerTz: body.tz,
     });
     return NextResponse.json(
-      { bookingId: booking.id, holdExpiresAt: booking.holdExpiresAt, holdMinutes: HOLD_MINUTES },
+      {
+        bookingId: booking.id,
+        holdExpiresAt: booking.holdExpiresAt,
+        holdMinutes: HOLD_MINUTES,
+        pollToken: safePollToken(booking.id),
+      },
       { status: 201 },
     );
   } catch (e) {
