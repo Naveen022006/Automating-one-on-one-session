@@ -1,7 +1,15 @@
 {
   "task_id": "task-phase-4-messaging",
   "task_description": "Implement Phase 4 (WhatsApp + SMS messaging) from doc/04-messaging.md on the phase-4-messaging branch: Message data model + migration, lib/whatsapp.ts and lib/sms.ts send functions, a send-message worker job with WhatsApp->SMS fallback, a BullMQ send-message queue + enqueue, a cross-phase trigger so a paid booking attempts a send-message (Phase 3 is absent), a WhatsApp delivery-status webhook (GET verify + POST statuses), surfacing the meeting link on the confirmation page/status endpoint, extending the worker process to run BullMQ workers, offline-safe tests, and updated doc checkboxes. Mirror existing codebase conventions. Do not push or open a PR.",
-  "status": "in_progress",
+  "status": "completed",
   "feature_order": ["FEAT-001", "FEAT-002"],
-  "blocked_reason": null
+  "blocked_reason": null,
+  "verification": {
+    "build": "not_run",
+    "tests": "not_run",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "Automated gates (npm run typecheck, npm test, prisma generate, next build) COULD NOT be executed: the JS toolchain is not installed (node_modules holds only empty placeholder dirs, no node_modules/.bin, no generated/prisma client) and the npm registry is blocked (HTTP 403) with no offline cache, so deps cannot be installed. This blocker pre-dates the task (baseline typecheck/test already failed) and was confirmed independently by the orchestrator. No Docker/Dockerfile present. Verification was therefore by thorough manual code review of every changed file against existing patterns (lib/payments.ts env()+non-2xx error style, lib/queue.ts BullMQ options, payment-webhook raw-body/transaction/DI shape, test DI + DB-skip conventions). test_quality: pass — the new tests exercise real logic with injected fakes (WhatsApp success, WhatsApp->SMS fallback recording both rows, opt-out skip, missing-link retryable, both-fail throw; webhook status mapping + verify-token + payload parsing) and would fail if the corresponding implementation were reverted; tests/payments.test.ts asserts the cross-phase send-message enqueue fires. Code is written to pass typecheck/tests once deps + prisma generate are available."
+  },
+  "cross_phase_assumption": "Phase 3 (Google Meet) is not implemented. Booking.meetLink/eventId were added now; lib/payment-webhook.ts enqueues send-message directly on PAID as a bridge; sendBookingMessage throws a retryable error while meetLink is null so BullMQ retries until Phase 3 sets the link. Documented in code comments and doc/04-messaging.md. When Phase 3 lands, its create-meeting job should own the send-message enqueue and the bridge in payment-webhook can be removed."
 }
