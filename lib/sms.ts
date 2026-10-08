@@ -1,26 +1,52 @@
+import { toE164 } from "@/lib/phone";
+
+// Generic SMS provider HTTP endpoint. Swap this for the chosen provider (MSG91/Twilio) during
+// provider onboarding; the request shape is kept in one place so the rest of the app is unaffected.
+// DLT registration (sender id + templates) for India is an external/manual step (doc/04-messaging.md).
+const SMS_API = process.env.SMS_API_URL ?? "https://api.sms-provider.example.com/v1/messages";
+
+function env(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is not set`);
+  return v;
+}
+
+export interface SendSMSInput {
+  /** Destination number; normalized to E.164 (default IN) before sending. */
+  to: string;
+  /** Message body (fallback plain text with the meeting link). */
+  body: string;
+}
+
+export interface SendResult {
+  providerMessageId: string;
+}
+
+type FetchFn = typeof fetch;
+
 /**
- * SMS send function (e.g. MSG91 for India).
- *
- * ASSUMPTION / Phase 4 completion: a real SMS send needs a provider account plus DLT registration
- * (sender id + approved templates) for India, and network access - none available here. So the default
- * below is a safe log-and-succeed stub when the provider env vars are absent, used as the fallback when
- * WhatsApp delivery fails. It keeps Phase 5 testable without fabricating credentials or real API calls.
- *
- * TODO(phase-4): when SMS_API_KEY (+ SMS_SENDER_ID) are configured, POST to the provider's send endpoint
- * and return the returned message id.
+ * Sends an SMS through the configured provider. The `fetch` function is injectable so tests run with
+ * no network. Throws on a non-2xx response (mirrors lib/whatsapp.ts / lib/payments.ts createOrder).
  */
+export async function sendSMS(input: SendSMSInput, fetchFn: FetchFn = fetch): Promise<SendResult> {
+  const apiKey = env("SMS_API_KEY");
+  const to = toE164(input.to) ?? input.to;
 
-import type { SendResult } from "@/lib/whatsapp";
+  const res = await fetchFn(SMS_API, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ to, body: input.body }),
+  });
 
-export type SendSms = (to: string, body: string) => Promise<SendResult>;
-
-export const sendSms: SendSms = async (to, body) => {
-  const apiKey = process.env.SMS_API_KEY;
-  if (!apiKey) {
-    // Stub path: no provider configured. Log a structured line so the pipeline is observable and succeed.
-    console.log("[sms:stub]", JSON.stringify({ to, body, note: "SMS_API_KEY not set; not actually sent" }));
-    return { providerId: `stub-sms-${to}` };
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`SMS send failed (${res.status}): ${body.slice(0, 300)}`);
   }
-  // TODO(phase-4): real SMS provider call goes here (DLT-approved template required for India).
-  throw new Error("SMS provider configured but real delivery is not implemented (Phase 4 completion)");
-};
+
+  const data = (await res.json()) as { id?: string; messageId?: string };
+  const providerMessageId = data.messageId ?? data.id;
+  if (!providerMessageId) {
+    throw new Error("SMS send succeeded but no message id was returned");
+  }
+  return { providerMessageId };
+}

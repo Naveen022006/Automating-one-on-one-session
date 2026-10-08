@@ -28,7 +28,7 @@ let messages: Worker<SendMessageData> | undefined;
 let reminders: Worker<SendReminderData> | undefined;
 
 if (!process.env.REDIS_URL) {
-  console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting jobs will not be processed");
+  console.warn("[worker] REDIS_URL is not set: only hold expiry is running, meeting/message jobs will not be processed");
 } else {
   meetings = new Worker<CreateMeetingData>(MEETING_QUEUE, handleCreateMeeting, {
     connection: redisConnection(),
@@ -47,6 +47,9 @@ if (!process.env.REDIS_URL) {
   });
   console.log(`[worker] processing "${MEETING_QUEUE}" queue`);
 
+  // The messages worker carries every outbound customer message (booking confirmation, reschedule and
+  // cancellation notices), keyed by the per-job template. The booking confirmation is enqueued by the
+  // create-meeting job after the Meet link is set, so the link is present when it runs.
   messages = new Worker<SendMessageData>(MESSAGE_QUEUE, handleSendMessage, {
     connection: redisConnection(),
     concurrency: 5,
@@ -93,9 +96,7 @@ if (!process.env.REDIS_URL) {
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
   clearInterval(timer);
-  await meetings?.close();
-  await messages?.close();
-  await reminders?.close();
+  await Promise.all([meetings?.close(), messages?.close(), reminders?.close()]);
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));

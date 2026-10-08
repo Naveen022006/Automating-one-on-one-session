@@ -72,6 +72,8 @@ test("replaying the same webhook enqueues only one meeting job", { skip }, async
   assert.equal(first, "processed");
   assert.equal(second, "duplicate");
   assert.equal(third, "processed");
+  // A paid booking enqueues the create-meeting job exactly once. The create-meeting job (Phase 3) is
+  // the sole producer of send-message, enqueueing it only after the Meet link is set.
   assert.deepEqual(queued, [bookingId]);
   const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
   assert.equal(booking.status, "PAID");

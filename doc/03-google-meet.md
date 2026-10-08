@@ -36,4 +36,9 @@ A paid test booking produces a calendar event with a working Meet link and the c
   | Google 5xx / 429 / rate limit / Meet link still pending / network | Retried by BullMQ (5 attempts, exponential backoff). If all fail: `last_error` recorded, influencer alerted, booking stays `PAID`; the worker re-queues it on next start. |
   | Google rejects the request (e.g. invalid attendee), or the event was deleted | Booking -> `FAILED` (needs manual attention), influencer alerted. |
 - **Alerts are a log line for now.** `lib/alerts.ts` exposes `setAlertSender`; Phase 4 plugs in WhatsApp/SMS/email.
-- **Group services.** This phase creates one event per booking. Phase 6 changes group sessions to one shared event.
+- **Group services.** Phase 3 created one event per booking. **Phase 6 (implemented)** makes group sessions share one
+  event per session: the id is `sha256("session:<id>")`, the first paid attendee's job creates the event (electing one
+  creator via an atomic `sessions.event_id` null-guard, so concurrent payers cannot both create it), and every later
+  attendee is added to that same event via `GoogleClient.addAttendee` (GET then PATCH with `sendUpdates=all`, deduped by
+  email). The shared `event_id`/`meet_link` are stored on the session and copied onto each booking. 1:1 services are
+  unchanged (one event per booking).

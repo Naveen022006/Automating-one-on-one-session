@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Verify the baseline and add the data model for messaging. Confirm the existing project builds/tests green, then add a Message model (+ MessageChannel and MessageStatus enums) to prisma/schema.prisma and a hand-written SQL migration, plus the meetLink/eventId fields on Booking that Phase 4 depends on (Phase 3 is not implemented, so these fields are added here as a documented cross-phase assumption). Add new env vars to .env.example.",
+  "status": "completed",
+  "steps": [
+    "Run `npm run typecheck` and `npm test` first to confirm the baseline is green (DB tests skip when DATABASE_URL is unset). Record the baseline result.",
+    "In prisma/schema.prisma add two enums in SCREAMING_CASE: `enum MessageChannel { WHATSAPP SMS }` and `enum MessageStatus { PENDING SENT DELIVERED READ FAILED }` (mirror the style of existing BookingStatus/PaymentStatus).",
+    "In prisma/schema.prisma add a `Message` model mirroring the Payment model conventions: id String @id @default(cuid()); bookingId String @map(\"booking_id\"); channel MessageChannel; template String; status MessageStatus @default(PENDING); providerMessageId String? @map(\"provider_message_id\"); error String?; createdAt DateTime @default(now()) @map(\"created_at\"); updatedAt DateTime @updatedAt @map(\"updated_at\"); booking relation to Booking with onDelete: Cascade; @@index([bookingId]); add @@index([providerMessageId]) so the status webhook can look messages up by provider id; @@map(\"messages\").",
+    "Add the reverse relation `messages Message[]` to the Booking model (alongside the existing `payments Payment[]`).",
+    "Add Phase-3 bridge fields to the Booking model so the message job has a link to send: `meetLink String? @map(\"meet_link\")` and `eventId String? @map(\"event_id\")`. Document in a comment that these are normally set by the Phase 3 create-meeting job which is not yet implemented.",
+    "Create prisma/migrations/<new-timestamp>_messaging/migration.sql (timestamp lexicographically after 20261008000000_payments, e.g. 20261009000000_messaging). Follow the exact format of the payments migration: CreateEnum for MessageChannel and MessageStatus; ALTER TABLE \"bookings\" ADD COLUMN \"meet_link\" TEXT and \"event_id\" TEXT; CreateTable \"messages\" with snake_case columns (id, booking_id, channel, template, status default 'PENDING', provider_message_id, error, created_at default CURRENT_TIMESTAMP, updated_at); CreateIndex messages_booking_id_idx and messages_provider_message_id_idx; AddForeignKey messages_booking_id_fkey REFERENCES bookings(id) ON DELETE CASCADE ON UPDATE CASCADE.",
+    "If the `prisma` CLI can run offline, run `npx prisma generate` to regenerate the client in generated/prisma so the new Message delegate and Booking fields are typed. If prisma generate requires network/DB and fails, note it; typecheck of new code will still validate against the generated types once available.",
+    "Add to .env.example the new messaging env vars with empty values and placement near the existing block: WHATSAPP_TOKEN=, WHATSAPP_PHONE_NUMBER_ID=, WHATSAPP_WEBHOOK_VERIFY_TOKEN=, SMS_API_KEY= (APP_URL already present)."
+  ],
+  "acceptance_criteria": [
+    "`npm run typecheck` passes with no errors after schema changes and `prisma generate` (if generate cannot run offline, the generated client must still already contain Message types or the step is documented as blocked-by-environment).",
+    "prisma/schema.prisma contains MessageChannel, MessageStatus enums, a Message model with @@map(\"messages\") and the two indexes, Booking has `messages Message[]`, `meetLink`, and `eventId`.",
+    "A new migration directory exists under prisma/migrations with a migration.sql matching the hand-written SQL style of the payments migration.",
+    ".env.example contains WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_WEBHOOK_VERIFY_TOKEN, SMS_API_KEY."
+  ],
+  "verification": [
+    "Run `npm run typecheck` and confirm it exits 0.",
+    "Run `npm test` and confirm existing tests still pass (DB-dependent ones skip when DATABASE_URL is unset)."
+  ],
+  "blocked_reason": null,
+  "environment_verification_caveat": {
+    "detail": "Code deliverables complete and committed (c2e0eee). Automated verification gates (npm run typecheck, npm test, npx prisma generate) CANNOT run in this sandbox and were already failing at the pre-change baseline: node_modules contains only ~40K of empty placeholder dirs (no real typescript/tsx/prisma/next binaries, no node_modules/.bin, generated/prisma client absent); the npm registry returns HTTP 403 and there is no offline cache (npm install --offline -> ENOTCACHED). Orchestrator confirmed this independently. NODE_OPTIONS references a missing proxy-bootstrap.js and must be unset before any node/npm call. Code was reviewed by hand against existing BookingStatus/PaymentStatus, the Payment model, and the payments migration for exact style parity."
+  },
+  "findings": "Code complete: added MessageChannel/MessageStatus enums + Message model (@@map(\"messages\"), @@index([bookingId]) and @@index([providerMessageId]), onDelete Cascade FK) to prisma/schema.prisma; added meetLink/eventId (commented as Phase-3 bridge) and `messages Message[]` to Booking; created prisma/migrations/20261009000000_messaging/migration.sql mirroring the payments migration (CreateEnum x2, ALTER TABLE bookings ADD meet_link/event_id, CreateTable messages, CreateIndex x2, AddForeignKey ON DELETE CASCADE); added WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_WEBHOOK_VERIFY_TOKEN, SMS_API_KEY to .env.example. BLOCKER: toolchain (tsc/tsx/prisma) missing from node_modules and npm registry returns 403 with no cache, so typecheck/test/prisma generate cannot run; this failure pre-existed at the baseline step. Must `unset NODE_OPTIONS` before any node/npm invocation (it references a missing proxy-bootstrap.js). Schema edits were reviewed by hand against existing BookingStatus/PaymentStatus and the Payment model and the payments migration.sql for exact style parity. generated/prisma client is absent, so downstream FEAT-002 code that imports Message types will also not typecheck until the environment can run `prisma generate`."
+}

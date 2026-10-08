@@ -7,9 +7,11 @@ export interface SendMessageData {
 }
 
 /**
- * BullMQ handler for `send-message`. Delivery failures (WhatsApp and SMS both down) are transient, so they are
- * rethrown and retried with the queue's exponential backoff; after the attempts are exhausted the worker's
- * `failed` listener records the failure and alerts the influencer. Mirrors worker/jobs/createMeeting.ts.
+ * BullMQ handler for `send-message`. Honours the per-job `template` so the one queue carries every outbound
+ * customer message (booking confirmation, reschedule/cancellation notices). Delivery failures (WhatsApp and
+ * SMS both down) are transient, so they are rethrown and retried with the queue's exponential backoff; after
+ * the attempts are exhausted the worker's `failed` listener records the failure and alerts the influencer.
+ * Mirrors worker/jobs/sendReminder.ts.
  */
 export async function handleSendMessage(job: Job<SendMessageData>): Promise<MessageOutcome> {
   const outcome = await sendMessageForBooking(job.data.bookingId, job.data.template);

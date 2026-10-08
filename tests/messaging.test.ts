@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { prisma } from "../lib/db";
 import { createHold } from "../lib/holds";
 import { sendMessageForBooking, type MessagingDeps } from "../lib/messaging";
-import type { SendResult } from "../lib/whatsapp";
+import type { SendResult } from "../lib/sms";
 
 // Integration tests: need a migrated Postgres at DATABASE_URL (skipped otherwise). The senders and the
 // alert hook are always injected as fakes, so no real WhatsApp/SMS provider is ever contacted.
@@ -45,12 +45,12 @@ function fakes(behaviour: { whatsapp?: "ok" | "fail"; sms?: "ok" | "fail" } = {}
     sendWhatsApp: async (): Promise<SendResult> => {
       calls.push("whatsapp");
       if (behaviour.whatsapp === "fail") throw new Error("whatsapp down");
-      return { providerId: "wa-123" };
+      return { providerMessageId: "wa-123" };
     },
-    sendSms: async (): Promise<SendResult> => {
+    sendSMS: async (): Promise<SendResult> => {
       calls.push("sms");
       if (behaviour.sms === "fail") throw new Error("sms down");
-      return { providerId: "sms-456" };
+      return { providerMessageId: "sms-456" };
     },
     alert: async (_id, a) => void alerts.push(a.kind),
   };
@@ -80,11 +80,11 @@ test("WhatsApp success records SENT with the provider id", { skip }, async () =>
   assert.equal(outcome, "sent");
   assert.deepEqual(calls, ["whatsapp"]);
   const row = await prisma.message.findUniqueOrThrow({
-    where: { bookingId_template: { bookingId: id, template: "booking-confirmation" } },
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
   });
   assert.equal(row.status, "SENT");
   assert.equal(row.channel, "WHATSAPP");
-  assert.equal(row.providerId, "wa-123");
+  assert.equal(row.providerMessageId, "wa-123");
 });
 
 test("WhatsApp failure falls back to SMS and records SENT", { skip }, async () => {
@@ -94,11 +94,16 @@ test("WhatsApp failure falls back to SMS and records SENT", { skip }, async () =
   assert.equal(outcome, "sent");
   assert.deepEqual(calls, ["whatsapp", "sms"]);
   const row = await prisma.message.findUniqueOrThrow({
-    where: { bookingId_template: { bookingId: id, template: "booking-confirmation" } },
+    where: { bookingId_channel_template: { bookingId: id, channel: "SMS", template: "booking-confirmation" } },
   });
   assert.equal(row.status, "SENT");
   assert.equal(row.channel, "SMS");
-  assert.equal(row.providerId, "sms-456");
+  assert.equal(row.providerMessageId, "sms-456");
+  // The WhatsApp attempt left its own row recording the failure (not SENT).
+  const waRow = await prisma.message.findUniqueOrThrow({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
+  });
+  assert.notEqual(waRow.status, "SENT");
 });
 
 test("both channels failing throws (retryable) and does not mark SENT", { skip }, async () => {
@@ -106,10 +111,14 @@ test("both channels failing throws (retryable) and does not mark SENT", { skip }
   const { deps, calls } = fakes({ whatsapp: "fail", sms: "fail" });
   await assert.rejects(sendMessageForBooking(id, "booking-confirmation", deps));
   assert.deepEqual(calls, ["whatsapp", "sms"]);
-  const row = await prisma.message.findUnique({
-    where: { bookingId_template: { bookingId: id, template: "booking-confirmation" } },
+  const smsRow = await prisma.message.findUnique({
+    where: { bookingId_channel_template: { bookingId: id, channel: "SMS", template: "booking-confirmation" } },
   });
-  assert.notEqual(row?.status, "SENT");
+  assert.notEqual(smsRow?.status, "SENT");
+  const waRow = await prisma.message.findUnique({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
+  });
+  assert.notEqual(waRow?.status, "SENT");
 });
 
 test("a cancelled booking is skipped without sending", { skip }, async () => {

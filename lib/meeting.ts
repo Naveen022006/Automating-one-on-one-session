@@ -9,8 +9,28 @@ import {
   type CalendarEvent,
   type GoogleClient,
 } from "@/lib/google";
+import { sendBookingEmail } from "@/lib/email";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
+import { createMessage } from "@/lib/messages";
 import { enqueueReminders, enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
+
+const CONFIRMATION_TEMPLATE = "booking-confirmation";
+
+/**
+ * Records that the booking confirmation was handed to the messaging queue, sends the customer their
+ * confirmation/receipt email (which carries the signed self-service link), then enqueues the WhatsApp
+ * message. Best-effort and non-throwing (createMessage and sendBookingEmail both swallow their own errors):
+ * recording/emailing must never fail the create-meeting job. The WhatsApp row is 'queued' because the real
+ * delivery worker is Phase 4; the dashboard shows it as the latest status.
+ */
+async function enqueueConfirmation(deps: MeetingDeps, bookingId: string): Promise<void> {
+  await createMessage({ bookingId, channel: "whatsapp", template: CONFIRMATION_TEMPLATE, status: "queued" });
+  // The confirmation email is the only organic delivery of the self-service link, so it must go out on the
+  // normal paid -> scheduled path, not only from the resend/reschedule actions. sendBookingEmail is itself
+  // best-effort (records an 'email' Message row and never throws), so a broken email channel cannot fail the job.
+  await deps.sendBookingEmail(bookingId, CONFIRMATION_TEMPLATE);
+  await deps.enqueueSendMessage(bookingId);
+}
 
 /**
  * The influencer must act (connect / reconnect Google) before this booking can get a link.
@@ -26,6 +46,7 @@ export interface MeetingDeps {
   google: GoogleClient;
   enqueueSendMessage: (bookingId: string) => Promise<void>;
   enqueueReminders: (bookingId: string, startTime: Date) => Promise<void>;
+  sendBookingEmail: typeof sendBookingEmail;
   alert: typeof alertInfluencer;
   sleep: (ms: number) => Promise<void>;
 }
@@ -34,6 +55,7 @@ const defaultDeps: MeetingDeps = {
   google: defaultGoogle,
   enqueueSendMessage: (id) => enqueueSendMessage(id),
   enqueueReminders: (id, startTime) => enqueueReminders(id, startTime),
+  sendBookingEmail,
   alert: alertInfluencer,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
@@ -44,6 +66,15 @@ const defaultDeps: MeetingDeps = {
  */
 export function calendarEventId(bookingId: string): string {
   return createHash("sha256").update(`booking:${bookingId}`).digest("hex");
+}
+
+/**
+ * Event id for a GROUP session. Every booking in the session derives the SAME id, so they all converge on
+ * one shared Calendar event: the first paid attendee creates it, the rest are added to it. Keyed on the
+ * session (not the booking) and using the same sha256 hex scheme as {@link calendarEventId}.
+ */
+export function sessionEventId(sessionId: string): string {
+  return createHash("sha256").update(`session:${sessionId}`).digest("hex");
 }
 
 const LINK_POLLS = 3;
@@ -96,7 +127,12 @@ export async function createMeetingForBooking(
   }
 
   if (booking.eventId) {
-    if (booking.status === "SCHEDULED") await deps.enqueueSendMessage(booking.id);
+    if (booking.status === "SCHEDULED") {
+      await enqueueConfirmation(deps, booking.id);
+      // Re-establish the reminders too (recovery after a lost enqueue). enqueueReminders is idempotent via the
+      // deterministic job ids and skips any fire time already in the past, so this is safe to repeat.
+      await deps.enqueueReminders(booking.id, booking.session.startTime);
+    }
     return "already-scheduled";
   }
   // Read at run time, never trusted from enqueue time: the booking may have been cancelled or refunded since.
@@ -108,9 +144,11 @@ export async function createMeetingForBooking(
   const { session } = booking;
   const { service } = session;
   const { influencer } = service;
-  const eventId = calendarEventId(booking.id);
+  const isGroup = service.type === "GROUP";
+  // GROUP: one shared event per session (id derived from the session). 1:1: one event per booking (unchanged).
+  const eventId = isGroup ? sessionEventId(session.id) : calendarEventId(booking.id);
 
-  if (service.type === "GROUP" && service.durationMin > 60) {
+  if (isGroup && service.durationMin > 60) {
     console.warn(
       `[create-meeting] service ${service.id} is a ${service.durationMin} min group call; free Gmail accounts cap group Meet calls at 60 minutes`,
     );
@@ -143,18 +181,75 @@ export async function createMeetingForBooking(
     const accessToken = await deps.google.refreshAccessToken(token.refreshToken);
     const start = session.startTime;
     const end = session.endTime;
-    const created = await deps.google.insertEvent(accessToken, {
-      id: eventId,
-      summary: `${service.title} with ${influencer.name}`,
-      description: `${service.title} with ${influencer.name}.\nBooking reference: ${booking.id}`,
-      start,
-      end,
-      attendee: { email: booking.customerEmail, displayName: booking.customerName },
-      conferenceRequestId: booking.id,
-    });
-    const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
-    if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
-    meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
+    const attendee = { email: booking.customerEmail, displayName: booking.customerName };
+
+    if (isGroup) {
+      // Elect exactly one creator per session. The first attendee to flip session.event_id from null (atomic
+      // updateMany with a where-guard, mirroring the races guarded in lib/holds.ts and lib/payment-webhook.ts)
+      // wins the insert; everyone else takes the add-attendee path. Two concurrent payers therefore cannot both
+      // create the event. The event id is deterministic and keyed on the session, so even if the elected creator
+      // crashes before the link is saved, the retry's insertEvent/addAttendee converge on the same event.
+      const claim = await prisma.session.updateMany({
+        where: { id: session.id, eventId: null },
+        data: { eventId },
+      });
+      const weAreCreator = claim.count > 0;
+
+      if (weAreCreator) {
+        const created = await deps.google.insertEvent(accessToken, {
+          id: eventId,
+          summary: `${service.title} with ${influencer.name}`,
+          description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
+          start,
+          end,
+          attendee,
+          conferenceRequestId: session.id,
+        });
+        const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
+        if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
+        meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
+        // Store the shared link on the session so later attendees copy it without another Google round-trip.
+        await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
+      } else {
+        // Another attendee already claimed the event. If its link is saved we reuse it; otherwise the creator is
+        // still mid-flight (or crashed), so insertEvent on the deterministic id gives us the event (409 -> read)
+        // and we poll for the link. Either way we add THIS customer to the shared event.
+        const fresh = await prisma.session.findUnique({ where: { id: session.id }, select: { meetLink: true } });
+        if (fresh?.meetLink) {
+          meetLink = fresh.meetLink;
+          await deps.google.addAttendee(accessToken, eventId, attendee);
+        } else {
+          // Creator has not finished. Ensure the event exists (insert is idempotent via the deterministic id)
+          // and the link is ready, then persist it so the stuck creator and other attendees converge.
+          const created = await deps.google.insertEvent(accessToken, {
+            id: eventId,
+            summary: `${service.title} with ${influencer.name}`,
+            description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
+            start,
+            end,
+            attendee,
+            conferenceRequestId: session.id,
+          });
+          const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
+          if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
+          meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
+          await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
+        }
+      }
+    } else {
+      const created = await deps.google.insertEvent(accessToken, {
+        id: eventId,
+        summary: `${service.title} with ${influencer.name}`,
+        description: `${service.title} with ${influencer.name}.\nBooking reference: ${booking.id}`,
+        start,
+        end,
+        attendee,
+        conferenceRequestId: booking.id,
+      });
+      const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
+      if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
+      meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
+    }
   } catch (e) {
     if (e instanceof GoogleReconnectError) return blocked(e.message, "revoked");
     if (e instanceof GoogleRequestError) {
@@ -179,9 +274,10 @@ export async function createMeetingForBooking(
     return "skipped";
   }
 
-  // Only now that the booking is actually SCHEDULED do we schedule the confirmation and the reminders.
-  // Reminders are never enqueued at PAID/enqueue time; the delayed jobs re-read status when they fire.
-  await deps.enqueueSendMessage(booking.id);
+  // Only now that the booking is actually SCHEDULED do we send the confirmation (email + WhatsApp) and
+  // schedule the reminders. Reminders are never enqueued at PAID/enqueue time; the delayed jobs re-read the
+  // booking status when they fire, so a cancel/reschedule before the fire time is honoured at run time.
+  await enqueueConfirmation(deps, booking.id);
   await deps.enqueueReminders(booking.id, session.startTime);
   return "scheduled";
 }

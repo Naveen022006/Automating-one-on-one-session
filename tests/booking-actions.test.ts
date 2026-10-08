@@ -7,7 +7,10 @@ import {
   rescheduleBooking,
   type BookingActionDeps,
 } from "../lib/booking-actions";
-import type { CalendarEvent, EventPatch, GoogleClient, NewEvent } from "../lib/google";
+import type { CalendarEvent, GoogleClient, NewEvent } from "../lib/google";
+
+/** The times patch shape the merged lib/google.updateEvent accepts (main's reschedule signature). */
+type EventTimes = { start: Date; end: Date };
 import type { MessageOutcome } from "../lib/messaging";
 import type { TokenLookup } from "../lib/google-tokens";
 import { prisma } from "../lib/db";
@@ -44,7 +47,7 @@ function slotIn(days: number): Date {
  */
 function actionFakes(tokenState: TokenLookup = { state: "ok", refreshToken: "rt" }) {
   const calls: string[] = [];
-  const updatedEvents: Array<{ eventId: string; patch: EventPatch }> = [];
+  const updatedEvents: Array<{ eventId: string; patch: EventTimes }> = [];
   const deletedEvents: string[] = [];
   const reminderEnqueues: Array<{ bookingId: string; startTime: Date }> = [];
   const messages: Array<{ bookingId: string; template: string }> = [];
@@ -62,6 +65,14 @@ function actionFakes(tokenState: TokenLookup = { state: "ok", refreshToken: "rt"
       calls.push("updateEvent");
       updatedEvents.push({ eventId, patch });
       return { id: eventId, status: "confirmed", meetLink: null, conferenceStatus: "none" };
+    },
+    addAttendee: async (_t, eventId): Promise<CalendarEvent> => {
+      calls.push("addAttendee");
+      return { id: eventId, status: "confirmed", meetLink: null, conferenceStatus: "none" };
+    },
+    removeAttendee: async () => {
+      calls.push("removeAttendee");
+      return { remaining: 0 };
     },
     deleteEvent: async (_t, eventId) => {
       calls.push("deleteEvent");
