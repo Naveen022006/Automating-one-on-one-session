@@ -5,8 +5,8 @@ Customer receives the meeting link on WhatsApp, with SMS as a fallback.
 
 ## Tasks
 - [ ] Meta Business account + WhatsApp Cloud API number _(external/manual: cannot be done in code)_
-- [ ] Create and submit templates for approval: booking confirmation (with link), 24h reminder, 15min reminder, cancellation/reschedule _(external/manual: Meta template approval)_
-- [ ] SMS provider account; complete DLT registration (sender ID + templates) for India _(external/manual)_
+- [ ] Create and submit templates for approval: booking confirmation (with link), 24h reminder, 15min reminder, cancellation/reschedule _(external/manual: Meta template approval. Exact names and body variables: `lib/message-templates.ts`, Phase 7)_
+- [ ] SMS provider account; complete DLT registration (sender ID + templates) for India _(external/manual; MSG91 and Twilio are implemented in `lib/sms.ts`, Phase 7)_
 - [x] `lib/whatsapp.ts` and `lib/sms.ts` send functions
 - [x] Worker job `send-message`: try WhatsApp -> on failure try SMS
 - [x] `messages` table: booking, channel, template, status, provider id, error

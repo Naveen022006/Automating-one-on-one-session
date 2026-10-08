@@ -86,13 +86,15 @@ Manual steps (cannot be coded; owner or implementer does them in Meta's UI):
 4. Submit these **utility** templates for approval (language `en`; approval takes hours to days). The template names are
    fixed by the code, so they must match exactly:
 
-| Template name (code) | Purpose | Suggested body (variable = `{{1}}`) |
-|---|---|---|
-| `booking-confirmation` | After payment, with the link | "Your session is confirmed. Join here: {{1}}" |
-| `reminder-24h` | 24 hours before | "Reminder: your session is tomorrow. Join link: {{1}}" |
-| `reminder-15m` | 15 minutes before | "Your session starts in 15 minutes. Join here: {{1}}" |
-| `reschedule` | After a reschedule | "Your session was rescheduled. Updated link: {{1}}" |
-| `cancellation` | After a cancel (add if missing) | "Your session was cancelled. Any refund follows our policy." |
+| Template name (code) | Purpose | Body variables (order matters) | Suggested body |
+|---|---|---|---|
+| `booking-confirmation` | After payment, with the link | 1 link, 2 service, 3 host, 4 time | "Your {{2}} session with {{3}} on {{4}} is confirmed. Join here: {{1}}" |
+| `reminder-24h` | 24 hours before | 1 link, 2 service, 3 host, 4 time | "Reminder: {{2}} with {{3}} is tomorrow, {{4}}. Join link: {{1}}" |
+| `reminder-15m` | 15 minutes before | 1 link, 2 service, 3 host, 4 time | "{{2}} with {{3}} starts in 15 minutes ({{4}}). Join here: {{1}}" |
+| `reschedule` | After a reschedule | 1 link, 2 service, 3 host, 4 time | "Your {{2}} session with {{3}} was moved to {{4}}. Updated link: {{1}}" |
+| `cancellation` | After a cancel | 1 service, 2 host, 3 time | "Your {{1}} session with {{2}} on {{3}} was cancelled. Any refund follows our policy." |
+
+(Updated in Phase 7 when the extra variables were added; the source of truth is `lib/message-templates.ts`.)
 
 5. **Improve the code** (small, in this part): every template currently receives only the link as `{{1}}`. Add the
    service title, influencer name and the session time **formatted in the customer's timezone** (`booking.customerTz`) as
@@ -307,3 +309,84 @@ the new UI is usable at 375 px width.
 The phase is done when a new influencer can: find the landing page, register and verify, finish onboarding, connect
 Google Calendar, share their booking link, and a customer can book and pay in test mode and receive the Meet link by
 WhatsApp and email, with reminders scheduled, all on a polished, consistent, accessible UI.
+
+## 11. Implementation status (Phase 7 build)
+
+Built on one branch (`phase-7-product-ui-auth-integrations`) with one commit per part, instead of five branches, so
+the parts that depend on each other (auth ↔ dashboard ↔ design system) land together. Split it if you prefer.
+
+### Part A: integrations
+- [x] Razorpay refunds: dashboard **Refund** action (`POST /api/dashboard/bookings/[id]/refund`, full or partial),
+      `lib/refunds.ts` claims the payment first so double clicks cannot refund twice; `refund.processed` /
+      `refund.failed` webhooks update the payment (subscribe to them in Razorpay). Payment moves to `REFUNDED`.
+- [x] Cancellation refund policy per service (`FULL`, `NOTICE_24H`, `NONE`; host cancels always refund).
+      `AUTO_REFUND_ON_CANCEL=true` refunds eligible cancels immediately; otherwise they are flagged and alerted.
+- [x] Google: "Connect Google Calendar" button (session-authenticated `/api/google/connect`), status
+      Connected as `<email>` / Reconnect needed (reason) / Disconnect (revokes at Google). The CLI connect link and
+      `npm run dashboard:link` are removed. 60-minute group warning in the service form and API.
+- [x] WhatsApp: templates now get link, service, host and the time in the customer's timezone; the SMS fallback uses
+      the same text. `WHATSAPP_DISABLED=true` forces the SMS fallback for testing; `MESSAGING_DRY_RUN=true` logs.
+- [x] SMS: real MSG91 (Flow API, one DLT flow per template) and Twilio providers in `lib/sms.ts`.
+- [x] Email: Resend and Postmark providers over fetch (`EMAIL_PROVIDER`), responsive table-based HTML + plain
+      text for confirmation/receipt, reschedule, cancellation (with refund outcome), verify-email, password reset,
+      password changed and influencer alerts. Confirmation emails are no longer re-sent when a job retries.
+- [x] A6 cleanups: `lib/messaging.ts` channel type, `.ts` import in `tests/group-meeting.test.ts`, `AGENTS.md`
+      ignored, GitHub Actions CI with Postgres + Redis (`.github/workflows/ci.yml`).
+- [ ] Manual: Meta templates, DLT registration, SPF/DKIM, Google app publishing/verification, live Razorpay KYC.
+
+Fixed while integrating: dashboard/self-service cancel and reschedule (`lib/manage.ts`) did not touch reminders and
+re-sent the *confirmation* template instead of a cancellation/reschedule notice; "Resend link" was swallowed by the
+messaging idempotency check. All three now behave as documented. Customers can no longer move a whole group
+session from their self-service link (host only). `/api/bookings/[id]/cancel|reschedule` now require the owning
+influencer's login and use the same code path as the dashboard.
+
+### Part B: accounts
+- [x] `users`, `auth_sessions`, `password_reset_tokens`, `email_verification_tokens` (migration
+      `20261014000000_phase7_accounts_refunds_rate_limits`).
+- [x] Register (password policy with common-password list, terms, unique non-reserved slug), verify email
+      (token POSTed from the page so link scanners cannot consume it), login, logout, log out everywhere, per-device
+      sign-out, forgot/reset password (1 hour, single use, revokes every session), change password.
+- [x] Opaque session cookie: HttpOnly, SameSite=Lax, `__Host-` + Secure in production, rolling 30 days; sensitive
+      actions (refund, disconnect Google, erase customer, log out everywhere, revoke device) need a password entry in
+      the last 8 hours and prompt for it in the UI.
+- [x] Passwords: **scrypt** (N=2^15, r=8, p=3, OWASP parameters), not argon2id/bcrypt: no native module to build on
+      deploy targets. The hash format is versioned and rehashed on login, so argon2id can be added later.
+- [x] CSRF origin check on every state-changing API call (`proxy.ts`, webhooks exempt).
+- [x] `/dashboard` and `/api/dashboard/*` use the session; ownership checks kept. Unverified or un-onboarded
+      accounts have no public page (the owner sees a preview).
+- [x] Onboarding wizard: profile, first service, availability + days off, Google, preview and copy link.
+
+### Rate limiting (all APIs) and database protection
+- Every `/api/*` request passes `proxy.ts`: a global 300/min per IP plus a route rule (`lib/rate-limit/policies.ts`),
+  e.g. login 10/15 min per IP, register 5/hour, holds 10/10 min, refunds 10/hour. Route handlers add per-identity
+  limits after parsing the body (login 5/15 min per email, reset 3/hour per email, holds 5/10 min per email, resend
+  link 3/hour per booking). 429 responses carry `Retry-After` and `RateLimit-*` headers.
+- Counters use a sliding-window algorithm in **Redis** (one atomic Lua script per hit). If Redis is not configured or
+  fails, they fall back to the **Postgres** `rate_limit_buckets` table (one upsert per hit), so limits keep working on
+  the database alone; if both fail the request is allowed and the error logged. The worker sweeps expired rows.
+- The database is also protected by pool limits: `DATABASE_POOL_MAX`, connection wait timeout and a per-statement
+  timeout (`lib/db.ts`).
+- Set `CLIENT_IP_HEADER` in production (e.g. `cf-connecting-ip`, `x-real-ip`) so clients cannot spoof their IP.
+
+### Parts C–E: design system, public pages, dashboard
+- [x] Tokens in `app/styles/tokens.css` (single source; AA contrast checked), Newsreader + Inter via `next/font`,
+      Lucide icons inlined, component layer in `components/ui/*`, `/design` catalogue (dev only).
+      Styling is plain CSS on the tokens rather than Tailwind: nothing new to install, and the look is not a kit default.
+- [x] Landing page `/` (hero, how it works, features with real UI fragments, customer strip, FAQ, CTA), legal drafts
+      (`/terms`, `/privacy`, `/refund-policy`, `/contact`, clearly marked as drafts), public profile `/<slug>`,
+      redesigned booking flow (stepper, availability calendar, grouped times, changeable timezone, hold countdown,
+      confirmation with Meet link, .ics, manage link, resend), 404/error pages, sitemap, robots, OG image, JSON-LD.
+- [x] Dashboard app shell (sidebar, top bar, mobile bottom nav): Overview, Sessions (filters + drawer with payment,
+      per-channel message history and actions incl. refund), Services (form with live preview), Availability (weekly
+      grid + days-off calendar), Customers (with data erasure), Earnings (range + CSV), Messages, Settings.
+- [x] Security headers (CSP with per-request nonce + strict-dynamic, HSTS in production, nosniff, frame-ancestors).
+- [x] Privacy: customer data erasure, retention note in the privacy policy.
+- [x] Observability: influencer alerts are emailed (opt-out in Settings); errors are structured JSON logs with an
+      optional `ERROR_WEBHOOK_URL`. Sentry needs its SDK added (left as a hook: `setErrorReporter`).
+
+### Not done here (needs a network-enabled machine or an owner decision)
+- `npm install`, `prisma generate`, `next build`, the database tests and an axe run could not be executed in the
+  build sandbox (no npm registry). CI runs all of them. Playwright end-to-end tests and the automated axe check
+  need their dev dependencies added.
+- Section 8 open decisions are still open; defaults used: brand name from `NEXT_PUBLIC_BRAND_NAME`, no pricing
+  section, one platform Razorpay account, MSG91 for SMS, Resend/Postmark for email, customers stay guests.
