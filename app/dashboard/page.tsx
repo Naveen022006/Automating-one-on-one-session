@@ -1,7 +1,13 @@
 import { prisma } from "@/lib/db";
 import { DASHBOARD_LINK_PURPOSE, aggregateEarnings, type EarningsPaymentInput } from "@/lib/dashboard";
 import { verifyToken } from "@/lib/signing";
-import { Dashboard, type DashboardData, type SessionView } from "./Dashboard";
+import {
+  Dashboard,
+  type DashboardData,
+  type RuleView,
+  type ServiceAdminView,
+  type SessionView,
+} from "./Dashboard";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +32,7 @@ export default async function DashboardPage({
 
   const influencer = await prisma.influencer.findUnique({
     where: { id: link.i },
-    select: { id: true, name: true },
+    select: { id: true, name: true, timezone: true },
   });
   if (!influencer) {
     return (
@@ -75,6 +81,37 @@ export default async function DashboardPage({
     serviceTitle: p.booking.session.service.title,
   }));
 
+  // Everything the management UI needs: the influencer's services, weekly availability rules and blocked days.
+  const [services, rules, blockedDates] = await Promise.all([
+    prisma.service.findMany({ where: { influencerId: influencer.id }, orderBy: { createdAt: "asc" } }),
+    prisma.availabilityRule.findMany({ where: { influencerId: influencer.id }, orderBy: [{ weekday: "asc" }, { startTime: "asc" }] }),
+    prisma.blockedDate.findMany({ where: { influencerId: influencer.id }, orderBy: { date: "asc" } }),
+  ]);
+
+  const serviceViews: ServiceAdminView[] = services.map((s) => ({
+    id: s.id,
+    title: s.title,
+    description: s.description,
+    durationMin: s.durationMin,
+    priceMinor: s.priceMinor,
+    currency: s.currency,
+    type: s.type,
+    capacity: s.capacity,
+    active: s.active,
+  }));
+  const ruleViews: RuleView[] = rules.map((r) => ({
+    id: r.id,
+    weekday: r.weekday,
+    startTime: r.startTime,
+    endTime: r.endTime,
+    timezone: r.timezone,
+  }));
+  const blockedViews = blockedDates.map((b) => ({
+    id: b.id,
+    date: b.date.toISOString().slice(0, 10),
+    reason: b.reason,
+  }));
+
   const now = Date.now();
   const toView = (s: (typeof sessions)[number]): SessionView => {
     const seatsFilled = s.bookings.filter((b) => b.status !== "CANCELLED" && b.status !== "FAILED").length;
@@ -114,6 +151,10 @@ export default async function DashboardPage({
     upcoming,
     past,
     earnings: aggregateEarnings(earningsInput),
+    services: serviceViews,
+    rules: ruleViews,
+    blockedDates: blockedViews,
+    influencerTimezone: influencer.timezone,
   };
 
   return <Dashboard data={data} />;

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { createMessage, markMessageFailed, markMessageSent } from "@/lib/messages";
+import { buildSelfServiceUrl } from "@/lib/self-service";
 
 /** Which customer email we are sending. */
 export type EmailKind = "booking-confirmation" | "receipt";
@@ -59,7 +60,15 @@ export async function sendBookingEmail(bookingId: string, kind: EmailKind): Prom
 
     const when = session.startTime.toISOString();
     const link = booking.meetLink ?? session.meetLink;
-    const email = renderEmail({ kind, service, influencer, when, link, payment });
+    // A signed self-service link so the customer can reschedule or cancel their own booking without a login.
+    // Best-effort: if APP_URL is unset we simply omit it rather than failing the email.
+    let manageUrl: string | null = null;
+    try {
+      manageUrl = buildSelfServiceUrl(booking.id);
+    } catch {
+      manageUrl = null;
+    }
+    const email = renderEmail({ kind, service, influencer, when, link, payment, manageUrl });
 
     // Record 'queued' first, then flip to 'sent' once the sender returns, so a sender that throws leaves a
     // 'failed' row (recording that we tried) rather than no trace at all.
@@ -80,8 +89,9 @@ function renderEmail(args: {
   when: string;
   link: string | null;
   payment: { amountMinor: number; currency: string } | null;
+  manageUrl: string | null;
 }): BookingEmail {
-  const { kind, service, influencer, when, link, payment } = args;
+  const { kind, service, influencer, when, link, payment, manageUrl } = args;
   const price = payment ? formatPrice(payment.amountMinor, payment.currency) : formatPrice(service.priceMinor, service.currency);
   const lines: string[] = [];
 
@@ -90,6 +100,7 @@ function renderEmail(args: {
     lines.push(`Session: ${service.title} with ${influencer.name}`);
     lines.push(`When: ${when} (UTC)`);
     if (link) lines.push(`Meeting link: ${link}`);
+    if (manageUrl) lines.push(`Reschedule or cancel: ${manageUrl}`);
     return { kind, subject: `Receipt for ${service.title}`, body: lines.join("\n") };
   }
 
@@ -97,5 +108,6 @@ function renderEmail(args: {
   lines.push(`When: ${when} (UTC)`);
   if (link) lines.push(`Join here: ${link}`);
   else lines.push("Your meeting link will follow shortly.");
+  if (manageUrl) lines.push(`Reschedule or cancel: ${manageUrl}`);
   return { kind, subject: `Booking confirmed: ${service.title}`, body: lines.join("\n") };
 }

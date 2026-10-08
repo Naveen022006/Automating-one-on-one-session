@@ -1,6 +1,12 @@
-import { signToken } from "@/lib/signing";
+import { signToken, verifyToken } from "@/lib/signing";
 
 export const DASHBOARD_LINK_PURPOSE = "influencer-dashboard-link";
+
+/** Returns the influencer id a valid, unexpired dashboard token authorises, or null. Used to gate the dashboard management routes. */
+export function verifyDashboardToken(token: string | null | undefined): string | null {
+  const data = verifyToken<{ i: string }>(DASHBOARD_LINK_PURPOSE, token);
+  return data?.i ?? null;
+}
 
 /**
  * Signed, expiring link that opens one influencer's dashboard. Like the Google connect link (buildConnectUrl in
