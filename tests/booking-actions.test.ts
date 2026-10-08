@@ -146,13 +146,15 @@ test("reschedule updates the event, then cancels old reminders before enqueueing
   assert.equal(updatedEvents[0].eventId, "evt_resched");
   assert.equal(updatedEvents[0].patch.start?.getTime(), newStart.getTime());
 
-  // Ordering is the key spec outcome: updateEvent, then cancelReminders BEFORE enqueueReminders.
+  // Ordering is the key spec outcome. Reminders are replaced (cancel BEFORE enqueue, only the new ones remain)
+  // and that replacement happens BEFORE the fallible Calendar patch, so a transient updateEvent failure can
+  // never leave a SCHEDULED booking with no reminders (review issues 2 & 4).
   const iUpdate = calls.indexOf("updateEvent");
   const iCancel = calls.indexOf("cancelReminders");
   const iEnqueue = calls.indexOf("enqueueReminders");
   assert.ok(iUpdate >= 0 && iCancel >= 0 && iEnqueue >= 0);
-  assert.ok(iUpdate < iCancel, "updateEvent should run before cancelReminders");
   assert.ok(iCancel < iEnqueue, "cancelReminders must run before enqueueReminders (only the new reminders remain)");
+  assert.ok(iEnqueue < iUpdate, "reminders must be replaced before the fallible Calendar patch (recoverable state)");
 
   // The new reminders are enqueued for the NEW start time, not the old one.
   assert.equal(reminderEnqueues.length, 1);
@@ -165,6 +167,60 @@ test("reschedule updates the event, then cancels old reminders before enqueueing
   const moved = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { session: true } });
   assert.equal(moved.session.startTime.getTime(), newStart.getTime());
   assert.equal(moved.lastError, null);
+});
+
+test("reschedule of a PAID booking (no eventId yet) enqueues reminders and skips updateEvent", { skip }, async () => {
+  // A PAID booking has not been scheduled on the calendar yet, so there is no eventId to patch. The reminder
+  // replacement must still run for the new time; the deterministic ids dedupe the later createMeeting enqueue.
+  const bookingId = await makeBooking({ status: "PAID", startTime: slotIn(5), eventId: null });
+  const newStart = slotIn(11);
+  const { deps, calls, updatedEvents, reminderEnqueues, messages } = actionFakes();
+
+  const outcome = await rescheduleBooking(bookingId, newStart, deps);
+  assert.equal(outcome, "rescheduled");
+
+  // No calendar event exists, so updateEvent (and the token refresh behind it) is skipped entirely.
+  assert.equal(updatedEvents.length, 0);
+  assert.ok(!calls.includes("updateEvent"), "updateEvent must be skipped when the booking has no eventId");
+
+  // Reminders are still replaced for the new time, and the customer is still told the booking moved.
+  const iCancel = calls.indexOf("cancelReminders");
+  const iEnqueue = calls.indexOf("enqueueReminders");
+  assert.ok(iCancel >= 0 && iEnqueue >= 0 && iCancel < iEnqueue);
+  assert.equal(reminderEnqueues.length, 1);
+  assert.equal(reminderEnqueues[0].startTime.getTime(), newStart.getTime());
+  assert.deepEqual(messages, [{ bookingId, template: "reschedule" }]);
+
+  const moved = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { session: true } });
+  assert.equal(moved.session.startTime.getTime(), newStart.getTime());
+});
+
+test("reschedule leaves a recoverable state when the Calendar patch fails transiently", { skip }, async () => {
+  // Review issue 4: a transient updateEvent failure must not strand the move. The session should already be
+  // moved and the reminders already replaced for the new time BEFORE the patch is attempted, so the operation
+  // is re-drivable; the failure surfaces with lastError recorded.
+  const bookingId = await makeBooking({ status: "SCHEDULED", startTime: slotIn(5), eventId: "evt_fail" });
+  const newStart = slotIn(12);
+  const { deps, calls } = actionFakes();
+  // Make the Calendar patch throw a transient Google error.
+  const { GoogleTransientError } = await import("../lib/google");
+  deps.google!.updateEvent = async () => {
+    calls.push("updateEvent");
+    throw new GoogleTransientError("calendar unavailable");
+  };
+
+  await assert.rejects(() => rescheduleBooking(bookingId, newStart, deps), /calendar unavailable/);
+
+  // The session move committed and the reminders were replaced before the patch was attempted.
+  const moved = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { session: true } });
+  assert.equal(moved.session.startTime.getTime(), newStart.getTime());
+  const iCancel = calls.indexOf("cancelReminders");
+  const iEnqueue = calls.indexOf("enqueueReminders");
+  const iUpdate = calls.indexOf("updateEvent");
+  assert.ok(iCancel >= 0 && iEnqueue >= 0 && iUpdate >= 0);
+  assert.ok(iEnqueue < iUpdate, "reminders are replaced before the Calendar patch, so the state is recoverable");
+  // lastError records the transient failure for the dashboard flag / re-drive.
+  assert.ok((moved.lastError ?? "").includes("calendar unavailable"));
 });
 
 test("reschedule of a non-SCHEDULED/PAID booking throws BookingNotReschedulableError", { skip }, async () => {
@@ -204,6 +260,26 @@ test("cancel deletes the event, cancels reminders, sends a cancellation message 
   const payment = await prisma.payment.findFirstOrThrow({ where: { bookingId } });
   assert.equal(payment.needsRefund, true);
   assert.match(payment.failureReason ?? "", /booking cancelled/);
+});
+
+test("cancel still completes when the cancellation message send throws (review issue 3)", { skip }, async () => {
+  // A transient WhatsApp+SMS outage must NOT abort the cancel: the booking should still flip to CANCELLED, the
+  // event be deleted, and the reminders dropped even though the notification send threw.
+  const bookingId = await makeBooking({ status: "SCHEDULED", startTime: slotIn(13), eventId: "evt_msgfail" });
+  const { deps, calls, deletedEvents } = actionFakes();
+  deps.sendMessage = async () => {
+    calls.push("sendMessage:cancellation");
+    throw new Error("whatsapp and sms both down");
+  };
+
+  const outcome = await cancelBooking(bookingId, "customer asked", deps);
+  assert.equal(outcome, "cancelled");
+
+  // The messaging failure did not block any of the cancel side effects.
+  assert.deepEqual(deletedEvents, ["evt_msgfail"]);
+  assert.ok(calls.includes("cancelReminders"));
+  const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
+  assert.equal(booking.status, "CANCELLED");
 });
 
 test("cancel is idempotent on an already-CANCELLED booking (no second delete or alert)", { skip }, async () => {

@@ -8,8 +8,11 @@ import {
 import { prisma } from "@/lib/db";
 import { GoogleReconnectError, GoogleRequestError, GoogleTransientError } from "@/lib/google";
 
-// NOTE: unauthenticated for parity with the existing booking routes. The Phase 6 dashboard adds auth so only
-// the influencer (or the booking's customer) can reschedule.
+// SECURITY / TRUST BOUNDARY (reviewed, deliberately deferred to Phase 6): this route is UNAUTHENTICATED, for
+// parity with the existing booking routes (hold/checkout). That means anyone who knows a booking id can move
+// it to another slot. This is an accepted, documented gap for Phase 5 (reminders & retries), NOT an oversight:
+// the Phase 6 dashboard introduces auth, after which this handler must require the authenticated influencer (or
+// the booking's own customer). Do not ship these mutation routes publicly until that auth lands.
 const bodySchema = z.object({
   startTime: z.iso.datetime(),
 });

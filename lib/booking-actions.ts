@@ -148,14 +148,27 @@ export async function rescheduleBooking(
     throw e;
   }
 
-  // 2) Shift the Calendar event to the new start/end. Mirror lib/meeting.ts error handling / token refresh.
+  // 2) Replace the reminders BEFORE any fallible Calendar/messaging step, so a transient failure below can
+  //    never leave a SCHEDULED booking with no reminders. The old jobs are dropped first, then fresh jobs for
+  //    the NEW time are enqueued (enqueueReminders itself does a remove-then-add replace and the new jobs carry
+  //    expectedStartTime, checked at run time), so ONLY the new reminders remain. This is the Phase 5 "a
+  //    rescheduled booking sends only the new reminders" outcome, and the deterministic ids make a re-driven
+  //    reschedule (after a later-step failure) idempotent.
+  await deps.cancelReminders(booking.id);
+  await deps.enqueueReminders(booking.id, newStartTime);
+
+  // 3) Shift the Calendar event to the new start/end. Mirror lib/meeting.ts error handling / token refresh.
+  //    The booking has already moved and its reminders already point at the new time, so a transient failure
+  //    here records lastError and surfaces (route -> 409) WITHOUT undoing the move: re-running rescheduleBooking
+  //    for the same slot is a no-op on the session (idempotent) and simply re-patches the event.
   if (booking.eventId) {
     try {
       const accessToken = await accessTokenFor(deps, influencer.id);
       await deps.google.updateEvent(accessToken, booking.eventId, { start: newStartTime, end: newEndTime });
     } catch (e) {
       if (e instanceof GoogleReconnectError) {
-        // The grant is dead. Flag the influencer once and surface it; the booking has already moved in the DB.
+        // The grant is dead. Flag the influencer once and surface it; the booking has already moved in the DB
+        // and the reminders already target the new time, so this is a recoverable state.
         const notify = await markReconnectNeeded(influencer.id, e.message);
         await fail(`Waiting for ${influencer.name} to reconnect Google Calendar: ${e.message}`);
         if (notify) {
@@ -175,11 +188,6 @@ export async function rescheduleBooking(
       throw e;
     }
   }
-
-  // 3) Replace the reminders: drop the old jobs FIRST, then enqueue fresh ones for the NEW time, so only the
-  //    new reminders remain. This is the Phase 5 "a rescheduled booking sends only the new reminders" outcome.
-  await deps.cancelReminders(booking.id);
-  await deps.enqueueReminders(booking.id, newStartTime);
 
   // 4) Tell the customer the booking moved, and clear any recorded error now that the reschedule succeeded.
   await deps.sendMessage(booking.id, "reschedule");
@@ -215,7 +223,21 @@ export async function cancelBooking(
   // Notify the customer BEFORE flipping to CANCELLED: the messaging layer only sends for live statuses
   // (PAID/SCHEDULED/COMPLETED), so a cancellation sent after the flip would be skipped. On an idempotent
   // re-run the terminal-status short-circuit above means this never fires twice.
-  await deps.sendMessage(booking.id, "cancellation");
+  //
+  // The send must NOT be able to abort the cancel: a transient WhatsApp+SMS outage used to throw out of here
+  // before the booking was marked CANCELLED, the event deleted, or the reminders dropped, leaving the cancel
+  // fully blocked by a messaging hiccup. We now tolerate a send failure here (it is logged and the customer
+  // still learns of the cancellation through the confirmation page / email) and proceed with the cancel. The
+  // messaging layer records its own failure/alert on the Message row, so the outage is still surfaced.
+  try {
+    await deps.sendMessage(booking.id, "cancellation");
+  } catch (e) {
+    console.error(
+      `[cancel] cancellation message failed for booking ${booking.id}; proceeding with cancel: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
 
   // All DB mutations in one transaction: mark CANCELLED and flag any captured payment for refund.
   await prisma.$transaction(async (tx) => {

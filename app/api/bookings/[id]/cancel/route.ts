@@ -3,8 +3,11 @@ import { z } from "zod";
 import { BookingNotReschedulableError, cancelBooking } from "@/lib/booking-actions";
 import { GoogleReconnectError } from "@/lib/google";
 
-// NOTE: unauthenticated for parity with the existing booking routes. The Phase 6 dashboard adds auth so only
-// the influencer (or the booking's customer) can cancel.
+// SECURITY / TRUST BOUNDARY (reviewed, deliberately deferred to Phase 6): this route is UNAUTHENTICATED, for
+// parity with the existing booking routes (hold/checkout). That means anyone who knows a booking id can cancel
+// it and trigger a refund flag. This is an accepted, documented gap for Phase 5 (reminders & retries), NOT an
+// oversight: the Phase 6 dashboard introduces auth, after which this handler must require the authenticated
+// influencer (or the booking's own customer). Do not ship these mutation routes publicly until that auth lands.
 const bodySchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
