@@ -1,0 +1,7 @@
+{
+  "task_id": "task-phase-4-messaging",
+  "task_description": "Implement Phase 4 (WhatsApp + SMS messaging) from doc/04-messaging.md on the phase-4-messaging branch: Message data model + migration, lib/whatsapp.ts and lib/sms.ts send functions, a send-message worker job with WhatsApp->SMS fallback, a BullMQ send-message queue + enqueue, a cross-phase trigger so a paid booking attempts a send-message (Phase 3 is absent), a WhatsApp delivery-status webhook (GET verify + POST statuses), surfacing the meeting link on the confirmation page/status endpoint, extending the worker process to run BullMQ workers, offline-safe tests, and updated doc checkboxes. Mirror existing codebase conventions. Do not push or open a PR.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
