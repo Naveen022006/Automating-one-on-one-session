@@ -15,7 +15,8 @@ export interface BookingView {
   status: string;
   meetLink: string | null;
   lastError: string | null;
-  latestMessage: MessageView | null;
+  /** Latest message per channel (so a queued whatsapp row never hides a failed email on the same booking). */
+  messages: MessageView[];
 }
 
 export interface SessionView {
@@ -79,9 +80,10 @@ function formatWhen(iso: string) {
   return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-function messageLabel(m: MessageView | null): string {
-  if (!m) return "not sent";
-  return `${m.template} · ${m.channel} · ${m.status}`;
+function messagesLabel(messages: MessageView[]): string {
+  if (messages.length === 0) return "not sent";
+  // One entry per channel so a failed email is not hidden behind a later queued whatsapp row.
+  return messages.map((m) => `${m.template} · ${m.channel} · ${m.status}`).join(" | ");
 }
 
 /** Shared helper: POST JSON to a dashboard route, reporting a message. Reloads on success so views refresh. */
@@ -128,7 +130,7 @@ function BookingRow({ booking, token }: { booking: BookingView; token: string })
     <div className="card">
       <strong>{booking.customerName}</strong>
       <div className="muted">
-        Booking {booking.status} · message: {messageLabel(booking.latestMessage)}
+        Booking {booking.status} · message: {messagesLabel(booking.messages)}
       </div>
       {booking.meetLink && (
         <div className="muted">

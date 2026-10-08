@@ -56,7 +56,9 @@ export default async function DashboardPage({
         where: { status: { in: [...VISIBLE_BOOKING_STATUSES] } },
         orderBy: { createdAt: "asc" },
         include: {
-          messages: { orderBy: { createdAt: "desc" }, take: 1 },
+          // Load recent messages newest-first and reduce to the latest row PER CHANNEL below, so a later
+          // 'queued' whatsapp row cannot visually mask an earlier 'failed' email row on the same booking.
+          messages: { orderBy: { createdAt: "desc" }, take: 20 },
         },
       },
     },
@@ -112,6 +114,21 @@ export default async function DashboardPage({
     reason: b.reason,
   }));
 
+  // Reduce a booking's messages (ordered newest-first) to the latest row per channel, so each channel's true
+  // current status is shown rather than only the single most recent row across all channels.
+  const latestPerChannel = (
+    messages: { channel: string; template: string; status: string }[],
+  ): { channel: string; template: string; status: string }[] => {
+    const seen = new Set<string>();
+    const out: { channel: string; template: string; status: string }[] = [];
+    for (const m of messages) {
+      if (seen.has(m.channel)) continue;
+      seen.add(m.channel);
+      out.push({ channel: m.channel, template: m.template, status: m.status });
+    }
+    return out;
+  };
+
   const now = Date.now();
   const toView = (s: (typeof sessions)[number]): SessionView => {
     const seatsFilled = s.bookings.filter((b) => b.status !== "CANCELLED" && b.status !== "FAILED").length;
@@ -130,9 +147,9 @@ export default async function DashboardPage({
         status: b.status,
         meetLink: b.meetLink,
         lastError: b.lastError,
-        latestMessage: b.messages[0]
-          ? { channel: b.messages[0].channel, template: b.messages[0].template, status: b.messages[0].status }
-          : null,
+        // One row per channel (the latest for that channel), newest channel first. messages are already
+        // ordered createdAt desc, so the first time a channel is seen is its latest status.
+        messages: latestPerChannel(b.messages),
       })),
     };
   };
