@@ -8,9 +8,11 @@ import {
   type GoogleClient,
 } from "@/lib/google";
 import { getRefreshToken } from "@/lib/google-tokens";
+import { activeSeatWhere } from "@/lib/holds";
 import { calendarEventId, sessionEventId } from "@/lib/meeting";
 import { createMessage } from "@/lib/messages";
 import { enqueueSendMessage } from "@/lib/queue";
+import { blockedDaySet, isSlotStart, type Rule } from "@/lib/slots";
 
 export { SELF_SERVICE_PURPOSE, buildSelfServiceUrl, verifySelfServiceToken } from "@/lib/self-service";
 
@@ -19,6 +21,31 @@ export class ManageBlockedError extends Error {}
 /** Google rejected the change for good (deleted event, bad request); recorded for manual attention. */
 export class ManageRejectedError extends Error {}
 export class BookingNotManageableError extends Error {}
+/** The requested reschedule time is in the past, off the influencer's schedule, on a blocked day, or clashes. */
+export class RescheduleNotAllowedError extends Error {}
+
+/**
+ * Pure, DB-free check that `newStart` is a legal time to reschedule onto, mirroring the hold route's gate
+ * (app/api/bookings/hold/route.ts): the time must be in the future AND a real slot start out of the
+ * influencer's availability rules that does not fall on a blocked day. Kept pure (rules + blocked days are
+ * passed in) so it is unit-testable without a DB, like lib/slots.ts. Returns null when ok, or a reason string.
+ */
+export function validateRescheduleTime(args: {
+  rules: Rule[];
+  durationMin: number;
+  newStart: Date;
+  blockedDates: ReadonlySet<string>;
+  now?: Date;
+}): string | null {
+  const { rules, durationMin, newStart, blockedDates } = args;
+  const now = args.now ?? new Date();
+  if (Number.isNaN(newStart.getTime())) return "The new time is not a valid date";
+  if (newStart <= now) return "The new time must be in the future";
+  if (!isSlotStart(rules, durationMin, newStart, blockedDates)) {
+    return "That time is not available";
+  }
+  return null;
+}
 
 export interface ManageDeps {
   google: GoogleClient;
@@ -43,7 +70,9 @@ function loadBooking(bookingId: string) {
   return prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      session: { include: { service: { include: { influencer: true } }, bookings: true } },
+      session: {
+        include: { service: { include: { influencer: { include: { rules: true } } } }, bookings: true },
+      },
       payments: { where: { status: "CAPTURED" } },
     },
   });
@@ -161,22 +190,57 @@ export async function rescheduleBooking(
   if (!MANAGEABLE.includes(booking.status as (typeof MANAGEABLE)[number])) {
     throw new BookingNotManageableError(`Booking cannot be rescheduled while it is ${booking.status}`);
   }
-  if (newStart <= new Date()) throw new BookingNotManageableError("The new time must be in the future");
 
   const { session } = booking;
   const { service } = session;
   const influencerId = service.influencer.id;
   const newEnd = new Date(newStart.getTime() + service.durationMin * 60_000);
 
-  // 1) DB: move the session to the new time (the (service_id, start_time) unique guards against a clash).
-  const clash = await prisma.session.findFirst({
-    where: { serviceId: service.id, startTime: newStart, id: { not: session.id } },
-    select: { id: true },
+  // 1) Validate the new time the same way the hold route does: it must be a real slot start out of the
+  //    influencer's availability rules and not land on a blocked day. The API routes accept any ISO datetime,
+  //    so without this a crafted dashboard/self-service request could move a booking (and, for GROUP, the whole
+  //    shared session) to an off-schedule or blocked time. Load the influencer's blocked days around the target.
+  const blocked = await prisma.blockedDate.findMany({
+    where: {
+      influencerId,
+      date: {
+        gte: new Date(newStart.getTime() - 86_400_000),
+        lte: new Date(newStart.getTime() + 86_400_000),
+      },
+    },
+    select: { date: true },
   });
-  if (clash) throw new BookingNotManageableError("Another session already occupies that time");
-  await prisma.session.update({ where: { id: session.id }, data: { startTime: newStart, endTime: newEnd } });
+  const reason = validateRescheduleTime({
+    rules: service.influencer.rules,
+    durationMin: service.durationMin,
+    newStart,
+    blockedDates: blockedDaySet(blocked.map((b) => b.date)),
+  });
+  if (reason) throw new RescheduleNotAllowedError(reason);
 
-  // 2) Calendar (best-effort): patch the event start/end.
+  // 2) DB: move the session to the new time, serialized on the destination so capacity cannot be raced. The
+  //    (service_id, start_time) unique constraint means a second session already at newStart would collide, so
+  //    we reject that up front; then we lock THIS session row (FOR UPDATE, mirroring lib/holds.ts) and confirm
+  //    its live seats still fit the service capacity at the destination before moving it. This keeps the
+  //    one-event-per-session invariant (the whole GROUP session moves together) and prevents an oversell slipping
+  //    in if capacity was shrunk after the seats were sold.
+  await prisma.$transaction(async (tx) => {
+    const clash = await tx.session.findFirst({
+      where: { serviceId: service.id, startTime: newStart, id: { not: session.id } },
+      select: { id: true },
+    });
+    if (clash) throw new RescheduleNotAllowedError("Another session already occupies that time");
+
+    await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${session.id} FOR UPDATE`;
+    const taken = await tx.booking.count({ where: { sessionId: session.id, ...activeSeatWhere(new Date()) } });
+    if (taken > service.capacity) {
+      throw new RescheduleNotAllowedError("This session has more bookings than the service now allows");
+    }
+
+    await tx.session.update({ where: { id: session.id }, data: { startTime: newStart, endTime: newEnd } });
+  });
+
+  // 3) Calendar (best-effort): patch the event start/end.
   const eventId =
     service.type === "GROUP" ? session.eventId ?? sessionEventId(session.id) : booking.eventId ?? calendarEventId(booking.id);
   if (booking.eventId || session.eventId) {
@@ -188,7 +252,9 @@ export async function rescheduleBooking(
     }
   }
 
-  // 3) Re-notify every booking in the (possibly shared) session of the new time.
+  // 4) Re-notify every live booking in the (possibly shared) session of the new time. For a GROUP this is one
+  //    confirmation email per attendee: intended, because the shared event moved for all of them and each
+  //    customer needs their own notice carrying their own self-service link (issue 5 - this is by design).
   for (const b of session.bookings) {
     if (b.status === "CANCELLED" || b.status === "FAILED" || b.status === "EXPIRED") continue;
     await renotify(deps, b.id, "booking-rescheduled", true);

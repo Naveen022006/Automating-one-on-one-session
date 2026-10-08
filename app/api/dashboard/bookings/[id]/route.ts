@@ -6,6 +6,7 @@ import {
   BookingNotManageableError,
   ManageBlockedError,
   ManageRejectedError,
+  RescheduleNotAllowedError,
   cancelBooking,
   rescheduleBooking,
   resendBookingLink,
@@ -47,7 +48,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
-    if (e instanceof BookingNotManageableError) return NextResponse.json({ error: e.message }, { status: 409 });
+    if (e instanceof BookingNotManageableError || e instanceof RescheduleNotAllowedError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
     if (e instanceof ManageBlockedError) {
       // The DB change landed but the calendar could not be updated (influencer must reconnect Google).

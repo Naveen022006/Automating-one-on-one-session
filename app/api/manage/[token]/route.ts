@@ -4,6 +4,7 @@ import {
   BookingNotManageableError,
   ManageBlockedError,
   ManageRejectedError,
+  RescheduleNotAllowedError,
   cancelBooking,
   rescheduleBooking,
 } from "@/lib/manage";
@@ -38,7 +39,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
-    if (e instanceof BookingNotManageableError) return NextResponse.json({ error: e.message }, { status: 409 });
+    if (e instanceof BookingNotManageableError || e instanceof RescheduleNotAllowedError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
     if (e instanceof ManageBlockedError) return NextResponse.json({ ok: true, warning: e.message }, { status: 202 });
     console.error("[self-service] action failed", e);
