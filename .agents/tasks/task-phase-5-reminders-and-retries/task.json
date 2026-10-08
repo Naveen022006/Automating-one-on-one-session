@@ -1,0 +1,20 @@
+{
+  "task_id": "task-phase-5-reminders-and-retries",
+  "task_description": "Implement Phase 5 (doc/05-reminders-and-retries.md) on branch phase-5-reminders-and-retries: delayed T-24h/T-15m reminders with deterministic job ids that read booking state at run time, exponential-backoff retries (5 attempts) that mark the message FAILED + alert the influencer + flag the dashboard after final failure, and reschedule/cancel flows that update/delete the Calendar event, replace reminder jobs, and re-notify. Because Phase 4 messaging is only a stub, a minimal messaging substrate (Message table + migration, injectable WhatsApp->SMS delivery, send-message worker) is built as part of this work; full real-provider integration and the delivery-status webhook are explicitly out of scope. All work on the new branch, committed locally; the orchestrator pushes and opens the PR.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null,
+  "review": {
+    "passes": 2,
+    "final_verdict": "APPROVED",
+    "v1": "NEEDS_CHANGES - 6 issues (reschedule reminder fire-time backstop, reschedule atomicity, cancel abortable by message outage, calendar-patch recoverability, PAID-reschedule coverage, unauthenticated routes). Review: 2026-10-08-143607-review.md",
+    "v2": "APPROVED - issues 1-5 fixed in commit 3007ca8 and covered by tests; issue 6 (unauthenticated reschedule/cancel routes) justified as a documented, intentional Phase-6 auth deferral consistent with the existing unauthenticated booking routes. Review: 2026-10-08-144449-review.md"
+  },
+  "verification": {
+    "build": "skipped",
+    "tests": "skipped",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "npm run typecheck and npm test cannot run in this sandbox: the npm registry is blocked (every registry.npmjs.org tarball returns HTTP 403, pnpm metadata fetch fails), so dependencies cannot be installed and the Prisma client cannot be generated; there is also no Postgres/Redis. No Dockerfile. Best-effort validation performed instead: per-file and whole-set `tsc --noEmit --skipLibCheck` with the host-global TypeScript 5.9.2 over all new/changed Phase 5 files reports ZERO real type errors - only TS2307/TS2688 unresolved-module/type noise from the empty node_modules. Migration SQL (prisma/migrations/20261010000000_messages) reviewed against the schema: enums, columns, defaults, index and FK all match. Test quality reviewed: tests/messaging.test.ts, tests/reminders.test.ts, and tests/booking-actions.test.ts inject fakes and exercise the real logic paths (run-time status skip, WhatsApp->SMS fallback, deterministic reminder ids/delays, reschedule cancel-before-enqueue ordering, cancel idempotency + refund flagging) and would fail if the behaviour were reverted; DB-dependent assertions use the project's DATABASE_URL skip-guard convention. CI must run `npm install` + `npx prisma generate` + `npm run typecheck` + `npm test` after merge to confirm."
+  }
+}

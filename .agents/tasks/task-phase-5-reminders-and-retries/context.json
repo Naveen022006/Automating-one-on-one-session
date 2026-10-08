@@ -1,0 +1,33 @@
+{
+  "project_type": "Next.js (App Router) + TypeScript booking automation app with a separate BullMQ worker process",
+  "language": "TypeScript",
+  "build_system": "npm + Next.js. Prisma generates a client to ../generated/prisma (schema prisma/schema.prisma). tsx runs TS directly (worker, scripts, tests).",
+  "test_framework": "node:test via `tsx --test tests/*.test.ts`. Integration tests (holds, payments) self-skip when DATABASE_URL is unset; signature.test.ts is pure-logic and needs no DB.",
+  "build_command": "npm run typecheck (tsc --noEmit). NOTE: cannot run in this sandbox - see environment_constraints.",
+  "test_command": "npm test (tsx --test tests/*.test.ts). NOTE: cannot run in this sandbox - see environment_constraints.",
+  "verification_instructions": "Intended: run `npm install`, `npx prisma generate`, then `npm run typecheck` and `npm test`. In THIS sandbox none of those can run because the npm registry is blocked. Best-effort validation available: the host has a GLOBAL TypeScript 5.9.2 (`tsc`) and node v22.23.3. Use `tsc --noEmit --skipLibCheck <file.ts>` for per-file syntax/type sanity on new/changed files (expect unresolved-module errors for `@/...`, `bullmq`, `@/generated/prisma` because node_modules is empty - those are environment noise, not real defects). Review logic by reading, mirror existing patterns exactly.",
+  "snapshot_or_generated_files": "generated/prisma is the generated Prisma client (gitignored, produced by `prisma generate`). It is NOT present and cannot be generated in this sandbox (registry blocked). Prisma migrations under prisma/migrations/ ARE checked in and must be hand-written following existing style when the schema changes.",
+  "setup_instructions": "Normally: `npm install` then `npx prisma migrate dev` (or `prisma generate`) then `npm run db:seed`. In this sandbox `npm install` hangs/fails: the proxy returns HTTP 403 for every registry.npmjs.org tarball and pnpm cannot reach metadata at all. node_modules contains only empty placeholder dirs. Do NOT attempt to run npm install/npx - it will time out. Unset NODE_OPTIONS before any node/tsc command: NODE_OPTIONS points at a missing preload file (/opt/amazon/kiro-agent/proxy-bootstrap.js) that crashes every node process otherwise.",
+  "environment_constraints": "HARD BLOCKER: npm registry (registry.npmjs.org) is blocked by the sandbox proxy - all tarball GETs return 403, pnpm metadata fetch fails. Dependencies cannot be installed; the Prisma client cannot be generated; therefore `npm run typecheck` and `npm test` CANNOT be executed here. There is no Postgres or Redis running either, so even integration tests would self-skip. Available for validation: global `tsc` (TypeScript 5.9.2) and node v22. Always `unset NODE_OPTIONS` in each shell command (the configured preload file is missing and crashes node). The orchestrator/CI will run the real build and tests after merge.",
+  "contribution_requirements": "No CONTRIBUTING.md. Conventions inferred from code: all work on branch phase-5-reminders-and-retries (already created, do NOT commit to main). Commit locally with clear messages; do NOT push or open a PR (the orchestrator does that). Follow existing phase migration-dir naming (prisma/migrations/<yyyymmddHHMMSS>_<name>/migration.sql).",
+  "key_patterns": "Deterministic BullMQ job ids for idempotency (lib/queue.ts createMeetingJobId, enqueueCreateMeeting with attempts:5 + exponential backoff delay 5000 + removeOnComplete age 7d + removeOnFail:false). requeue* helpers remove a finished (failed/completed) job before re-adding, and leave waiting/active/delayed jobs alone. Business logic lives in lib/*.ts and ALWAYS re-reads the latest booking row at run time (lib/meeting.ts createMeetingForBooking) - never trust enqueue-time data. Idempotent updateMany with a status guard in the WHERE clause (status:'PAID', eventId:null) to avoid races. Errors classified GoogleReconnectError / GoogleRequestError / GoogleTransientError; worker wraps unrecoverable ones in UnrecoverableError so BullMQ stops retrying, rethrows transient ones for backoff. Alerts go through lib/alerts.ts alertInfluencer({kind, detail, bookingId}); booking.lastError backs the dashboard flag. Dependency-injection via an overrides/deps object with defaults (MeetingDeps) makes handlers unit-testable without Redis/Google/DB - mirror this for reminders. Path alias @/* -> project root (tsconfig). lib/google.ts is a GoogleClient interface over fetch with a createGoogleClient(fetchImpl) factory for testing.",
+  "relevant_files": [
+    "doc/05-reminders-and-retries.md (authoritative spec)",
+    "doc/04-messaging.md (Phase 4 context - messages table + send-message worker described but NOT built)",
+    "lib/queue.ts (ADD reminder enqueue/cancel/requeue helpers + deterministic ids here)",
+    "lib/meeting.ts (reference business-logic layer; run-time status read, idempotency, alerts)",
+    "lib/google.ts (ADD updateEvent + deleteEvent to GoogleClient + createGoogleClient; reuse error taxonomy)",
+    "lib/alerts.ts (alertInfluencer; may need a new InfluencerAlertKind for reminder/message failure)",
+    "lib/holds.ts (createHold pattern + FOR UPDATE session locking for reschedule seat check)",
+    "lib/slots.ts (isSlotStart - validate a reschedule target time)",
+    "lib/payment-webhook.ts (where booking becomes PAID -> enqueueCreateMeeting; reminders scheduled after SCHEDULED in lib/meeting.ts)",
+    "worker/index.ts (ADD reminder + message Workers here, same shape: REDIS_URL guard, error/failed listeners, graceful shutdown, failed->report-failure)",
+    "worker/jobs/createMeeting.ts (handler pattern: wrap unrecoverable in UnrecoverableError, rethrow transient)",
+    "app/api/bookings/[id]/route.ts (currently GET status only - ADD reschedule/cancel endpoints or sibling routes)",
+    "prisma/schema.prisma (ADD Message model + MessageStatus/MessageChannel enums)",
+    "prisma/migrations/20261009000000_google_meet/migration.sql (migration style reference)",
+    "tests/payments.test.ts and tests/holds.test.ts (DB-integration test style, self-skip without DATABASE_URL)",
+    "tests/signature.test.ts (pure-logic test style, no DB)"
+  ],
+  "directory_structure": "app/ Next.js App Router (public booking page [influencer]/book, api routes under app/api/{slots,checkout,bookings,webhooks/payment,google}). lib/ business logic (db, queue, google, meeting, holds, slots, alerts, payments, payment-webhook, crypto, signing, phone, google-tokens). worker/ BullMQ worker (index.ts + jobs/createMeeting.ts). prisma/ schema + hand-written migrations + seed. tests/ node:test files. generated/prisma (gitignored) is the Prisma client output."
+}
