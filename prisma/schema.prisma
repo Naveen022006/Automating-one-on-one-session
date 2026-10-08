@@ -92,21 +92,62 @@ model Session {
 }
 
 model Booking {
-  id              String        @id @default(cuid())
-  sessionId       String        @map("session_id")
-  status          BookingStatus @default(HELD)
-  holdExpiresAt   DateTime?     @map("hold_expires_at")
-  customerName    String        @map("customer_name")
-  customerEmail   String        @map("customer_email")
-  whatsappE164    String        @map("whatsapp_e164")
-  whatsappOptIn   Boolean       @default(false) @map("whatsapp_opt_in")
-  customerTz      String?       @map("customer_tz")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  id            String        @id @default(cuid())
+  sessionId     String        @map("session_id")
+  status        BookingStatus @default(HELD)
+  holdExpiresAt DateTime?     @map("hold_expires_at")
+  customerName  String        @map("customer_name")
+  customerEmail String        @map("customer_email")
+  whatsappE164  String        @map("whatsapp_e164")
+  whatsappOptIn Boolean       @default(false) @map("whatsapp_opt_in")
+  customerTz    String?       @map("customer_tz")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
 
-  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session  Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  payments Payment[]
 
   @@index([sessionId, status])
   @@index([status, holdExpiresAt])
   @@map("bookings")
+}
+
+enum PaymentStatus {
+  CREATED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  bookingId         String        @map("booking_id")
+  provider          String        @default("razorpay")
+  providerOrderId   String        @unique @map("provider_order_id")
+  providerPaymentId String?       @unique @map("provider_payment_id")
+  amountMinor       Int           @map("amount_minor")
+  currency          String
+  status            PaymentStatus @default(CREATED)
+  // Set when money was captured but the booking could not be honoured (needs a manual/automatic refund).
+  needsRefund       Boolean       @default(false) @map("needs_refund")
+  failureReason     String?       @map("failure_reason")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("payments")
+}
+
+// One row per provider event id; the unique key is what makes webhook handling idempotent.
+model WebhookEvent {
+  id         String   @id @default(cuid())
+  provider   String
+  eventId    String   @map("event_id")
+  type       String
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@unique([provider, eventId])
+  @@map("webhook_events")
 }

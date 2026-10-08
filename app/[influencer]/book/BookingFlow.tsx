@@ -22,6 +22,36 @@ interface HoldResult {
   holdExpiresAt: string;
 }
 
+interface CheckoutResult {
+  bookingId: string;
+  keyId: string;
+  orderId: string;
+  amountMinor: number;
+  currency: string;
+  holdExpiresAt: string;
+  customer: { name: string; email: string; contact: string };
+}
+interface RazorpayInstance {
+  open(): void;
+  on(event: "payment.failed", cb: (r: { error: { description: string } }) => void): void;
+}
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance;
+  }
+}
+
+function loadRazorpay(): Promise<boolean> {
+  if (window.Razorpay) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const el = document.createElement("script");
+    el.src = "https://checkout.razorpay.com/v1/checkout.js";
+    el.onload = () => resolve(true);
+    el.onerror = () => resolve(false);
+    document.body.appendChild(el);
+  });
+}
+
 function formatPrice(minor: number, currency: string) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / 100);
 }
@@ -46,6 +76,9 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
   const [submitting, setSubmitting] = useState(false);
   const [hold, setHold] = useState<HoldResult | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [paying, setPaying] = useState(false);
+  // "confirming" = checkout reported success; we wait for the server (webhook) to confirm before showing it.
+  const [payState, setPayState] = useState<"idle" | "confirming" | "confirmed" | "failed">("idle");
 
   useEffect(() => {
     if (!service) return;
@@ -71,6 +104,63 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [hold]);
+
+  useEffect(() => {
+    if (payState !== "confirming" || !hold) return;
+    let stopped = false;
+    const started = Date.now();
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/bookings/${hold.bookingId}`);
+        const data = await r.json();
+        if (stopped) return;
+        if (["PAID", "SCHEDULED", "COMPLETED"].includes(data.status)) return setPayState("confirmed");
+        if (data.status === "FAILED") return setPayState("failed");
+      } catch {
+        /* keep polling */
+      }
+      if (Date.now() - started > 120_000) return setPayState("failed");
+      setTimeout(poll, 2000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+    };
+  }, [payState, hold]);
+
+  async function pay() {
+    if (!hold) return;
+    setPaying(true);
+    setError(null);
+    try {
+      if (!(await loadRazorpay()) || !window.Razorpay) throw new Error("Could not load the payment window");
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: hold.bookingId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not start payment");
+      const c = data as CheckoutResult;
+      setHold((h) => (h ? { ...h, holdExpiresAt: c.holdExpiresAt } : h)); // checkout extends the hold
+      const rzp = new window.Razorpay({
+        key: c.keyId,
+        order_id: c.orderId,
+        amount: c.amountMinor,
+        currency: c.currency,
+        name: service?.title ?? "Session",
+        prefill: c.customer,
+        // Only a hint: the booking becomes paid when the webhook says so.
+        handler: () => setPayState("confirming"),
+        modal: { ondismiss: () => setPaying(false) },
+      });
+      rzp.on("payment.failed", (r) => setError(r.error.description));
+      rzp.open();
+    } catch (e) {
+      setError((e as Error).message);
+      setPaying(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -104,6 +194,24 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
     }
   }
 
+  if (hold && slot && service && (payState === "confirming" || payState === "confirmed")) {
+    return (
+      <div className="card">
+        <h2>{payState === "confirmed" ? "Payment confirmed" : "Confirming your payment…"}</h2>
+        <p>
+          {service.title} on{" "}
+          {new Date(slot.start).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}
+        </p>
+        <p className="muted">
+          {payState === "confirmed"
+            ? "You're booked. Your meeting link will be sent to your WhatsApp and email."
+            : "This usually takes a few seconds."}
+        </p>
+        <p className="muted">Booking reference: {hold.bookingId}</p>
+      </div>
+    );
+  }
+
   if (hold && slot && service) {
     const msLeft = new Date(hold.holdExpiresAt).getTime() - now;
     const expired = msLeft <= 0;
@@ -122,9 +230,17 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
           </button>
         ) : (
           <>
-            <p className="muted">
-              Held for {mm}:{String(ss).padStart(2, "0")}. Payment is added in the next phase.
-            </p>
+            <p className="muted">Held for {mm}:{String(ss).padStart(2, "0")}.</p>
+            {payState === "failed" && (
+              <p className="error" role="alert">
+                We could not confirm your payment. If money was deducted it will be refunded; contact support with
+                your booking reference.
+              </p>
+            )}
+            <button className="primary" onClick={pay} disabled={paying}>
+              {paying ? "Opening payment…" : `Pay ${formatPrice(service.priceMinor, service.currency)}`}
+            </button>
+            {error && <p className="error" role="alert">{error}</p>}
             <p className="muted">Booking reference: {hold.bookingId}</p>
           </>
         )}

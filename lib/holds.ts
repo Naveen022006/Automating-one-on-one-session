@@ -2,16 +2,21 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 export const HOLD_MINUTES = 10;
+/** When checkout starts, the hold is pushed out to at least this long so a payment in progress keeps its seat. */
+export const PAYMENT_WINDOW_MINUTES = 20;
 
 /** Statuses that occupy a seat regardless of hold expiry. */
-export const SEAT_STATUSES = ["PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED"] as const;
+export const SEAT_STATUSES = ["PAID", "SCHEDULED", "COMPLETED"] as const;
 
-/** Where-clause for bookings that currently occupy a seat. A HELD booking only counts until it expires. */
+/** Statuses that occupy a seat only until `holdExpiresAt`. */
+export const TIMED_SEAT_STATUSES = ["HELD", "PENDING_PAYMENT"] as const;
+
+/** Where-clause for bookings that currently occupy a seat. Unpaid bookings only count until their hold expires. */
 export function activeSeatWhere(now: Date): Prisma.BookingWhereInput {
   return {
     OR: [
       { status: { in: [...SEAT_STATUSES] } },
-      { status: "HELD", holdExpiresAt: { gt: now } },
+      { status: { in: [...TIMED_SEAT_STATUSES] }, holdExpiresAt: { gt: now } },
     ],
   };
 }
@@ -75,10 +80,10 @@ export async function createHold(input: HoldInput) {
   });
 }
 
-/** Marks timed-out holds EXPIRED. Availability never depends on this running (expired holds are ignored); it keeps data tidy. */
+/** Marks timed-out unpaid bookings (held or awaiting payment) EXPIRED. Availability never depends on this running (expired holds are ignored); it keeps data tidy. */
 export async function expireStaleHolds(now = new Date()): Promise<number> {
   const { count } = await prisma.booking.updateMany({
-    where: { status: "HELD", holdExpiresAt: { lte: now } },
+    where: { status: { in: [...TIMED_SEAT_STATUSES] }, holdExpiresAt: { lte: now } },
     data: { status: "EXPIRED" },
   });
   return count;

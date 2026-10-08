@@ -1,0 +1,126 @@
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import { prisma } from "../lib/db";
+import { createHold } from "../lib/holds";
+import { handleRazorpayEvent, type RazorpayWebhook } from "../lib/payment-webhook";
+
+// Integration tests: need a migrated Postgres at DATABASE_URL (skipped otherwise).
+const skip = process.env.DATABASE_URL ? false : "DATABASE_URL not set";
+const slotStart = new Date(Date.now() + 9 * 86_400_000);
+slotStart.setUTCMinutes(0, 0, 0);
+const slotEnd = new Date(slotStart.getTime() + 30 * 60_000);
+
+let influencerId: string;
+let serviceId: string;
+const run = Date.now();
+let n = 0;
+
+async function pendingBooking(email: string, start = slotStart) {
+  const hold = await createHold({
+    serviceId,
+    startTime: start,
+    endTime: new Date(start.getTime() + 30 * 60_000),
+    capacity: 1,
+    customerName: "Pay Tester",
+    customerEmail: email,
+    whatsappE164: "+919876543210",
+    whatsappOptIn: true,
+  });
+  const orderId = `order_${run}_${++n}`;
+  await prisma.booking.update({ where: { id: hold.id }, data: { status: "PENDING_PAYMENT" } });
+  await prisma.payment.create({
+    data: { bookingId: hold.id, providerOrderId: orderId, amountMinor: 49900, currency: "INR" },
+  });
+  return { bookingId: hold.id, orderId };
+}
+
+const captured = (orderId: string, amount = 49900): RazorpayWebhook => ({
+  event: "payment.captured",
+  payload: { payment: { entity: { id: `pay_${orderId}`, order_id: orderId, amount, currency: "INR" } } },
+});
+
+before(async () => {
+  if (skip) return;
+  const inf = await prisma.influencer.create({
+    data: { slug: `pay-${run}`, name: "Pay Test", email: `pay${run}@example.com` },
+  });
+  influencerId = inf.id;
+  serviceId = (
+    await prisma.service.create({ data: { influencerId, title: "1:1", durationMin: 30, priceMinor: 49900 } })
+  ).id;
+});
+
+after(async () => {
+  if (!skip && influencerId) {
+    await prisma.influencer.delete({ where: { id: influencerId } });
+    await prisma.$executeRaw`DELETE FROM webhook_events WHERE event_id LIKE ${"evt_" + run + "%"}`;
+  }
+  await prisma.$disconnect();
+});
+
+test("replaying the same webhook enqueues only one meeting job", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking("replay@example.com");
+  const queued: string[] = [];
+  const enqueue = async (id: string) => void queued.push(id);
+
+  const first = await handleRazorpayEvent(`evt_${run}_a`, captured(orderId), enqueue);
+  const second = await handleRazorpayEvent(`evt_${run}_a`, captured(orderId), enqueue);
+  // Razorpay also sends order.paid for the same payment under a different event id.
+  const third = await handleRazorpayEvent(`evt_${run}_b`, { ...captured(orderId), event: "order.paid" }, enqueue);
+
+  assert.equal(first, "processed");
+  assert.equal(second, "duplicate");
+  assert.equal(third, "processed");
+  assert.deepEqual(queued, [bookingId]);
+  const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
+  assert.equal(booking.status, "PAID");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } })).status, "CAPTURED");
+});
+
+test("a failed enqueue rolls back, so the retried webhook is processed", { skip }, async () => {
+  const start = new Date(slotStart.getTime() + 3_600_000);
+  const { bookingId, orderId } = await pendingBooking("rollback@example.com", start);
+  await assert.rejects(
+    handleRazorpayEvent(`evt_${run}_c`, captured(orderId), async () => {
+      throw new Error("redis down");
+    }),
+  );
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "PENDING_PAYMENT");
+
+  const queued: string[] = [];
+  const out = await handleRazorpayEvent(`evt_${run}_c`, captured(orderId), async (id) => void queued.push(id));
+  assert.equal(out, "processed");
+  assert.deepEqual(queued, [bookingId]);
+});
+
+test("amount mismatch is not marked paid and is flagged for refund", { skip }, async () => {
+  const start = new Date(slotStart.getTime() + 7_200_000);
+  const { bookingId, orderId } = await pendingBooking("mismatch@example.com", start);
+  const queued: string[] = [];
+  await handleRazorpayEvent(`evt_${run}_d`, captured(orderId, 100), async (id) => void queued.push(id));
+  assert.equal(queued.length, 0);
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "FAILED");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } })).needsRefund, true);
+});
+
+test("payment after hold expiry is refused when the slot was re-taken", { skip }, async () => {
+  const start = new Date(slotStart.getTime() + 10_800_000);
+  const { bookingId, orderId } = await pendingBooking("late@example.com", start);
+  await prisma.booking.update({ where: { id: bookingId }, data: { status: "EXPIRED" } });
+  await createHold({
+    serviceId,
+    startTime: start,
+    endTime: new Date(start.getTime() + 30 * 60_000),
+    capacity: 1,
+    customerName: "Someone else",
+    customerEmail: "other@example.com",
+    whatsappE164: "+919876543210",
+    whatsappOptIn: true,
+  });
+  const queued: string[] = [];
+  await handleRazorpayEvent(`evt_${run}_e`, captured(orderId), async (id) => void queued.push(id));
+  assert.equal(queued.length, 0);
+  const p = await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } });
+  assert.equal(p.needsRefund, true);
+});
