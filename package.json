@@ -10,6 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "expire-holds": "tsx worker/index.ts",
+    "worker": "tsx worker/index.ts",
+    "google:connect-link": "tsx scripts/connect-link.ts",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
