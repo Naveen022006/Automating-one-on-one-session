@@ -28,4 +28,15 @@ A paid booking sends a WhatsApp message; disabling WhatsApp triggers the SMS fal
   messaged twice. `sendBookingMessage` still guards defensively against a missing `meetLink` (throwing
   a retryable error), but that is a fallback rather than the expected path.
 - The meeting link is always surfaced on the confirmation page (`BookingFlow.tsx`) and the booking
-  status endpoint (`/api/bookings/[id]`) so a message failure never blocks the customer.
+  status endpoint (`/api/bookings/[id]`) so a message failure never blocks the customer. Because that
+  endpoint is public and unauthenticated and the link is a join capability, `/api/bookings/[id]` only
+  returns `meetLink` once the booking is in a terminal paid state (`PAID`/`SCHEDULED`/`COMPLETED`); a
+  guessed/pre-payment booking id never yields a link. Booking ids are cuids and the link is also sent
+  over WhatsApp/SMS, so this does not widen exposure. A proper session/ownership check is deferred to
+  when an auth system lands.
+- Webhook trust boundary: the WhatsApp POST delivery-status endpoint verifies Meta's
+  `X-Hub-Signature-256` header (HMAC-SHA256 of the raw body with `WHATSAPP_APP_SECRET`) in constant
+  time before applying any status update, mirroring the payment webhook. The GET verify-token
+  handshake uses a constant-time compare too. Delivery status is treated as the source of truth and
+  the stored `error` is only overwritten on `FAILED` transitions, so a later DELIVERED/READ callback
+  cannot wipe diagnostic context from a prior FAILED.
