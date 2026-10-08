@@ -10,7 +10,20 @@ import {
   type GoogleClient,
 } from "@/lib/google";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
+import { createMessage } from "@/lib/messages";
 import { enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
+
+const CONFIRMATION_TEMPLATE = "booking-confirmation";
+
+/**
+ * Records that the booking confirmation was handed to the messaging queue, then enqueues it. Best-effort and
+ * non-throwing (via createMessage): recording must never fail the create-meeting job. The row is 'queued'
+ * because the real WhatsApp/email delivery worker is Phase 4; the dashboard shows it as the latest status.
+ */
+async function enqueueConfirmation(deps: MeetingDeps, bookingId: string): Promise<void> {
+  await createMessage({ bookingId, channel: "whatsapp", template: CONFIRMATION_TEMPLATE, status: "queued" });
+  await deps.enqueueSendMessage(bookingId);
+}
 
 /**
  * The influencer must act (connect / reconnect Google) before this booking can get a link.
@@ -103,7 +116,7 @@ export async function createMeetingForBooking(
   }
 
   if (booking.eventId) {
-    if (booking.status === "SCHEDULED") await deps.enqueueSendMessage(booking.id);
+    if (booking.status === "SCHEDULED") await enqueueConfirmation(deps, booking.id);
     return "already-scheduled";
   }
   // Read at run time, never trusted from enqueue time: the booking may have been cancelled or refunded since.
@@ -245,7 +258,7 @@ export async function createMeetingForBooking(
     return "skipped";
   }
 
-  await deps.enqueueSendMessage(booking.id);
+  await enqueueConfirmation(deps, booking.id);
   return "scheduled";
 }
 

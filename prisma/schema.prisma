@@ -143,10 +143,32 @@ model Booking {
 
   session  Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   payments Payment[]
+  messages Message[]
 
   @@index([sessionId, status])
   @@index([status, holdExpiresAt])
   @@map("bookings")
+}
+
+// One outbound customer communication (confirmation, receipt, reminder, resent link...). Phases 4/5
+// (WhatsApp/SMS/email + reminders) are not built yet, so there is no real delivery worker: rows are
+// recorded by lib/messages.ts helpers and the structured-log senders in lib/email.ts / lib/alerts.ts.
+// The dashboard reads the latest row per booking to show whether the customer was told, and why not.
+model Message {
+  id        String    @id @default(cuid())
+  bookingId String    @map("booking_id")
+  channel   String // 'email' | 'whatsapp' | 'sms' | 'log'
+  template  String // e.g. 'booking-confirmation' | 'receipt'
+  status    String    @default("queued") // 'queued' | 'sent' | 'failed'
+  error     String?
+  sentAt    DateTime? @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("messages")
 }
 
 enum PaymentStatus {
