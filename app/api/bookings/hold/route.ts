@@ -8,7 +8,7 @@ import {
   SlotUnavailableError,
 } from "@/lib/holds";
 import { toE164 } from "@/lib/phone";
-import { isSlotStart, isValidTimezone } from "@/lib/slots";
+import { blockedDaySet, isSlotStart, isValidTimezone } from "@/lib/slots";
 
 const bodySchema = z.object({
   serviceId: z.string().min(1),
@@ -44,9 +44,26 @@ export async function POST(req: Request) {
   });
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
-  // Only real slots can be held: the start must come out of the influencer's availability rules.
+  // A blocked day cannot be booked even if a rule would otherwise produce slots on it.
   const startTime = new Date(body.startTime);
-  if (startTime <= new Date() || !isSlotStart(service.influencer.rules, service.durationMin, startTime)) {
+  const blocked = await prisma.blockedDate.findMany({
+    where: {
+      influencerId: service.influencerId,
+      date: {
+        gte: new Date(startTime.getTime() - 86_400_000),
+        lte: new Date(startTime.getTime() + 86_400_000),
+      },
+    },
+    select: { date: true },
+  });
+  const blockedDates = blockedDaySet(blocked.map((b) => b.date));
+
+  // Only real slots can be held: the start must come out of the influencer's availability rules and not fall
+  // on a blocked day.
+  if (
+    startTime <= new Date() ||
+    !isSlotStart(service.influencer.rules, service.durationMin, startTime, blockedDates)
+  ) {
     return NextResponse.json({ error: "That time is not available" }, { status: 409 });
   }
 

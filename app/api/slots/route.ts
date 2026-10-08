@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { activeSeatWhere } from "@/lib/holds";
-import { dayBoundsUtc, generateSlots, isValidTimezone } from "@/lib/slots";
+import { blockedDaySet, dayBoundsUtc, generateSlots, isValidTimezone } from "@/lib/slots";
 
 export const dynamic = "force-dynamic";
 
@@ -26,12 +26,27 @@ export async function GET(req: Request) {
   const bounds = dayBoundsUtc(date, tz);
   if (!bounds) return NextResponse.json({ error: "Invalid date" }, { status: 400 });
 
+  // Days the influencer has blocked off produce no slots. Load the ones overlapping this day (plus a day of
+  // slack on each side, matching the rule-timezone/UTC day boundary handling in generateSlots).
+  const blocked = await prisma.blockedDate.findMany({
+    where: {
+      influencerId: service.influencerId,
+      date: {
+        gte: new Date(bounds.from.getTime() - 86_400_000),
+        lte: new Date(bounds.to.getTime() + 86_400_000),
+      },
+    },
+    select: { date: true },
+  });
+  const blockedDates = blockedDaySet(blocked.map((b) => b.date));
+
   const now = new Date();
   const candidates = generateSlots(
     service.influencer.rules,
     service.durationMin,
     new Date(Math.max(bounds.from.getTime(), now.getTime())),
     bounds.to,
+    blockedDates,
   );
 
   const sessions = await prisma.session.findMany({

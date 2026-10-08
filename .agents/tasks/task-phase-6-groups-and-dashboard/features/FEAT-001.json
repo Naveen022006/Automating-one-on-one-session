@@ -1,0 +1,41 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Establish the Phase 6 baseline and validation strategy for the sandbox. The public npm registry is blocked (403) in this INTEGRATIONS_ONLY environment, so the normal build/typecheck/test tools cannot run. This feature confirms that constraint, records the fallback validation approach, and makes sure the working tree is a clean, understood starting point before any Phase 6 code is written. This is independent of the other features and must run first.",
+  "status": "completed",
+  "steps": [
+    "Confirm the current branch is phase-6-groups-and-dashboard and the working tree is clean (`git status`, `git branch --show-current`). Do NOT create or switch branches.",
+    "Attempt `npm ci`/`npm install` ONCE with a short timeout to confirm the registry is blocked, then STOP retrying. Expected result: 403 Forbidden from registry.npmjs.org and no usable node_modules (only ~36K of empty placeholder directories, no node_modules/.bin, no tsc, no prisma binary). Do not spend more than ~90s on this.",
+    "Because `npm run typecheck`, `npm run build`, `prisma generate`, `prisma migrate`, and `npm test` cannot run here, adopt this validation approach for every later feature and note it in findings: (a) read each new/changed file for TypeScript correctness; (b) use grep to confirm every imported symbol exists at its source (e.g. functions exported from lib/*.ts) and that every Prisma field/enum value referenced matches prisma/schema.prisma; (c) confirm each new Prisma schema change has a matching hand-written SQL migration under prisma/migrations/.",
+    "Read doc/06-groups-and-dashboard.md and doc/00-overview.md once more and record, in findings, the Phase 6 task checklist you will implement across FEAT-002..FEAT-004 so the mapping is explicit."
+  ],
+  "acceptance_criteria": [
+    "findings documents that the branch is phase-6-groups-and-dashboard with a clean starting tree",
+    "findings states clearly that npm install fails with registry 403 and that build/typecheck/test/prisma tooling is unavailable in this sandbox",
+    "findings records the inspection + grep + migration-matching validation approach that later features will use",
+    "findings lists the Phase 6 checklist items and which later feature covers each"
+  ],
+  "verification": [
+    "Run `git branch --show-current` and confirm it prints phase-6-groups-and-dashboard",
+    "Run `git status` and confirm the tree is clean (no accidental artifacts committed)"
+  ],
+  "blocked_reason": null,
+  "findings": {
+    "branch_and_tree": "Confirmed on branch 'phase-6-groups-and-dashboard' (git branch --show-current). Working tree is clean: the only untracked path is '.agents/' (this task-state directory), which is expected and not a source artifact. git log HEAD = cfe3f5f 'Merge phase-3-google-meet: Google Meet links'; the repo has Phases 1-3 landed (booking/slots, Razorpay payments, Google Meet). Phases 4 (messaging) and 5 (reminders) are NOT implemented in code, consistent with the task description. Did NOT create or switch branches.",
+    "npm_registry_blocked": "Confirmed npm/build/test/prisma tooling CANNOT run in this INTEGRATIONS_ONLY sandbox. Evidence: (1) node_modules is only 36K and contains NO node_modules/.bin, NO tsc, NO prisma binary - just empty placeholder dirs; (2) a direct HTTPS request to https://registry.npmjs.org returned 'Client network socket disconnected before secure TLS connection was established' (registry unreachable / blocked, equivalent to the documented 403); (3) `npm install` and plain `node` invocations additionally fail in this sandbox because NODE_OPTIONS preloads a missing '/opt/amazon/kiro-agent/proxy-bootstrap.js' wrapper (MODULE_NOT_FOUND). Net effect: `npm install`/`npm ci`/`npx`/`prisma generate`/`prisma migrate`/`npm run typecheck`/`npm run build`/`npm test` all fail. There is also no reachable Postgres, Redis, Google, Razorpay, or SMTP. Later features must NOT retry installs.",
+    "validation_approach": "Because build/typecheck/test/prisma tooling is unavailable, every later feature (FEAT-002..FEAT-004) is validated STATICALLY by: (a) reading each new/changed file for TypeScript correctness and consistency with existing patterns (strict TS; named Error subclasses thrown from lib/ and mapped to HTTP status in routes; zod body validation; UTC times; node:crypto signing via lib/signing.ts; Prisma via lib/db.ts singleton; capacity/seat races guarded by SELECT ... FOR UPDATE inside prisma.$transaction per lib/holds.ts / lib/checkout.ts / lib/payment-webhook.ts; structured-log sender pattern from lib/alerts.ts instead of real delivery); (b) grep-based structural checks confirming every imported symbol exists at its source (functions exported from lib/*.ts), and every Prisma field/enum value referenced matches prisma/schema.prisma @map names/enum values; (c) confirming each new Prisma schema change has a matching hand-written SQL migration under prisma/migrations/ in the style of prisma/migrations/20261009000000_google_meet/migration.sql, with a timestamp later than the previous migration and without changing migration_lock.toml's provider. Any check that is static-only (prisma generate, typecheck, next build, npm test against a live DB) will be explicitly flagged as CI-only in each feature's findings. New unit tests are still written (DB-free/pure, following tests/slots.test.ts and tests/signature.test.ts) so they run in CI where deps exist.",
+    "phase6_checklist_mapping": {
+      "Group services: capacity, one shared Meet event per session": "FEAT-002",
+      "Seat counting inside a transaction so the session never oversells": "FEAT-002 (verify/strengthen lib/holds.ts, do not regress)",
+      "Add each paid attendee to the same Calendar event and send the same link": "FEAT-002 (session-derived event id + lib/google.ts addAttendee + copy meetLink/eventId onto every booking)",
+      "Dashboard: upcoming sessions, past sessions, earnings, message status": "FEAT-003 (read-only dashboard gated by signed link; needs Message model + lib/email.ts structured-log sender + lib/dashboard.ts aggregation)",
+      "Manage services and availability, block dates": "FEAT-004 (BlockedDate model + migration; signed-token-gated management API/UI; slot generation respects blocked days)",
+      "Manual actions: resend link, cancel, reschedule": "FEAT-004 (signed-token-gated routes; cancelBooking/rescheduleBooking/resendBookingLink in lib/meeting.ts or lib/manage.ts; lib/google.ts patch/delete/remove-attendee; group cancel removes only one attendee and deletes event only when empty)",
+      "Customer self-service page via a signed link (reschedule/cancel)": "FEAT-004 (new 'customer-self-service' purpose string distinct from dashboard token; public page under app/manage/[token] or app/booking/[token])",
+      "Email receipt/confirmation": "FEAT-003 (lib/email.ts sendBookingEmail -> structured-log stub + records a Message row; real SMTP deferred to Phase 4)"
+    },
+    "feature_dependencies": "Order: FEAT-001 (this, baseline) -> FEAT-002 (shared-event schema fields read by later features) -> FEAT-003 (Message model + email + dashboard, depends on FEAT-002) -> FEAT-004 (manual actions + management + self-service, depends on FEAT-002 and FEAT-003).",
+    "done_when": "Phase 6 'Done when': five customers can book one group session, all get the same link, and the influencer sees them in the dashboard. Also honor the Meet 60-minute free-Gmail group-call limit (already logged as a warning in lib/meeting.ts).",
+    "verification_run": "git branch --show-current -> phase-6-groups-and-dashboard; git status -> clean (only untracked .agents/). No source files changed by this chore feature."
+  }
+}

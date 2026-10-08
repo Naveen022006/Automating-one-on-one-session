@@ -12,6 +12,7 @@
     "expire-holds": "tsx worker/index.ts",
     "worker": "tsx worker/index.ts",
     "google:connect-link": "tsx scripts/connect-link.ts",
+    "dashboard:link": "tsx scripts/dashboard-link.ts",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
