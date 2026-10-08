@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Establish the working baseline and record the environment reality. Normally this feature installs deps, generates the Prisma client, and runs the existing build+tests green. In THIS sandbox the npm registry is blocked (every registry.npmjs.org tarball returns HTTP 403; pnpm metadata fetch fails), so `npm install`, `npx prisma generate`, `npm run typecheck`, and `npm test` cannot run. The branch phase-5-reminders-and-retries is already created off clean main. The job here is to CONFIRM the constraint (do not burn time fighting it), establish the best-effort validation path with the host-global tsc 5.9.2, and leave a short note so later features validate consistently.",
+  "status": "completed",
+  "steps": [
+    "Confirm current branch is phase-5-reminders-and-retries (git branch --show-current). Do NOT commit to main.",
+    "In every shell command, run `unset NODE_OPTIONS` first: NODE_OPTIONS references a missing preload file (/opt/amazon/kiro-agent/proxy-bootstrap.js) that crashes node/tsc otherwise.",
+    "Attempt a SHORT, bounded dependency check only to confirm the blocker (e.g. `timeout 60 npm ls bullmq 2>&1 | tail` or inspect that node_modules/<pkg> dirs are empty). Do NOT run an unbounded `npm install` - it hangs on 403 retries. Record that node_modules holds only empty placeholder dirs and generated/prisma is absent.",
+    "Confirm the host-global TypeScript compiler is available: `unset NODE_OPTIONS && tsc --version` (expect 5.9.2). This is the only typecheck tool that works here.",
+    "Document in findings: deps cannot be installed, Prisma client cannot be generated, `npm run typecheck`/`npm test` cannot execute in-sandbox, and the fallback is per-file `tsc --noEmit --skipLibCheck <file>` understanding that `@/...`, bullmq, and @/generated/prisma imports will report as unresolved (environment noise, not defects)."
+  ],
+  "acceptance_criteria": [
+    "git branch --show-current prints phase-5-reminders-and-retries",
+    "The environment blocker (npm registry 403, empty node_modules, no generated/prisma) is confirmed and recorded in findings",
+    "Host-global `tsc --version` runs successfully and the version is recorded",
+    "No unbounded npm install/npx command is left running"
+  ],
+  "verification": [
+    "Run `unset NODE_OPTIONS && git branch --show-current` and confirm it is phase-5-reminders-and-retries",
+    "Run `unset NODE_OPTIONS && tsc --version` and confirm it succeeds"
+  ],
+  "blocked_reason": null,
+  "findings": "Environment baseline confirmed on branch phase-5-reminders-and-retries (verified via git branch --show-current). HARD BLOCKER confirmed: the npm registry is blocked, so dependencies cannot be installed. node_modules/bullmq and node_modules/next are EMPTY placeholder dirs (0 files each); generated/prisma does NOT exist. Consequently `npm install`, `npx prisma generate`, `npm run typecheck`, and `npm test` CANNOT run in this sandbox, and there is no Postgres/Redis available. Did NOT run any unbounded npm install/npx (would hang on 403 retries). Working tooling: node v22.23.3 and host-global TypeScript 5.9.2 (`tsc --version` -> Version 5.9.2). VALIDATION PATH for later features (FEAT-002..004): always prefix every shell command with `unset NODE_OPTIONS` (NODE_OPTIONS points at a missing preload /opt/amazon/kiro-agent/proxy-bootstrap.js that crashes node/tsc); then run per-file `unset NODE_OPTIONS && tsc --noEmit --skipLibCheck <file.ts>` for syntax/type sanity. Expect and IGNORE unresolved-module errors for '@/...', 'bullmq', 'next', and '@/generated/prisma' imports - that is environment noise from the empty node_modules, not a defect. Review logic by reading and mirroring existing lib/*.ts patterns. The orchestrator/CI runs the real build+tests after merge."
+}

@@ -1,17 +1,20 @@
-import type { Job } from "bullmq";
-import { sendBookingMessage } from "../../lib/messaging";
+import { type Job } from "bullmq";
+import { sendMessageForBooking, type MessageOutcome } from "../../lib/messaging";
+
+export interface SendMessageData {
+  bookingId: string;
+  template: string;
+}
 
 /**
- * BullMQ processor for the send-message queue. Delegates to lib/messaging.sendBookingMessage, which
- * tries WhatsApp first and falls back to SMS. The job is enqueued by the create-meeting job after the
- * Meet link is set; a still-missing link raises a retryable error so BullMQ retries the job later.
+ * BullMQ handler for `send-message`. Honours the per-job `template` so the one queue carries every outbound
+ * customer message (booking confirmation, reschedule/cancellation notices). Delivery failures (WhatsApp and
+ * SMS both down) are transient, so they are rethrown and retried with the queue's exponential backoff; after
+ * the attempts are exhausted the worker's `failed` listener records the failure and alerts the influencer.
+ * Mirrors worker/jobs/sendReminder.ts.
  */
-export async function processSendMessage(job: Job<{ bookingId: string; template?: string }>): Promise<void> {
-  const { bookingId } = job.data;
-  const result = await sendBookingMessage(bookingId);
-  if (result.skipped) {
-    console.log(`[worker] send-message ${bookingId}: skipped (not opted in)`);
-  } else {
-    console.log(`[worker] send-message ${bookingId}: sent via ${result.channel}`);
-  }
+export async function handleSendMessage(job: Job<SendMessageData>): Promise<MessageOutcome> {
+  const outcome = await sendMessageForBooking(job.data.bookingId, job.data.template);
+  console.log(`[send-message] booking ${job.data.bookingId} (${job.data.template}): ${outcome}`);
+  return outcome;
 }

@@ -1,9 +1,14 @@
 import { prisma } from "@/lib/db";
 
 /**
- * Thin recording helpers for the Message log. Phase 4 (WhatsApp/SMS) and Phase 5 (reminders) will add a real
- * delivery worker; until then these rows are written by the structured-log senders (lib/email.ts, the
- * confirmation enqueue in lib/meeting.ts) so the dashboard can show whether, and how, a customer was contacted.
+ * Thin recording helpers for the Message log. The real delivery worker (WhatsApp/SMS) lives in
+ * lib/messaging.ts; these helpers record best-effort rows for the OTHER channels (email, structured log)
+ * and for queued WhatsApp confirmations so the dashboard can show whether, and how, a customer was contacted.
+ *
+ * The Message table is now the unified enum model (lib/messaging.ts + the WhatsApp status webhook share it).
+ * These helpers accept the legacy lowercase channel/status vocabulary and map it onto the enum, so Phase 6
+ * callers (lib/email.ts, lib/manage.ts) are unchanged. Rows are keyed on (bookingId, template) which is
+ * unique, so recording is idempotent: a repeat records against the same row via upsert.
  *
  * Every helper is best-effort and never throws: recording that we told a customer must not fail or retry the
  * booking/meeting job that produced the message. On error we log and return null (createMessage) or do nothing.
@@ -11,6 +16,32 @@ import { prisma } from "@/lib/db";
 
 export type MessageChannel = "email" | "whatsapp" | "sms" | "log";
 export type MessageStatus = "queued" | "sent" | "failed";
+
+/** Maps the legacy lowercase channel vocabulary onto the Prisma MessageChannel enum. */
+function toChannel(channel: MessageChannel): "EMAIL" | "WHATSAPP" | "SMS" | "LOG" {
+  switch (channel) {
+    case "email":
+      return "EMAIL";
+    case "whatsapp":
+      return "WHATSAPP";
+    case "sms":
+      return "SMS";
+    case "log":
+      return "LOG";
+  }
+}
+
+/** Maps the legacy lowercase status vocabulary onto the Prisma MessageStatus enum. */
+function toStatus(status: MessageStatus): "PENDING" | "SENT" | "FAILED" {
+  switch (status) {
+    case "queued":
+      return "PENDING";
+    case "sent":
+      return "SENT";
+    case "failed":
+      return "FAILED";
+  }
+}
 
 export interface CreateMessageInput {
   bookingId: string;
@@ -20,18 +51,22 @@ export interface CreateMessageInput {
   status?: MessageStatus;
 }
 
-/** Records a new outbound message. Returns the row id, or null if recording failed. */
+/**
+ * Records a new outbound message. Returns the row id, or null if recording failed. Upserts on the unique
+ * (bookingId, template) key so a repeat (e.g. a resend) records against the same row instead of violating
+ * the constraint.
+ */
 export async function createMessage(input: CreateMessageInput): Promise<string | null> {
   try {
-    const status = input.status ?? "queued";
-    const row = await prisma.message.create({
-      data: {
-        bookingId: input.bookingId,
-        channel: input.channel,
-        template: input.template,
-        status,
-        sentAt: status === "sent" ? new Date() : null,
+    const status = toStatus(input.status ?? "queued");
+    const channel = toChannel(input.channel);
+    const sentAt = status === "SENT" ? new Date() : null;
+    const row = await prisma.message.upsert({
+      where: {
+        bookingId_channel_template: { bookingId: input.bookingId, channel, template: input.template },
       },
+      create: { bookingId: input.bookingId, channel, template: input.template, status, sentAt },
+      update: { status, sentAt },
       select: { id: true },
     });
     return row.id;
@@ -47,7 +82,7 @@ export async function markMessageSent(messageId: string | null): Promise<void> {
   try {
     await prisma.message.update({
       where: { id: messageId },
-      data: { status: "sent", error: null, sentAt: new Date() },
+      data: { status: "SENT", error: null, sentAt: new Date() },
     });
   } catch (e) {
     console.error("[messages] failed to mark message sent", e);
@@ -60,7 +95,7 @@ export async function markMessageFailed(messageId: string | null, error: string)
   try {
     await prisma.message.update({
       where: { id: messageId },
-      data: { status: "failed", error: error.slice(0, 500) },
+      data: { status: "FAILED", error: error.slice(0, 500) },
     });
   } catch (e) {
     console.error("[messages] failed to mark message failed", e);

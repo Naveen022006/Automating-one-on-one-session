@@ -168,27 +168,6 @@ model Booking {
   @@map("bookings")
 }
 
-// One outbound customer communication (confirmation, receipt, reminder, resent link...). Phases 4/5
-// (WhatsApp/SMS/email + reminders) are not built yet, so there is no real delivery worker: rows are
-// recorded by lib/messages.ts helpers and the structured-log senders in lib/email.ts / lib/alerts.ts.
-// The dashboard reads the latest row per booking to show whether the customer was told, and why not.
-model Message {
-  id        String    @id @default(cuid())
-  bookingId String    @map("booking_id")
-  channel   String // 'email' | 'whatsapp' | 'sms' | 'log'
-  template  String // e.g. 'booking-confirmation' | 'receipt'
-  status    String    @default("queued") // 'queued' | 'sent' | 'failed'
-  error     String?
-  sentAt    DateTime? @map("sent_at")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-
-  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-
-  @@index([bookingId])
-  @@map("messages")
-}
-
 enum PaymentStatus {
   CREATED
   CAPTURED
@@ -217,11 +196,18 @@ model Payment {
   @@map("payments")
 }
 
+// Delivery channels. WHATSAPP/SMS are the real customer-messaging channels (Phase 4/5); EMAIL and LOG are
+// used by the best-effort recorders in lib/email.ts and the structured-log senders so every outbound
+// communication lands in one table the dashboard can read.
 enum MessageChannel {
   WHATSAPP
   SMS
+  EMAIL
+  LOG
 }
 
+// Lifecycle: PENDING -> SENT -> DELIVERED/READ (via the WhatsApp provider status webhook, Phase 4) ; FAILED
+// on give-up. The Phase 6 recorders map their 'queued'/'sent'/'failed' states onto PENDING/SENT/FAILED.
 enum MessageStatus {
   PENDING
   SENT
@@ -230,9 +216,10 @@ enum MessageStatus {
   FAILED
 }
 
-// One row per message send attempt. The message job tries WhatsApp first and
-// falls back to SMS, recording every attempt here. The delivery-status webhook
-// looks rows up by providerMessageId to advance status (SENT -> DELIVERED/READ).
+// One outbound customer communication (confirmation, reminder, cancellation, receipt, resent link...). The
+// message job tries WhatsApp first and falls back to SMS, recording the attempt here; the delivery-status
+// webhook looks rows up by providerMessageId to advance status (SENT -> DELIVERED/READ). The
+// (booking, template) pair is unique so a retried send records against the same row instead of duplicating.
 model Message {
   id                String         @id @default(cuid())
   bookingId         String         @map("booking_id")
@@ -241,11 +228,16 @@ model Message {
   status            MessageStatus  @default(PENDING)
   providerMessageId String?        @map("provider_message_id")
   error             String?
+  sentAt            DateTime?      @map("sent_at")
   createdAt         DateTime       @default(now()) @map("created_at")
   updatedAt         DateTime       @updatedAt @map("updated_at")
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  // Unique per (booking, channel, template): one row per channel for a given message type, so a WhatsApp
+  // confirmation, an email confirmation and an SMS fallback coexist (the dashboard shows the latest per
+  // channel) while a retried send for the SAME channel+template upserts the same row instead of duplicating.
+  @@unique([bookingId, channel, template])
   @@index([bookingId])
   @@index([providerMessageId])
   @@map("messages")

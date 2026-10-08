@@ -123,6 +123,7 @@ async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
   mock.module("@/lib/queue", {
     namedExports: {
       enqueueSendMessage: async (id: string) => void enqueued.push(id),
+      enqueueReminders: async () => {},
       requeueCreateMeeting: async () => {},
     },
   });

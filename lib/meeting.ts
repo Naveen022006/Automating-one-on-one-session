@@ -12,7 +12,7 @@ import {
 import { sendBookingEmail } from "@/lib/email";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
 import { createMessage } from "@/lib/messages";
-import { enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
+import { enqueueReminders, enqueueSendMessage, requeueCreateMeeting } from "@/lib/queue";
 
 const CONFIRMATION_TEMPLATE = "booking-confirmation";
 
@@ -45,6 +45,7 @@ export type MeetingOutcome = "scheduled" | "already-scheduled" | "skipped";
 export interface MeetingDeps {
   google: GoogleClient;
   enqueueSendMessage: (bookingId: string) => Promise<void>;
+  enqueueReminders: (bookingId: string, startTime: Date) => Promise<void>;
   sendBookingEmail: typeof sendBookingEmail;
   alert: typeof alertInfluencer;
   sleep: (ms: number) => Promise<void>;
@@ -53,6 +54,7 @@ export interface MeetingDeps {
 const defaultDeps: MeetingDeps = {
   google: defaultGoogle,
   enqueueSendMessage: (id) => enqueueSendMessage(id),
+  enqueueReminders: (id, startTime) => enqueueReminders(id, startTime),
   sendBookingEmail,
   alert: alertInfluencer,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -125,7 +127,12 @@ export async function createMeetingForBooking(
   }
 
   if (booking.eventId) {
-    if (booking.status === "SCHEDULED") await enqueueConfirmation(deps, booking.id);
+    if (booking.status === "SCHEDULED") {
+      await enqueueConfirmation(deps, booking.id);
+      // Re-establish the reminders too (recovery after a lost enqueue). enqueueReminders is idempotent via the
+      // deterministic job ids and skips any fire time already in the past, so this is safe to repeat.
+      await deps.enqueueReminders(booking.id, booking.session.startTime);
+    }
     return "already-scheduled";
   }
   // Read at run time, never trusted from enqueue time: the booking may have been cancelled or refunded since.
@@ -267,7 +274,11 @@ export async function createMeetingForBooking(
     return "skipped";
   }
 
+  // Only now that the booking is actually SCHEDULED do we send the confirmation (email + WhatsApp) and
+  // schedule the reminders. Reminders are never enqueued at PAID/enqueue time; the delayed jobs re-read the
+  // booking status when they fire, so a cancel/reschedule before the fire time is honoured at run time.
   await enqueueConfirmation(deps, booking.id);
+  await deps.enqueueReminders(booking.id, session.startTime);
   return "scheduled";
 }
 

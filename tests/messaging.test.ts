@@ -1,162 +1,148 @@
+import "dotenv/config";
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import {
-  RetryableMessageError,
-  sendBookingMessage,
-  type MessagingPrisma,
-  type SendBookingMessageDeps,
-} from "../lib/messaging";
+import { after, before, test } from "node:test";
+import { prisma } from "../lib/db";
+import { createHold } from "../lib/holds";
+import { sendMessageForBooking, type MessagingDeps } from "../lib/messaging";
+import type { SendResult } from "../lib/sms";
 
-interface FakeMessageRow {
-  id: string;
-  bookingId: string;
-  channel: "WHATSAPP" | "SMS";
-  template: string;
-  status: "PENDING" | "SENT" | "FAILED";
-  providerMessageId: string | null;
-  error: string | null;
-}
+// Integration tests: need a migrated Postgres at DATABASE_URL (skipped otherwise). The senders and the
+// alert hook are always injected as fakes, so no real WhatsApp/SMS provider is ever contacted.
+const skip = process.env.DATABASE_URL ? false : "DATABASE_URL not set";
 
-interface FakeBooking {
-  status: string;
-  whatsappE164: string;
-  whatsappOptIn: boolean;
-  meetLink: string | null;
-}
+const slotStart = new Date(Date.now() + 11 * 86_400_000);
+slotStart.setUTCMinutes(0, 0, 0);
 
-// Tiny in-memory fake for the prisma delegates the job uses, so this runs with no DB/Redis/network.
-function makeFakePrisma(booking: FakeBooking | null): { prisma: MessagingPrisma; rows: FakeMessageRow[] } {
-  const rows: FakeMessageRow[] = [];
-  let seq = 0;
-  const prisma: MessagingPrisma = {
-    booking: {
-      async findUnique() {
-        return booking
-          ? {
-              status: booking.status,
-              whatsappE164: booking.whatsappE164,
-              whatsappOptIn: booking.whatsappOptIn,
-              meetLink: booking.meetLink,
-            }
-          : null;
-      },
-    },
-    message: {
-      async create({ data }) {
-        const row: FakeMessageRow = {
-          id: `msg_${++seq}`,
-          bookingId: data.bookingId,
-          channel: data.channel,
-          template: data.template,
-          status: data.status,
-          providerMessageId: null,
-          error: null,
-        };
-        rows.push(row);
-        return { id: row.id };
-      },
-      async update({ where, data }) {
-        const row = rows.find((r) => r.id === where.id);
-        if (!row) throw new Error("row not found");
-        if (data.status !== undefined) row.status = data.status;
-        if (data.providerMessageId !== undefined) row.providerMessageId = data.providerMessageId;
-        if (data.error !== undefined) row.error = data.error;
-        return row;
-      },
-    },
-  };
-  return { prisma, rows };
-}
+let influencerId: string;
+let serviceId: string;
+const run = Date.now();
+let n = 0;
 
-const optedIn: FakeBooking = {
-  status: "PAID",
-  whatsappE164: "+919876543210",
-  whatsappOptIn: true,
-  meetLink: "https://meet.example.com/abc",
-};
-
-test("WhatsApp success marks a WHATSAPP message SENT", async () => {
-  const { prisma, rows } = makeFakePrisma(optedIn);
-  const deps: SendBookingMessageDeps = {
-    prisma,
-    sendWhatsApp: async () => ({ providerMessageId: "wamid.1" }),
-    sendSMS: async () => assert.fail("SMS should not be called on WhatsApp success"),
-  };
-
-  const result = await sendBookingMessage("b1", deps);
-  assert.equal(result.channel, "WHATSAPP");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].channel, "WHATSAPP");
-  assert.equal(rows[0].status, "SENT");
-  assert.equal(rows[0].providerMessageId, "wamid.1");
-});
-
-test("WhatsApp failure falls back to SMS: FAILED WHATSAPP row + SENT SMS row", async () => {
-  const { prisma, rows } = makeFakePrisma(optedIn);
-  const deps: SendBookingMessageDeps = {
-    prisma,
-    sendWhatsApp: async () => {
-      throw new Error("whatsapp down");
-    },
-    sendSMS: async () => ({ providerMessageId: "sms.1" }),
-  };
-
-  const result = await sendBookingMessage("b1", deps);
-  assert.equal(result.channel, "SMS");
-  assert.equal(rows.length, 2);
-
-  const wa = rows.find((r) => r.channel === "WHATSAPP");
-  const sms = rows.find((r) => r.channel === "SMS");
-  assert.ok(wa && sms);
-  assert.equal(wa.status, "FAILED");
-  assert.match(wa.error ?? "", /whatsapp down/);
-  assert.equal(sms.status, "SENT");
-  assert.equal(sms.providerMessageId, "sms.1");
-});
-
-test("opt-out is not messaged and records nothing", async () => {
-  const { prisma, rows } = makeFakePrisma({ ...optedIn, whatsappOptIn: false });
-  const deps: SendBookingMessageDeps = {
-    prisma,
-    sendWhatsApp: async () => assert.fail("should not send"),
-    sendSMS: async () => assert.fail("should not send"),
-  };
-
-  const result = await sendBookingMessage("b1", deps);
-  assert.equal(result.skipped, true);
-  assert.equal(result.channel, null);
-  assert.equal(rows.length, 0);
-});
-
-test("missing meetLink throws a retryable error (Phase 3 gap)", async () => {
-  const { prisma, rows } = makeFakePrisma({ ...optedIn, meetLink: null });
-  const deps: SendBookingMessageDeps = {
-    prisma,
-    sendWhatsApp: async () => assert.fail("should not send"),
-    sendSMS: async () => assert.fail("should not send"),
-  };
-
-  await assert.rejects(sendBookingMessage("b1", deps), (e: unknown) => {
-    assert.ok(e instanceof RetryableMessageError);
-    assert.equal((e as RetryableMessageError).retryable, true);
-    return true;
+async function booking(opts: { optIn?: boolean; status?: string } = {}) {
+  const start = new Date(slotStart.getTime() + ++n * 3_600_000);
+  const hold = await createHold({
+    serviceId,
+    startTime: start,
+    endTime: new Date(start.getTime() + 30 * 60_000),
+    capacity: 1,
+    customerName: "Msg Tester",
+    customerEmail: `msg${run}_${n}@example.com`,
+    whatsappE164: "+919876543210",
+    whatsappOptIn: opts.optIn ?? true,
   });
-  assert.equal(rows.length, 0);
+  await prisma.booking.update({
+    where: { id: hold.id },
+    data: { status: (opts.status ?? "PAID") as never, meetLink: "https://meet.google.com/abc-defg-hij" },
+  });
+  return hold.id;
+}
+
+/** A deps object whose senders record calls and behave per the test's instructions. */
+function fakes(behaviour: { whatsapp?: "ok" | "fail"; sms?: "ok" | "fail" } = {}) {
+  const calls: string[] = [];
+  const alerts: string[] = [];
+  const deps: Partial<MessagingDeps> = {
+    sendWhatsApp: async (): Promise<SendResult> => {
+      calls.push("whatsapp");
+      if (behaviour.whatsapp === "fail") throw new Error("whatsapp down");
+      return { providerMessageId: "wa-123" };
+    },
+    sendSMS: async (): Promise<SendResult> => {
+      calls.push("sms");
+      if (behaviour.sms === "fail") throw new Error("sms down");
+      return { providerMessageId: "sms-456" };
+    },
+    alert: async (_id, a) => void alerts.push(a.kind),
+  };
+  return { deps, calls, alerts };
+}
+
+before(async () => {
+  if (skip) return;
+  const inf = await prisma.influencer.create({
+    data: { slug: `msg-${run}`, name: "Msg Test", email: `msgtest${run}@example.com` },
+  });
+  influencerId = inf.id;
+  serviceId = (
+    await prisma.service.create({ data: { influencerId, title: "1:1", durationMin: 30, priceMinor: 49900 } })
+  ).id;
 });
 
-test("both channels failing throws (so BullMQ retries) and records both FAILED", async () => {
-  const { prisma, rows } = makeFakePrisma(optedIn);
-  const deps: SendBookingMessageDeps = {
-    prisma,
-    sendWhatsApp: async () => {
-      throw new Error("wa down");
-    },
-    sendSMS: async () => {
-      throw new Error("sms down");
-    },
-  };
+after(async () => {
+  if (!skip && influencerId) await prisma.influencer.delete({ where: { id: influencerId } });
+  await prisma.$disconnect();
+});
 
-  await assert.rejects(sendBookingMessage("b1", deps), /Both WhatsApp and SMS failed/);
-  assert.equal(rows.length, 2);
-  assert.ok(rows.every((r) => r.status === "FAILED"));
+test("WhatsApp success records SENT with the provider id", { skip }, async () => {
+  const id = await booking();
+  const { deps, calls } = fakes({ whatsapp: "ok" });
+  const outcome = await sendMessageForBooking(id, "booking-confirmation", deps);
+  assert.equal(outcome, "sent");
+  assert.deepEqual(calls, ["whatsapp"]);
+  const row = await prisma.message.findUniqueOrThrow({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
+  });
+  assert.equal(row.status, "SENT");
+  assert.equal(row.channel, "WHATSAPP");
+  assert.equal(row.providerMessageId, "wa-123");
+});
+
+test("WhatsApp failure falls back to SMS and records SENT", { skip }, async () => {
+  const id = await booking();
+  const { deps, calls } = fakes({ whatsapp: "fail", sms: "ok" });
+  const outcome = await sendMessageForBooking(id, "booking-confirmation", deps);
+  assert.equal(outcome, "sent");
+  assert.deepEqual(calls, ["whatsapp", "sms"]);
+  const row = await prisma.message.findUniqueOrThrow({
+    where: { bookingId_channel_template: { bookingId: id, channel: "SMS", template: "booking-confirmation" } },
+  });
+  assert.equal(row.status, "SENT");
+  assert.equal(row.channel, "SMS");
+  assert.equal(row.providerMessageId, "sms-456");
+  // The WhatsApp attempt left its own row recording the failure (not SENT).
+  const waRow = await prisma.message.findUniqueOrThrow({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
+  });
+  assert.notEqual(waRow.status, "SENT");
+});
+
+test("both channels failing throws (retryable) and does not mark SENT", { skip }, async () => {
+  const id = await booking();
+  const { deps, calls } = fakes({ whatsapp: "fail", sms: "fail" });
+  await assert.rejects(sendMessageForBooking(id, "booking-confirmation", deps));
+  assert.deepEqual(calls, ["whatsapp", "sms"]);
+  const smsRow = await prisma.message.findUnique({
+    where: { bookingId_channel_template: { bookingId: id, channel: "SMS", template: "booking-confirmation" } },
+  });
+  assert.notEqual(smsRow?.status, "SENT");
+  const waRow = await prisma.message.findUnique({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "booking-confirmation" } },
+  });
+  assert.notEqual(waRow?.status, "SENT");
+});
+
+test("a cancelled booking is skipped without sending", { skip }, async () => {
+  const id = await booking({ status: "CANCELLED" });
+  const { deps, calls } = fakes({ whatsapp: "ok" });
+  const outcome = await sendMessageForBooking(id, "booking-confirmation", deps);
+  assert.equal(outcome, "skipped");
+  assert.deepEqual(calls, []);
+});
+
+test("an opted-out booking is skipped without sending", { skip }, async () => {
+  const id = await booking({ optIn: false });
+  const { deps, calls } = fakes({ whatsapp: "ok" });
+  const outcome = await sendMessageForBooking(id, "booking-confirmation", deps);
+  assert.equal(outcome, "skipped");
+  assert.deepEqual(calls, []);
+});
+
+test("re-running after a SENT message does not send again", { skip }, async () => {
+  const id = await booking();
+  const first = fakes({ whatsapp: "ok" });
+  await sendMessageForBooking(id, "booking-confirmation", first.deps);
+  const second = fakes({ whatsapp: "ok" });
+  const outcome = await sendMessageForBooking(id, "booking-confirmation", second.deps);
+  assert.equal(outcome, "already-sent");
+  assert.deepEqual(second.calls, []);
 });

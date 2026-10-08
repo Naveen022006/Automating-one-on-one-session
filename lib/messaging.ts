@@ -1,15 +1,16 @@
-import { prisma as realPrisma } from "@/lib/db";
+import { alertInfluencer } from "@/lib/alerts";
+import { prisma } from "@/lib/db";
 import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 
 /** Template used for the booking confirmation message (must be approved in WhatsApp Business). */
-export const CONFIRMATION_TEMPLATE = "booking_confirmation";
+export const CONFIRMATION_TEMPLATE = "booking-confirmation";
 
 /**
- * Thrown when a message cannot be sent yet but should be retried later. send-message is now enqueued
- * only by the Phase 3 create-meeting job, after it sets the Meet link, so a missing link is not the
- * expected path. This remains a defensive guard: if a job somehow runs before the link is persisted,
- * it throws so BullMQ retries rather than sending an incomplete message.
+ * Thrown when a message cannot be sent yet but should be retried later. send-message is enqueued
+ * only by the create-meeting job, after it sets the Meet link, so a missing link is not the expected
+ * path. This remains a defensive guard: if a job somehow runs before the link is persisted, it throws
+ * so BullMQ retries rather than sending an incomplete message.
  */
 export class RetryableMessageError extends Error {
   readonly retryable = true;
@@ -19,35 +20,15 @@ export class RetryableMessageError extends Error {
   }
 }
 
-// The subset of the prisma client the job needs; keeps the deps injectable for offline unit tests.
-export interface MessagingPrisma {
-  booking: {
-    findUnique(args: {
-      where: { id: string };
-      select: { status: true; whatsappE164: true; whatsappOptIn: true; meetLink: true };
-    }): Promise<{
-      status: string;
-      whatsappE164: string;
-      whatsappOptIn: boolean;
-      meetLink: string | null;
-    } | null>;
-  };
-  message: {
-    create(args: {
-      data: { bookingId: string; channel: "WHATSAPP" | "SMS"; template: string; status: "PENDING" };
-    }): Promise<{ id: string }>;
-    update(args: {
-      where: { id: string };
-      data: { status?: "SENT" | "FAILED"; providerMessageId?: string | null; error?: string | null };
-    }): Promise<unknown>;
-  };
-}
+export type MessageOutcome = "sent" | "already-sent" | "skipped";
 
-export interface SendBookingMessageDeps {
-  prisma?: MessagingPrisma;
-  sendWhatsApp?: (input: { to: string; template: string; languageCode?: string; components?: unknown[] }) => Promise<SendResult>;
-  sendSMS?: (input: { to: string; body: string }) => Promise<SendResult>;
-}
+/**
+ * Statuses from which a customer message still makes sense. A booking that has been cancelled, expired or
+ * failed should not receive a confirmation/reminder, so those are skipped (read at run time, never trusted
+ * from enqueue time: the booking may have changed since the job was queued). A cancellation message is a
+ * deliberate exception handled by its caller (lib/booking-actions.cancelBooking sends it BEFORE the flip).
+ */
+const SENDABLE_STATUSES = new Set(["PAID", "SCHEDULED", "COMPLETED"]);
 
 export interface SendBookingMessageResult {
   /** The channel that ultimately succeeded, or null if nothing was sent. */
@@ -56,79 +37,192 @@ export interface SendBookingMessageResult {
   skipped?: boolean;
 }
 
+export interface MessagingDeps {
+  sendWhatsApp: (input: {
+    to: string;
+    template: string;
+    languageCode?: string;
+    components?: unknown[];
+  }) => Promise<SendResult>;
+  sendSMS: (input: { to: string; body: string }) => Promise<SendResult>;
+  alert: typeof alertInfluencer;
+}
+
+const defaultDeps: MessagingDeps = {
+  sendWhatsApp: (input) => realSendWhatsApp(input as never),
+  sendSMS: (input) => realSendSMS(input),
+  alert: alertInfluencer,
+};
+
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
 /**
- * Sends the meeting link to a scheduled booking: tries WhatsApp first and falls back to SMS when
- * WhatsApp fails, recording every attempt in the messages table. Only opted-in numbers are messaged.
+ * Sends (or re-records) a customer message for a booking, trying WhatsApp first and falling back to SMS.
  *
- * meetLink is set by the Phase 3 create-meeting job, which enqueues send-message only after the link
- * exists, so by the time this runs the link is normally present. A still-missing link raises
- * RetryableMessageError as a defensive fallback so BullMQ retries rather than sending an incomplete
- * message.
+ * This is the single delivery path used by every outbound customer message: the booking confirmation
+ * (enqueued by the create-meeting job), the session reminders (Phase 5), and the reschedule/cancellation
+ * notices (Phase 5). It re-reads the latest booking at run time, keeps one deterministic Message row per
+ * (bookingId, channel, template) via upsert so retries never duplicate rows, records the provider id + SENT
+ * on success, records the error on failure, and rethrows a transient failure so BullMQ retries with backoff.
+ *
+ * Idempotent and safe to run repeatedly: a row already SENT/DELIVERED/READ short-circuits to "already-sent".
  */
-export async function sendBookingMessage(
+export async function sendMessageForBooking(
   bookingId: string,
-  deps: SendBookingMessageDeps = {},
-): Promise<SendBookingMessageResult> {
-  const prisma = deps.prisma ?? (realPrisma as unknown as MessagingPrisma);
-  const sendWhatsApp = deps.sendWhatsApp ?? ((input) => realSendWhatsApp(input as never));
-  const sendSMS = deps.sendSMS ?? ((input) => realSendSMS(input));
+  template: string,
+  overrides: Partial<MessagingDeps> = {},
+): Promise<MessageOutcome> {
+  const deps = { ...defaultDeps, ...overrides };
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    select: { status: true, whatsappE164: true, whatsappOptIn: true, meetLink: true },
+    include: { session: { include: { service: { include: { influencer: true } } } } },
   });
-  if (!booking) throw new Error(`Booking ${bookingId} not found`);
-
-  // Only message numbers that opted in (doc rule). Nothing recorded; the link is still shown on the
-  // confirmation page and email so the customer is never blocked.
+  if (!booking) {
+    console.warn(`[send-message] booking ${bookingId} not found, skipping`);
+    return "skipped";
+  }
+  if (!SENDABLE_STATUSES.has(booking.status)) {
+    console.warn(`[send-message] booking ${bookingId} is ${booking.status}; not sendable, skipping`);
+    return "skipped";
+  }
   if (!booking.whatsappOptIn || !booking.whatsappE164) {
-    return { channel: null, skipped: true };
+    console.warn(`[send-message] booking ${bookingId} has not opted in to messaging, skipping`);
+    return "skipped";
   }
 
-  // The create-meeting job sets meetLink before enqueueing this job, so it is normally present.
-  // Guard defensively: if it is somehow missing, retry rather than send an incomplete message.
-  if (!booking.meetLink) {
-    throw new RetryableMessageError(`Booking ${bookingId} has no meetLink yet; will retry`);
-  }
-
-  const link = booking.meetLink;
-
-  // Try WhatsApp first.
-  const waRow = await prisma.message.create({
-    data: { bookingId, channel: "WHATSAPP", template: CONFIRMATION_TEMPLATE, status: "PENDING" },
+  // Idempotency: if THIS message type has already been delivered on either customer channel, do not re-send.
+  // Rows are keyed on (bookingId, channel, template), so a confirmation that went out over WhatsApp is a
+  // WHATSAPP row; a re-run must not then fire the SMS fallback. We look across both customer channels.
+  const alreadyDelivered = await prisma.message.findFirst({
+    where: {
+      bookingId,
+      template,
+      channel: { in: ["WHATSAPP", "SMS"] },
+      status: { in: ["SENT", "DELIVERED", "READ"] },
+    },
+    select: { id: true },
   });
+  if (alreadyDelivered) return "already-sent";
+
+  const { session } = booking;
+  const { service } = session;
+  const { influencer } = service;
+  const to = booking.whatsappE164;
+  const link = booking.meetLink ?? "";
+  const body = `${service.title} with ${influencer.name} on ${session.startTime.toISOString()}${
+    link ? ` — ${link}` : ""
+  }`;
+
+  // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
+  let channel: "WHATSAPP" | "SMS" = "WHATSAPP";
+  let result: SendResult;
   try {
-    const { providerMessageId } = await sendWhatsApp({
-      to: booking.whatsappE164,
-      template: CONFIRMATION_TEMPLATE,
+    result = await deps.sendWhatsApp({
+      to,
+      template,
       languageCode: "en",
-      // The link is passed as a template body parameter so the approved template renders it.
+      // The link is passed as a template body parameter so an approved template can render it.
       components: [{ type: "body", parameters: [{ type: "text", text: link }] }],
     });
-    await prisma.message.update({ where: { id: waRow.id }, data: { status: "SENT", providerMessageId } });
-    return { channel: "WHATSAPP" };
-  } catch (waErr) {
-    await prisma.message.update({ where: { id: waRow.id }, data: { status: "FAILED", error: errText(waErr) } });
-
-    // Fall back to SMS.
-    const smsRow = await prisma.message.create({
-      data: { bookingId, channel: "SMS", template: CONFIRMATION_TEMPLATE, status: "PENDING" },
-    });
+  } catch (whatsappError) {
+    console.warn(
+      `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
+    );
+    // Record the WhatsApp failure on its own row so the dashboard shows the attempt, then try SMS.
+    await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
+    channel = "SMS";
     try {
-      const { providerMessageId } = await sendSMS({
-        to: booking.whatsappE164,
-        body: `Your session is confirmed. Join here: ${link}`,
-      });
-      await prisma.message.update({ where: { id: smsRow.id }, data: { status: "SENT", providerMessageId } });
-      return { channel: "SMS" };
-    } catch (smsErr) {
-      await prisma.message.update({ where: { id: smsRow.id }, data: { status: "FAILED", error: errText(smsErr) } });
-      // Both channels failed: throw so BullMQ retries. The confirmation page/email still show the link.
-      throw new Error(`Both WhatsApp and SMS failed for booking ${bookingId}: ${errText(smsErr)}`);
+      result = await deps.sendSMS({ to, body });
+    } catch (smsError) {
+      await recordFailure(bookingId, "SMS", template, errText(smsError)); // transient: worker alerts after final attempt
+      throw smsError;
     }
   }
+
+  await prisma.message.upsert({
+    where: { bookingId_channel_template: { bookingId, channel, template } },
+    create: {
+      bookingId,
+      template,
+      channel,
+      status: "SENT",
+      providerMessageId: result.providerMessageId,
+      error: null,
+    },
+    update: { status: "SENT", providerMessageId: result.providerMessageId, error: null },
+  });
+  return "sent";
+}
+
+/** Records (or creates) the Message row for a channel with the latest failure, without flipping it to FAILED. */
+async function recordFailure(
+  bookingId: string,
+  channel: "WHATSAPP" | "SMS",
+  template: string,
+  message: string,
+): Promise<void> {
+  const error = message.slice(0, 500);
+  await prisma.message.upsert({
+    where: { bookingId_channel_template: { bookingId, channel, template } },
+    create: { bookingId, template, channel, status: "PENDING", error },
+    update: { error },
+  });
+}
+
+/**
+ * Called by the worker after the final retry failed. Marks the Message row FAILED, records booking.lastError
+ * for the dashboard flag, and alerts the influencer. The customer still has the link on the confirmation page
+ * and email, so a message failure never blocks the booking.
+ */
+export async function reportMessageFailure(
+  bookingId: string,
+  template: string,
+  message: string,
+  alert: typeof alertInfluencer = alertInfluencer,
+): Promise<void> {
+  const booking = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    select: { id: true, session: { select: { service: { select: { influencerId: true } } } } },
+  });
+  if (!booking) return;
+
+  const detail = `Could not deliver "${template}" message after repeated failures: ${message}`.slice(0, 500);
+  // Reaching the final failure means both channels failed; the SMS fallback is the last resort, so its row
+  // carries the terminal FAILED state for the dashboard. (The WhatsApp attempt already left its own row.)
+  await prisma.message.upsert({
+    where: { bookingId_channel_template: { bookingId, channel: "SMS", template } },
+    create: { bookingId, template, channel: "SMS", status: "FAILED", error: detail },
+    update: { status: "FAILED", error: detail },
+  });
+  await prisma.booking.update({ where: { id: bookingId }, data: { lastError: detail } });
+  await alert(booking.session.service.influencerId, {
+    kind: "message-delivery-failed",
+    detail,
+    bookingId,
+  });
+}
+
+/**
+ * Backwards-compatible wrapper kept for callers that only send the booking confirmation (the Phase 4/6
+ * manage + resend flows and the create-meeting confirmation enqueue). Delegates to sendMessageForBooking
+ * with the confirmation template and reports the result in the shape those callers expect.
+ */
+export async function sendBookingMessage(bookingId: string): Promise<SendBookingMessageResult> {
+  const outcome = await sendMessageForBooking(bookingId, CONFIRMATION_TEMPLATE);
+  if (outcome === "skipped") return { channel: null, skipped: true };
+  // sendMessageForBooking records the channel that succeeded on its own row; re-read the delivered one so the
+  // caller's log reflects the real channel. A missing row (should not happen on "sent") degrades to WHATSAPP.
+  const row = await prisma.message.findFirst({
+    where: {
+      bookingId,
+      template: CONFIRMATION_TEMPLATE,
+      channel: { in: ["WHATSAPP", "SMS"] },
+      status: { in: ["SENT", "DELIVERED", "READ"] },
+    },
+    select: { channel: true },
+  });
+  return { channel: row?.channel ?? "WHATSAPP" };
 }
