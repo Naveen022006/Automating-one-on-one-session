@@ -1,10 +1,19 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
+import { customerZone, formatSessionTime } from "@/lib/format";
+import {
+  CANCELLATION_TEMPLATE,
+  CONFIRMATION_TEMPLATE,
+  smsBody,
+  templateParams,
+  whatsappComponents,
+  type MessageContext,
+} from "@/lib/message-templates";
 import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 
 /** Template used for the booking confirmation message (must be approved in WhatsApp Business). */
-export const CONFIRMATION_TEMPLATE = "booking-confirmation";
+export { CONFIRMATION_TEMPLATE };
 
 /**
  * Thrown when a message cannot be sent yet but should be retried later. send-message is enqueued
@@ -44,7 +53,7 @@ export interface MessagingDeps {
     languageCode?: string;
     components?: unknown[];
   }) => Promise<SendResult>;
-  sendSMS: (input: { to: string; body: string }) => Promise<SendResult>;
+  sendSMS: (input: { to: string; body: string; template?: string; variables?: string[] }) => Promise<SendResult>;
   alert: typeof alertInfluencer;
 }
 
@@ -84,7 +93,13 @@ export async function sendMessageForBooking(
     console.warn(`[send-message] booking ${bookingId} not found, skipping`);
     return "skipped";
   }
-  if (!SENDABLE_STATUSES.has(booking.status)) {
+  // A cancellation notice is the one message that is meant for a CANCELLED booking.
+  const sendable = SENDABLE_STATUSES.has(booking.status) || (template === CANCELLATION_TEMPLATE && booking.status === "CANCELLED");
+  if (booking.redactedAt) {
+    console.warn(`[send-message] booking ${bookingId} was redacted on request, skipping`);
+    return "skipped";
+  }
+  if (!sendable) {
     console.warn(`[send-message] booking ${bookingId} is ${booking.status}; not sendable, skipping`);
     return "skipped";
   }
@@ -111,10 +126,15 @@ export async function sendMessageForBooking(
   const { service } = session;
   const { influencer } = service;
   const to = booking.whatsappE164;
-  const link = booking.meetLink ?? "";
-  const body = `${service.title} with ${influencer.name} on ${session.startTime.toISOString()}${
-    link ? ` — ${link}` : ""
-  }`;
+  // Every template gets the same readable values: link, service, host and the time in the CUSTOMER's timezone
+  // (falling back to the influencer's), never a raw ISO timestamp. See lib/message-templates.ts.
+  const context: MessageContext = {
+    link: booking.meetLink ?? session.meetLink ?? null,
+    serviceTitle: service.title,
+    influencerName: influencer.name,
+    when: formatSessionTime(session.startTime, customerZone(booking.customerTz, influencer.timezone)),
+  };
+  const body = smsBody(template, context);
 
   // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
   let channel: "WHATSAPP" | "SMS" = "WHATSAPP";
@@ -123,9 +143,8 @@ export async function sendMessageForBooking(
     result = await deps.sendWhatsApp({
       to,
       template,
-      languageCode: "en",
-      // The link is passed as a template body parameter so an approved template can render it.
-      components: [{ type: "body", parameters: [{ type: "text", text: link }] }],
+      languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en",
+      components: whatsappComponents(template, context),
     });
   } catch (whatsappError) {
     console.warn(
@@ -135,7 +154,7 @@ export async function sendMessageForBooking(
     await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
     channel = "SMS";
     try {
-      result = await deps.sendSMS({ to, body });
+      result = await deps.sendSMS({ to, body, template, variables: templateParams(template, context) });
     } catch (smsError) {
       await recordFailure(bookingId, "SMS", template, errText(smsError)); // transient: worker alerts after final attempt
       throw smsError;
@@ -151,8 +170,9 @@ export async function sendMessageForBooking(
       status: "SENT",
       providerMessageId: result.providerMessageId,
       error: null,
+      sentAt: new Date(),
     },
-    update: { status: "SENT", providerMessageId: result.providerMessageId, error: null },
+    update: { status: "SENT", providerMessageId: result.providerMessageId, error: null, sentAt: new Date() },
   });
   return "sent";
 }
@@ -224,5 +244,18 @@ export async function sendBookingMessage(bookingId: string): Promise<SendBooking
     },
     select: { channel: true },
   });
-  return { channel: row?.channel ?? "WHATSAPP" };
+  const channel = row?.channel === "SMS" ? "SMS" : "WHATSAPP";
+  return { channel };
+}
+
+/**
+ * Re-arms a message type for a deliberate re-send (resend link, a second reschedule): the idempotency check in
+ * sendMessageForBooking skips a template that was already delivered, so its WhatsApp/SMS rows go back to PENDING
+ * first. Pair with a unique job suffix in enqueueSendMessage so BullMQ does not dedupe the new job either.
+ */
+export async function rearmMessage(bookingId: string, template: string): Promise<void> {
+  await prisma.message.updateMany({
+    where: { bookingId, template, channel: { in: ["WHATSAPP", "SMS"] } },
+    data: { status: "PENDING", error: null },
+  });
 }

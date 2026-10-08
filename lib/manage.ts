@@ -10,8 +10,12 @@ import {
 import { getRefreshToken } from "@/lib/google-tokens";
 import { activeSeatWhere } from "@/lib/holds";
 import { calendarEventId, sessionEventId } from "@/lib/meeting";
+import { CANCELLATION_TEMPLATE, CONFIRMATION_TEMPLATE, RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
+import { rearmMessage } from "@/lib/messaging";
 import { createMessage } from "@/lib/messages";
-import { enqueueSendMessage } from "@/lib/queue";
+import { cancelReminders, enqueueReminders, enqueueSendMessage } from "@/lib/queue";
+import { describeRefundPolicy, refundDecision, type CancelActor, type RefundPolicy } from "@/lib/refund-policy";
+import { refundPayment } from "@/lib/refunds";
 import { blockedDaySet, isSlotStart, type Rule } from "@/lib/slots";
 
 export { SELF_SERVICE_PURPOSE, buildSelfServiceUrl, verifySelfServiceToken } from "@/lib/self-service";
@@ -27,8 +31,7 @@ export class RescheduleNotAllowedError extends Error {}
 /**
  * Pure, DB-free check that `newStart` is a legal time to reschedule onto, mirroring the hold route's gate
  * (app/api/bookings/hold/route.ts): the time must be in the future AND a real slot start out of the
- * influencer's availability rules that does not fall on a blocked day. Kept pure (rules + blocked days are
- * passed in) so it is unit-testable without a DB, like lib/slots.ts. Returns null when ok, or a reason string.
+ * influencer's availability rules that does not fall on a blocked day. Returns null when ok, or a reason string.
  */
 export function validateRescheduleTime(args: {
   rules: Rule[];
@@ -49,16 +52,24 @@ export function validateRescheduleTime(args: {
 
 export interface ManageDeps {
   google: GoogleClient;
-  enqueueSendMessage: (bookingId: string) => Promise<void>;
+  enqueueSendMessage: (bookingId: string, template?: string, dedupeSuffix?: string) => Promise<void>;
   sendBookingEmail: typeof sendBookingEmail;
   alert: typeof alertInfluencer;
+  cancelReminders: (bookingId: string) => Promise<void>;
+  enqueueReminders: (bookingId: string, startTime: Date) => Promise<void>;
+  rearmMessage: (bookingId: string, template: string) => Promise<void>;
+  refundPayment: (paymentId: string, opts: { reason?: string }) => Promise<unknown>;
 }
 
 const defaultDeps: ManageDeps = {
   google: defaultGoogle,
-  enqueueSendMessage: (id) => enqueueSendMessage(id),
+  enqueueSendMessage: (id, template, suffix) => enqueueSendMessage(id, template, suffix),
   sendBookingEmail,
   alert: alertInfluencer,
+  cancelReminders: (id) => cancelReminders(id),
+  enqueueReminders: (id, start) => enqueueReminders(id, start),
+  rearmMessage,
+  refundPayment: (id, opts) => refundPayment(id, opts),
 };
 
 /** Statuses whose booking still has a live session the customer/influencer can act on. */
@@ -78,28 +89,31 @@ function loadBooking(bookingId: string) {
   });
 }
 
-/**
- * Re-notifies the customer of a change: records a WhatsApp message under `template`, re-enqueues delivery, and
- * (for a reschedule) sends a fresh confirmation email with the new time. Cancellations skip the email because
- * the only email kinds are confirmation/receipt. All best-effort / non-throwing, like the create path.
- */
-async function renotify(deps: ManageDeps, bookingId: string, template: string, sendEmail: boolean): Promise<void> {
-  await createMessage({ bookingId, channel: "whatsapp", template, status: "queued" });
-  if (sendEmail) await deps.sendBookingEmail(bookingId, "booking-confirmation");
-  await deps.enqueueSendMessage(bookingId);
+/** Each step is best-effort: a queue/email hiccup must not undo or fail a change that already landed. */
+async function step(label: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`[manage] ${label} failed`, e instanceof Error ? e.message : e);
+  }
 }
 
 /**
- * Re-sends the booking confirmation (email + queued WhatsApp message) without touching the Calendar event.
- * Used by the influencer "resend link" action. Best-effort recording like the create path.
+ * Re-sends the booking confirmation (email + WhatsApp/SMS) without touching the Calendar event. Used by the
+ * influencer "Resend link" action and the customer's "message not received?" button. The confirmation is
+ * re-armed so the messaging idempotency check does not swallow the deliberate repeat.
  */
 export async function resendBookingLink(bookingId: string, overrides: Partial<ManageDeps> = {}): Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { id: true } });
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { id: true, status: true } });
   if (!booking) throw new BookingNotManageableError("Booking not found");
-  await createMessage({ bookingId, channel: "whatsapp", template: "booking-confirmation", status: "queued" });
-  await deps.sendBookingEmail(bookingId, "booking-confirmation");
-  await deps.enqueueSendMessage(bookingId);
+  if (!["PAID", "SCHEDULED", "COMPLETED"].includes(booking.status)) {
+    throw new BookingNotManageableError(`There is no link to resend while the booking is ${booking.status}`);
+  }
+  await deps.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
+  await step("re-arm confirmation", () => deps.rearmMessage(bookingId, CONFIRMATION_TEMPLATE));
+  await createMessage({ bookingId, channel: "whatsapp", template: CONFIRMATION_TEMPLATE, status: "queued" });
+  await step("enqueue confirmation", () => deps.enqueueSendMessage(bookingId, CONFIRMATION_TEMPLATE, `resend-${Date.now()}`));
 }
 
 /** Resolves an access token for the booking's influencer, or throws ManageBlockedError if not connected. */
@@ -117,18 +131,34 @@ async function accessTokenFor(deps: ManageDeps, booking: BookingWithContext): Pr
   }
 }
 
+export interface CancelOptions {
+  /** Who is cancelling. Customers get the service's refund policy; an influencer cancel always refunds. */
+  actor?: CancelActor;
+  reason?: string;
+}
+
+export interface CancelResult {
+  refund: { eligible: boolean; reason: string; issued: boolean };
+}
+
 /**
- * Cancels a booking: marks it CANCELLED, updates the shared/1:1 Calendar event, flags the payment for refund
- * if money was captured, and re-notifies the customer. The DB change always happens; a calendar failure is
- * best-effort (recorded + alerted) so a cancel is never blocked by Google being unreachable.
+ * Cancels a booking: marks it CANCELLED, updates the shared/1:1 Calendar event, drops its reminders, decides the
+ * refund from the service policy, and tells the customer (WhatsApp/SMS + email). The DB change always happens; a
+ * calendar failure is best-effort (recorded + alerted) so a cancel is never blocked by Google being unreachable.
  *
  *  - 1:1    -> delete the booking's own event.
  *  - GROUP  -> remove ONLY this attendee from the shared session event; delete the event (and clear the
- *              session's shared fields) only when the last attendee has left. Preserves the shared-event
- *              invariant from FEAT-002.
+ *              session's shared fields) only when the last attendee has left.
+ *  - Refund -> eligible payments are flagged `needsRefund` (and the influencer alerted), or refunded straight
+ *              away through Razorpay when AUTO_REFUND_ON_CANCEL=true.
  */
-export async function cancelBooking(bookingId: string, overrides: Partial<ManageDeps> = {}): Promise<void> {
+export async function cancelBooking(
+  bookingId: string,
+  opts: CancelOptions = {},
+  overrides: Partial<ManageDeps> = {},
+): Promise<CancelResult> {
   const deps = { ...defaultDeps, ...overrides };
+  const actor = opts.actor ?? "influencer";
   const booking = await loadBooking(bookingId);
   if (!booking) throw new BookingNotManageableError("Booking not found");
   if (!MANAGEABLE.includes(booking.status as (typeof MANAGEABLE)[number]) && booking.status !== "FAILED") {
@@ -139,13 +169,16 @@ export async function cancelBooking(bookingId: string, overrides: Partial<Manage
   const { service } = session;
   const influencerId = service.influencer.id;
   const isGroup = service.type === "GROUP";
+  const policy = ((service as { refundPolicy?: RefundPolicy }).refundPolicy ?? "FULL") as RefundPolicy;
+  const decision = refundDecision({ policy, actor, sessionStart: session.startTime });
+  const hasCapturedPayment = (booking.payments ?? []).length > 0;
 
-  // 1) DB: cancel the booking and flag any captured payment for refund (mirrors needsRefund in lib/payment-webhook.ts).
+  // 1) DB: cancel the booking and record the refund decision on any captured payment.
   await prisma.booking.update({ where: { id: booking.id }, data: { status: "CANCELLED", lastError: null } });
-  if (booking.payments.length > 0) {
+  if (hasCapturedPayment) {
     await prisma.payment.updateMany({
       where: { bookingId: booking.id, status: "CAPTURED" },
-      data: { needsRefund: true, failureReason: "booking cancelled" },
+      data: { needsRefund: decision.refund, failureReason: `booking ${decision.reason}${opts.reason ? `: ${opts.reason}` : ""}`.slice(0, 500) },
     });
   }
 
@@ -156,7 +189,6 @@ export async function cancelBooking(bookingId: string, overrides: Partial<Manage
       if (isGroup) {
         const eventId = session.eventId ?? sessionEventId(session.id);
         const { remaining } = await deps.google.removeAttendee(accessToken, eventId, booking.customerEmail);
-        // The last attendee has left: drop the shared event and clear the session's shared fields.
         if (remaining === 0) {
           await deps.google.deleteEvent(accessToken, eventId);
           await prisma.session.update({ where: { id: session.id }, data: { eventId: null, meetLink: null } });
@@ -169,15 +201,51 @@ export async function cancelBooking(bookingId: string, overrides: Partial<Manage
     }
   }
 
-  // 3) Re-notify the customer that their booking was cancelled (no email: see renotify).
-  await renotify(deps, booking.id, "booking-cancelled", false);
+  // 3) No stale reminder may fire for a cancelled booking (the reminder job also re-checks status at run time).
+  await step("cancel reminders", () => deps.cancelReminders(booking.id));
+
+  // 4) Refund: issue it automatically if configured, otherwise flag it for the influencer.
+  let issued = false;
+  if (decision.refund && hasCapturedPayment) {
+    if (process.env.AUTO_REFUND_ON_CANCEL === "true") {
+      for (const p of booking.payments) {
+        try {
+          await deps.refundPayment(p.id, { reason: decision.reason });
+          issued = true;
+        } catch (e) {
+          await deps.alert(influencerId, {
+            kind: "refund-failed",
+            detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
+            bookingId: booking.id,
+          });
+        }
+      }
+    } else {
+      await deps.alert(influencerId, {
+        kind: "refund-needed",
+        detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason}. Issue the refund from the Sessions page.`,
+        bookingId: booking.id,
+      });
+    }
+  }
+
+  // 5) Tell the customer. The cancellation template is the one message allowed for a CANCELLED booking.
+  const refundNote = !hasCapturedPayment
+    ? null
+    : decision.refund
+      ? "You will be refunded in full to your original payment method. Refunds usually arrive within 5-7 working days."
+      : `No refund is due under this session's policy: ${describeRefundPolicy(policy)}`;
+  await deps.sendBookingEmail(booking.id, "booking-cancelled", { refundNote });
+  await createMessage({ bookingId: booking.id, channel: "whatsapp", template: CANCELLATION_TEMPLATE, status: "queued" });
+  await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));
+
+  return { refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued } };
 }
 
 /**
  * Reschedules a booking to `newStart` by moving its Session and patching the Calendar event start/end
- * (sendUpdates=all notifies every attendee), then re-notifies. For a GROUP session this moves the shared
- * session (all attendees) to the new time, keeping the one-event-per-session invariant intact. The booking's
- * endTime is derived from the service duration.
+ * (sendUpdates=all notifies every attendee), replacing the reminders, then re-notifying. For a GROUP session this
+ * moves the shared session (all attendees) to the new time, keeping the one-event-per-session invariant intact.
  */
 export async function rescheduleBooking(
   bookingId: string,
@@ -195,11 +263,9 @@ export async function rescheduleBooking(
   const { service } = session;
   const influencerId = service.influencer.id;
   const newEnd = new Date(newStart.getTime() + service.durationMin * 60_000);
+  if (session.startTime.getTime() === newStart.getTime()) return; // already there (idempotent re-run)
 
-  // 1) Validate the new time the same way the hold route does: it must be a real slot start out of the
-  //    influencer's availability rules and not land on a blocked day. The API routes accept any ISO datetime,
-  //    so without this a crafted dashboard/self-service request could move a booking (and, for GROUP, the whole
-  //    shared session) to an off-schedule or blocked time. Load the influencer's blocked days around the target.
+  // 1) Validate the new time the same way the hold route does: a real slot start, not on a blocked day.
   const blocked = await prisma.blockedDate.findMany({
     where: {
       influencerId,
@@ -218,12 +284,7 @@ export async function rescheduleBooking(
   });
   if (reason) throw new RescheduleNotAllowedError(reason);
 
-  // 2) DB: move the session to the new time, serialized on the destination so capacity cannot be raced. The
-  //    (service_id, start_time) unique constraint means a second session already at newStart would collide, so
-  //    we reject that up front; then we lock THIS session row (FOR UPDATE, mirroring lib/holds.ts) and confirm
-  //    its live seats still fit the service capacity at the destination before moving it. This keeps the
-  //    one-event-per-session invariant (the whole GROUP session moves together) and prevents an oversell slipping
-  //    in if capacity was shrunk after the seats were sold.
+  // 2) DB: move the session to the new time under a FOR UPDATE lock that re-checks capacity (see lib/holds.ts).
   await prisma.$transaction(async (tx) => {
     const clash = await tx.session.findFirst({
       where: { serviceId: service.id, startTime: newStart, id: { not: session.id } },
@@ -243,22 +304,32 @@ export async function rescheduleBooking(
   // 3) Calendar (best-effort): patch the event start/end.
   const eventId =
     service.type === "GROUP" ? session.eventId ?? sessionEventId(session.id) : booking.eventId ?? calendarEventId(booking.id);
+  let calendarError: unknown = null;
   if (booking.eventId || session.eventId) {
     try {
       const accessToken = await accessTokenFor(deps, booking);
       await deps.google.updateEvent(accessToken, eventId, { start: newStart, end: newEnd });
     } catch (e) {
-      await handleCalendarError(deps, influencerId, booking.id, e, "reschedule");
+      calendarError = e;
     }
   }
 
-  // 4) Re-notify every live booking in the (possibly shared) session of the new time. For a GROUP this is one
-  //    confirmation email per attendee: intended, because the shared event moved for all of them and each
-  //    customer needs their own notice carrying their own self-service link (issue 5 - this is by design).
+  // 4) Every live booking in the (possibly shared) session: replace its reminders and tell the customer. Done
+  //    before surfacing a calendar error so a Google outage never leaves a moved booking without reminders.
+  const suffix = `at-${newStart.getTime()}`;
   for (const b of session.bookings) {
     if (b.status === "CANCELLED" || b.status === "FAILED" || b.status === "EXPIRED") continue;
-    await renotify(deps, b.id, "booking-rescheduled", true);
+    await step("replace reminders", async () => {
+      await deps.cancelReminders(b.id);
+      if (b.status === "SCHEDULED") await deps.enqueueReminders(b.id, newStart);
+    });
+    await deps.sendBookingEmail(b.id, "booking-rescheduled");
+    await step("re-arm reschedule notice", () => deps.rearmMessage(b.id, RESCHEDULE_TEMPLATE));
+    await createMessage({ bookingId: b.id, channel: "whatsapp", template: RESCHEDULE_TEMPLATE, status: "queued" });
+    await step("enqueue reschedule notice", () => deps.enqueueSendMessage(b.id, RESCHEDULE_TEMPLATE, suffix));
   }
+
+  if (calendarError) await handleCalendarError(deps, influencerId, booking.id, calendarError, "reschedule");
 }
 
 /** Records a calendar failure on the booking and alerts the influencer. Does not rethrow transient failures. */

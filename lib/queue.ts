@@ -72,12 +72,20 @@ export async function requeueCreateMeeting(bookingId: string): Promise<void> {
  * Asks the messaging worker (Phase 4) to send the booking confirmation with the Meet link. The id is
  * deterministic so a retried create-meeting job cannot send the customer two confirmations.
  */
-export async function enqueueSendMessage(bookingId: string, template = "booking-confirmation"): Promise<void> {
+export async function enqueueSendMessage(
+  bookingId: string,
+  template = "booking-confirmation",
+  /**
+   * Makes the job id unique for a deliberate repeat (a resend, a second reschedule). Without it the default id is
+   * deterministic, so a retried create-meeting job can never send the customer two confirmations.
+   */
+  dedupeSuffix?: string,
+): Promise<void> {
   await getQueue(MESSAGE_QUEUE).add(
     "send-message",
     { bookingId, template },
     {
-      jobId: `send-message-${template}-${bookingId}`,
+      jobId: `send-message-${template}-${bookingId}${dedupeSuffix ? `-${dedupeSuffix}` : ""}`,
       attempts: 5,
       backoff: { type: "exponential", delay: 5_000 },
       removeOnComplete: { age: 7 * 86_400 },

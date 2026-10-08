@@ -42,6 +42,42 @@ export async function createOrder(input: {
   return (await res.json()) as RazorpayOrder;
 }
 
+export interface RazorpayRefund {
+  id: string;
+  payment_id: string;
+  amount: number;
+  currency: string;
+  /** "pending" | "processed" | "failed" */
+  status: string;
+}
+
+/**
+ * Refunds a captured payment (all of it, or `amountMinor`). https://razorpay.com/docs/api/refunds/create-normal/
+ * The final outcome arrives later as a `refund.processed` / `refund.failed` webhook.
+ */
+export async function createRefund(
+  input: { providerPaymentId: string; amountMinor?: number; receipt?: string; notes?: Record<string, string> },
+  fetchFn: typeof fetch = fetch,
+): Promise<RazorpayRefund> {
+  const auth = Buffer.from(`${razorpayKeyId()}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
+  const res = await fetchFn(`${RAZORPAY_API}/payments/${encodeURIComponent(input.providerPaymentId)}/refund`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...(input.amountMinor !== undefined ? { amount: input.amountMinor } : {}),
+      speed: "normal",
+      ...(input.receipt ? { receipt: input.receipt.slice(0, 40) } : {}),
+      ...(input.notes ? { notes: input.notes } : {}),
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Razorpay refund failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  return (await res.json()) as RazorpayRefund;
+}
+
 /** Verifies the `x-razorpay-signature` header (HMAC-SHA256 hex of the exact raw body), in constant time. */
 export function verifyWebhookSignature(
   rawBody: string,

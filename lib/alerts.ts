@@ -1,24 +1,68 @@
+import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
-import { buildConnectUrl } from "@/lib/google-tokens";
+import { reportError } from "@/lib/observability";
 
-export type InfluencerAlertKind = "google-reconnect-needed" | "meeting-creation-failed" | "message-delivery-failed";
+export type InfluencerAlertKind =
+  | "google-reconnect-needed"
+  | "meeting-creation-failed"
+  | "message-delivery-failed"
+  | "refund-needed"
+  | "refund-failed";
 
 export interface InfluencerAlert {
   kind: InfluencerAlertKind;
   detail: string;
   bookingId?: string;
-  /** Present on reconnect alerts: the signed link the influencer must open. */
+  /** Where the influencer should go to fix it. Defaults per kind (settings for Google, sessions otherwise). */
   actionUrl?: string;
 }
 
-/** Delivery hook. Phase 4 (WhatsApp/SMS/email) replaces the default, which only writes a structured log line. */
-export type AlertSender = (to: { id: string; name: string; email: string }, alert: InfluencerAlert) => Promise<void>;
+export interface AlertRecipient {
+  id: string;
+  name: string;
+  email: string;
+  notifyByEmail: boolean;
+}
 
-const logSender: AlertSender = async (to, alert) => {
-  console.error("[alert:influencer]", JSON.stringify({ influencerId: to.id, email: to.email, ...alert }));
+/** Delivery hook. The default emails the influencer (unless they turned alerts off) and always logs. */
+export type AlertSender = (to: AlertRecipient, alert: InfluencerAlert) => Promise<void>;
+
+const TITLES: Record<InfluencerAlertKind, { title: string; action: string }> = {
+  "google-reconnect-needed": { title: "Reconnect Google Calendar", action: "Reconnect Google" },
+  "meeting-creation-failed": { title: "A Meet link could not be created", action: "Open the session" },
+  "message-delivery-failed": { title: "A customer message was not delivered", action: "Open the session" },
+  "refund-needed": { title: "A payment needs a refund", action: "Review the refund" },
+  "refund-failed": { title: "A refund failed", action: "Review the refund" },
 };
 
-let sender: AlertSender = logSender;
+export function defaultActionUrl(alert: InfluencerAlert): string {
+  if (alert.kind === "google-reconnect-needed") return `${appUrl()}/dashboard/settings#google`;
+  if (alert.bookingId) return `${appUrl()}/dashboard/sessions?booking=${encodeURIComponent(alert.bookingId)}`;
+  return `${appUrl()}/dashboard`;
+}
+
+const defaultSender: AlertSender = async (to, alert) => {
+  console.error("[alert:influencer]", JSON.stringify({ influencerId: to.id, kind: alert.kind, bookingId: alert.bookingId, detail: alert.detail }));
+  if (!to.notifyByEmail) return;
+  // Imported lazily so modules that only raise alerts do not pull in the email stack at load time.
+  const [{ sendAccountEmail }, { influencerAlertMessage }] = await Promise.all([
+    import("@/lib/email"),
+    import("@/lib/email/templates"),
+  ]);
+  const t = TITLES[alert.kind];
+  await sendAccountEmail(
+    { email: to.email, name: to.name },
+    influencerAlertMessage(to.name, {
+      title: t.title,
+      detail: alert.detail,
+      actionLabel: t.action,
+      actionUrl: alert.actionUrl ?? defaultActionUrl(alert),
+    }),
+    `alert-${alert.kind}`,
+  );
+};
+
+let sender: AlertSender = defaultSender;
 export function setAlertSender(next: AlertSender): void {
   sender = next;
 }
@@ -28,15 +72,11 @@ export async function alertInfluencer(influencerId: string, alert: InfluencerAle
   try {
     const influencer = await prisma.influencer.findUnique({
       where: { id: influencerId },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, notifyByEmail: true },
     });
     if (!influencer) return;
-    const withLink =
-      alert.kind === "google-reconnect-needed" && !alert.actionUrl
-        ? { ...alert, actionUrl: buildConnectUrl(influencerId) }
-        : alert;
-    await sender(influencer, withLink);
+    await sender(influencer, { ...alert, actionUrl: alert.actionUrl ?? defaultActionUrl(alert) });
   } catch (e) {
-    console.error("[alert:influencer] failed to send alert", e);
+    reportError(e, { where: "alertInfluencer", influencerId, kind: alert.kind });
   }
 }
