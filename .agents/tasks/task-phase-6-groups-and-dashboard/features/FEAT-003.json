@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Influencer dashboard (read views) plus the message-status and email data model it depends on. The dashboard shows upcoming sessions, past sessions, earnings, and per-booking message status. Phases 4 (messaging) and 5 (reminders) are NOT implemented, so there is no Message table yet; this feature introduces a lightweight messages/notifications model and a structured-log email sender (mirroring lib/alerts.ts) so the dashboard has real data to display and the Phase 6 'email receipt/confirmation' task has a home. There is no auth yet, so the dashboard is reached via the same signed-link pattern used by the Google connect flow (lib/signing.ts / buildConnectUrl). Depends on FEAT-002 (shared-event fields) because the dashboard reads session event/meet data. Message status + email sending here are consumed by FEAT-004 manual actions.",
+  "status": "pending",
+  "steps": [
+    "Schema + migration: add a Message model to prisma/schema.prisma to record outbound customer communications (confirmation, receipt, reminder, link-resent) with at least: id, bookingId (FK, onDelete Cascade), channel String (e.g. 'email'|'whatsapp'|'sms'|'log'), template String, status String (e.g. 'queued'|'sent'|'failed'), error String?, sentAt DateTime?, createdAt/updatedAt, and an index on bookingId. Follow the @map snake_case + enum/String conventions already in the file. Add a hand-written migration prisma/migrations/<timestamp>_messages/migration.sql in the existing SQL style, timestamp after FEAT-002's migration.",
+    "Create lib/email.ts following the lib/alerts.ts delivery-hook pattern: an EmailSender type with a default logSender that writes a structured console line (no real SMTP in this environment / Phase 4), a setEmailSender override hook, and a sendBookingEmail(bookingId, kind) that renders a receipt/confirmation from the booking + payment + session + service and records a Message row (status 'sent' for the log sender). Keep it dependency-free (no new npm packages).",
+    "Wire message-status recording so the dashboard has data: when the confirmation message is enqueued/sent in the meeting flow (lib/meeting.ts enqueueSendMessage path), and when the email receipt is sent, create/update a Message row. Do this without introducing a real Phase 4 worker; a thin recording helper in lib/messages.ts (createMessage/markMessageSent/markMessageFailed) is enough. If adding the recording inside createMeetingForBooking, keep it best-effort and non-throwing like alerts.",
+    "Dashboard access: add a signed-link helper (reuse lib/signing.ts) e.g. buildDashboardUrl(influencerId) with its own purpose string, analogous to buildConnectUrl in lib/google-tokens.ts. Add a script scripts/dashboard-link.ts mirroring scripts/connect-link.ts to print the link, and a package.json script (e.g. \"dashboard:link\") mirroring \"google:connect-link\". The dashboard route must verify the signed token (verifyToken) before showing anything; an invalid/expired token returns 403, matching app/api/google/connect/route.ts.",
+    "Create the dashboard page under app/dashboard/ (App Router server component, `export const dynamic = \"force-dynamic\"`, Prisma via lib/db.ts). It takes the signed token (e.g. ?t=...), resolves the influencer, and renders: Upcoming sessions (future sessions with their bookings, seats filled vs capacity, meet_link, each booking's status and latest message status), Past sessions (completed/elapsed), Earnings (sum of CAPTURED payments, grouped sensibly e.g. total and per-service, formatted with the currency like BookingFlow's formatPrice), and a message-status column. Reuse the CSS classes in app/globals.css (card, muted, choice, slot, primary) rather than adding a new design system. Keep interactive bits (the manual-action buttons from FEAT-004) in a client component similar to app/[influencer]/book/BookingFlow.tsx.",
+    "Keep the dashboard read-only in this feature; the manual-action buttons and management forms are FEAT-004. Leave clear seams (e.g. pass the signed token / booking ids to a client component) so FEAT-004 can attach actions without restructuring.",
+    "Add tests where they can be pure: e.g. tests/earnings.test.ts asserting the earnings aggregation helper (extract the sum/group logic into a pure function in lib/dashboard.ts) over a fixture array of payments, in the node:test + tsx style. Avoid DB-dependent tests; if a query helper needs Prisma, keep the pure math separate and test only that.",
+    "Update doc/06-groups-and-dashboard.md to check off the 'Dashboard' and 'Email receipt/confirmation' tasks (email sending lands here; manual actions and management are FEAT-004). Note in the doc that email/WhatsApp delivery is still a structured-log stub pending Phases 4/5."
+  ],
+  "acceptance_criteria": [
+    "prisma/schema.prisma has a Message model with a matching hand-written SQL migration (timestamp after FEAT-002)",
+    "lib/email.ts exists with a setEmailSender hook and a default structured-log sender, mirroring lib/alerts.ts, and records a Message row when sending a receipt/confirmation",
+    "The dashboard at app/dashboard renders upcoming sessions, past sessions, earnings (sum of CAPTURED payments formatted by currency), and per-booking message status, reading real Prisma data including the shared group meet_link",
+    "The dashboard is gated by a signed, expiring token verified with lib/signing.ts; an invalid/expired token yields 403",
+    "scripts/dashboard-link.ts and a package.json script print a working signed dashboard link, mirroring the connect-link flow",
+    "A pure earnings-aggregation function is unit-tested in tests/ without a live DB"
+  ],
+  "verification": [
+    "Static validation: grep that app/dashboard imports resolve to real exports (lib/db, lib/signing verifyToken, lib/dashboard helpers, lib/email) and that every Prisma field referenced (Message.*, Payment.status CAPTURED, Session.eventId/meetLink, Booking.status) matches prisma/schema.prisma",
+    "Confirm the new migration column/table names exactly match the Prisma model @map names",
+    "Read the dashboard server component and confirm it returns 403 on a bad token before any data is shown, matching app/api/google/connect/route.ts",
+    "In a normal environment: `npx prisma generate`, `npm run typecheck`, `npm run build`, `npm test` (CI-only here; note in findings)"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
