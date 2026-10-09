@@ -82,3 +82,18 @@ Influencers add where to be paid under **Dashboard > Payouts** (bank account + I
 password entry, stores the account number / UPI id AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`), shows only a masked
 value afterwards, and emails the influencer a security notice. New or changed details are `PENDING_REVIEW` until an
 administrator verifies them (admin console > influencer > Payout details). Revealing the full number is audit-logged.
+
+## Reconciliation and influencer payouts
+Customers pay the platform's Razorpay account; the owner pays influencers by hand. In the admin console:
+
+1. **Payments > To reconcile > Reconcile with Razorpay.** Each payment is fetched from Razorpay and must match
+   (payment id, order, amount, currency, captured). Only reconciled payments are payable.
+2. A payment becomes payable once it is reconciled, the session has finished plus `PAYOUT_HOLD_DAYS` (default 2), the
+   booking is `SCHEDULED`/`COMPLETED`, and no refund is in flight.
+3. **Influencers > (influencer) > Earnings and payouts > Create payout.** Needs *verified* payout details. It locks the
+   payable payments into a `PENDING` payout (a row lock stops two admins paying the same money twice):
+   `payout = (paid - refunded) - platform fee`. The fee is `PLATFORM_FEE_BPS` by default, overridable per influencer, and
+   is floored to a whole paisa.
+4. Reveal the account (audit-logged), send the money yourself, then **Payouts > Mark as paid** with the bank reference (UTR).
+   The influencer is emailed. **Cancel** releases the payments. A refund made after a payout was paid is flagged
+   "refunded since, to recover".

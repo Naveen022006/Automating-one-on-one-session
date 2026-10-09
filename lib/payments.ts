@@ -106,6 +106,31 @@ export async function listRefunds(providerPaymentId: string, fetchFn: typeof fet
   return data.items ?? [];
 }
 
+export interface RazorpayPayment {
+  id: string;
+  order_id: string | null;
+  amount: number;
+  currency: string;
+  /** "created" | "authorized" | "captured" | "refunded" | "failed" */
+  status: string;
+  amount_refunded?: number;
+}
+
+/** One payment as Razorpay holds it, used to reconcile our records before paying influencers. */
+export async function fetchPayment(providerPaymentId: string, fetchFn: typeof fetch = fetch): Promise<RazorpayPayment> {
+  if (!providerPaymentId) throw new Error("This payment has no Razorpay payment id");
+  const auth = Buffer.from(`${razorpayKeyId()}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
+  const res = await fetchFn(`${RAZORPAY_API}/payments/${encodeURIComponent(providerPaymentId)}`, {
+    headers: { Authorization: `Basic ${auth}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new RazorpayHttpError(res.status, `Razorpay payment lookup failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  return (await res.json()) as RazorpayPayment;
+}
+
 /** Verifies the `x-razorpay-signature` header (HMAC-SHA256 hex of the exact raw body), in constant time. */
 export function verifyWebhookSignature(
   rawBody: string,
