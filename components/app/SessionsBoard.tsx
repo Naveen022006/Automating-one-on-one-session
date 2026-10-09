@@ -129,7 +129,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
   const [detail, setDetail] = useState<BookingDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"cancel" | "refund" | "reschedule" | null>(null);
+  const [dialog, setDialog] = useState<"cancel" | "refund" | "reschedule" | "decline" | null>(null);
   const [reason, setReason] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
 
@@ -175,6 +175,20 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
       footer={
         detail && (
           <>
+            {detail.status === "REQUESTED" && (
+              <>
+                <Button
+                  variant="primary"
+                  onClick={() => run("approve", `/api/dashboard/bookings/${detail.id}/decision`, { action: "approve" }, "Approved. The customer was emailed a link to pay.")}
+                  loading={busy === "approve"}
+                >
+                  Approve request
+                </Button>
+                <Button variant="danger" onClick={() => setDialog("decline")}>
+                  Decline
+                </Button>
+              </>
+            )}
             {(live || detail.status === "COMPLETED") && (
               <Button onClick={() => run("resend", `/api/dashboard/bookings/${detail.id}`, { action: "resend" }, "Link sent again.")} loading={busy === "resend"}>
                 <IconSend size={16} /> Resend link
@@ -222,6 +236,16 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
           {captured?.needsRefund && (
             <Alert tone="warning" title="Refund due">
               This booking was cancelled and its payment should be refunded.
+            </Alert>
+          )}
+          {detail.status === "REQUESTED" && (
+            <Alert tone="warning" title="Waiting for your answer">
+              This customer asked to book. The time is held for them{detail.requestExpiresAt ? ` until ${dateTime(detail.requestExpiresAt)}` : ""}. Approve to let them pay, or decline. Nothing has been charged.
+            </Alert>
+          )}
+          {detail.status === "CANCELLED" && detail.declineReason && (
+            <Alert tone="info" title="You declined this request">
+              Reason given to the customer: {detail.declineReason}
             </Alert>
           )}
           <section className="stack stack--sm" aria-label="Status">
@@ -356,6 +380,20 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
 
       {detail && (
         <>
+          <ConfirmDialog
+            open={dialog === "decline"}
+            onClose={() => setDialog(null)}
+            danger
+            busy={busy === "decline"}
+            title="Decline this request?"
+            description={`${detail.customerName} is emailed that the request was not accepted. They have not been charged.`}
+            confirmLabel="Decline request"
+            onConfirm={() => run("decline", `/api/dashboard/bookings/${detail.id}/decision`, { action: "decline", reason: reason || undefined }, "Request declined.")}
+          >
+            <Field id="decline-reason" label="Note to the customer" optional help="Shown in the email, for example another time that suits you.">
+              <Textarea id="decline-reason" value={reason} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReason(e.target.value)} maxLength={300} />
+            </Field>
+          </ConfirmDialog>
           <ConfirmDialog
             open={dialog === "cancel"}
             onClose={() => setDialog(null)}

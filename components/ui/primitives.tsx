@@ -224,6 +224,7 @@ export function Badge({ tone = "neutral", plain, children }: { tone?: Tone; plai
 }
 
 const BOOKING_STATUS: Record<string, { label: string; tone: Tone }> = {
+  REQUESTED: { label: "Awaiting approval", tone: "warning" },
   HELD: { label: "Held", tone: "neutral" },
   PENDING_PAYMENT: { label: "Awaiting payment", tone: "warning" },
   PAID: { label: "Paid, link pending", tone: "info" },

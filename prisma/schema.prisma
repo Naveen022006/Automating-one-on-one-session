@@ -15,6 +15,9 @@ enum ServiceType {
 // Lifecycle: HELD -> PENDING_PAYMENT -> PAID -> SCHEDULED -> COMPLETED
 // Side exits: EXPIRED, CANCELLED, FAILED
 enum BookingStatus {
+  // The customer asked to book a service that needs the influencer's approval. The seat is held (for up to
+  // REQUEST_TTL_HOURS) but nothing can be paid yet. Approved -> HELD (pay within the payment window); declined -> CANCELLED.
+  REQUESTED
   HELD
   PENDING_PAYMENT
   PAID
@@ -195,25 +198,27 @@ enum RefundPolicy {
 }
 
 model Service {
-  id              String       @id @default(cuid())
-  influencerId    String       @map("influencer_id")
-  title           String
-  description     String?
-  durationMin     Int          @map("duration_min")
-  priceMinor      Int          @map("price_minor") // smallest currency unit (paise/cents)
-  currency        String       @default("INR")
-  type            ServiceType  @default(ONE_TO_ONE)
-  capacity        Int          @default(1)
-  active          Boolean      @default(true)
-  refundPolicy    RefundPolicy @default(FULL) @map("refund_policy")
+  id               String       @id @default(cuid())
+  influencerId     String       @map("influencer_id")
+  title            String
+  description      String?
+  durationMin      Int          @map("duration_min")
+  priceMinor       Int          @map("price_minor") // smallest currency unit (paise/cents)
+  currency         String       @default("INR")
+  type             ServiceType  @default(ONE_TO_ONE)
+  capacity         Int          @default(1)
+  active           Boolean      @default(true)
+  refundPolicy     RefundPolicy @default(FULL) @map("refund_policy")
   // Custom questions the customer answers when booking (array of {id,label,type,required,options?}); see lib/intake.ts.
-  intakeQuestions Json?        @map("intake_questions")
+  intakeQuestions  Json?        @map("intake_questions")
   // Booking window: the earliest a customer may book (hours from now) and the furthest ahead (days).
-  minNoticeHours  Int          @default(0) @map("min_notice_hours")
-  maxAdvanceDays  Int          @default(60) @map("max_advance_days")
+  minNoticeHours   Int          @default(0) @map("min_notice_hours")
+  maxAdvanceDays   Int          @default(60) @map("max_advance_days")
   // "What to prepare": shown on the booking page, confirmation and email.
-  prepNotes       String?      @map("prep_notes")
-  createdAt       DateTime     @default(now()) @map("created_at")
+  prepNotes        String?      @map("prep_notes")
+  // When true, a booking is a request: the influencer approves or declines it before the customer can pay.
+  requiresApproval Boolean      @default(false) @map("requires_approval")
+  createdAt        DateTime     @default(now()) @map("created_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
   sessions   Session[]
@@ -281,6 +286,9 @@ model Booking {
   // The customer's answers to the service's intake questions, with the question text copied in so later edits to the
   // questions never change what was asked. Array of {id,label,answer}. Erased with the rest of the customer's data.
   intakeAnswers Json?         @map("intake_answers")
+  // When the influencer approved or declined a request, and the reason given to the customer on a decline.
+  decidedAt     DateTime?     @map("decided_at")
+  declineReason String?       @map("decline_reason")
   // The service's cancellation policy when the customer booked (Phase 7). Later policy edits never change what an
   // existing booking was sold under. Null for bookings made before this column existed (use the service's policy).
   refundPolicy  RefundPolicy? @map("refund_policy")

@@ -26,6 +26,7 @@ const createSchema = z.object({
   minNoticeHours: z.number().int().min(0).max(MAX_NOTICE_HOURS).optional(),
   maxAdvanceDays: z.number().int().min(1).max(MAX_ADVANCE_DAYS).optional(),
   prepNotes: z.string().trim().max(1000).nullable().optional(),
+  requiresApproval: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -43,6 +44,7 @@ const updateSchema = z.object({
   minNoticeHours: z.number().int().min(0).max(MAX_NOTICE_HOURS).optional(),
   maxAdvanceDays: z.number().int().min(1).max(MAX_ADVANCE_DAYS).optional(),
   prepNotes: z.string().trim().max(1000).nullable().optional(),
+  requiresApproval: z.boolean().optional(),
 });
 
 /**
@@ -85,6 +87,7 @@ export async function POST(req: Request) {
       ...(body.minNoticeHours !== undefined ? { minNoticeHours: body.minNoticeHours } : {}),
       ...(body.maxAdvanceDays !== undefined ? { maxAdvanceDays: body.maxAdvanceDays } : {}),
       prepNotes: body.prepNotes || null,
+      requiresApproval: body.requiresApproval ?? false,
     },
     select: { id: true },
   });
@@ -157,6 +160,7 @@ export async function PATCH(req: Request) {
       ...(body.minNoticeHours !== undefined ? { minNoticeHours: body.minNoticeHours } : {}),
       ...(body.maxAdvanceDays !== undefined ? { maxAdvanceDays: body.maxAdvanceDays } : {}),
       ...(body.prepNotes !== undefined ? { prepNotes: body.prepNotes || null } : {}),
+      ...(body.requiresApproval !== undefined ? { requiresApproval: body.requiresApproval } : {}),
     },
   });
   return NextResponse.json({

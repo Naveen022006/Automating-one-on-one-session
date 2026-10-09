@@ -9,7 +9,7 @@ import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-token
  * session, never from the request, so one influencer can never read another's data.
  */
 
-const VISIBLE_BOOKING_STATUSES = ["PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED"] as const;
+const VISIBLE_BOOKING_STATUSES = ["REQUESTED", "PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED"] as const;
 const LIVE = new Set(["PAID", "SCHEDULED", "COMPLETED"]);
 
 export interface MessageView {
@@ -98,7 +98,7 @@ function toSessionRow(s: SessionWithBookings): SessionRow {
   };
 }
 
-export type SessionView = "upcoming" | "past" | "cancelled" | "attention";
+export type SessionView = "requests" | "upcoming" | "past" | "cancelled" | "attention";
 
 export async function listSessions(influencerId: string, view: SessionView, opts: { page?: number; pageSize?: number; now?: Date } = {}) {
   const now = opts.now ?? new Date();
@@ -106,7 +106,9 @@ export async function listSessions(influencerId: string, view: SessionView, opts
   const page = Math.max(1, opts.page ?? 1);
   const base = { service: { influencerId } };
   const where =
-    view === "upcoming"
+    view === "requests"
+      ? { ...base, endTime: { gte: now }, bookings: { some: { status: "REQUESTED" as const, holdExpiresAt: { gt: now } } } }
+      : view === "upcoming"
       ? { ...base, endTime: { gte: now }, bookings: { some: { status: { in: ["PAID", "SCHEDULED"] as ("PAID" | "SCHEDULED")[] } } } }
       : view === "past"
         ? { ...base, endTime: { lt: now }, bookings: { some: { status: { in: ["PAID", "SCHEDULED", "COMPLETED", "FAILED"] as ("PAID" | "SCHEDULED" | "COMPLETED" | "FAILED")[] } } } }
@@ -134,7 +136,7 @@ export async function listSessions(influencerId: string, view: SessionView, opts
 }
 
 export interface AttentionItem {
-  kind: "google" | "failed-message" | "needs-refund" | "booking-error" | "verify-email";
+  kind: "google" | "booking-request" | "failed-message" | "needs-refund" | "booking-error" | "verify-email";
   title: string;
   detail: string;
   href: string;
@@ -151,7 +153,7 @@ export interface Overview {
 export async function getOverview(influencerId: string, emailVerified: boolean, now = new Date()): Promise<Overview> {
   const weekAhead = new Date(now.getTime() + 7 * 86_400_000);
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const [upcoming, monthPayments, google, failedMessages, refunds, errored] = await Promise.all([
+  const [upcoming, monthPayments, google, failedMessages, refunds, errored, requests] = await Promise.all([
     prisma.session.findMany({
       where: { service: { influencerId }, startTime: { lt: weekAhead }, endTime: { gte: now }, bookings: { some: { status: { in: ["PAID", "SCHEDULED"] } } } },
       include: sessionInclude,
@@ -165,6 +167,7 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
     }),
     prisma.payment.count({ where: { needsRefund: true, status: "CAPTURED", booking: { session: { service: { influencerId } } } } }),
     prisma.booking.count({ where: { lastError: { not: null }, status: { in: ["PAID", "SCHEDULED", "FAILED"] }, session: { service: { influencerId } } } }),
+    prisma.booking.count({ where: { status: "REQUESTED", holdExpiresAt: { gt: now }, session: { service: { influencerId } } } }),
   ]);
 
   const attention: AttentionItem[] = [];
@@ -181,6 +184,9 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
           : "Meet links are created on your Google Calendar. Connect it before you take bookings.",
       href: "/dashboard/settings#google",
     });
+  }
+  if (requests > 0) {
+    attention.push({ kind: "booking-request", title: `${requests} booking request${requests > 1 ? "s" : ""} to review`, detail: "Customers are waiting for your answer. Approve to let them pay, or decline.", href: "/dashboard/sessions?view=requests" });
   }
   if (refunds > 0) {
     attention.push({ kind: "needs-refund", title: `${refunds} payment${refunds > 1 ? "s" : ""} to refund`, detail: "Cancelled bookings whose payment should be returned.", href: "/dashboard/sessions?view=attention" });
@@ -311,7 +317,7 @@ export async function getBookingDetail(influencerId: string, bookingId: string) 
   const b = await prisma.booking.findFirst({
     where: { id: bookingId, session: { service: { influencerId } } },
     include: {
-      session: { include: { service: { select: { id: true, title: true, type: true, durationMin: true, refundPolicy: true } } } },
+      session: { include: { service: { select: { id: true, title: true, type: true, durationMin: true, refundPolicy: true, priceMinor: true, currency: true } } } },
       payments: { orderBy: { createdAt: "desc" } },
       messages: { orderBy: { updatedAt: "desc" } },
     },
@@ -325,6 +331,8 @@ export async function getBookingDetail(influencerId: string, bookingId: string) 
     whatsapp: b.whatsappE164,
     whatsappOptIn: b.whatsappOptIn,
     customerTz: b.customerTz,
+    requestExpiresAt: b.status === "REQUESTED" ? (b.holdExpiresAt?.toISOString() ?? null) : null,
+    declineReason: b.declineReason,
     intakeAnswers: parseAnswers(b.intakeAnswers),
     redacted: b.redactedAt !== null,
     meetLink: b.meetLink ?? b.session.meetLink,

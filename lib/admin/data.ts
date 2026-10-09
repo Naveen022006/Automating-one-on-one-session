@@ -233,7 +233,7 @@ export async function paymentViewCounts() {
 }
 
 export async function listBookings(page: number, status?: string) {
-  const valid = ["HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "EXPIRED", "CANCELLED", "FAILED"];
+  const valid = ["REQUESTED", "HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "EXPIRED", "CANCELLED", "FAILED"];
   const where: Prisma.BookingWhereInput = status && valid.includes(status) ? { status: status as never } : {};
   const [total, rows] = await Promise.all([
     prisma.booking.count({ where }),

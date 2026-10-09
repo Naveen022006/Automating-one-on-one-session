@@ -49,6 +49,7 @@ export default async function OnboardingPage({ searchParams }: { searchParams: P
           minNoticeHours: s.minNoticeHours,
           maxAdvanceDays: s.maxAdvanceDays,
           prepNotes: s.prepNotes,
+          requiresApproval: s.requiresApproval,
       }))}
       rules={rules.map((r) => ({ id: r.id, weekday: r.weekday, startTime: r.startTime, endTime: r.endTime, timezone: r.timezone }))}
       blocked={blocked.map((b) => ({ id: b.id, date: b.date.toISOString().slice(0, 10), reason: b.reason }))}
