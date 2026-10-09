@@ -8,7 +8,8 @@ export type InfluencerAlertKind =
   | "message-delivery-failed"
   | "refund-needed"
   | "refund-failed"
-  | "booking-request";
+  | "booking-request"
+  | "whatsapp-reconnect-needed";
 
 export interface InfluencerAlert {
   kind: InfluencerAlertKind;
@@ -35,10 +36,12 @@ const TITLES: Record<InfluencerAlertKind, { title: string; action: string }> = {
   "refund-needed": { title: "A payment needs a refund", action: "Review the refund" },
   "refund-failed": { title: "A refund failed", action: "Review the refund" },
   "booking-request": { title: "New booking request", action: "Review the request" },
+  "whatsapp-reconnect-needed": { title: "Reconnect WhatsApp", action: "Reconnect WhatsApp" },
 };
 
 export function defaultActionUrl(alert: InfluencerAlert): string {
   if (alert.kind === "google-reconnect-needed") return `${appUrl()}/dashboard/settings#google`;
+  if (alert.kind === "whatsapp-reconnect-needed") return `${appUrl()}/dashboard/settings#whatsapp`;
   if (alert.bookingId) return `${appUrl()}/dashboard/sessions?booking=${encodeURIComponent(alert.bookingId)}`;
   return `${appUrl()}/dashboard`;
 }

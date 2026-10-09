@@ -113,3 +113,41 @@ export function parseWhatsAppStatuses(payload: unknown): WhatsAppStatusUpdate[] 
   }
   return updates;
 }
+
+export interface TemplateStatusUpdate {
+  wabaId: string;
+  name: string;
+  language: string;
+  /** "APPROVED" | "REJECTED" | "PENDING" | "PAUSED" | "DISABLED" ... as Meta reports it. */
+  status: string;
+  reason: string | null;
+}
+
+/**
+ * Flattens `message_template_status_update` events (Meta tells us when a template is approved or rejected). The
+ * `entry.id` is the WhatsApp Business Account id, which is how we find the influencer.
+ */
+export function parseTemplateStatusUpdates(payload: unknown): TemplateStatusUpdate[] {
+  const body = (payload ?? {}) as {
+    entry?: Array<{
+      id?: string;
+      changes?: Array<{ field?: string; value?: { event?: string; message_template_name?: string; message_template_language?: string; reason?: string } }>;
+    }>;
+  };
+  const out: TemplateStatusUpdate[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      if (change.field !== "message_template_status_update") continue;
+      const v = change.value;
+      if (!entry.id || !v?.message_template_name || !v.event) continue;
+      out.push({
+        wabaId: String(entry.id),
+        name: v.message_template_name,
+        language: v.message_template_language ?? "en",
+        status: v.event.toUpperCase(),
+        reason: v.reason && v.reason !== "NONE" ? v.reason : null,
+      });
+    }
+  }
+  return out;
+}

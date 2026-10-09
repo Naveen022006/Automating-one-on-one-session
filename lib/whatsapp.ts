@@ -1,4 +1,5 @@
 import { toE164 } from "@/lib/phone";
+import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
 
 const GRAPH_API = "https://graph.facebook.com/v21.0";
 
@@ -22,6 +23,8 @@ export interface SendWhatsAppInput {
   /** Template language code, e.g. "en" or "en_US". */
   languageCode?: string;
   components?: WhatsAppTemplateComponent[];
+  /** The influencer's own number. Absent = the platform number from the environment (testing only). */
+  credentials?: { token: string; phoneNumberId: string };
 }
 
 export interface SendResult {
@@ -44,8 +47,8 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
     console.log("[whatsapp:dry-run]", JSON.stringify({ to, template: input.template, components: input.components }));
     return { providerMessageId: `dry-run-wa-${Date.now()}` };
   }
-  const token = env("WHATSAPP_TOKEN");
-  const phoneNumberId = env("WHATSAPP_PHONE_NUMBER_ID");
+  const token = input.credentials?.token ?? env("WHATSAPP_TOKEN");
+  const phoneNumberId = input.credentials?.phoneNumberId ?? env("WHATSAPP_PHONE_NUMBER_ID");
 
   const res = await fetchFn(`${GRAPH_API}/${phoneNumberId}/messages`, {
     method: "POST",
@@ -65,7 +68,14 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`WhatsApp send failed (${res.status}): ${body.slice(0, 300)}`);
+    let code: number | null = null;
+    try {
+      code = (JSON.parse(body) as { error?: { code?: number } }).error?.code ?? null;
+    } catch {
+      /* non-JSON error body */
+    }
+    // A structured error so the caller can tell a dead token (190 / 401) from a one-off failure.
+    throw new WhatsAppGraphError(`WhatsApp send failed (${res.status}): ${body.slice(0, 300)}`, res.status, code);
   }
 
   const data = (await res.json()) as { messages?: Array<{ id?: string }> };

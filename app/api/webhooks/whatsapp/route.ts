@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import {
   isVerifyRequestValid,
+  parseTemplateStatusUpdates,
   parseWhatsAppStatuses,
   verifyMetaSignature,
 } from "@/lib/whatsapp-webhook";
+import { applyTemplateStatusUpdate } from "@/lib/whatsapp-connection";
 
 // Meta's verification handshake: echo hub.challenge back as plain text when the verify token matches.
 export async function GET(req: Request) {
@@ -52,6 +54,8 @@ export async function POST(req: Request) {
         data,
       });
     }
+    // Meta also tells us when an influencer's templates are approved or rejected.
+    for (const t of parseTemplateStatusUpdates(payload)) await applyTemplateStatusUpdate(t);
     return NextResponse.json({ ok: true, applied: updates.length });
   } catch (e) {
     console.error("[whatsapp-webhook] failed", e);

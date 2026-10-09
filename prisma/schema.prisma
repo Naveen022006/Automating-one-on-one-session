@@ -42,16 +42,17 @@ model Influencer {
   notifyByEmail Boolean   @default(true) @map("notify_by_email")
   createdAt     DateTime  @default(now()) @map("created_at")
 
-  services       Service[]
-  rules          AvailabilityRule[]
-  blockedDates   BlockedDate[]
-  googleToken    GoogleToken?
-  user           User?
-  payoutAccount  PayoutAccount?
+  services           Service[]
+  rules              AvailabilityRule[]
+  blockedDates       BlockedDate[]
+  googleToken        GoogleToken?
+  user               User?
+  payoutAccount      PayoutAccount?
+  whatsappConnection WhatsAppConnection?
   // Platform fee in basis points (1000 = 10%) taken from this influencer's payouts. Null = use the platform default
   // (PLATFORM_FEE_BPS). Decided by the administrator.
-  platformFeeBps Int?               @map("platform_fee_bps")
-  payouts        Payout[]
+  platformFeeBps     Int?                @map("platform_fee_bps")
+  payouts            Payout[]
 
   @@map("influencers")
 }
@@ -561,4 +562,40 @@ model Payout {
   @@index([influencerId, createdAt])
   @@index([status])
   @@map("payouts")
+}
+
+enum WhatsAppConnectionStatus {
+  ACTIVE
+  // Meta rejected the access token (revoked or expired). Messages fall back to SMS until the influencer reconnects.
+  ERROR
+}
+
+// The influencer's own WhatsApp Business number, used to message their customers so the messages come from them.
+// Connected through Meta Embedded Signup or by entering the WhatsApp Business Account id, phone number id and a
+// permanent system-user token. The token is stored AES-256-GCM encrypted (aad binds it to this influencer) and is
+// never returned to the browser or shown to administrators.
+model WhatsAppConnection {
+  id                String                   @id @default(cuid())
+  influencerId      String                   @unique @map("influencer_id")
+  wabaId            String                   @map("waba_id")
+  // A phone number can belong to only one influencer.
+  phoneNumberId     String                   @unique @map("phone_number_id")
+  displayPhone      String?                  @map("display_phone")
+  verifiedName      String?                  @map("verified_name")
+  tokenEnc          String                   @map("token_enc")
+  // "embedded" (Meta Embedded Signup) or "manual" (ids + token entered by hand).
+  source            String                   @default("manual")
+  status            WhatsAppConnectionStatus @default(ACTIVE)
+  lastError         String?                  @map("last_error")
+  // Template name -> { status: "APPROVED" | "PENDING" | "REJECTED" | ..., language }. Kept current by the template
+  // status webhook and the Refresh button.
+  templates         Json?
+  templatesSyncedAt DateTime?                @map("templates_synced_at")
+  connectedAt       DateTime                 @default(now()) @map("connected_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@map("whatsapp_connections")
 }

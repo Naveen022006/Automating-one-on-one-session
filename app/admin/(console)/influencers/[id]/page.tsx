@@ -6,6 +6,7 @@ import { PayoutPanel } from "@/components/admin/PayoutPanel";
 import { getInfluencerDetail } from "@/lib/admin/data";
 import { CreatePayoutButton, FeeForm, PayoutRowActions } from "@/components/admin/PayoutActions";
 import { prisma } from "@/lib/db";
+import { viewTemplates } from "@/lib/whatsapp-connection";
 import { getPayoutAccountView } from "@/lib/payout-account";
 import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, loadPayable, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
 import { formatMoney } from "@/lib/format";
@@ -53,6 +54,18 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
                 <Badge tone="success">{i.googleToken.googleEmail ?? "Connected"}</Badge>
               ) : (
                 <Badge tone="danger">Reconnect needed</Badge>
+              )}
+            </dd>
+            <dt>WhatsApp</dt>
+            <dd>
+              {!i.whatsappConnection ? (
+                <Badge>Not connected</Badge>
+              ) : i.whatsappConnection.status === "ERROR" ? (
+                <Badge tone="danger">Reconnect needed</Badge>
+              ) : viewTemplates(i.whatsappConnection.templates).every((t) => t.status === "APPROVED") ? (
+                <Badge tone="success">{i.whatsappConnection.displayPhone ?? "Ready"}</Badge>
+              ) : (
+                <Badge tone="warning">{i.whatsappConnection.displayPhone ?? "Connected"}, templates in review</Badge>
               )}
             </dd>
             <dt>Email from Gmail</dt>

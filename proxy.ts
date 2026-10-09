@@ -17,6 +17,8 @@ import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule } from "@/lib/rate-limit
  */
 
 const DEV = process.env.NODE_ENV !== "production";
+// Meta Embedded Signup (an influencer connecting their own WhatsApp number) loads the Facebook SDK and a dialog.
+const META_EMBEDDED = Boolean(process.env.META_APP_ID && process.env.META_ES_CONFIG_ID);
 
 const SESSION_COOKIES = ["__Host-sa_session", "sa_session"];
 const ADMIN_COOKIES = ["__Host-sa_admin", "sa_admin"];
@@ -84,12 +86,12 @@ function contentSecurityPolicy(nonce: string): string {
   return [
     "default-src 'self'",
     // strict-dynamic lets the Razorpay checkout script, which our nonce'd code inserts, load and run.
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' https://checkout.razorpay.com${DEV ? " 'unsafe-eval'" : ""}`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' https://checkout.razorpay.com${META_EMBEDDED ? " https://connect.facebook.net" : ""}${DEV ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    "connect-src 'self' https://*.razorpay.com",
-    "frame-src https://api.razorpay.com https://checkout.razorpay.com",
+    `connect-src 'self' https://*.razorpay.com${META_EMBEDDED ? " https://*.facebook.com https://graph.facebook.com" : ""}`,
+    `frame-src https://api.razorpay.com https://checkout.razorpay.com${META_EMBEDDED ? " https://*.facebook.com" : ""}`,
     "form-action 'self'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
