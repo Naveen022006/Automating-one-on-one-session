@@ -161,7 +161,7 @@ export async function getInfluencerDetail(id: string) {
     where: { id },
     include: {
       user: { select: { emailVerifiedAt: true, createdAt: true } },
-      googleToken: { select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true } },
+      googleToken: { select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true, scope: true } },
       services: { orderBy: { createdAt: "desc" } },
     },
   });

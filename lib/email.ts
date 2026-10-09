@@ -1,6 +1,7 @@
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { customerZone } from "@/lib/format";
+import { sendCustomerEmail } from "@/lib/customer-email";
 import { createMessage, markMessageFailed } from "@/lib/messages";
 import { buildSelfServiceUrl } from "@/lib/self-service";
 import { transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
@@ -118,7 +119,7 @@ export async function sendBookingEmail(
     // Record 'queued' first, then flip to 'sent' once the provider accepts, so a provider error leaves a
     // 'failed' row (recording that we tried) rather than no trace at all.
     messageId = await createMessage({ bookingId, channel: "email", template: kind, status: "queued" });
-    const result = await sendEmail({
+    const result = await sendCustomerEmail(influencer.id, {
       to: { email: booking.customerEmail, name: booking.customerName },
       subject: rendered.subject,
       html: rendered.html,

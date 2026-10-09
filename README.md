@@ -116,3 +116,12 @@ paying; the booking is `REQUESTED` and holds the seat for up to 48 hours. The in
   is emailed a signed link to `/pay/<token>` where they pay through the normal Razorpay checkout.
 - **Decline** -> `CANCELLED`, the customer is emailed the reason. Nothing was ever charged, so there is nothing to refund.
 - An unanswered request expires with the normal expiry job and the seat is released.
+
+## Sending customer email from the influencer's Gmail
+The Google connection asks for Calendar (Meet links) and, unless `GOOGLE_REQUEST_GMAIL_SEND=false`, permission to send
+email (`gmail.send`). Customer-facing emails (confirmation, receipt, reschedule, cancellation, booking request /
+approval / decline) then go out from the influencer's own Gmail address. If they decline that permission, or Gmail
+fails or is rate limited, the platform's email provider sends instead with the influencer as Reply-To, so an email is
+never lost. A dead Google grant flags the influencer to reconnect. Account emails (verification, password reset, payout
+notices, alerts) always come from the platform. `gmail.send` is a restricted Google scope: it works for test users while
+the consent screen is in Testing, and needs Google verification before general use.

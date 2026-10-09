@@ -9,11 +9,15 @@ import { useApi } from "./ApiProvider";
 
 export type GoogleStatusView =
   | { state: "not-connected" }
-  | { state: "connected"; email: string | null; connectedAt: string }
+  | { state: "connected"; email: string | null; connectedAt: string; gmailSend: boolean }
   | { state: "reconnect-needed"; email: string | null; reason: string | null };
 
 const OUTCOME: Record<string, { tone: "success" | "danger" | "warning"; text: string }> = {
-  connected: { tone: "success", text: "Google Calendar connected. New bookings get a Meet link automatically." },
+  connected: { tone: "success", text: "Google connected. New bookings get a Meet link automatically." },
+  "connected-no-gmail": {
+    tone: "warning",
+    text: "Google Calendar connected, but sending email from your Gmail was not allowed. Customer emails will come from our address with your email as Reply-To.",
+  },
   denied: { tone: "warning", text: "Google access was not granted, so Meet links cannot be created yet." },
   "missing-permission": { tone: "warning", text: "Calendar permission was unticked. Connect again and leave every permission ticked." },
   expired: { tone: "warning", text: "The connection step expired. Please try again." },
@@ -43,6 +47,18 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
             <div>
               <p style={{ fontWeight: 600 }}>Connected{status.email ? ` as ${status.email}` : ""}</p>
               <p className="subtle">Meet links are created on this account&rsquo;s calendar.</p>
+              <p className="subtle" style={{ marginTop: 4 }}>
+                {status.gmailSend ? (
+                  <>
+                    <Badge tone="success">Gmail on</Badge> Customer emails are sent from {status.email ?? "your Gmail"}.
+                  </>
+                ) : (
+                  <>
+                    <Badge>Gmail off</Badge> Customer emails come from our address, with your email as Reply-To.{" "}
+                    <a href={`${href}&gmail=1`}>Send from my Gmail instead</a>
+                  </>
+                )}
+              </p>
             </div>
           </div>
           <div className="row">
