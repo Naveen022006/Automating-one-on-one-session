@@ -81,6 +81,7 @@ export interface InfluencerRow {
   onboarded: boolean;
   emailVerified: boolean;
   google: "connected" | "reconnect" | "none";
+  payout: "none" | "pending" | "verified" | "rejected";
   services: number;
   bookings: number;
   grossMinor: number;
@@ -114,6 +115,7 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
         createdAt: true,
         user: { select: { emailVerifiedAt: true } },
         googleToken: { select: { status: true } },
+        payoutAccount: { select: { status: true } },
         _count: { select: { services: true } },
       },
     }),
@@ -143,6 +145,7 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
       onboarded: r.onboardedAt !== null,
       emailVerified: r.user?.emailVerifiedAt != null,
       google: !r.googleToken ? "none" : r.googleToken.status === "ACTIVE" ? "connected" : "reconnect",
+      payout: !r.payoutAccount ? "none" : r.payoutAccount.status === "VERIFIED" ? "verified" : r.payoutAccount.status === "REJECTED" ? "rejected" : "pending",
       services: r._count.services,
       bookings: Number(byId.get(r.id)?.bookings ?? 0),
       grossMinor: Number(byId.get(r.id)?.gross ?? 0),

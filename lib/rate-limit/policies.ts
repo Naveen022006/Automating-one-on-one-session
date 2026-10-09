@@ -34,6 +34,7 @@ export const ROUTE_RULES: RouteRule[] = [
 
   // --- Administrator console: sign-in is a brute-force target, everything else is low volume.
   { name: "admin-login", pattern: /^\/api\/admin\/auth\/login$/, methods: ["POST"], limit: 8, windowMs: 15 * MIN, by: "ip" },
+  { name: "admin-payout-account", pattern: /^\/api\/admin\/influencers\/[^/]+\/payout-account$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   { name: "admin", pattern: /^\/api\/admin\//, limit: 120, windowMs: MIN, by: "ip" },
 
   // --- Public booking flow. Holds reserve a seat, so they are tightly limited to stop seat squatting.
@@ -54,6 +55,7 @@ export const ROUTE_RULES: RouteRule[] = [
 
   // --- Influencer dashboard. Refunds move money, so they get their own tight limit.
   { name: "dashboard-refund", pattern: /^\/api\/dashboard\/bookings\/[^/]+\/refund$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
+  { name: "dashboard-payout-account", pattern: /^\/api\/dashboard\/payout-account$/, methods: ["PUT"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-export", pattern: /^\/api\/dashboard\/earnings\/export$/, limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard", pattern: /^\/api\/dashboard\//, limit: 120, windowMs: MIN, by: "session-or-ip" },
 ];
