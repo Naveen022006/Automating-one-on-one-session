@@ -3,6 +3,7 @@ import { PageHead } from "@/components/app/AppShell";
 import { ServicesManager } from "@/components/app/ServicesManager";
 import { requirePageAuth } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
+import { parseQuestions } from "@/lib/intake";
 
 export const metadata: Metadata = { title: "Services" };
 
@@ -24,6 +25,10 @@ export default async function ServicesPage() {
           capacity: s.capacity,
           active: s.active,
           refundPolicy: s.refundPolicy,
+          intakeQuestions: parseQuestions(s.intakeQuestions),
+          minNoticeHours: s.minNoticeHours,
+          maxAdvanceDays: s.maxAdvanceDays,
+          prepNotes: s.prepNotes,
         }))}
       />
     </div>

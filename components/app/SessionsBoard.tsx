@@ -265,6 +265,20 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
             )}
           </section>
 
+          {!detail.redacted && detail.intakeAnswers.length > 0 && (
+            <section className="stack stack--sm" aria-labelledby="drawer-answers">
+              <h3 id="drawer-answers" className="eyebrow">Customer&rsquo;s answers</h3>
+              <dl className="stack stack--sm" style={{ margin: 0 }}>
+                {detail.intakeAnswers.map((a) => (
+                  <div key={a.id}>
+                    <dt className="subtle">{a.label}</dt>
+                    <dd style={{ margin: 0, whiteSpace: "pre-wrap" }}>{a.answer}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+
           <section className="stack stack--sm" aria-labelledby="drawer-payment">
             <h3 id="drawer-payment" className="eyebrow">Payment</h3>
             {detail.payments.length === 0 ? (

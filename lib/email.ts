@@ -112,6 +112,7 @@ export async function sendBookingEmail(
         ? { amountMinor: payment.amountMinor, currency: payment.currency, reference: payment.providerPaymentId }
         : null,
       refundNote: opts.refundNote,
+      prepNotes: service.prepNotes,
     });
 
     // Record 'queued' first, then flip to 'sent' once the provider accepts, so a provider error leaves a

@@ -30,6 +30,6 @@ export async function GET(req: Request) {
   if (end.to.getTime() - start.from.getTime() > MAX_DAYS * 86_400_000) {
     return NextResponse.json({ error: `Ask for at most ${MAX_DAYS} days` }, { status: 400 });
   }
-  const slots = await openSlots(service, start.from, end.to);
+  const slots = await openSlots(service, start.from, end.to, new Date(), { ignoreWindow: viewer?.influencerId === service.influencerId });
   return NextResponse.json({ days: daysWithSlots(slots, tz) });
 }

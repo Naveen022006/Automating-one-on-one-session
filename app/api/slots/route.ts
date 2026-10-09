@@ -24,5 +24,6 @@ export async function GET(req: Request) {
   const bounds = dayBoundsUtc(date, tz);
   if (!bounds) return NextResponse.json({ error: "Invalid date" }, { status: 400 });
 
-  return NextResponse.json({ slots: await openSlots(service, bounds.from, bounds.to) });
+  const owner = viewer?.influencerId === service.influencerId;
+  return NextResponse.json({ slots: await openSlots(service, bounds.from, bounds.to, new Date(), { ignoreWindow: owner }) });
 }

@@ -17,6 +17,7 @@ import { cancelReminders, enqueueReminders, enqueueSendMessage } from "@/lib/que
 import { describeRefundPolicy, refundDecision, type CancelActor, type RefundPolicy } from "@/lib/refund-policy";
 import { RefundPendingError, refundPayment } from "@/lib/refunds";
 import { NOTICE_MS } from "@/lib/refund-policy";
+import { windowProblem } from "@/lib/booking-window";
 import { blockedDaySet, isSlotStart, type Rule } from "@/lib/slots";
 
 export { SELF_SERVICE_PURPOSE, buildSelfServiceUrl, verifySelfServiceToken } from "@/lib/self-service";
@@ -298,6 +299,9 @@ export async function rescheduleBooking(
     if (policy === "NOTICE_24H" && msToStart < NOTICE_MS) {
       throw new BookingNotManageableError("Sessions can only be rescheduled online at least 24 hours in advance. Please contact the host.");
     }
+    // Customers move within the same booking window as when booking (minimum notice, furthest ahead).
+    const outside = windowProblem(newStart, { minNoticeHours: service.minNoticeHours, maxAdvanceDays: service.maxAdvanceDays });
+    if (outside) throw new RescheduleNotAllowedError(outside);
   }
   const influencerId = service.influencer.id;
   const newEnd = new Date(newStart.getTime() + service.durationMin * 60_000);
