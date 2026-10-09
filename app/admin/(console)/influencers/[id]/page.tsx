@@ -6,6 +6,7 @@ import { PayoutPanel } from "@/components/admin/PayoutPanel";
 import { getInfluencerDetail } from "@/lib/admin/data";
 import { CreatePayoutButton, FeeForm, PayoutRowActions } from "@/components/admin/PayoutActions";
 import { prisma } from "@/lib/db";
+import { evaluateReadiness, readinessInput } from "@/lib/readiness";
 import { viewTemplates } from "@/lib/whatsapp-connection";
 import { getPayoutAccountView } from "@/lib/payout-account";
 import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, loadPayable, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
@@ -27,6 +28,7 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   const currencies = summariseCurrencies(payable, feeBps);
   const owed = new Map(await Promise.all(payouts.filter((p) => p.status === "PAID").map(async (p) => [p.id, await postPayoutRefunds(p.id)] as const)));
   const verified = payout?.status === "VERIFIED";
+  const readiness = evaluateReadiness(readinessInput({ ...i, payoutAccount: payout ? { status: payout.status } : null, _count: { rules: await prisma.availabilityRule.count({ where: { influencerId: id } }), services: i.services.filter((s) => s.active).length } }, i.user?.emailVerifiedAt != null || !i.user));
 
   return (
     <div className="stack stack--lg">
@@ -43,6 +45,16 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
             <dt>Joined</dt>
             <dd>{i.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</dd>
           </dl>
+        </Card>
+        <Card title="Go-live checklist">
+          <ul className="stack stack--sm" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {readiness.items.map((c) => (
+              <li key={c.key} className="row row--between">
+                <span>{c.label}</span>
+                {c.state === "done" ? <Badge tone="success">Done</Badge> : c.state === "attention" ? <Badge tone="danger">Needs action</Badge> : c.required ? <Badge tone="warning">Required</Badge> : <Badge>Recommended</Badge>}
+              </li>
+            ))}
+          </ul>
         </Card>
         <Card title="Connections">
           <dl className="kv">

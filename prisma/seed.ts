@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client";
 import { hashPassword } from "../lib/auth/password";
+import { encryptSecret } from "../lib/crypto";
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
@@ -40,6 +41,26 @@ async function main() {
         { influencerId: influencer.id, title: "1:1 Career Call", description: "30 minutes, just you and me.", durationMin: 30, priceMinor: 49900, type: "ONE_TO_ONE", capacity: 1, refundPolicy: "NOTICE_24H" },
         { influencerId: influencer.id, title: "Small Group Workshop", description: "Up to 5 people, 60 minutes.", durationMin: 60, priceMinor: 19900, type: "GROUP", capacity: 5, refundPolicy: "FULL" },
       ],
+    });
+  }
+
+  // Demo payout details (verified), so the admin payout flow can be tried locally. Fake, development-only numbers.
+  if (process.env.NODE_ENV !== "production" && process.env.TOKEN_ENCRYPTION_KEY) {
+    await prisma.payoutAccount.upsert({
+      where: { influencerId: influencer.id },
+      update: {},
+      create: {
+        influencerId: influencer.id,
+        method: "BANK",
+        accountHolderName: "Demo Creator",
+        bankName: "Demo Bank",
+        ifsc: "DEMO0000001",
+        accountNumberEnc: encryptSecret("000011112222", `payout:${influencer.id}:account`),
+        accountNumberMasked: "XXXXXXXX2222",
+        status: "VERIFIED",
+        reviewedAt: new Date(),
+        reviewedByEmail: "seed",
+      },
     });
   }
 

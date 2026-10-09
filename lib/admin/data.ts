@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { CONNECTION_KEYS, evaluateReadiness, readinessInput } from "@/lib/readiness";
 import { viewTemplates } from "@/lib/whatsapp-connection";
 
 export const PAGE_SIZE = 25;
@@ -80,6 +81,10 @@ export interface InfluencerRow {
   name: string;
   email: string;
   onboarded: boolean;
+  /** Taking bookings: onboarding done, email verified and every required connection in place. */
+  live: boolean;
+  /** Why it is not live (empty when live). */
+  blockers: string[];
   emailVerified: boolean;
   google: "connected" | "reconnect" | "none";
   payout: "none" | "pending" | "verified" | "rejected";
@@ -116,10 +121,10 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
         onboardedAt: true,
         createdAt: true,
         user: { select: { emailVerifiedAt: true } },
-        googleToken: { select: { status: true } },
+        googleToken: { select: { status: true, scope: true } },
         payoutAccount: { select: { status: true } },
         whatsappConnection: { select: { status: true, templates: true } },
-        _count: { select: { services: true } },
+        _count: { select: { services: { where: { active: true } }, rules: true } },
       },
     }),
   ]);
@@ -140,7 +145,13 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
   const byId = new Map(money.map((m) => [m.influencer_id, m]));
 
   return paged(
-    rows.map((r) => ({
+    rows.map((r) => {
+      const readiness = evaluateReadiness(readinessInput(r, r.user?.emailVerifiedAt != null || !r.user));
+      const connectionBlockers = readiness.blockers.filter((b) => b.key === "email" || (CONNECTION_KEYS as readonly string[]).includes(b.key));
+      const live = r.onboardedAt !== null && connectionBlockers.length === 0;
+      return {
+      live,
+      blockers: r.onboardedAt === null ? ["Finish onboarding", ...connectionBlockers.map((b) => b.label)] : connectionBlockers.map((b) => b.label),
       id: r.id,
       slug: r.slug,
       name: r.name,
@@ -154,7 +165,8 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
       bookings: Number(byId.get(r.id)?.bookings ?? 0),
       grossMinor: Number(byId.get(r.id)?.gross ?? 0),
       createdAt: r.createdAt,
-    })),
+      };
+    }),
     total,
     page,
   );

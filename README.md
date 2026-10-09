@@ -139,3 +139,21 @@ the dashboard shows which are approved. Until a template is approved, or if ther
 by SMS. A token Meta rejects flags the connection once and alerts the influencer. Set `WHATSAPP_PLATFORM_FALLBACK=true` only
 for testing with the platform's own number. Embedded Signup could not be exercised without an approved Meta app: the manual
 connect path is verified against Meta's real Graph API.
+
+## Go-live readiness
+A booking page only takes bookings (and money) once the influencer has what the product needs. The same rules drive the
+dashboard checklist, the public page and the booking/slot APIs (`lib/readiness.ts`):
+
+- **Always required:** verified email, one active service, weekly hours.
+- **Required by default:** Google Calendar (Meet links are created on it) and payout details (added; verification happens
+  before the first payout).
+- **Recommended, not blocking:** their own WhatsApp number and sending email from their Gmail. Without them customers get SMS
+  and the platform's email address.
+
+Change what blocks with `READINESS_REQUIRED` (comma list of `google,gmail,whatsapp,payout`). Until a page is live only its
+owner can open it, as a preview that lists what is missing; everyone else gets a 404 and holds are refused. The influencer
+overview shows a go-live checklist, the onboarding wizard has WhatsApp and payout steps, and the admin console shows
+Live / Not live (and what each influencer is waiting for). A dead Google grant takes a page offline until they reconnect.
+
+For local development set `READINESS_BYPASS=true` (ignored in production) so the seeded demo page is bookable without
+connecting Google. The seed also adds verified demo payout details.

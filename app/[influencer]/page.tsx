@@ -35,7 +35,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ influe
         {profile.preview && (
           <div style={{ marginTop: 24 }}>
             <Alert tone="info" title="Preview">
-              Only you can see this page until you finish onboarding and confirm your email.
+              Only you can see this page until it is ready for customers.{profile.blockers.length > 0 && <> Still to do: {profile.blockers.join(", ")}.</>}
             </Alert>
           </div>
         )}
