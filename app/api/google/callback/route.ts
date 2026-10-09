@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { CALENDAR_SCOPE, exchangeCode } from "@/lib/google";
+import { hasGmailSendScope } from "@/lib/gmail";
 import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, saveGoogleToken } from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";
 
-type Outcome = "connected" | "denied" | "missing-permission" | "failed" | "expired";
+type Outcome = "connected" | "connected-no-gmail" | "denied" | "missing-permission" | "failed" | "expired";
 
 function back(req: NextRequest, returnTo: string, outcome: Outcome): NextResponse {
   const url = req.nextUrl.clone();
@@ -24,7 +25,7 @@ function back(req: NextRequest, returnTo: string, outcome: Outcome): NextRespons
 // influencer started from (settings or onboarding) through ?google=<outcome>.
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
-  const state = verifyToken<{ i: string; n: string; r?: string }>(OAUTH_STATE_PURPOSE, params.get("state"));
+  const state = verifyToken<{ i: string; n: string; r?: string; g?: number }>(OAUTH_STATE_PURPOSE, params.get("state"));
   const returnTo = safeNextPath(state?.r, "/dashboard/settings");
   const cookieNonce = req.cookies.get(NONCE_COOKIE)?.value;
   if (!state || !cookieNonce || !safeEqual(state.n, cookieNonce)) return back(req, returnTo, "expired");
@@ -37,11 +38,14 @@ export async function GET(req: NextRequest) {
   const code = params.get("code");
   if (!code) return back(req, returnTo, "failed");
 
+  let gmailMissing = false;
   try {
     const { refreshToken, scope, email } = await exchangeCode(code);
     // Google lets users untick individual permissions on the consent screen; without this one we cannot create events.
     if (!scope.split(" ").includes(CALENDAR_SCOPE)) return back(req, returnTo, "missing-permission");
     await saveGoogleToken(state.i, refreshToken, scope, email);
+    // Gmail is optional: people can untick it, and customer emails then go out from the platform address instead.
+    gmailMissing = state.g === 1 && !hasGmailSendScope(scope);
   } catch (e) {
     console.error("[google:callback] connect failed", e instanceof Error ? e.message : e);
     return back(req, returnTo, "failed");
@@ -55,5 +59,5 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     console.error("[google:callback] could not re-queue waiting bookings", e);
   }
-  return back(req, returnTo, "connected");
+  return back(req, returnTo, gmailMissing ? "connected-no-gmail" : "connected");
 }

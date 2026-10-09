@@ -54,20 +54,20 @@ export async function markReconnectNeeded(influencerId: string, reason: string):
 
 export type GoogleConnectionStatus =
   | { state: "not-connected" }
-  | { state: "connected"; email: string | null; connectedAt: Date }
+  | { state: "connected"; email: string | null; connectedAt: Date; gmailSend: boolean }
   | { state: "reconnect-needed"; email: string | null; reason: string | null; since: Date | null };
 
 /** Connection state for the dashboard: Connected as <email> / Reconnect needed (reason) / Not connected. */
 export async function getGoogleStatus(influencerId: string): Promise<GoogleConnectionStatus> {
   const row = await prisma.googleToken.findUnique({
     where: { influencerId },
-    select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true, reconnectNeededAt: true },
+    select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true, reconnectNeededAt: true, scope: true },
   });
   if (!row) return { state: "not-connected" };
   if (row.status === "RECONNECT_NEEDED") {
     return { state: "reconnect-needed", email: row.googleEmail, reason: row.reconnectReason, since: row.reconnectNeededAt };
   }
-  return { state: "connected", email: row.googleEmail, connectedAt: row.connectedAt };
+  return { state: "connected", email: row.googleEmail, connectedAt: row.connectedAt, gmailSend: row.scope.split(/\s+/).includes("https://www.googleapis.com/auth/gmail.send") };
 }
 
 /**

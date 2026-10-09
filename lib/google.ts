@@ -12,6 +12,9 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_URL = "https://www.googleapis.com/calendar/v3";
 
 /** Narrowest scope that allows creating/updating/deleting events (Phase 5 needs update + delete). */
+/** Permission to send email as the influencer (restricted scope; see lib/gmail.ts). */
+export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 
 export class GoogleReconnectError extends Error {}
@@ -87,12 +90,23 @@ function env(name: string): string {
  */
 export const IDENTITY_SCOPES = ["openid", "email"];
 
-export function buildAuthUrl(state: string, loginHint?: string): string {
+/**
+ * Whether the connect flow asks for permission to send email as the influencer (gmail.send). On by default; set
+ * GOOGLE_REQUEST_GMAIL_SEND=false to ask for Calendar only (for example before the Google app is verified).
+ */
+export function requestGmailByDefault(env = process.env): boolean {
+  return (env.GOOGLE_REQUEST_GMAIL_SEND ?? "true").toLowerCase() !== "false";
+}
+
+export function buildAuthUrl(state: string, loginHint?: string, opts: { gmail?: boolean } = {}): string {
+  const gmail = opts.gmail ?? requestGmailByDefault();
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
     response_type: "code",
-    scope: [CALENDAR_SCOPE, ...IDENTITY_SCOPES].join(" "),
+    scope: [CALENDAR_SCOPE, ...(gmail ? [GMAIL_SEND_SCOPE] : []), ...IDENTITY_SCOPES].join(" "),
+    // Incremental consent: adding Gmail later keeps the Calendar permission already granted.
+    include_granted_scopes: "true",
     ...(loginHint ? { login_hint: loginHint } : {}),
     // offline + consent: Google only returns a refresh token on the first grant unless consent is forced.
     access_type: "offline",

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
-import { buildAuthUrl } from "@/lib/google";
+import { buildAuthUrl, requestGmailByDefault } from "@/lib/google";
 import { NONCE_COOKIE, OAUTH_STATE_PURPOSE } from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
 import { randomNonce, signToken } from "@/lib/signing";
@@ -23,11 +23,14 @@ export async function GET(req: NextRequest) {
   // `state` is signed (so it cannot be forged) and carries a nonce that must match this browser's cookie on the
   // way back, so a callback URL cannot be replayed into a different person's session.
   const nonce = randomNonce();
-  const state = signToken(OAUTH_STATE_PURPOSE, { i: auth.influencerId, n: nonce, r: returnTo }, STATE_TTL_SEC);
+  // ?gmail=1 asks for send-email permission too (the "Send from my Gmail" button); ?gmail=0 asks for Calendar only.
+  const flag = req.nextUrl.searchParams.get("gmail");
+  const gmail = flag === "1" ? true : flag === "0" ? false : requestGmailByDefault();
+  const state = signToken(OAUTH_STATE_PURPOSE, { i: auth.influencerId, n: nonce, r: returnTo, g: gmail ? 1 : 0 }, STATE_TTL_SEC);
 
   let authUrl: string;
   try {
-    authUrl = buildAuthUrl(state, auth.email);
+    authUrl = buildAuthUrl(state, auth.email, { gmail });
   } catch (e) {
     console.error("[google:connect] not configured", e instanceof Error ? e.message : e);
     const url = req.nextUrl.clone();

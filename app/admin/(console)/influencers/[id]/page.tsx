@@ -55,6 +55,10 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
                 <Badge tone="danger">Reconnect needed</Badge>
               )}
             </dd>
+            <dt>Email from Gmail</dt>
+            <dd>
+              {i.googleToken?.scope.split(/\s+/).includes("https://www.googleapis.com/auth/gmail.send") ? <Badge tone="success">On</Badge> : <Badge>Off (platform sender)</Badge>}
+            </dd>
           </dl>
         </Card>
       </div>

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { alertInfluencer } from "@/lib/alerts";
-import { sendAccountEmail } from "@/lib/email";
+import { sendCustomerRendered } from "@/lib/customer-email";
 import { requestEmail, type RequestEmailData } from "@/lib/email/templates";
 import { formatSessionTime } from "@/lib/format";
 import { APPROVED_PAY_HOURS, REQUEST_TTL_HOURS } from "@/lib/holds";
@@ -86,7 +86,7 @@ export async function notifyRequestCreated(bookingId: string): Promise<void> {
     });
     if (!b) return;
     const d = emailData(b);
-    await sendAccountEmail({ email: b.customerEmail, name: b.customerName }, requestEmail("request-received", { ...d, decideWithinHours: REQUEST_TTL_HOURS }), "request-received");
+    await sendCustomerRendered(b.session.service.influencer.id, { email: b.customerEmail, name: b.customerName }, requestEmail("request-received", { ...d, decideWithinHours: REQUEST_TTL_HOURS }), "request-received");
     await alertInfluencer(b.session.service.influencer.id, {
       kind: "booking-request",
       detail: `${b.customerName} asked to book ${b.session.service.title} on ${formatSessionTime(b.session.startTime, b.session.service.influencer.timezone)}. Approve or decline before the held time is released.`,
@@ -116,7 +116,8 @@ export async function approveRequest(influencerId: string, bookingId: string, no
 
   try {
     const payUrl = buildPayUrl(b.id, (payBy.getTime() - now.getTime()) / 1000);
-    await sendAccountEmail(
+    await sendCustomerRendered(
+      b.session.service.influencer.id,
       { email: b.customerEmail, name: b.customerName },
       requestEmail("request-approved", { ...emailData(b), payUrl, payBy, amount: { amountMinor: b.session.service.priceMinor, currency: b.session.service.currency } }),
       "request-approved",
@@ -137,5 +138,5 @@ export async function declineRequest(influencerId: string, bookingId: string, re
     data: { status: "CANCELLED", decidedAt: now, declineReason: note },
   });
   if (count === 0) throw new ApprovalError("This request changed while you were declining it. Refresh and try again.");
-  await sendAccountEmail({ email: b.customerEmail, name: b.customerName }, requestEmail("request-declined", { ...emailData(b), reason: note }), "request-declined");
+  await sendCustomerRendered(b.session.service.influencer.id, { email: b.customerEmail, name: b.customerName }, requestEmail("request-declined", { ...emailData(b), reason: note }), "request-declined");
 }

@@ -25,7 +25,7 @@ export default async function OnboardingPage({ searchParams }: { searchParams: P
   ]);
   const googleView: GoogleStatusView =
     google.state === "connected"
-      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString() }
+      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend }
       : google.state === "reconnect-needed"
         ? { state: "reconnect-needed", email: google.email, reason: google.reason }
         : { state: "not-connected" };
