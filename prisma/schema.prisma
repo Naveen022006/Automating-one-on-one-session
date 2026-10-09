@@ -31,14 +31,109 @@ model Influencer {
   name      String
   email     String   @unique
   timezone  String   @default("Asia/Kolkata")
+  bio       String?
+  photoUrl  String?  @map("photo_url")
+  // Set when the influencer finishes the onboarding wizard (Phase 7). Null for accounts still onboarding.
+  onboardedAt DateTime? @map("onboarded_at")
+  // Notification preferences for influencer alerts (failed messages, Google reconnect, refunds needed).
+  notifyByEmail Boolean @default(true) @map("notify_by_email")
   createdAt DateTime @default(now()) @map("created_at")
 
   services     Service[]
   rules        AvailabilityRule[]
   blockedDates BlockedDate[]
   googleToken  GoogleToken?
+  user         User?
 
   @@map("influencers")
+}
+
+// An influencer's login (Phase 7). Customers stay guests; only influencers have accounts. One user owns exactly
+// one influencer profile. The email is stored lowercased.
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  // Self-describing hash string (see lib/auth/password.ts), never the password itself.
+  passwordHash      String    @map("password_hash")
+  emailVerifiedAt   DateTime? @map("email_verified_at")
+  termsAcceptedAt   DateTime  @map("terms_accepted_at")
+  passwordChangedAt DateTime? @map("password_changed_at")
+  influencerId      String    @unique @map("influencer_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  influencer         Influencer               @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  sessions           AuthSession[]
+  passwordResets     PasswordResetToken[]
+  emailVerifications EmailVerificationToken[]
+
+  @@map("users")
+}
+
+// A logged-in browser. The cookie carries a random token; only its SHA-256 is stored, so a database leak does not
+// leak usable sessions.
+model AuthSession {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique @map("token_hash")
+  userId     String   @map("user_id")
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastUsedAt DateTime @default(now()) @map("last_used_at")
+  // When the password was last entered on this session. Sensitive actions (refunds, password change, log out
+  // everywhere...) require this to be within the last 8 hours, otherwise the user re-enters their password.
+  authenticatedAt DateTime @default(now()) @map("authenticated_at")
+  userAgent  String?  @map("user_agent")
+  ip         String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+// Single-use, hashed, 1-hour password reset token.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// Single-use, hashed email verification token.
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+// Database-backed rate limit counters (Phase 7). Used when Redis is not configured or is unreachable, so API
+// rate limits keep working on the database alone. One row per (key, fixed window); expired rows are swept by the
+// worker. See lib/rate-limit.
+model RateLimitBucket {
+  key         String
+  windowStart DateTime @map("window_start")
+  count       Int      @default(0)
+  expiresAt   DateTime @map("expires_at")
+
+  @@id([key, windowStart])
+  @@index([expiresAt])
+  @@map("rate_limit_buckets")
 }
 
 // A day the influencer is unavailable (holiday, leave...). Slots are never generated for a blocked day and
@@ -75,12 +170,23 @@ model GoogleToken {
   status            GoogleTokenStatus @default(ACTIVE)
   reconnectReason   String?           @map("reconnect_reason")
   reconnectNeededAt DateTime?         @map("reconnect_needed_at")
+  // The Google account the calendar belongs to (from the OpenID email claim), shown as "Connected as ...".
+  googleEmail       String?           @map("google_email")
   connectedAt       DateTime          @default(now()) @map("connected_at")
   updatedAt         DateTime          @updatedAt @map("updated_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 
   @@map("google_tokens")
+}
+
+// What a CUSTOMER gets back when they cancel their own booking. An influencer-initiated cancel always refunds in
+// full. FULL: always refund. NOTICE_24H: full refund only if cancelled at least 24 hours before the session.
+// NONE: no refund on customer cancellation.
+enum RefundPolicy {
+  FULL
+  NOTICE_24H
+  NONE
 }
 
 model Service {
@@ -94,6 +200,7 @@ model Service {
   type         ServiceType @default(ONE_TO_ONE)
   capacity     Int         @default(1)
   active       Boolean     @default(true)
+  refundPolicy RefundPolicy @default(FULL) @map("refund_policy")
   createdAt    DateTime    @default(now()) @map("created_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
@@ -156,6 +263,12 @@ model Booking {
   meetLink      String?       @map("meet_link")
   // Last create-meeting failure, cleared on success. Lets the dashboard show why a paid booking has no link yet.
   lastError     String?       @map("last_error")
+  // Set when the customer's personal data was erased on request (name/email/phone replaced). Payments are kept
+  // for accounting.
+  redactedAt    DateTime?     @map("redacted_at")
+  // The service's cancellation policy when the customer booked (Phase 7). Later policy edits never change what an
+  // existing booking was sold under. Null for bookings made before this column existed (use the service's policy).
+  refundPolicy  RefundPolicy? @map("refund_policy")
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
@@ -187,13 +300,39 @@ model Payment {
   // Set when money was captured but the booking could not be honoured (needs a manual/automatic refund).
   needsRefund       Boolean       @default(false) @map("needs_refund")
   failureReason     String?       @map("failure_reason")
+  // Refund summary (Phase 7), derived from the `refunds` rows: total refunded (pending or processed, not failed),
+  // the latest refund's status ("requested" while a Razorpay call is in flight or unconfirmed, then "pending" |
+  // "processed" | "failed"), and when the last refund was issued. The payment becomes REFUNDED once the total
+  // reaches the amount paid; partial refunds leave it CAPTURED.
+  refundStatus      String?       @map("refund_status")
+  refundAmountMinor Int?          @map("refund_amount_minor")
+  refundedAt        DateTime?     @map("refunded_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
-  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  refunds Refund[]
 
   @@index([bookingId])
   @@map("payments")
+}
+
+// One Razorpay refund against a payment (a payment can have several partial refunds). Keyed by Razorpay's refund
+// id so webhooks and reconciliation upsert the same row.
+model Refund {
+  id               String   @id @default(cuid())
+  paymentId        String   @map("payment_id")
+  providerRefundId String   @unique @map("provider_refund_id")
+  amountMinor      Int      @map("amount_minor")
+  // "pending" | "processed" | "failed"
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@map("refunds")
 }
 
 // Delivery channels. WHATSAPP/SMS are the real customer-messaging channels (Phase 4/5); EMAIL and LOG are

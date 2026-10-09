@@ -21,3 +21,18 @@ export function verifySelfServiceToken(token: string | null | undefined): string
   const data = verifyToken<{ b: string }>(SELF_SERVICE_PURPOSE, token);
   return data?.b ?? null;
 }
+
+/**
+ * Short-lived token handed to the browser that created a hold, so only that browser's confirmation page receives
+ * the self-service link from GET /api/bookings/[id] (the booking id alone is shown as a reference and may be
+ * shared with support). Distinct purpose, so it can never be used as a self-service token itself.
+ */
+export const BOOKING_POLL_PURPOSE = "booking-confirmation-poll";
+
+export function signBookingPollToken(bookingId: string, ttlSec = 2 * 3_600): string {
+  return signToken(BOOKING_POLL_PURPOSE, { b: bookingId }, ttlSec);
+}
+
+export function verifyBookingPollToken(bookingId: string, token: string | null | undefined): boolean {
+  return verifyToken<{ b: string }>(BOOKING_POLL_PURPOSE, token)?.b === bookingId;
+}

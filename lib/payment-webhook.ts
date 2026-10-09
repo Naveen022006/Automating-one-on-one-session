@@ -2,11 +2,13 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { activeSeatWhere } from "@/lib/holds";
 import { enqueueCreateMeeting } from "@/lib/queue";
+import { applyRefundWebhook } from "@/lib/refunds";
 
 export interface RazorpayWebhook {
   event: string;
   payload?: {
     payment?: { entity?: RazorpayPaymentEntity };
+    refund?: { entity?: { id: string; payment_id: string; amount?: number; status?: string } };
   };
 }
 interface RazorpayPaymentEntity {
@@ -36,6 +38,13 @@ export async function handleRazorpayEvent(
         VALUES (${"we_" + crypto.randomUUID()}, 'razorpay', ${eventId}, ${event.event}, now())
         ON CONFLICT (provider, event_id) DO NOTHING`;
       if (inserted === 0) return "duplicate";
+
+      // Refund outcome for a refund issued from the dashboard (lib/refunds.ts).
+      if (event.event === "refund.processed" || event.event === "refund.failed") {
+        const refund = event.payload?.refund?.entity;
+        if (!refund?.id) return "ignored";
+        return (await applyRefundWebhook(event.event, refund, undefined, tx)) ? "processed" : "ignored";
+      }
 
       const entity = event.payload?.payment?.entity;
       if (!entity?.order_id) return "ignored";

@@ -1,6 +1,9 @@
 import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
+import { sweepExpiredAuthRows } from "../lib/auth/sweep";
 import { expireStaleHolds } from "../lib/holds";
+import { reportError } from "../lib/observability";
+import { sweepExpiredBuckets } from "../lib/rate-limit/sweep";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
 import { reportMessageFailure } from "../lib/messaging";
 import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from "../lib/queue";
@@ -9,14 +12,28 @@ import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 
 const INTERVAL_MS = 30_000;
+/** Housekeeping (expired rate-limit buckets, sessions and single-use tokens) runs every SWEEP_EVERY ticks (~10 min). */
+const SWEEP_EVERY = 20;
+let ticks = 0;
+
+async function sweep() {
+  try {
+    const buckets = await sweepExpiredBuckets();
+    const auth = await sweepExpiredAuthRows();
+    if (buckets + auth > 0) console.log(`[worker] swept ${buckets} rate-limit bucket(s), ${auth} expired auth row(s)`);
+  } catch (e) {
+    reportError(e, { where: "worker:sweep" });
+  }
+}
 
 async function tick() {
   try {
     const n = await expireStaleHolds();
     if (n > 0) console.log(`[worker] expired ${n} stale hold(s)`);
   } catch (e) {
-    console.error("[worker] expire-holds failed", e);
+    reportError(e, { where: "worker:expire-holds" });
   }
+  if (ticks++ % SWEEP_EVERY === 0) await sweep();
 }
 
 console.log("[worker] hold expiry running every", INTERVAL_MS / 1000, "s");

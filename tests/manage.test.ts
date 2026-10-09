@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { before, mock, test } from "node:test";
 import type { Rule } from "../lib/slots";
 
 /**
@@ -17,7 +17,12 @@ const monday: Rule = { weekday: 1, startTime: "10:00", endTime: "12:00", timezon
 
 // The pure helper does not touch the DB, but importing lib/manage pulls in @/lib/db at module load, so this
 // (like tests/group-meeting.test.ts) resolves only where node_modules + the @/* alias exist (CI).
-const { validateRescheduleTime } = await import("../lib/manage");
+// Imported lazily inside each test (no top-level await: tsx runs these tests as CommonJS).
+const validateRescheduleTime: typeof import("../lib/manage").validateRescheduleTime = (args) => loaded!(args);
+let loaded: typeof import("../lib/manage").validateRescheduleTime | null = null;
+before(async () => {
+  ({ validateRescheduleTime: loaded } = await import("../lib/manage"));
+});
 
 test("validateRescheduleTime rejects a past time", async () => {
   const reason = validateRescheduleTime({
@@ -149,12 +154,23 @@ function groupFixture(remainingAfterRemove: number) {
 
 async function loadManageWithMocks(session: FakeSession, bookings: FakeBooking[]) {
   mock.module("@/lib/db", { namedExports: { prisma: makeDb([session], bookings) } });
-  mock.module("@/lib/queue", { namedExports: { enqueueSendMessage: async () => {} } });
+  mock.module("@/lib/queue", {
+    namedExports: {
+      enqueueSendMessage: async () => {},
+      enqueueReminders: async () => {},
+      cancelReminders: async () => {},
+      requeueCreateMeeting: async () => {},
+    },
+  });
   mock.module("@/lib/alerts", { namedExports: { alertInfluencer: async () => {} } });
   mock.module("@/lib/messages", { namedExports: { createMessage: async () => "m1" } });
+  mock.module("@/lib/messaging", { namedExports: { rearmMessage: async () => {} } });
   mock.module("@/lib/email", { namedExports: { sendBookingEmail: async () => {} } });
   mock.module("@/lib/google-tokens", {
-    namedExports: { getRefreshToken: async () => ({ state: "ok", refreshToken: "refresh" }) },
+    namedExports: {
+      getRefreshToken: async () => ({ state: "ok", refreshToken: "refresh" }),
+      markReconnectNeeded: async () => false,
+    },
   });
   return await import("../lib/manage.ts?manage-cancel=" + Math.random());
 }
@@ -163,7 +179,7 @@ test("group cancel removes only the leaving attendee when others remain, keeping
   const { session, google, removed, deleted } = groupFixture(1); // one attendee still remains
   const mod = await loadManageWithMocks(session, session.bookings);
 
-  await mod.cancelBooking("b1", { google });
+  await mod.cancelBooking("b1", { actor: "influencer" }, { google });
 
   assert.deepEqual(removed, [{ eventId: EVENT_ID, email: "a@example.com" }], "removes just this attendee");
   assert.deepEqual(deleted, [], "the shared event is NOT deleted while others remain");
@@ -177,7 +193,7 @@ test("group cancel deletes the shared event and clears the session when the last
   const { session, google, removed, deleted } = groupFixture(0); // nobody left after removal
   const mod = await loadManageWithMocks(session, session.bookings);
 
-  await mod.cancelBooking("b1", { google });
+  await mod.cancelBooking("b1", { actor: "influencer" }, { google });
 
   assert.deepEqual(removed, [{ eventId: EVENT_ID, email: "a@example.com" }]);
   assert.deepEqual(deleted, [EVENT_ID], "the shared event is deleted once the last attendee leaves");

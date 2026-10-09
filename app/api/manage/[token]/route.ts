@@ -33,9 +33,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
 
   try {
     if (parsed.data.action === "cancel") {
-      await cancelBooking(bookingId);
+      // A customer cancel: the refund follows the service's cancellation policy (lib/refunds.ts).
+      const result = await cancelBooking(bookingId, { actor: "customer" });
+      return NextResponse.json({ ok: true, refund: result.refund });
     } else {
-      await rescheduleBooking(bookingId, new Date(parsed.data.startTime));
+      // Customer rules (lib/manage.ts): not for group sessions, not after the start, not inside a 24-hour notice window.
+      await rescheduleBooking(bookingId, new Date(parsed.data.startTime), {}, { actor: "customer" });
     }
     return NextResponse.json({ ok: true });
   } catch (e) {

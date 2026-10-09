@@ -80,12 +80,20 @@ function env(name: string): string {
   return v;
 }
 
-export function buildAuthUrl(state: string): string {
+/**
+ * `openid email` are non-sensitive scopes added only so the dashboard can show which Google account the calendar
+ * belongs to ("Connected as ..."). They are part of the Calendar connect consent, NOT a sign-in: logging in to the
+ * app never uses Google (doc/07 B2).
+ */
+export const IDENTITY_SCOPES = ["openid", "email"];
+
+export function buildAuthUrl(state: string, loginHint?: string): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
     response_type: "code",
-    scope: CALENDAR_SCOPE,
+    scope: [CALENDAR_SCOPE, ...IDENTITY_SCOPES].join(" "),
+    ...(loginHint ? { login_hint: loginHint } : {}),
     // offline + consent: Google only returns a refresh token on the first grant unless consent is forced.
     access_type: "offline",
     prompt: "consent",
@@ -346,7 +354,7 @@ export const google: GoogleClient = createGoogleClient();
 export async function exchangeCode(
   code: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ refreshToken: string; scope: string }> {
+): Promise<{ refreshToken: string; scope: string; email: string | null }> {
   let res: Response;
   try {
     res = await fetchImpl(TOKEN_URL, {
@@ -368,11 +376,42 @@ export async function exchangeCode(
     const { reason, message } = await readError(res);
     throw new GoogleRequestError(`Code exchange failed (${res.status} ${reason}): ${message}`);
   }
-  const body = (await res.json()) as { refresh_token?: string; scope?: string };
+  const body = (await res.json()) as { refresh_token?: string; scope?: string; id_token?: string };
   if (!body.refresh_token) {
     throw new GoogleRequestError(
       "Google did not return a refresh token. Remove the app at myaccount.google.com/permissions and connect again.",
     );
   }
-  return { refreshToken: body.refresh_token, scope: body.scope ?? "" };
+  return { refreshToken: body.refresh_token, scope: body.scope ?? "", email: emailFromIdToken(body.id_token) };
+}
+
+/**
+ * Reads the `email` claim from the ID token returned by the token endpoint. The token came straight from Google
+ * over TLS in response to our own client-authenticated request, so (per OpenID Connect Core 3.1.3.7) its
+ * signature does not need re-verifying for this display-only use.
+ */
+export function emailFromIdToken(idToken: string | undefined): string | null {
+  if (!idToken) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      email?: string;
+      email_verified?: boolean;
+    };
+    return typeof payload.email === "string" && payload.email.length <= 320 ? payload.email : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Revokes a refresh token at Google (used by "Disconnect"). Best-effort: a dead token is already revoked. */
+export async function revokeToken(token: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  try {
+    await fetchImpl(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    /* best-effort */
+  }
 }

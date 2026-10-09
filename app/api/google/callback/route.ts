@@ -1,43 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAuth } from "@/lib/auth/session";
 import { CALENDAR_SCOPE, exchangeCode } from "@/lib/google";
 import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, saveGoogleToken } from "@/lib/google-tokens";
+import { safeNextPath } from "@/lib/http";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";
 
-// Static messages only: nothing from the request is ever interpolated into the HTML.
-function page(status: number, title: string, message: string) {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1>${title}</h1><p>${message}</p></body></html>`;
-  const res = new NextResponse(html, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
+type Outcome = "connected" | "denied" | "missing-permission" | "failed" | "expired";
+
+function back(req: NextRequest, returnTo: string, outcome: Outcome): NextResponse {
+  const url = req.nextUrl.clone();
+  const [path, query = ""] = returnTo.split("?");
+  const params = new URLSearchParams(query);
+  params.set("google", outcome);
+  url.pathname = path;
+  url.search = `?${params}`;
+  const res = NextResponse.redirect(url);
   res.cookies.delete({ name: NONCE_COOKIE, path: "/api/google" });
   return res;
 }
 
-// Step 2 of the connect flow: Google redirects here with ?code=...&state=...
+// Step 2 of the connect flow: Google redirects here with ?code=...&state=... The outcome is shown on the page the
+// influencer started from (settings or onboarding) through ?google=<outcome>.
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
-
-  const state = verifyToken<{ i: string; n: string }>(OAUTH_STATE_PURPOSE, params.get("state"));
+  const state = verifyToken<{ i: string; n: string; r?: string }>(OAUTH_STATE_PURPOSE, params.get("state"));
+  const returnTo = safeNextPath(state?.r, "/dashboard/settings");
   const cookieNonce = req.cookies.get(NONCE_COOKIE)?.value;
-  if (!state || !cookieNonce || !safeEqual(state.n, cookieNonce)) {
-    return page(400, "Connection failed", "This sign-in session is invalid or has expired. Please open your connect link again.");
-  }
+  if (!state || !cookieNonce || !safeEqual(state.n, cookieNonce)) return back(req, returnTo, "expired");
 
-  if (params.get("error")) {
-    return page(400, "Not connected", "Google Calendar access was not granted, so session links cannot be created yet. Open your connect link to try again.");
-  }
+  // The browser finishing the flow must still be logged in as the influencer who started it.
+  const auth = await getAuth();
+  if (!auth || auth.influencerId !== state.i) return back(req, returnTo, "expired");
+
+  if (params.get("error")) return back(req, returnTo, "denied");
   const code = params.get("code");
-  if (!code) return page(400, "Connection failed", "Google did not return an authorisation code. Please try again.");
+  if (!code) return back(req, returnTo, "failed");
 
   try {
-    const { refreshToken, scope } = await exchangeCode(code);
+    const { refreshToken, scope, email } = await exchangeCode(code);
     // Google lets users untick individual permissions on the consent screen; without this one we cannot create events.
-    if (!scope.split(" ").includes(CALENDAR_SCOPE)) {
-      return page(400, "Permission missing", "Calendar permission was not granted. Please try again and leave all permissions ticked.");
-    }
-    await saveGoogleToken(state.i, refreshToken, scope);
+    if (!scope.split(" ").includes(CALENDAR_SCOPE)) return back(req, returnTo, "missing-permission");
+    await saveGoogleToken(state.i, refreshToken, scope, email);
   } catch (e) {
-    console.error("[google:callback] connect failed", e);
-    return page(502, "Connection failed", "We could not complete the connection with Google. Please try again in a moment.");
+    console.error("[google:callback] connect failed", e instanceof Error ? e.message : e);
+    return back(req, returnTo, "failed");
   }
 
   // Bookings that were paid while the connection was broken can get their Meet link now. A Redis hiccup here must
@@ -48,6 +55,5 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     console.error("[google:callback] could not re-queue waiting bookings", e);
   }
-
-  return page(200, "Google Calendar connected", "You're all set. Meet links will now be created automatically for new bookings. You can close this tab.");
+  return back(req, returnTo, "connected");
 }

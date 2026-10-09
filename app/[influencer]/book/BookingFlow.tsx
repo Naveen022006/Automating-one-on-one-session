@@ -1,6 +1,29 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import {
+  IconCalendar,
+  IconCheckCircle,
+  IconChevronLeft,
+  IconClock,
+  IconDownload,
+  IconGlobe,
+  IconUsers,
+  IconVideo,
+} from "@/components/icons";
+import {
+  Calendar,
+  TimeSlotPicker,
+  monthOf,
+  timezoneOptions,
+  todayIn,
+  addMonths,
+  daysInMonth,
+  ymd,
+  type SlotOption,
+} from "@/components/ui/scheduling";
+import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, describedBy } from "@/components/ui/primitives";
 
 interface ServiceView {
   id: string;
@@ -11,17 +34,19 @@ interface ServiceView {
   currency: string;
   type: "ONE_TO_ONE" | "GROUP";
   capacity: number;
+  refundText: string;
 }
-interface Slot {
-  start: string;
-  end: string;
-  seatsLeft: number;
+interface Host {
+  name: string;
+  photoUrl: string | null;
+  slug: string;
+  timezone: string;
 }
 interface HoldResult {
   bookingId: string;
   holdExpiresAt: string;
+  pollToken?: string | null;
 }
-
 interface CheckoutResult {
   bookingId: string;
   keyId: string;
@@ -41,6 +66,9 @@ declare global {
   }
 }
 
+const STEPS = ["Service", "Date & time", "Details", "Pay", "Confirmation"];
+type Step = 0 | 1 | 2 | 3 | 4;
+
 function loadRazorpay(): Promise<boolean> {
   if (window.Razorpay) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -52,48 +80,97 @@ function loadRazorpay(): Promise<boolean> {
   });
 }
 
-function formatPrice(minor: number, currency: string) {
+function money(minor: number, currency: string) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / 100);
 }
-
-function todayInTz(tz: string) {
-  // en-CA formats as YYYY-MM-DD
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+function duration(min: number) {
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}`;
+}
+function when(iso: string, tz: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short", timeZone: tz }).format(new Date(iso));
 }
 
-export function BookingFlow({ services }: { services: ServiceView[] }) {
-  // Times are stored in UTC; everything shown here is in the customer's own timezone.
-  const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
-  const [service, setService] = useState<ServiceView | null>(null);
-  const [date, setDate] = useState(() => todayInTz(tz));
-  const [slots, setSlots] = useState<Slot[] | null>(null);
-  const [slot, setSlot] = useState<Slot | null>(null);
+export function BookingFlow({
+  host,
+  services,
+  initialServiceId,
+  preview,
+}: {
+  host: Host;
+  services: ServiceView[];
+  initialServiceId: string | null;
+  preview: boolean;
+}) {
+  const browserTz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const [tz, setTz] = useState(browserTz);
+  const initial = services.find((s) => s.id === initialServiceId) ?? (services.length === 1 ? services[0] : null);
+  const [service, setService] = useState<ServiceView | null>(initial);
+  const [step, setStep] = useState<Step>(initial ? 1 : 0);
+  const today = useMemo(() => todayIn(tz), [tz]);
+  const [month, setMonth] = useState(() => monthOf(todayIn(browserTz)));
+  const [days, setDays] = useState<Set<string> | null>(null);
+  const [daysLoading, setDaysLoading] = useState(false);
+  const [date, setDate] = useState<string | null>(null);
+  const [slots, setSlots] = useState<SlotOption[] | null>(null);
+  const [slot, setSlot] = useState<SlotOption | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [optIn, setOptIn] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [hold, setHold] = useState<HoldResult | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [paying, setPaying] = useState(false);
-  // "confirming" = checkout reported success; we wait for the server (webhook) to confirm before showing it.
   const [payState, setPayState] = useState<"idle" | "confirming" | "confirmed" | "failed">("idle");
-  // Populated once the server knows the meeting link (set by the Phase 3 create-meeting job). Shown on
-  // the confirmation screen so a WhatsApp/SMS failure never blocks the customer.
   const [meetLink, setMeetLink] = useState<string | null>(null);
+  const [manageUrl, setManageUrl] = useState<string | null>(null);
+  const [resend, setResend] = useState<"idle" | "busy" | "sent" | "error">("idle");
 
+  // Days with open slots for the visible month.
   useEffect(() => {
-    if (!service) return;
+    if (!service || step !== 1) return;
+    let cancelled = false;
+    const first = ymd(month.y, month.m, 1);
+    const from = first < today ? today : first;
+    const to = ymd(month.y, month.m, daysInMonth(month.y, month.m));
+    if (to < from) {
+      setDays(new Set());
+      return;
+    }
+    setDaysLoading(true);
+    fetch(`/api/slots/days?${new URLSearchParams({ serviceId: service.id, from, to, tz })}`)
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error ?? "Could not load available days");
+        if (!cancelled) setDays(new Set<string>(data.days));
+      })
+      .catch((e: Error) => !cancelled && (setDays(null), setError(e.message)))
+      .finally(() => !cancelled && setDaysLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [service, month, tz, today, step]);
+
+  // Pick the first available day automatically so the customer sees times straight away.
+  useEffect(() => {
+    if (days && days.size > 0 && (!date || !days.has(date))) setDate([...days].sort()[0]);
+    if (days && days.size === 0) setDate(null);
+  }, [days]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Times for the chosen day.
+  useEffect(() => {
+    if (!service || !date) {
+      setSlots(null);
+      return;
+    }
     let cancelled = false;
     setSlots(null);
     setSlot(null);
-    setError(null);
-    const qs = new URLSearchParams({ serviceId: service.id, date, tz });
-    fetch(`/api/slots?${qs}`)
+    fetch(`/api/slots?${new URLSearchParams({ serviceId: service.id, date, tz })}`)
       .then(async (r) => {
         const data = await r.json();
-        if (!r.ok) throw new Error(data.error ?? "Could not load slots");
+        if (!r.ok) throw new Error(data.error ?? "Could not load times");
         if (!cancelled) setSlots(data.slots);
       })
       .catch((e: Error) => !cancelled && setError(e.message));
@@ -102,42 +179,104 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
     };
   }, [service, date, tz]);
 
+  // Hold countdown.
   useEffect(() => {
-    if (!hold) return;
+    if (!hold || step !== 3) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [hold]);
+  }, [hold, step]);
 
+  // After checkout: wait for the server (webhook) to confirm, then keep polling briefly for the Meet link.
   useEffect(() => {
-    if (payState !== "confirming" || !hold) return;
+    if (!hold || (payState !== "confirming" && payState !== "confirmed")) return;
+    if (payState === "confirmed" && meetLink) return;
     let stopped = false;
     const started = Date.now();
     const poll = async () => {
       try {
-        const r = await fetch(`/api/bookings/${hold.bookingId}`);
+        const qs = hold.pollToken ? `?t=${encodeURIComponent(hold.pollToken)}` : "";
+        const r = await fetch(`/api/bookings/${encodeURIComponent(hold.bookingId)}${qs}`);
         const data = await r.json();
         if (stopped) return;
         if (data.meetLink) setMeetLink(data.meetLink);
-        if (["PAID", "SCHEDULED", "COMPLETED"].includes(data.status)) return setPayState("confirmed");
-        if (data.status === "FAILED") return setPayState("failed");
+        if (data.manageUrl) setManageUrl(data.manageUrl);
+        if (["PAID", "SCHEDULED", "COMPLETED"].includes(data.status)) {
+          if (payState !== "confirmed") {
+            setPayState("confirmed");
+            setStep(4);
+          }
+          if (data.meetLink) return;
+        } else if (data.status === "FAILED") {
+          return setPayState("failed");
+        }
       } catch {
         /* keep polling */
       }
-      if (Date.now() - started > 120_000) return setPayState("failed");
-      setTimeout(poll, 2000);
+      if (Date.now() - started > 150_000) {
+        if (payState === "confirming") setPayState("failed");
+        return;
+      }
+      setTimeout(poll, 2500);
     };
     void poll();
     return () => {
       stopped = true;
     };
-  }, [payState, hold]);
+  }, [payState, hold, meetLink]);
 
-  async function pay() {
-    if (!hold) return;
-    setPaying(true);
+  function chooseService(s: ServiceView) {
+    setService(s);
+    setSlot(null);
+    setDate(null);
+    setDays(null);
+    setError(null);
+    setStep(1);
+  }
+
+  async function submitDetails(e: React.FormEvent) {
+    e.preventDefault();
+    if (!service || !slot) return;
+    const local: Record<string, string> = {};
+    if (!name.trim()) local.name = "Enter your name.";
+    if (!/^\S+@\S+\.\S+$/.test(email)) local.email = "Enter a valid email address.";
+    if (whatsapp.replace(/\D/g, "").length < 8) local.whatsapp = "Enter your WhatsApp number with the country code.";
+    if (!optIn) local.optIn = "Tick this so we can send your link and reminders on WhatsApp.";
+    setErrors(local);
+    if (Object.keys(local).length) return;
+    setBusy(true);
     setError(null);
     try {
-      if (!(await loadRazorpay()) || !window.Razorpay) throw new Error("Could not load the payment window");
+      const res = await fetch("/api/bookings/hold", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serviceId: service.id, startTime: slot.start, name, email, whatsapp, whatsappOptIn: optIn, tz }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409) {
+          setError(`${data.error ?? "That time was just taken."} Please pick another time.`);
+          setSlot(null);
+          setDate((d) => d);
+          setStep(1);
+        } else {
+          setError(data.error ?? "Could not hold that time.");
+        }
+        return;
+      }
+      setNow(Date.now());
+      setHold(data);
+      setStep(3);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pay() {
+    if (!hold || !service) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (!(await loadRazorpay()) || !window.Razorpay) throw new Error("The payment window could not load. Check your connection and try again.");
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -146,178 +285,363 @@ export function BookingFlow({ services }: { services: ServiceView[] }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start payment");
       const c = data as CheckoutResult;
-      setHold((h) => (h ? { ...h, holdExpiresAt: c.holdExpiresAt } : h)); // checkout extends the hold
+      setHold((h) => (h ? { ...h, holdExpiresAt: c.holdExpiresAt } : h));
       const rzp = new window.Razorpay({
         key: c.keyId,
         order_id: c.orderId,
         amount: c.amountMinor,
         currency: c.currency,
-        name: service?.title ?? "Session",
+        name: host.name,
+        description: service.title,
         prefill: c.customer,
-        // Only a hint: the booking becomes paid when the webhook says so.
+        theme: { color: "#17694f" },
+        // Only a hint: the booking becomes paid when the verified webhook says so.
         handler: () => setPayState("confirming"),
-        modal: { ondismiss: () => setPaying(false) },
+        modal: { ondismiss: () => setBusy(false) },
       });
-      rzp.on("payment.failed", (r) => setError(r.error.description));
+      rzp.on("payment.failed", (r) => {
+        setError(`${r.error.description} You can try again; your time is still held.`);
+        setBusy(false);
+      });
       rzp.open();
     } catch (e) {
       setError((e as Error).message);
-      setPaying(false);
+      setBusy(false);
     }
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!service || !slot) return;
-    setSubmitting(true);
+  async function resendLink() {
+    if (!hold) return;
+    setResend("busy");
+    const r = await fetch(`/api/bookings/${encodeURIComponent(hold.bookingId)}/resend`, { method: "POST" });
+    setResend(r.ok ? "sent" : "error");
+  }
+
+  function startOver() {
+    setHold(null);
+    setSlot(null);
+    setPayState("idle");
     setError(null);
-    try {
-      const res = await fetch("/api/bookings/hold", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          serviceId: service.id,
-          startTime: slot.start,
-          name,
-          email,
-          whatsapp,
-          whatsappOptIn: optIn,
-          tz,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Could not hold that slot");
-        if (res.status === 409) setDate((d) => d); // slot gone: list refreshes on next pick
-        return;
-      }
-      setNow(Date.now());
-      setHold(data);
-    } finally {
-      setSubmitting(false);
-    }
+    setDays(null);
+    setStep(1);
   }
 
-  if (hold && slot && service && (payState === "confirming" || payState === "confirmed")) {
-    return (
-      <div className="card">
-        <h2>{payState === "confirmed" ? "Payment confirmed" : "Confirming your payment…"}</h2>
-        <p>
-          {service.title} on{" "}
-          {new Date(slot.start).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}
-        </p>
-        <p className="muted">
-          {payState === "confirmed"
-            ? "You're booked. Your meeting link will be sent to your WhatsApp and email."
-            : "This usually takes a few seconds."}
-        </p>
-        {meetLink && (
-          <p>
-            <a href={meetLink} target="_blank" rel="noopener noreferrer">
-              Join your meeting
-            </a>
-          </p>
-        )}
-        <p className="muted">Booking reference: {hold.bookingId}</p>
-      </div>
-    );
-  }
+  const msLeft = hold ? new Date(hold.holdExpiresAt).getTime() - now : 0;
+  const expired = hold !== null && step === 3 && msLeft <= 0 && payState === "idle";
+  const mm = Math.floor(Math.max(msLeft, 0) / 60000);
+  const ss = Math.floor((Math.max(msLeft, 0) % 60000) / 1000);
 
-  if (hold && slot && service) {
-    const msLeft = new Date(hold.holdExpiresAt).getTime() - now;
-    const expired = msLeft <= 0;
-    const mm = Math.floor(Math.max(msLeft, 0) / 60000);
-    const ss = Math.floor((Math.max(msLeft, 0) % 60000) / 1000);
-    return (
-      <div className="card">
-        <h2>{expired ? "Your hold expired" : "Slot held for you"}</h2>
-        <p>
-          {service.title} on{" "}
-          {new Date(slot.start).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}
-        </p>
-        {expired ? (
-          <button className="primary" onClick={() => { setHold(null); setSlot(null); setDate((d) => d); }}>
-            Pick a time again
-          </button>
-        ) : (
-          <>
-            <p className="muted">Held for {mm}:{String(ss).padStart(2, "0")}.</p>
-            {payState === "failed" && (
-              <p className="error" role="alert">
-                We could not confirm your payment. If money was deducted it will be refunded; contact support with
-                your booking reference.
-              </p>
+  const summary = (
+    <Card className="booking-summary" title={<h2 className="card__title">Your booking</h2>}>
+      <div className="stack">
+        <div className="row row--nowrap">
+          <Avatar name={host.name} src={host.photoUrl} />
+          <div>
+            <p style={{ fontWeight: 600 }}>{host.name}</p>
+            <p className="subtle">Host</p>
+          </div>
+        </div>
+        {service ? (
+          <dl className="summary">
+            <dt>Session</dt>
+            <dd>{service.title}</dd>
+            <dt>Length</dt>
+            <dd>{duration(service.durationMin)}</dd>
+            <dt>Where</dt>
+            <dd>Google Meet</dd>
+            {slot && (
+              <>
+                <dt>When</dt>
+                <dd>{when(slot.start, tz)}</dd>
+              </>
             )}
-            <button className="primary" onClick={pay} disabled={paying}>
-              {paying ? "Opening payment…" : `Pay ${formatPrice(service.priceMinor, service.currency)}`}
-            </button>
-            {error && <p className="error" role="alert">{error}</p>}
-            <p className="muted">Booking reference: {hold.bookingId}</p>
-          </>
+            <dt>Price</dt>
+            <dd className="money">{money(service.priceMinor, service.currency)}</dd>
+          </dl>
+        ) : (
+          <p className="muted text-sm">Choose a session to see the details.</p>
         )}
+        {service && <p className="subtle">{service.refundText}</p>}
       </div>
-    );
-  }
+    </Card>
+  );
 
   return (
-    <>
-      <h2>1. Service</h2>
-      {services.length === 0 && <p className="muted">No services available yet.</p>}
-      {services.map((s) => (
-        <button key={s.id} className="choice" aria-pressed={service?.id === s.id} onClick={() => setService(s)}>
-          <strong>{s.title}</strong> — {formatPrice(s.priceMinor, s.currency)}
-          <div className="muted">
-            {s.durationMin} min · {s.type === "GROUP" ? `group (up to ${s.capacity})` : "1:1"}
-            {s.description ? ` · ${s.description}` : ""}
-          </div>
-        </button>
-      ))}
+    <div className="stack stack--lg">
+      <div className="stack stack--sm">
+        <h1 className="display" style={{ fontSize: "var(--text-2xl)" }}>
+          Book a session with {host.name}
+        </h1>
+        <Stepper steps={STEPS} current={step} />
+      </div>
 
-      {service && (
-        <>
-          <h2>2. Date</h2>
-          <input type="date" value={date} min={todayInTz(tz)} onChange={(e) => setDate(e.target.value)} />
-          <p className="muted">Times shown in {tz}</p>
+      <div className="booking-layout">
+        <div className="stack">
+          {error && step < 4 && (
+            <Alert tone="danger" role="alert">
+              {error}
+            </Alert>
+          )}
 
-          <h2>3. Time</h2>
-          {slots === null && !error && <p className="muted">Loading…</p>}
-          {slots?.length === 0 && <p className="muted">No slots on this day.</p>}
-          <div className="slots">
-            {slots?.map((s) => (
-              <button
-                key={s.start}
-                className="slot"
-                aria-pressed={slot?.start === s.start}
-                onClick={() => setSlot(s)}
-              >
-                {new Date(s.start).toLocaleTimeString(undefined, { timeStyle: "short" })}
-                {service.type === "GROUP" ? ` (${s.seatsLeft} left)` : ""}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+          {step === 0 && (
+            <section aria-labelledby="pick-service" className="stack">
+              <h2 id="pick-service" className="section-title">
+                Choose a session
+              </h2>
+              {services.length === 0 && <p className="muted">There are no sessions to book right now.</p>}
+              {services.map((s) => (
+                <button key={s.id} type="button" className="option" aria-pressed={service?.id === s.id} onClick={() => chooseService(s)}>
+                  <span style={{ color: "var(--accent)", marginTop: 2 }}>{s.type === "GROUP" ? <IconUsers /> : <IconVideo />}</span>
+                  <span className="stack stack--sm" style={{ flex: 1 }}>
+                    <span className="option__title">{s.title}</span>
+                    <span className="option__meta">
+                      {duration(s.durationMin)} · {s.type === "GROUP" ? `Group, up to ${s.capacity}` : "1:1"}
+                    </span>
+                    {s.description && <span className="option__meta">{s.description}</span>}
+                  </span>
+                  <span className="option__price">{money(s.priceMinor, s.currency)}</span>
+                </button>
+              ))}
+            </section>
+          )}
 
-      {slot && (
-        <form onSubmit={submit}>
-          <h2>4. Your details</h2>
-          <label htmlFor="name">Name</label>
-          <input id="name" type="text" required value={name} onChange={(e) => setName(e.target.value)} />
-          <label htmlFor="email">Email</label>
-          <input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-          <label htmlFor="wa">WhatsApp number (with country code, e.g. +91 98765 43210)</label>
-          <input id="wa" type="tel" required value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} />
-          <label className="check">
-            <input type="checkbox" checked={optIn} onChange={(e) => setOptIn(e.target.checked)} />
-            <span>I agree to receive my meeting link and reminders on WhatsApp.</span>
-          </label>
-          <button className="primary" type="submit" disabled={submitting || !optIn}>
-            {submitting ? "Holding…" : "Hold this slot"}
-          </button>
-        </form>
-      )}
+          {step === 1 && service && (
+            <section aria-labelledby="pick-time" className="stack">
+              <div className="row row--between">
+                <h2 id="pick-time" className="section-title">
+                  Pick a date and time
+                </h2>
+                {services.length > 1 && (
+                  <Button variant="ghost" size="sm" onClick={() => setStep(0)}>
+                    <IconChevronLeft size={16} /> Change session
+                  </Button>
+                )}
+              </div>
+              <Card>
+                <div className="picker">
+                  <Calendar
+                    month={month}
+                    onMonthChange={(m) => {
+                      setMonth(m);
+                      setDays(null);
+                    }}
+                    value={date}
+                    onChange={setDate}
+                    availableDays={days}
+                    loading={daysLoading}
+                    minDay={today}
+                    maxMonth={addMonths(monthOf(today).y, monthOf(today).m, 6)}
+                  />
+                  <div className="stack">
+                    <div className="row row--between">
+                      <p style={{ fontWeight: 600 }}>
+                        {date
+                          ? new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`))
+                          : daysLoading
+                            ? "Finding open days…"
+                            : days && days.size === 0
+                              ? "No open days this month"
+                              : "Choose a day"}
+                      </p>
+                    </div>
+                    {date ? (
+                      <TimeSlotPicker slots={slots} value={slot?.start ?? null} onChange={setSlot} tz={tz} showSeats={service.type === "GROUP"} />
+                    ) : (
+                      days &&
+                      days.size === 0 &&
+                      !daysLoading && (
+                        <Button
+                          onClick={() => {
+                            setMonth(addMonths(month.y, month.m, 1));
+                            setDays(null);
+                          }}
+                        >
+                          Look at next month
+                        </Button>
+                      )
+                    )}
+                    <Field id="tz" label={<span className="row" style={{ gap: 6 }}><IconGlobe size={16} /> Time zone</span>} help="Times are shown in this time zone.">
+                      <Select
+                        id="tz"
+                        value={tz}
+                        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                          setTz(e.target.value);
+                          setDays(null);
+                          setDate(null);
+                        }}
+                      >
+                        {timezoneOptions(tz).map((z) => (
+                          <option key={z} value={z}>
+                            {z.replace(/_/g, " ")}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </div>
+                </div>
+              </Card>
+              <div className="form-actions">
+                <Button variant="primary" size="lg" disabled={!slot} onClick={() => setStep(2)}>
+                  Continue
+                </Button>
+              </div>
+            </section>
+          )}
 
-      {error && <p className="error" role="alert">{error}</p>}
-    </>
+          {step === 2 && service && slot && (
+            <section aria-labelledby="your-details">
+              <form className="stack" onSubmit={submitDetails} noValidate>
+                <div className="row row--between">
+                  <h2 id="your-details" className="section-title">
+                    Your details
+                  </h2>
+                  <Button variant="ghost" size="sm" onClick={() => setStep(1)}>
+                    <IconChevronLeft size={16} /> Change time
+                  </Button>
+                </div>
+                <Card>
+                  <div className="form-grid">
+                    <Field id="name" label="Full name" error={errors.name}>
+                      <Input {...describedBy("name", { error: errors.name })} autoComplete="name" value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
+                    </Field>
+                    <Field id="email" label="Email" error={errors.email} help="Your confirmation, receipt and calendar invite go here.">
+                      <Input {...describedBy("email", { error: errors.email, help: true })} type="email" autoComplete="email" value={email} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)} required />
+                    </Field>
+                    <Field id="wa" label="WhatsApp number" error={errors.whatsapp} help="Include the country code, for example +91 98765 43210.">
+                      <Input {...describedBy("wa", { error: errors.whatsapp, help: true })} type="tel" autoComplete="tel" inputMode="tel" value={whatsapp} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhatsapp(e.target.value)} required />
+                    </Field>
+                    <div>
+                      <Checkbox
+                        checked={optIn}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOptIn(e.target.checked)}
+                        aria-invalid={errors.optIn ? true : undefined}
+                        label="Send my meeting link and reminders on WhatsApp (SMS if WhatsApp fails)."
+                      />
+                      {errors.optIn && <p className="field__error">{errors.optIn}</p>}
+                    </div>
+                  </div>
+                </Card>
+                {preview && <Alert tone="info">Holding is disabled in preview.</Alert>}
+                <div className="form-actions">
+                  <Button type="submit" variant="primary" size="lg" loading={busy} disabled={preview}>
+                    Hold this time
+                  </Button>
+                </div>
+                <p className="subtle">We hold the time for 10 minutes while you pay. Nothing is charged yet.</p>
+              </form>
+            </section>
+          )}
+
+          {step === 3 && service && slot && hold && (
+            <section aria-labelledby="pay-title" className="stack">
+              <h2 id="pay-title" className="section-title">
+                {expired ? "Your hold has ended" : payState === "confirming" ? "Confirming your payment" : "Pay to confirm"}
+              </h2>
+              <Card>
+                <div className="stack">
+                  {expired ? (
+                    <>
+                      <p className="muted">
+                        We held {when(slot.start, tz)} for you, but the time ran out before payment. No money was taken.
+                      </p>
+                      <Button variant="primary" size="lg" onClick={startOver}>
+                        Pick a time again
+                      </Button>
+                    </>
+                  ) : payState === "confirming" ? (
+                    <div className="stack" aria-live="polite">
+                      <p className="row">
+                        <span className="btn__spinner" aria-hidden="true" /> Waiting for Razorpay to confirm. This usually takes a few seconds.
+                      </p>
+                      <p className="subtle">Please keep this page open.</p>
+                    </div>
+                  ) : payState === "failed" ? (
+                    <Alert tone="danger" title="We could not confirm your payment">
+                      If money left your account it will be refunded automatically. Contact support with your booking reference{" "}
+                      <span className="tabular">{hold.bookingId}</span>.
+                    </Alert>
+                  ) : (
+                    <>
+                      <div className="countdown" role="timer" aria-live="off">
+                        <IconClock size={16} />
+                        Held for you for <strong>{mm}:{String(ss).padStart(2, "0")}</strong>
+                      </div>
+                      <Button variant="primary" size="lg" block onClick={pay} loading={busy}>
+                        Pay {money(service.priceMinor, service.currency)}
+                      </Button>
+                      <p className="subtle">
+                        Secure payment by Razorpay: cards, UPI and netbanking. Booking reference <span className="tabular">{hold.bookingId}</span>
+                      </p>
+                    </>
+                  )}
+                </div>
+              </Card>
+            </section>
+          )}
+
+          {step === 4 && service && slot && hold && (
+            <section aria-labelledby="done-title" className="stack" aria-live="polite">
+              <Alert tone="success" title="You're booked">
+                {service.title} with {host.name}, {when(slot.start, tz)}.
+              </Alert>
+              <Card>
+                <div className="stack">
+                  <h2 id="done-title" className="section-title">
+                    What happens next
+                  </h2>
+                  {meetLink ? (
+                    <div className="stack stack--sm">
+                      <p className="muted text-sm">Your Google Meet link is ready. It was also sent to your WhatsApp and email.</p>
+                      <a className="btn btn--primary btn--lg" href={meetLink} target="_blank" rel="noopener noreferrer">
+                        <IconVideo /> Join Google Meet
+                      </a>
+                      <p className="subtle break">{meetLink}</p>
+                    </div>
+                  ) : (
+                    <p className="row muted">
+                      <span className="btn__spinner" aria-hidden="true" /> Creating your Google Meet link. It appears here in a moment and is sent to your WhatsApp and email.
+                    </p>
+                  )}
+                  <ol className="stack stack--sm text-sm" style={{ paddingLeft: 20, margin: 0 }}>
+                    <li>A calendar invite from Google arrives at {email}.</li>
+                    <li>Reminders come 24 hours and 15 minutes before the session.</li>
+                    <li>Need to change it? Use the link below or the one in your email.</li>
+                  </ol>
+                  <div className="row">
+                    <a className="btn" href={`/api/bookings/${encodeURIComponent(hold.bookingId)}/ics`}>
+                      <IconDownload size={16} /> Add to calendar (.ics)
+                    </a>
+                    {manageUrl && (
+                      <a className="btn" href={manageUrl}>
+                        <IconCalendar size={16} /> Reschedule or cancel
+                      </a>
+                    )}
+                  </div>
+                  <p className="text-sm muted">
+                    Message not received?{" "}
+                    {resend === "sent" ? (
+                      <span role="status">We sent it again.</span>
+                    ) : (
+                      <button type="button" className="link-button" onClick={resendLink} disabled={resend === "busy"}>
+                        Resend my link
+                      </button>
+                    )}
+                    {resend === "error" && <span className="error-text"> Could not resend right now. Try again in a few minutes.</span>}
+                  </p>
+                  <p className="subtle">
+                    Booking reference <span className="tabular">{hold.bookingId}</span>
+                  </p>
+                </div>
+              </Card>
+              <p className="subtle">
+                <IconCheckCircle size={14} style={{ display: "inline", verticalAlign: "-2px" }} /> You can close this page.{" "}
+                <Link href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</Link>
+              </p>
+            </section>
+          )}
+        </div>
+        {summary}
+      </div>
+    </div>
   );
 }

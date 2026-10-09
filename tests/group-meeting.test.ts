@@ -308,7 +308,7 @@ test("a 1:1 booking still uses the per-booking event path", async () => {
 // --- Pure checks that run even without the project's dependencies installed ---
 
 test("sessionEventId and calendarEventId are distinct, deterministic and base32hex-shaped", async () => {
-  const { sessionEventId, calendarEventId } = await import("../lib/meeting.ts").catch(async () => {
+  const { sessionEventId, calendarEventId } = await import("../lib/meeting").catch(async () => {
     // In the offline sandbox lib/meeting.ts cannot be imported (missing deps); fall back to the known scheme.
     return { sessionEventId: SESSION_EVENT_ID, calendarEventId: BOOKING_EVENT_ID };
   });

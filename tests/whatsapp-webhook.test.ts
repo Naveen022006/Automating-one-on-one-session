@@ -46,7 +46,8 @@ test("parseWhatsAppStatuses flattens entry[].changes[].value.statuses[] and keep
 
   const updates = parseWhatsAppStatuses(payload);
   assert.equal(updates.length, 2);
-  assert.deepEqual(updates[0], { providerMessageId: "wamid.1", status: "DELIVERED", error: null });
+  // Non-FAILED updates omit `error` entirely so a stored FAILED error is preserved (Phase 4 review, Issue 5).
+  assert.deepEqual(updates[0], { providerMessageId: "wamid.1", status: "DELIVERED" });
   assert.equal(updates[1].providerMessageId, "wamid.2");
   assert.equal(updates[1].status, "FAILED");
   assert.equal(updates[1].error, "no account");

@@ -1,36 +1,43 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { BookingNotReschedulableError, cancelBooking } from "@/lib/booking-actions";
-import { GoogleReconnectError } from "@/lib/google";
+import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
+import { prisma } from "@/lib/db";
+import { BookingNotManageableError, ManageBlockedError, ManageRejectedError, autoRefundOnCancel, cancelBooking } from "@/lib/manage";
 
-// SECURITY / TRUST BOUNDARY (reviewed, deliberately deferred to Phase 6): this route is UNAUTHENTICATED, for
-// parity with the existing booking routes (hold/checkout). That means anyone who knows a booking id can cancel
-// it and trigger a refund flag. This is an accepted, documented gap for Phase 5 (reminders & retries), NOT an
-// oversight: the Phase 6 dashboard introduces auth, after which this handler must require the authenticated
-// influencer (or the booking's own customer). Do not ship these mutation routes publicly until that auth lands.
+// Phase 5 cancel endpoint, now authenticated (Phase 7): only the logged-in influencer who owns the booking may
+// call it (customers use their signed /manage link instead). Delegates to the same lib/manage.ts cancel the
+// dashboard uses, so reminders, refunds and notifications behave identically.
 const bodySchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
   const { id } = await ctx.params;
   const parsed = bodySchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
+  const owned = await prisma.booking.findFirst({
+    where: { id, session: { service: { influencerId: auth.influencerId } } },
+    select: { id: true, status: true },
+  });
+  if (!owned) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  if (owned.status === "CANCELLED") return NextResponse.json({ status: "CANCELLED", outcome: "already-cancelled" });
+  // With automatic refunds on, a cancel moves money: require a recent password entry, like the refund route.
+  if (autoRefundOnCancel() && (await prisma.payment.count({ where: { bookingId: id, status: "CAPTURED" } })) > 0) {
+    const recent = await requireRecentAuth();
+    if (recent instanceof NextResponse) return recent;
+  }
 
   try {
-    const outcome = await cancelBooking(id, parsed.data.reason);
-    // Both a fresh cancel and an idempotent re-run leave the booking CANCELLED.
-    return NextResponse.json({ status: "CANCELLED", outcome }, { status: 200 });
+    const result = await cancelBooking(id, { actor: "influencer", reason: parsed.data.reason });
+    return NextResponse.json({ status: "CANCELLED", outcome: "cancelled", refund: result.refund });
   } catch (e) {
-    if (e instanceof BookingNotReschedulableError) {
-      return NextResponse.json({ error: e.message }, { status: 404 });
-    }
-    // Dead Google grant while deleting the event: the booking is already CANCELLED in the DB -> 409.
-    if (e instanceof GoogleReconnectError) {
-      return NextResponse.json({ error: e.message }, { status: 409 });
-    }
+    if (e instanceof BookingNotManageableError) return NextResponse.json({ error: e.message }, { status: 409 });
+    if (e instanceof ManageBlockedError) return NextResponse.json({ status: "CANCELLED", warning: e.message }, { status: 202 });
+    if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
     throw e;
   }
 }
