@@ -2,17 +2,19 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { IconExternal } from "@/components/icons";
+import { IconCheckCircle, IconAlertCircle, IconExternal } from "@/components/icons";
 import { Wordmark } from "@/components/site/SiteChrome";
 import { CopyField, ToastProvider, useToast } from "@/components/ui/overlays";
-import { Alert, Button, Card, Stepper } from "@/components/ui/primitives";
+import { Alert, Badge, Button, Card, Stepper } from "@/components/ui/primitives";
 import { ApiProvider, useApi } from "./ApiProvider";
 import { BlockedDays, WeeklyHours, type BlockedRow, type RuleRow } from "./AvailabilityEditor";
 import { GoogleConnect, type GoogleStatusView } from "./GoogleConnect";
+import { PayoutForm, type PayoutAccountData } from "./PayoutForm";
 import { ServicesManager, type ServiceAdmin } from "./ServicesManager";
 import { ProfileForm, VerifyBanner, type ProfileData } from "./SettingsForms";
+import { WhatsAppConnect, type WhatsAppView } from "./WhatsAppConnect";
 
-const STEPS = ["Profile", "First service", "Availability", "Google Calendar", "Preview and share"];
+const STEPS = ["Profile", "First service", "Availability", "Google and Gmail", "WhatsApp", "Payouts", "Preview and share"];
 
 export interface OnboardingData {
   step: number;
@@ -22,6 +24,11 @@ export interface OnboardingData {
   blocked: BlockedRow[];
   google: GoogleStatusView;
   googleOutcome: string | null;
+  whatsapp: WhatsAppView | null;
+  embedded: { appId: string; configId: string } | null;
+  payout: PayoutAccountData | null;
+  /** What still stands between this page and going live, and what is merely recommended. */
+  checklist: { key: string; label: string; done: boolean; required: boolean }[];
   publicUrl: string;
   email: string;
   emailVerified: boolean;
@@ -97,18 +104,50 @@ function Wizard(d: OnboardingData) {
           )}
 
           {step === 3 && (
-            <Section title="Connect Google Calendar" lede="Meet links are created on your own calendar, and customers get Google's invite.">
+            <Section title="Connect Google" lede="Meet links are created on your own calendar, and customers get Google's invite. You can also let us send customer emails from your Gmail.">
               <Card>
                 <GoogleConnect status={d.google} returnTo="/onboarding?step=3" outcome={d.googleOutcome} />
               </Card>
               {d.google.state !== "connected" && (
-                <p className="subtle">You can skip this for now, but paid bookings will wait for a Meet link until you connect.</p>
+                <p className="subtle">Your booking page cannot go live until Google Calendar is connected: paid bookings would have no Meet link.</p>
               )}
             </Section>
           )}
 
           {step === 4 && (
+            <Section title="Connect your WhatsApp number" lede="Customers get their link and reminders from your own number. Recommended, not required: without it they are messaged by SMS.">
+              <Card>
+                <WhatsAppConnect connection={d.whatsapp} embedded={d.embedded} />
+              </Card>
+            </Section>
+          )}
+
+          {step === 5 && (
+            <Section title="Where should we send your earnings?" lede="Customers pay through the platform. After each payment is checked, we send your share to this account.">
+              <Card>
+                <PayoutForm account={d.payout} />
+              </Card>
+            </Section>
+          )}
+
+          {step === 6 && (
             <Section title="Preview and share your page" lede="This is the link to put in your bio, posts and messages.">
+              <Card title="Ready to take bookings?">
+                <ul className="stack stack--sm" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {d.checklist.map((c) => (
+                    <li key={c.key} className="row row--nowrap" style={{ alignItems: "center" }}>
+                      <span style={{ color: c.done ? "var(--success)" : "var(--text-muted)" }}>{c.done ? <IconCheckCircle size={18} /> : <IconAlertCircle size={18} />}</span>
+                      <span>{c.label}</span>
+                      {!c.done && (c.required ? <Badge tone="warning">Required</Badge> : <Badge>Recommended</Badge>)}
+                    </li>
+                  ))}
+                </ul>
+                {d.checklist.some((c) => !c.done && c.required) && (
+                  <p className="subtle" style={{ marginTop: 12 }}>
+                    Your page goes live as soon as the required steps are done. You can finish them from your dashboard.
+                  </p>
+                )}
+              </Card>
               <Card>
                 <div className="stack">
                   <CopyField value={d.publicUrl} />
@@ -128,7 +167,7 @@ function Wizard(d: OnboardingData) {
             {step < STEPS.length - 1 ? (
               step !== 0 && (
                 <Button variant="primary" onClick={() => go(step + 1)} disabled={!canContinue}>
-                  {step === 3 && d.google.state !== "connected" ? "Skip for now" : "Continue"}
+                  {(step === 3 && d.google.state !== "connected") || (step === 4 && !d.whatsapp) || (step === 5 && !d.payout) ? "Skip for now" : "Continue"}
                 </Button>
               )
             ) : (

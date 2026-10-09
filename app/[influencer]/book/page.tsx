@@ -42,6 +42,7 @@ export default async function BookPage({
           <div style={{ marginBottom: 24 }}>
             <Alert tone="info" title="Preview">
               This is how customers will see booking. Holding a slot is disabled until your page is live.
+              {profile.blockers.length > 0 && <> Still to do: {profile.blockers.join(", ")}.</>}
             </Alert>
           </div>
         )}

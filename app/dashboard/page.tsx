@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { IconAlert, IconArrowRight } from "@/components/icons";
 import { PageHead } from "@/components/app/AppShell";
+import { GoLiveChecklist } from "@/components/app/GoLiveChecklist";
 import { SessionsBoard } from "@/components/app/SessionsBoard";
 import { CopyField } from "@/components/ui/overlays";
 import { ButtonLink, Card, Stat } from "@/components/ui/primitives";
@@ -9,12 +10,14 @@ import { requirePageAuth } from "@/lib/auth/guards";
 import { appUrl } from "@/lib/brand";
 import { getOverview } from "@/lib/dashboard-data";
 import { formatMoney } from "@/lib/format";
+import { CONNECTION_KEYS, loadReadiness } from "@/lib/readiness";
 
 export const metadata: Metadata = { title: "Overview" };
 
 export default async function OverviewPage() {
   const auth = await requirePageAuth("/dashboard");
-  const overview = await getOverview(auth.influencerId, auth.emailVerified);
+  const [overview, readiness] = await Promise.all([getOverview(auth.influencerId, auth.emailVerified), loadReadiness(auth.influencerId, auth.emailVerified)]);
+  const live = readiness.blockers.every((b) => b.key !== "email" && !(CONNECTION_KEYS as readonly string[]).includes(b.key));
   const publicUrl = `${appUrl()}/${auth.influencerSlug}`;
   const monthName = new Intl.DateTimeFormat(undefined, { month: "long" }).format(new Date());
   const totals = overview.monthEarnings.totalsByCurrency;
@@ -22,6 +25,8 @@ export default async function OverviewPage() {
   return (
     <div className="stack stack--lg">
       <PageHead title={`Hello, ${auth.influencerName.split(" ")[0]}`} description="Here is what is coming up and anything that needs you." />
+
+      <GoLiveChecklist readiness={readiness} live={live} />
 
       {overview.attention.length > 0 && (
         <Card title="Needs your attention">

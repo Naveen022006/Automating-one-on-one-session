@@ -50,9 +50,10 @@ export default async function AdminInfluencersPage({ searchParams }: { searchPar
                   <td data-label="Influencer">
                     <Link href={`/admin/influencers/${r.id}`}>{r.name}</Link>
                     <div className="subtle">{r.email}</div>
+                    {!r.live && r.blockers.length > 0 && <div className="subtle">Waiting for: {r.blockers.join(", ")}</div>}
                   </td>
                   <td data-label="Status">
-                    {r.onboarded ? <Badge tone="success">Live</Badge> : <Badge>Onboarding</Badge>}{" "}
+                    {r.live ? <Badge tone="success">Live</Badge> : <Badge tone="warning">Not live</Badge>}{" "}
                     {!r.emailVerified && <Badge tone="warning">Email unverified</Badge>}
                   </td>
                   <td data-label="Google">
