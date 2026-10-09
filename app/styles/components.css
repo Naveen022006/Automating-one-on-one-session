@@ -1136,3 +1136,8 @@
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
+
+/* ---------- Key/value list (detail cards) ---------- */
+.kv { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: var(--space-2, 8px) var(--space-4, 16px); margin: 0; }
+.kv dt { color: var(--muted, #666); font-size: 0.875rem; }
+.kv dd { margin: 0; }

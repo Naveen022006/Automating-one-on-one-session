@@ -26,18 +26,18 @@ enum BookingStatus {
 }
 
 model Influencer {
-  id        String   @id @default(cuid())
-  slug      String   @unique
-  name      String
-  email     String   @unique
-  timezone  String   @default("Asia/Kolkata")
-  bio       String?
-  photoUrl  String?  @map("photo_url")
+  id            String    @id @default(cuid())
+  slug          String    @unique
+  name          String
+  email         String    @unique
+  timezone      String    @default("Asia/Kolkata")
+  bio           String?
+  photoUrl      String?   @map("photo_url")
   // Set when the influencer finishes the onboarding wizard (Phase 7). Null for accounts still onboarding.
-  onboardedAt DateTime? @map("onboarded_at")
+  onboardedAt   DateTime? @map("onboarded_at")
   // Notification preferences for influencer alerts (failed messages, Google reconnect, refunds needed).
-  notifyByEmail Boolean @default(true) @map("notify_by_email")
-  createdAt DateTime @default(now()) @map("created_at")
+  notifyByEmail Boolean   @default(true) @map("notify_by_email")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
   services     Service[]
   rules        AvailabilityRule[]
@@ -73,17 +73,17 @@ model User {
 // A logged-in browser. The cookie carries a random token; only its SHA-256 is stored, so a database leak does not
 // leak usable sessions.
 model AuthSession {
-  id         String   @id @default(cuid())
-  tokenHash  String   @unique @map("token_hash")
-  userId     String   @map("user_id")
-  expiresAt  DateTime @map("expires_at")
-  createdAt  DateTime @default(now()) @map("created_at")
-  lastUsedAt DateTime @default(now()) @map("last_used_at")
+  id              String   @id @default(cuid())
+  tokenHash       String   @unique @map("token_hash")
+  userId          String   @map("user_id")
+  expiresAt       DateTime @map("expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  lastUsedAt      DateTime @default(now()) @map("last_used_at")
   // When the password was last entered on this session. Sensitive actions (refunds, password change, log out
   // everywhere...) require this to be within the last 8 hours, otherwise the user re-enters their password.
   authenticatedAt DateTime @default(now()) @map("authenticated_at")
-  userAgent  String?  @map("user_agent")
-  ip         String?
+  userAgent       String?  @map("user_agent")
+  ip              String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -190,18 +190,18 @@ enum RefundPolicy {
 }
 
 model Service {
-  id           String      @id @default(cuid())
-  influencerId String      @map("influencer_id")
+  id           String       @id @default(cuid())
+  influencerId String       @map("influencer_id")
   title        String
   description  String?
-  durationMin  Int         @map("duration_min")
-  priceMinor   Int         @map("price_minor") // smallest currency unit (paise/cents)
-  currency     String      @default("INR")
-  type         ServiceType @default(ONE_TO_ONE)
-  capacity     Int         @default(1)
-  active       Boolean     @default(true)
+  durationMin  Int          @map("duration_min")
+  priceMinor   Int          @map("price_minor") // smallest currency unit (paise/cents)
+  currency     String       @default("INR")
+  type         ServiceType  @default(ONE_TO_ONE)
+  capacity     Int          @default(1)
+  active       Boolean      @default(true)
   refundPolicy RefundPolicy @default(FULL) @map("refund_policy")
-  createdAt    DateTime    @default(now()) @map("created_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
   sessions   Session[]
@@ -392,4 +392,61 @@ model WebhookEvent {
 
   @@unique([provider, eventId])
   @@map("webhook_events")
+}
+
+// Platform administrators. A separate account type from influencers (own login, own session cookie, own
+// short-lived sessions) so the admin plane can never be reached with an influencer session. Created from the
+// command line (`npm run admin:create`), never through public registration.
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String    @map("password_hash")
+  // Set to lock an admin out without deleting their audit trail.
+  disabledAt   DateTime? @map("disabled_at")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  sessions AdminSession[]
+  audits   AdminAuditLog[]
+
+  @@map("admin_users")
+}
+
+// Absolute 12-hour sessions (no sliding expiry). Only the SHA-256 of the cookie token is stored.
+model AdminSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique @map("token_hash")
+  adminId   String   @map("admin_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  userAgent String?  @map("user_agent")
+  ip        String?
+
+  admin AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([expiresAt])
+  @@map("admin_sessions")
+}
+
+// Append-only record of what an administrator did (viewed bank details, reconciled a payment, paid a payout...).
+// The admin email is copied onto the row so the trail survives deleting the admin account.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  adminId    String?  @map("admin_id")
+  adminEmail String   @map("admin_email")
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  detail     Json?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  admin AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([adminId])
+  @@map("admin_audit_logs")
 }

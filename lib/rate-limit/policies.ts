@@ -32,6 +32,10 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "auth-verify", pattern: /^\/api\/auth\/(verify-email|resend-verification)$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "ip" },
   { name: "auth-other", pattern: /^\/api\/auth\//, limit: 60, windowMs: 15 * MIN, by: "session-or-ip" },
 
+  // --- Administrator console: sign-in is a brute-force target, everything else is low volume.
+  { name: "admin-login", pattern: /^\/api\/admin\/auth\/login$/, methods: ["POST"], limit: 8, windowMs: 15 * MIN, by: "ip" },
+  { name: "admin", pattern: /^\/api\/admin\//, limit: 120, windowMs: MIN, by: "ip" },
+
   // --- Public booking flow. Holds reserve a seat, so they are tightly limited to stop seat squatting.
   { name: "hold", pattern: /^\/api\/bookings\/hold$/, methods: ["POST"], limit: 10, windowMs: 10 * MIN, by: "ip" },
   { name: "checkout", pattern: /^\/api\/checkout$/, methods: ["POST"], limit: 20, windowMs: 10 * MIN, by: "ip" },
@@ -63,6 +67,8 @@ export const IDENTITY_RULES = {
   loginEmail: { name: "auth-login-email-ip", limit: 5, windowMs: 15 * MIN },
   /** Password re-entry for sensitive actions / change password, keyed by user id + IP (separate from login). */
   reauthUser: { name: "auth-reauth-user-ip", limit: 10, windowMs: 15 * MIN },
+  adminLoginEmail: { name: "admin-login-email-ip", limit: 5, windowMs: 15 * MIN },
+  adminReauth: { name: "admin-password-user-ip", limit: 10, windowMs: 15 * MIN },
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },

@@ -19,6 +19,7 @@ import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule } from "@/lib/rate-limit
 const DEV = process.env.NODE_ENV !== "production";
 
 const SESSION_COOKIES = ["__Host-sa_session", "sa_session"];
+const ADMIN_COOKIES = ["__Host-sa_admin", "sa_admin"];
 const SESSION_MAX_AGE_SEC = 30 * 86_400;
 
 function sessionCookie(req: NextRequest): string | undefined {
@@ -100,6 +101,18 @@ function contentSecurityPolicy(nonce: string): string {
 function handlePage(req: NextRequest): NextResponse {
   const { pathname, search } = req.nextUrl;
   const cookie = sessionCookie(req);
+
+  // The admin console is a separate plane with its own cookie. Pages re-validate it against the database; this
+  // only saves a render for visitors who obviously have no admin session.
+  if ((pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login") {
+    const hasAdmin = ADMIN_COOKIES.some((n) => req.cookies.get(n)?.value);
+    if (!hasAdmin) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/admin/login";
+      url.search = `?next=${encodeURIComponent(pathname + search)}`;
+      return NextResponse.redirect(url);
+    }
+  }
 
   if ((pathname === "/dashboard" || pathname.startsWith("/dashboard/") || pathname.startsWith("/onboarding")) && !cookie) {
     const url = req.nextUrl.clone();
