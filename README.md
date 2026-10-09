@@ -64,3 +64,15 @@ personal Gmail).
 ## Design system
 Tokens: `app/styles/tokens.css`. Components: `components/ui/`. Every component and state is shown at `/design`
 (development only, or `ENABLE_DESIGN_PAGE=true`).
+
+## Admin console
+A separate plane for the platform owner at `/admin` (own accounts, own cookie, 12-hour sessions, never reachable
+with an influencer login). Create an administrator from the command line (there is no public registration):
+
+```
+npm run admin:create -- --email you@company.com --name "Your Name"
+```
+
+It prints a generated password once (or set `ADMIN_PASSWORD`); add `--reset` to change an existing admin's password.
+The console shows platform totals, every influencer with their connection status, every payment (with filters for
+"needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity.

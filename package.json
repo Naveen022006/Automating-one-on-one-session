@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "admin:create": "tsx scripts/create-admin.ts",
     "expire-holds": "tsx worker/index.ts",
     "worker": "tsx worker/index.ts",
     "test": "tsx --test --experimental-test-module-mocks tests/*.test.ts",
