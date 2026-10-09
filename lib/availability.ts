@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import { prisma } from "@/lib/db";
 import { activeSeatWhere } from "@/lib/holds";
 import { publicInfluencerWhere } from "@/lib/public";
+import { windowBounds } from "@/lib/booking-window";
 import { blockedDaySet, generateSlots, type Rule } from "@/lib/slots";
 
 export interface OpenSlot {
@@ -17,6 +18,8 @@ export interface BookableService {
   capacity: number;
   timezone: string;
   rules: Rule[];
+  minNoticeHours: number;
+  maxAdvanceDays: number;
 }
 
 /**
@@ -40,11 +43,26 @@ export async function loadBookableService(serviceId: string, viewerInfluencerId?
     capacity: service.capacity,
     timezone: service.influencer.timezone,
     rules: service.influencer.rules,
+    minNoticeHours: service.minNoticeHours,
+    maxAdvanceDays: service.maxAdvanceDays,
   };
 }
 
 /** Free slots (with seats left) whose start is in [from, to), never in the past. */
-export async function openSlots(service: BookableService, from: Date, to: Date, now = new Date()): Promise<OpenSlot[]> {
+export async function openSlots(
+  service: BookableService,
+  from: Date,
+  to: Date,
+  now = new Date(),
+  opts: { ignoreWindow?: boolean } = {},
+): Promise<OpenSlot[]> {
+  // Customers only see slots inside the service's booking window; the owner previewing their own page sees all.
+  if (!opts.ignoreWindow) {
+    const w = windowBounds(service, now);
+    from = new Date(Math.max(from.getTime(), w.earliest.getTime()));
+    to = new Date(Math.min(to.getTime(), w.latest.getTime() + 1));
+    if (to <= from) return [];
+  }
   const blocked = await prisma.blockedDate.findMany({
     where: {
       influencerId: service.influencerId,

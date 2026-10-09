@@ -195,18 +195,25 @@ enum RefundPolicy {
 }
 
 model Service {
-  id           String       @id @default(cuid())
-  influencerId String       @map("influencer_id")
-  title        String
-  description  String?
-  durationMin  Int          @map("duration_min")
-  priceMinor   Int          @map("price_minor") // smallest currency unit (paise/cents)
-  currency     String       @default("INR")
-  type         ServiceType  @default(ONE_TO_ONE)
-  capacity     Int          @default(1)
-  active       Boolean      @default(true)
-  refundPolicy RefundPolicy @default(FULL) @map("refund_policy")
-  createdAt    DateTime     @default(now()) @map("created_at")
+  id              String       @id @default(cuid())
+  influencerId    String       @map("influencer_id")
+  title           String
+  description     String?
+  durationMin     Int          @map("duration_min")
+  priceMinor      Int          @map("price_minor") // smallest currency unit (paise/cents)
+  currency        String       @default("INR")
+  type            ServiceType  @default(ONE_TO_ONE)
+  capacity        Int          @default(1)
+  active          Boolean      @default(true)
+  refundPolicy    RefundPolicy @default(FULL) @map("refund_policy")
+  // Custom questions the customer answers when booking (array of {id,label,type,required,options?}); see lib/intake.ts.
+  intakeQuestions Json?        @map("intake_questions")
+  // Booking window: the earliest a customer may book (hours from now) and the furthest ahead (days).
+  minNoticeHours  Int          @default(0) @map("min_notice_hours")
+  maxAdvanceDays  Int          @default(60) @map("max_advance_days")
+  // "What to prepare": shown on the booking page, confirmation and email.
+  prepNotes       String?      @map("prep_notes")
+  createdAt       DateTime     @default(now()) @map("created_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
   sessions   Session[]
@@ -271,6 +278,9 @@ model Booking {
   // Set when the customer's personal data was erased on request (name/email/phone replaced). Payments are kept
   // for accounting.
   redactedAt    DateTime?     @map("redacted_at")
+  // The customer's answers to the service's intake questions, with the question text copied in so later edits to the
+  // questions never change what was asked. Array of {id,label,answer}. Erased with the rest of the customer's data.
+  intakeAnswers Json?         @map("intake_answers")
   // The service's cancellation policy when the customer booked (Phase 7). Later policy edits never change what an
   // existing booking was sold under. Null for bookings made before this column existed (use the service's policy).
   refundPolicy  RefundPolicy? @map("refund_policy")

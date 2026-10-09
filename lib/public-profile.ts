@@ -1,5 +1,6 @@
 import { getAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import { parseQuestions, type IntakeQuestion } from "@/lib/intake";
 import { describeRefundPolicy, type RefundPolicy } from "@/lib/refund-policy";
 
 export interface PublicService {
@@ -13,6 +14,10 @@ export interface PublicService {
   capacity: number;
   refundPolicy: RefundPolicy;
   refundText: string;
+  intakeQuestions: IntakeQuestion[];
+  prepNotes: string | null;
+  minNoticeHours: number;
+  maxAdvanceDays: number;
 }
 
 export interface PublicProfile {
@@ -64,6 +69,10 @@ export async function loadPublicProfile(slug: string): Promise<PublicProfile | n
       capacity: s.capacity,
       refundPolicy: s.refundPolicy,
       refundText: describeRefundPolicy(s.refundPolicy),
+      intakeQuestions: parseQuestions(s.intakeQuestions),
+      prepNotes: s.prepNotes,
+      minNoticeHours: s.minNoticeHours,
+      maxAdvanceDays: s.maxAdvanceDays,
     })),
   };
 }

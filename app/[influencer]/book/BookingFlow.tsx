@@ -23,7 +23,8 @@ import {
   ymd,
   type SlotOption,
 } from "@/components/ui/scheduling";
-import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, describedBy } from "@/components/ui/primitives";
+import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@/components/ui/primitives";
+import type { IntakeQuestion } from "@/lib/intake";
 
 interface ServiceView {
   id: string;
@@ -35,6 +36,8 @@ interface ServiceView {
   type: "ONE_TO_ONE" | "GROUP";
   capacity: number;
   refundText: string;
+  intakeQuestions: IntakeQuestion[];
+  prepNotes: string | null;
 }
 interface Host {
   name: string;
@@ -117,6 +120,7 @@ export function BookingFlow({
   const [email, setEmail] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [optIn, setOptIn] = useState(false);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -241,6 +245,9 @@ export function BookingFlow({
     if (!/^\S+@\S+\.\S+$/.test(email)) local.email = "Enter a valid email address.";
     if (whatsapp.replace(/\D/g, "").length < 8) local.whatsapp = "Enter your WhatsApp number with the country code.";
     if (!optIn) local.optIn = "Tick this so we can send your link and reminders on WhatsApp.";
+    for (const q of service.intakeQuestions) {
+      if (q.required && !(answers[q.id] ?? "").trim()) local[`q:${q.id}`] = "Please answer this question.";
+    }
     setErrors(local);
     if (Object.keys(local).length) return;
     setBusy(true);
@@ -249,7 +256,7 @@ export function BookingFlow({
       const res = await fetch("/api/bookings/hold", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serviceId: service.id, startTime: slot.start, name, email, whatsapp, whatsappOptIn: optIn, tz }),
+        body: JSON.stringify({ serviceId: service.id, startTime: slot.start, name, email, whatsapp, whatsappOptIn: optIn, tz, answers }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -259,6 +266,7 @@ export function BookingFlow({
           setDate((d) => d);
           setStep(1);
         } else {
+          if (data.answerErrors) setErrors(Object.fromEntries(Object.entries(data.answerErrors as Record<string, string>).map(([k, v]) => [`q:${k}`, v])));
           setError(data.error ?? "Could not hold that time.");
         }
         return;
@@ -521,6 +529,41 @@ export function BookingFlow({
                     </div>
                   </div>
                 </Card>
+                {service.intakeQuestions.length > 0 && (
+                  <Card title="A few questions from your host">
+                    <div className="form-grid">
+                      {service.intakeQuestions.map((q) => {
+                        const id = `q-${q.id}`;
+                        const err = errors[`q:${q.id}`];
+                        const value = answers[q.id] ?? "";
+                        const set = (v: string) => setAnswers((a) => ({ ...a, [q.id]: v }));
+                        return (
+                          <Field key={q.id} id={id} label={q.label} optional={!q.required} error={err}>
+                            {q.type === "longtext" ? (
+                              <Textarea {...describedBy(id, { error: err })} value={value} maxLength={1000} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set(e.target.value)} />
+                            ) : q.type === "select" ? (
+                              <Select {...describedBy(id, { error: err })} value={value} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set(e.target.value)}>
+                                <option value="">Choose one</option>
+                                {q.options?.map((o) => (
+                                  <option key={o} value={o}>
+                                    {o}
+                                  </option>
+                                ))}
+                              </Select>
+                            ) : (
+                              <Input {...describedBy(id, { error: err })} value={value} maxLength={1000} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set(e.target.value)} />
+                            )}
+                          </Field>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                )}
+                {service.prepNotes && (
+                  <Alert tone="info" title="Before your session">
+                    {service.prepNotes}
+                  </Alert>
+                )}
                 {preview && <Alert tone="info">Holding is disabled in preview.</Alert>}
                 <div className="form-actions">
                   <Button type="submit" variant="primary" size="lg" loading={busy} disabled={preview}>
@@ -584,6 +627,11 @@ export function BookingFlow({
               <Alert tone="success" title="You're booked">
                 {service.title} with {host.name}, {when(slot.start, tz)}.
               </Alert>
+              {service.prepNotes && (
+                <Alert tone="info" title="Before your session">
+                  {service.prepNotes}
+                </Alert>
+              )}
               <Card>
                 <div className="stack">
                   <h2 id="done-title" className="section-title">

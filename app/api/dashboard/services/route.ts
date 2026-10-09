@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@/generated/prisma/client";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import { MAX_ADVANCE_DAYS, MAX_NOTICE_HOURS } from "@/lib/booking-window";
 import { activeSeatWhere } from "@/lib/holds";
+import { intakeQuestionsInput } from "@/lib/intake";
 
 // Influencer-authenticated via the login session (lib/auth/session.ts). Every mutation requires a session first
 // and that the targeted service belongs to that influencer; otherwise 401/404. Request
@@ -19,6 +22,10 @@ const createSchema = z.object({
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
   refundPolicy: z.enum(["FULL", "NOTICE_24H", "NONE"]).optional(),
+  intakeQuestions: intakeQuestionsInput.optional(),
+  minNoticeHours: z.number().int().min(0).max(MAX_NOTICE_HOURS).optional(),
+  maxAdvanceDays: z.number().int().min(1).max(MAX_ADVANCE_DAYS).optional(),
+  prepNotes: z.string().trim().max(1000).nullable().optional(),
 });
 
 const updateSchema = z.object({
@@ -32,6 +39,10 @@ const updateSchema = z.object({
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
   refundPolicy: z.enum(["FULL", "NOTICE_24H", "NONE"]).optional(),
+  intakeQuestions: intakeQuestionsInput.optional(),
+  minNoticeHours: z.number().int().min(0).max(MAX_NOTICE_HOURS).optional(),
+  maxAdvanceDays: z.number().int().min(1).max(MAX_ADVANCE_DAYS).optional(),
+  prepNotes: z.string().trim().max(1000).nullable().optional(),
 });
 
 /**
@@ -70,6 +81,10 @@ export async function POST(req: Request) {
       capacity,
       active: body.active ?? true,
       refundPolicy: body.refundPolicy ?? "FULL",
+      ...(body.intakeQuestions ? { intakeQuestions: body.intakeQuestions } : {}),
+      ...(body.minNoticeHours !== undefined ? { minNoticeHours: body.minNoticeHours } : {}),
+      ...(body.maxAdvanceDays !== undefined ? { maxAdvanceDays: body.maxAdvanceDays } : {}),
+      prepNotes: body.prepNotes || null,
     },
     select: { id: true },
   });
@@ -137,6 +152,11 @@ export async function PATCH(req: Request) {
       ...(body.capacity !== undefined ? { capacity: body.capacity } : {}),
       ...(body.active !== undefined ? { active: body.active } : {}),
       ...(body.refundPolicy !== undefined ? { refundPolicy: body.refundPolicy } : {}),
+      // An empty list clears the questions (stored as JSON null); existing bookings keep their answers regardless.
+      ...(body.intakeQuestions !== undefined ? { intakeQuestions: body.intakeQuestions.length ? body.intakeQuestions : Prisma.DbNull } : {}),
+      ...(body.minNoticeHours !== undefined ? { minNoticeHours: body.minNoticeHours } : {}),
+      ...(body.maxAdvanceDays !== undefined ? { maxAdvanceDays: body.maxAdvanceDays } : {}),
+      ...(body.prepNotes !== undefined ? { prepNotes: body.prepNotes || null } : {}),
     },
   });
   return NextResponse.json({

@@ -19,6 +19,8 @@ export interface BookingEmailData {
   payment: { amountMinor: number; currency: string; reference: string | null } | null;
   /** Cancellation only: what happens to the money. */
   refundNote?: string | null;
+  /** The service's "what to prepare" note, shown in the confirmation. */
+  prepNotes?: string | null;
 }
 
 export function bookingEmail(kind: BookingEmailKind, d: BookingEmailData): RenderedEmail {
@@ -45,6 +47,7 @@ export function bookingEmail(kind: BookingEmailKind, d: BookingEmailData): Rende
           d.meetLink
             ? "Join with the button at the session time. The same link was sent to your WhatsApp."
             : "Your Google Meet link is being created and will follow in a separate message shortly.",
+          ...(d.prepNotes ? [`Before your session: ${d.prepNotes}`] : []),
         ],
         // The confirmation doubles as the receipt: amount and payment reference are included.
         details: [

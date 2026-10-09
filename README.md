@@ -97,3 +97,12 @@ Customers pay the platform's Razorpay account; the owner pays influencers by han
 4. Reveal the account (audit-logged), send the money yourself, then **Payouts > Mark as paid** with the bank reference (UTR).
    The influencer is emailed. **Cancel** releases the payments. A refund made after a payout was paid is flagged
    "refunded since, to recover".
+
+## Custom services
+Every service is influencer-defined: title, length, price, 1:1 or group (any seat count), cancellation policy, plus:
+- **Questions for the customer** (up to 8: short answer, long answer or choose-one; required or optional). Asked on the
+  booking page, validated on the server, stored on the booking with the question text copied in, shown in the dashboard
+  booking drawer, and erased with the customer's data. Answers are never put in the shared Calendar event.
+- **Booking rules**: earliest a customer can book (minimum notice) and furthest ahead. Applied to the slot list, the hold
+  endpoint and customer rescheduling; the owner previewing their own page is not limited.
+- **What to prepare**: shown before booking, on the confirmation page and in the confirmation email.

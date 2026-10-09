@@ -4,6 +4,7 @@ import type { GoogleStatusView } from "@/components/app/GoogleConnect";
 import { requirePageAuth } from "@/lib/auth/guards";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
+import { parseQuestions } from "@/lib/intake";
 import { getGoogleStatus } from "@/lib/google-tokens";
 
 export const metadata: Metadata = { title: "Set up your booking page", robots: { index: false } };
@@ -44,6 +45,10 @@ export default async function OnboardingPage({ searchParams }: { searchParams: P
         capacity: s.capacity,
         active: s.active,
         refundPolicy: s.refundPolicy,
+          intakeQuestions: parseQuestions(s.intakeQuestions),
+          minNoticeHours: s.minNoticeHours,
+          maxAdvanceDays: s.maxAdvanceDays,
+          prepNotes: s.prepNotes,
       }))}
       rules={rules.map((r) => ({ id: r.id, weekday: r.weekday, startTime: r.startTime, endTime: r.endTime, timezone: r.timezone }))}
       blocked={blocked.map((b) => ({ id: b.id, date: b.date.toISOString().slice(0, 10), reason: b.reason }))}

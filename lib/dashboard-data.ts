@@ -1,3 +1,4 @@
+import { parseAnswers } from "@/lib/intake";
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { aggregateEarnings, type EarningsPaymentInput, type EarningsSummary } from "@/lib/dashboard";
@@ -324,6 +325,7 @@ export async function getBookingDetail(influencerId: string, bookingId: string) 
     whatsapp: b.whatsappE164,
     whatsappOptIn: b.whatsappOptIn,
     customerTz: b.customerTz,
+    intakeAnswers: parseAnswers(b.intakeAnswers),
     redacted: b.redactedAt !== null,
     meetLink: b.meetLink ?? b.session.meetLink,
     lastError: b.lastError,

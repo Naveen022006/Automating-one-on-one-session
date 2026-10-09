@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { windowProblem } from "@/lib/booking-window";
 import { prisma } from "@/lib/db";
+import { parseQuestions, validateAnswers } from "@/lib/intake";
 import {
   createHold,
   DuplicateBookingError,
@@ -21,6 +23,8 @@ const bodySchema = z.object({
   whatsapp: z.string().trim().min(5).max(30),
   whatsappOptIn: z.boolean(),
   tz: z.string().optional(),
+  // Answers to the service's intake questions, keyed by question id.
+  answers: z.record(z.string().max(30), z.string().max(2000)).optional(),
 });
 
 function safePollToken(bookingId: string): string | null {
@@ -59,8 +63,18 @@ export async function POST(req: Request) {
   });
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
-  // A blocked day cannot be booked even if a rule would otherwise produce slots on it.
   const startTime = new Date(body.startTime);
+
+  // The service's booking window (minimum notice, furthest ahead) and intake questions are enforced here, not just
+  // in the page, because the page is only a convenience.
+  const outside = windowProblem(startTime, { minNoticeHours: service.minNoticeHours, maxAdvanceDays: service.maxAdvanceDays });
+  if (outside) return NextResponse.json({ error: outside }, { status: 409 });
+  const answered = validateAnswers(parseQuestions(service.intakeQuestions), body.answers);
+  if (!answered.ok) {
+    return NextResponse.json({ error: "Please answer the highlighted questions.", answerErrors: answered.errors }, { status: 400 });
+  }
+
+  // A blocked day cannot be booked even if a rule would otherwise produce slots on it.
   const blocked = await prisma.blockedDate.findMany({
     where: {
       influencerId: service.influencerId,
@@ -94,6 +108,7 @@ export async function POST(req: Request) {
       whatsappOptIn: body.whatsappOptIn,
       customerTz: body.tz,
       refundPolicy: service.refundPolicy,
+      intakeAnswers: answered.answers,
     });
     return NextResponse.json(
       {

@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { IconPencil, IconPlus, IconUsers, IconVideo } from "@/components/icons";
+import { IconPencil, IconPlus, IconTrash, IconUsers, IconVideo } from "@/components/icons";
 import { Drawer, Switch, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Textarea, describedBy } from "@/components/ui/primitives";
+import { MAX_QUESTIONS, type IntakeQuestion } from "@/lib/intake";
 import { useApi } from "./ApiProvider";
 
 export interface ServiceAdmin {
@@ -18,7 +19,25 @@ export interface ServiceAdmin {
   capacity: number;
   active: boolean;
   refundPolicy: "FULL" | "NOTICE_24H" | "NONE";
+  intakeQuestions: IntakeQuestion[];
+  minNoticeHours: number;
+  maxAdvanceDays: number;
+  prepNotes: string | null;
 }
+
+const NOTICE_OPTIONS = [
+  { value: 0, label: "No minimum" },
+  { value: 1, label: "1 hour" },
+  { value: 2, label: "2 hours" },
+  { value: 6, label: "6 hours" },
+  { value: 12, label: "12 hours" },
+  { value: 24, label: "1 day" },
+  { value: 48, label: "2 days" },
+  { value: 72, label: "3 days" },
+  { value: 168, label: "1 week" },
+];
+const ADVANCE_OPTIONS = [7, 14, 30, 60, 90, 180, 365];
+const QUESTION_TYPE_LABEL = { text: "Short answer", longtext: "Long answer", select: "Choose one" } as const;
 
 const POLICIES = [
   { value: "FULL", label: "Flexible: full refund any time before the session" },
@@ -36,6 +55,10 @@ const BLANK: Omit<ServiceAdmin, "id"> = {
   capacity: 1,
   active: true,
   refundPolicy: "FULL",
+  intakeQuestions: [],
+  minNoticeHours: 0,
+  maxAdvanceDays: 60,
+  prepNotes: null,
 };
 
 function money(minor: number, currency: string) {
@@ -44,6 +67,19 @@ function money(minor: number, currency: string) {
   } catch {
     return `${(minor / 100).toFixed(2)} ${currency}`;
   }
+}
+
+interface DraftQuestion {
+  id: string;
+  label: string;
+  type: IntakeQuestion["type"];
+  required: boolean;
+  /** One choice per line (select questions only). */
+  options: string;
+}
+
+function toDraft(q: IntakeQuestion): DraftQuestion {
+  return { id: q.id, label: q.label, type: q.type, required: q.required, options: (q.options ?? []).join("\n") };
 }
 
 export function ServicesManager({ services, compact, onSaved }: { services: ServiceAdmin[]; compact?: boolean; onSaved?: () => void }) {
@@ -90,6 +126,17 @@ export function ServicesManager({ services, compact, onSaved }: { services: Serv
                       <p className="muted text-sm">
                         {s.durationMin} min · {s.type === "GROUP" ? `Group, ${s.capacity} seats` : "1:1"} · <span className="money">{money(s.priceMinor, s.currency)}</span>
                       </p>
+                      {(s.intakeQuestions.length > 0 || s.minNoticeHours > 0 || s.prepNotes) && (
+                        <p className="subtle">
+                          {[
+                            s.intakeQuestions.length > 0 ? `${s.intakeQuestions.length} question${s.intakeQuestions.length === 1 ? "" : "s"} for customers` : null,
+                            s.minNoticeHours > 0 ? `${NOTICE_OPTIONS.find((o) => o.value === s.minNoticeHours)?.label ?? `${s.minNoticeHours} h`} notice` : null,
+                            s.prepNotes ? "prep notes" : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      )}
                       {s.type === "GROUP" && s.durationMin > 60 && (
                         <p className="text-sm" style={{ color: "var(--warning)" }}>Longer than the 60-minute group limit on free Gmail.</p>
                       )}
@@ -155,6 +202,10 @@ function ServiceForm({
   const [type, setType] = useState(initial.type);
   const [capacity, setCapacity] = useState(String(initial.type === "GROUP" ? initial.capacity : 5));
   const [policy, setPolicy] = useState(initial.refundPolicy);
+  const [questions, setQuestions] = useState<DraftQuestion[]>(() => initial.intakeQuestions.map(toDraft));
+  const [minNotice, setMinNotice] = useState(String(initial.minNoticeHours));
+  const [maxAdvance, setMaxAdvance] = useState(String(initial.maxAdvanceDays));
+  const [prepNotes, setPrepNotes] = useState(initial.prepNotes ?? "");
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -170,6 +221,10 @@ function ServiceForm({
     if (!Number.isInteger(durationMin) || durationMin < 5 || durationMin > 480) local.duration = "Between 5 and 480 minutes.";
     if (!Number.isFinite(priceMinor) || priceMinor < 0) local.price = "Enter a price, for example 499.";
     if (type === "GROUP" && (!Number.isInteger(seats) || seats < 2 || seats > 1000)) local.capacity = "Between 2 and 1000 seats.";
+    questions.forEach((q, i) => {
+      if (q.label.trim().length < 3) local[`q${i}`] = "Write the question (at least 3 characters).";
+      else if (q.type === "select" && q.options.split("\n").map((o) => o.trim()).filter(Boolean).length < 2) local[`q${i}`] = "Add at least two choices, one per line.";
+    });
     setErrors(local);
     if (Object.keys(local).length) return;
     setBusy(true);
@@ -183,6 +238,16 @@ function ServiceForm({
       type,
       capacity: type === "GROUP" ? seats : 1,
       refundPolicy: policy,
+      intakeQuestions: questions.map((q) => ({
+        ...(q.id ? { id: q.id } : {}),
+        label: q.label.trim(),
+        type: q.type,
+        required: q.required,
+        ...(q.type === "select" ? { options: q.options.split("\n").map((o) => o.trim()).filter(Boolean) } : {}),
+      })),
+      minNoticeHours: Number(minNotice),
+      maxAdvanceDays: Number(maxAdvance),
+      prepNotes: prepNotes.trim() || (initial.id ? null : undefined),
     };
     const r = initial.id
       ? await api("/api/dashboard/services", { method: "PATCH", body: { serviceId: initial.id, ...body } })
@@ -267,6 +332,85 @@ function ServiceForm({
             </Select>
           </Field>
         </div>
+
+        <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend className="field__label">Booking rules</legend>
+          <div className="form-grid form-grid--2">
+            <Field id="svc-notice" label="Earliest a customer can book" help="How far ahead of the session they must book.">
+              <Select id="svc-notice" value={minNotice} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setMinNotice(e.target.value)}>
+                {NOTICE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field id="svc-advance" label="Furthest ahead" help="How far into the future sessions can be booked.">
+              <Select id="svc-advance" value={maxAdvance} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setMaxAdvance(e.target.value)}>
+                {ADVANCE_OPTIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {d} days
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+        </fieldset>
+
+        <Field id="svc-prep" label="What to prepare" optional help="Shown before booking, on the confirmation page and in the confirmation email.">
+          <Textarea id="svc-prep" value={prepNotes} maxLength={1000} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPrepNotes(e.target.value)} placeholder="For example: have your CV open and a list of the roles you are applying for." />
+        </Field>
+
+        <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
+          <legend className="field__label">Questions for your customer</legend>
+          <p className="subtle">Asked when someone books. You see the answers on the booking in your dashboard.</p>
+          {questions.map((q, i) => (
+            <Card key={i}>
+              <div className="stack stack--sm">
+                <Field id={`q-label-${i}`} label={`Question ${i + 1}`} error={errors[`q${i}`]}>
+                  <Input
+                    {...describedBy(`q-label-${i}`, { error: errors[`q${i}`] })}
+                    value={q.label}
+                    maxLength={120}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuestions((qs) => qs.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                    placeholder="What would you like to work on?"
+                  />
+                </Field>
+                <div className="form-grid form-grid--2">
+                  <Field id={`q-type-${i}`} label="Answer type">
+                    <Select id={`q-type-${i}`} value={q.type} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setQuestions((qs) => qs.map((x, j) => (j === i ? { ...x, type: e.target.value as DraftQuestion["type"] } : x)))}>
+                      {(Object.keys(QUESTION_TYPE_LABEL) as (keyof typeof QUESTION_TYPE_LABEL)[]).map((t) => (
+                        <option key={t} value={t}>
+                          {QUESTION_TYPE_LABEL[t]}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <div style={{ alignSelf: "end" }}>
+                    <Switch checked={q.required} onChange={() => setQuestions((qs) => qs.map((x, j) => (j === i ? { ...x, required: !x.required } : x)))} label={q.required ? "Required" : "Optional"} />
+                  </div>
+                </div>
+                {q.type === "select" && (
+                  <Field id={`q-options-${i}`} label="Choices" help="One per line.">
+                    <Textarea id={`q-options-${i}`} value={q.options} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuestions((qs) => qs.map((x, j) => (j === i ? { ...x, options: e.target.value } : x)))} />
+                  </Field>
+                )}
+                <div>
+                  <Button size="sm" variant="ghost" onClick={() => setQuestions((qs) => qs.filter((_, j) => j !== i))}>
+                    <IconTrash size={16} /> Remove question
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          ))}
+          {questions.length < MAX_QUESTIONS && (
+            <div>
+              <Button onClick={() => setQuestions((qs) => [...qs, { id: "", label: "", type: "text", required: false, options: "" }])}>
+                <IconPlus size={16} /> Add a question
+              </Button>
+            </div>
+          )}
+        </fieldset>
 
         <section className="stack stack--sm" aria-label="Preview">
           <p className="eyebrow">Preview on your booking page</p>

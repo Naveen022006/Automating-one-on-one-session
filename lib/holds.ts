@@ -36,6 +36,8 @@ export interface HoldInput {
   customerTz?: string;
   /** Snapshot of the service's cancellation policy at booking time. */
   refundPolicy?: "FULL" | "NOTICE_24H" | "NONE";
+  /** Validated answers to the service's intake questions (question text included). */
+  intakeAnswers?: { id: string; label: string; answer: string }[];
 }
 
 /**
@@ -78,6 +80,7 @@ export async function createHold(input: HoldInput) {
         whatsappOptIn: input.whatsappOptIn,
         customerTz: input.customerTz,
         refundPolicy: input.refundPolicy,
+        ...(input.intakeAnswers && input.intakeAnswers.length ? { intakeAnswers: input.intakeAnswers } : {}),
       },
     });
   });

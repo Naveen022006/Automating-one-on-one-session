@@ -1,3 +1,4 @@
+import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
@@ -34,6 +35,7 @@ export async function eraseCustomerData(
           whatsappOptIn: false,
           customerTz: null,
           lastError: null,
+          intakeAnswers: Prisma.DbNull,
           redactedAt: now,
         },
       }),
