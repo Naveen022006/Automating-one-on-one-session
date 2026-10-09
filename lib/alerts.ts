@@ -7,7 +7,8 @@ export type InfluencerAlertKind =
   | "meeting-creation-failed"
   | "message-delivery-failed"
   | "refund-needed"
-  | "refund-failed";
+  | "refund-failed"
+  | "booking-request";
 
 export interface InfluencerAlert {
   kind: InfluencerAlertKind;
@@ -33,6 +34,7 @@ const TITLES: Record<InfluencerAlertKind, { title: string; action: string }> = {
   "message-delivery-failed": { title: "A customer message was not delivered", action: "Open the session" },
   "refund-needed": { title: "A payment needs a refund", action: "Review the refund" },
   "refund-failed": { title: "A refund failed", action: "Review the refund" },
+  "booking-request": { title: "New booking request", action: "Review the request" },
 };
 
 export function defaultActionUrl(alert: InfluencerAlert): string {

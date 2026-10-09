@@ -8,9 +8,10 @@ import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Bookings" };
 
-const STATUSES = ["all", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED", "EXPIRED"] as const;
+const STATUSES = ["all", "REQUESTED", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED", "EXPIRED"] as const;
 const LABEL: Record<string, string> = {
   all: "All",
+  REQUESTED: "Awaiting approval",
   PENDING_PAYMENT: "Awaiting payment",
   PAID: "Paid, no link",
   SCHEDULED: "Scheduled",

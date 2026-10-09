@@ -9,6 +9,7 @@ export const metadata: Metadata = { title: "Sessions" };
 
 const VIEWS: { value: SessionView; label: string; empty: [string, string] }[] = [
   { value: "upcoming", label: "Upcoming", empty: ["No upcoming sessions", "New bookings appear here as soon as they are paid."] },
+  { value: "requests", label: "Requests", empty: ["No requests waiting", "When a customer asks to book a service that needs your approval, it shows up here."] },
   { value: "past", label: "Past", empty: ["No past sessions yet", "Sessions move here after they end."] },
   { value: "cancelled", label: "Cancelled", empty: ["No cancellations", "Cancelled bookings and their refunds appear here."] },
   { value: "attention", label: "Needs attention", empty: ["All clear", "Failed Meet links, calendar errors and refunds due show up here."] },

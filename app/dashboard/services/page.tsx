@@ -29,6 +29,7 @@ export default async function ServicesPage() {
           minNoticeHours: s.minNoticeHours,
           maxAdvanceDays: s.maxAdvanceDays,
           prepNotes: s.prepNotes,
+          requiresApproval: s.requiresApproval,
         }))}
       />
     </div>

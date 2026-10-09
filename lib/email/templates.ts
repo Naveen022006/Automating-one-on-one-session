@@ -201,3 +201,67 @@ export function payoutSentMessage(
     ],
   });
 }
+
+/** Booking-request emails to the customer (services that need the influencer's approval). */
+export type RequestEmailKind = "request-received" | "request-approved" | "request-declined";
+
+export interface RequestEmailData {
+  customerName: string;
+  serviceTitle: string;
+  influencerName: string;
+  startTime: Date;
+  tz: string;
+  /** Approved: the signed payment link and the deadline, and the amount to pay. */
+  payUrl?: string;
+  payBy?: Date;
+  amount?: { amountMinor: number; currency: string };
+  /** Declined: the reason the influencer gave, if any. */
+  reason?: string | null;
+  /** How long a request waits for an answer, in hours (received only). */
+  decideWithinHours?: number;
+}
+
+export function requestEmail(kind: RequestEmailKind, d: RequestEmailData): RenderedEmail {
+  const when = formatSessionTime(d.startTime, d.tz);
+  const first = d.customerName.split(" ")[0] || d.customerName;
+  const details: [string, string][] = [
+    ["Session", d.serviceTitle],
+    ["With", d.influencerName],
+    ["Requested time", when],
+  ];
+  switch (kind) {
+    case "request-received":
+      return renderEmail(`Request sent: ${d.serviceTitle} with ${d.influencerName}`, {
+        preheader: `${d.influencerName} will review your request. Nothing has been charged.`,
+        heading: "Your request is with " + d.influencerName,
+        paragraphs: [
+          `Hi ${first}, thanks for your request. ${d.influencerName} reviews each booking personally${d.decideWithinHours ? ` and usually replies within ${Math.round(d.decideWithinHours / 24) >= 2 ? `${Math.round(d.decideWithinHours / 24)} days` : `${d.decideWithinHours} hours`}` : ""}.`,
+          "Nothing has been charged. If they approve, we will email you a link to pay and confirm your session. The time is held for you until they decide.",
+        ],
+        details,
+        footnote: `You received this email because you requested a session through ${BRAND_NAME}.`,
+      });
+    case "request-approved":
+      return renderEmail(`Approved: pay to confirm ${d.serviceTitle}`, {
+        preheader: `${d.influencerName} approved your request. Pay to confirm your session.`,
+        heading: "Your request was approved",
+        paragraphs: [
+          `Hi ${first}, ${d.influencerName} approved your request. To confirm your session, complete the payment${d.payBy ? ` by ${formatSessionTime(d.payBy, d.tz)}` : ""}. Your time is held until then.`,
+        ],
+        details: [...details, ...(d.amount ? ([["Amount", formatMoney(d.amount.amountMinor, d.amount.currency)]] as [string, string][]) : [])],
+        button: d.payUrl ? { label: "Pay and confirm", url: d.payUrl } : undefined,
+        footnote: "If you do not pay in time the held slot is released.",
+      });
+    case "request-declined":
+      return renderEmail(`Your request for ${d.serviceTitle} was not accepted`, {
+        preheader: `${d.influencerName} could not accept this request. You were not charged.`,
+        heading: "Your request was not accepted",
+        paragraphs: [
+          `Hi ${first}, unfortunately ${d.influencerName} could not accept your request for ${when}. You have not been charged.`,
+          ...(d.reason ? [`Their note: ${d.reason}`] : []),
+          "You are welcome to choose another time on their booking page.",
+        ],
+        details,
+      });
+  }
+}

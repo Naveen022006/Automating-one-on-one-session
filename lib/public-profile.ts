@@ -16,6 +16,7 @@ export interface PublicService {
   refundText: string;
   intakeQuestions: IntakeQuestion[];
   prepNotes: string | null;
+  requiresApproval: boolean;
   minNoticeHours: number;
   maxAdvanceDays: number;
 }
@@ -71,6 +72,7 @@ export async function loadPublicProfile(slug: string): Promise<PublicProfile | n
       refundText: describeRefundPolicy(s.refundPolicy),
       intakeQuestions: parseQuestions(s.intakeQuestions),
       prepNotes: s.prepNotes,
+      requiresApproval: s.requiresApproval,
       minNoticeHours: s.minNoticeHours,
       maxAdvanceDays: s.maxAdvanceDays,
     })),

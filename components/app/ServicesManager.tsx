@@ -23,6 +23,7 @@ export interface ServiceAdmin {
   minNoticeHours: number;
   maxAdvanceDays: number;
   prepNotes: string | null;
+  requiresApproval: boolean;
 }
 
 const NOTICE_OPTIONS = [
@@ -59,6 +60,7 @@ const BLANK: Omit<ServiceAdmin, "id"> = {
   minNoticeHours: 0,
   maxAdvanceDays: 60,
   prepNotes: null,
+  requiresApproval: false,
 };
 
 function money(minor: number, currency: string) {
@@ -126,12 +128,13 @@ export function ServicesManager({ services, compact, onSaved }: { services: Serv
                       <p className="muted text-sm">
                         {s.durationMin} min · {s.type === "GROUP" ? `Group, ${s.capacity} seats` : "1:1"} · <span className="money">{money(s.priceMinor, s.currency)}</span>
                       </p>
-                      {(s.intakeQuestions.length > 0 || s.minNoticeHours > 0 || s.prepNotes) && (
+                      {(s.intakeQuestions.length > 0 || s.minNoticeHours > 0 || s.prepNotes || s.requiresApproval) && (
                         <p className="subtle">
                           {[
                             s.intakeQuestions.length > 0 ? `${s.intakeQuestions.length} question${s.intakeQuestions.length === 1 ? "" : "s"} for customers` : null,
                             s.minNoticeHours > 0 ? `${NOTICE_OPTIONS.find((o) => o.value === s.minNoticeHours)?.label ?? `${s.minNoticeHours} h`} notice` : null,
                             s.prepNotes ? "prep notes" : null,
+                            s.requiresApproval ? "needs your approval" : null,
                           ]
                             .filter(Boolean)
                             .join(" · ")}
@@ -206,6 +209,7 @@ function ServiceForm({
   const [minNotice, setMinNotice] = useState(String(initial.minNoticeHours));
   const [maxAdvance, setMaxAdvance] = useState(String(initial.maxAdvanceDays));
   const [prepNotes, setPrepNotes] = useState(initial.prepNotes ?? "");
+  const [requiresApproval, setRequiresApproval] = useState(initial.requiresApproval);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -248,6 +252,7 @@ function ServiceForm({
       minNoticeHours: Number(minNotice),
       maxAdvanceDays: Number(maxAdvance),
       prepNotes: prepNotes.trim() || (initial.id ? null : undefined),
+      requiresApproval,
     };
     const r = initial.id
       ? await api("/api/dashboard/services", { method: "PATCH", body: { serviceId: initial.id, ...body } })
@@ -356,6 +361,14 @@ function ServiceForm({
             </Field>
           </div>
         </fieldset>
+
+        <div className="stack stack--sm">
+          <Switch checked={requiresApproval} onChange={() => setRequiresApproval((v) => !v)} label="I approve each booking request" />
+          <p className="subtle">
+            Customers choose a time and send a request instead of paying. The time is held for up to 48 hours while you decide. Approve and
+            they get a link to pay; decline and nothing is charged.
+          </p>
+        </div>
 
         <Field id="svc-prep" label="What to prepare" optional help="Shown before booking, on the confirmation page and in the confirmation email.">
           <Textarea id="svc-prep" value={prepNotes} maxLength={1000} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPrepNotes(e.target.value)} placeholder="For example: have your CV open and a list of the roles you are applying for." />

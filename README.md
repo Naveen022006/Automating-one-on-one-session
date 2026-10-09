@@ -106,3 +106,13 @@ Every service is influencer-defined: title, length, price, 1:1 or group (any sea
 - **Booking rules**: earliest a customer can book (minimum notice) and furthest ahead. Applied to the slot list, the hold
   endpoint and customer rescheduling; the owner previewing their own page is not limited.
 - **What to prepare**: shown before booking, on the confirmation page and in the confirmation email.
+
+## Booking approval
+A service can be set to **I approve each booking request**. The customer picks a time and sends a request instead of
+paying; the booking is `REQUESTED` and holds the seat for up to 48 hours. The influencer sees it under
+**Sessions > Requests** (and in the needs-attention list) and approves or declines:
+
+- **Approve** -> `HELD` with a payment deadline (24 hours, never later than 15 minutes before the session). The customer
+  is emailed a signed link to `/pay/<token>` where they pay through the normal Razorpay checkout.
+- **Decline** -> `CANCELLED`, the customer is emailed the reason. Nothing was ever charged, so there is nothing to refund.
+- An unanswered request expires with the normal expiry job and the seat is released.

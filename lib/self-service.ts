@@ -36,3 +36,20 @@ export function signBookingPollToken(bookingId: string, ttlSec = 2 * 3_600): str
 export function verifyBookingPollToken(bookingId: string, token: string | null | undefined): boolean {
   return verifyToken<{ b: string }>(BOOKING_POLL_PURPOSE, token)?.b === bookingId;
 }
+
+/**
+ * Link sent to a customer once the influencer approves their request: it opens the payment page for that booking.
+ * Distinct purpose, so it cannot be used as a self-service or poll token. It expires with the payment window.
+ */
+export const BOOKING_PAY_PURPOSE = "booking-pay";
+
+export function buildPayUrl(bookingId: string, ttlSec: number): string {
+  const appUrl = process.env.APP_URL;
+  if (!appUrl) throw new Error("APP_URL is not set");
+  const t = signToken(BOOKING_PAY_PURPOSE, { b: bookingId }, Math.max(60, Math.floor(ttlSec)));
+  return `${appUrl.replace(/\/$/, "")}/pay/${encodeURIComponent(t)}`;
+}
+
+export function verifyPayToken(token: string | null | undefined): string | null {
+  return verifyToken<{ b: string }>(BOOKING_PAY_PURPOSE, token)?.b ?? null;
+}

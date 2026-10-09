@@ -38,6 +38,7 @@ interface ServiceView {
   refundText: string;
   intakeQuestions: IntakeQuestion[];
   prepNotes: string | null;
+  requiresApproval: boolean;
 }
 interface Host {
   name: string;
@@ -121,6 +122,8 @@ export function BookingFlow({
   const [whatsapp, setWhatsapp] = useState("");
   const [optIn, setOptIn] = useState(false);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Set when the service needs the host's approval: the request was sent and nothing is payable yet.
+  const [requested, setRequested] = useState<{ decideWithinHours: number } | null>(null);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -271,6 +274,11 @@ export function BookingFlow({
         }
         return;
       }
+      if (data.requiresApproval) {
+        setRequested({ decideWithinHours: data.decideWithinHours ?? 48 });
+        setStep(4);
+        return;
+      }
       setNow(Date.now());
       setHold(data);
       setStep(3);
@@ -327,6 +335,7 @@ export function BookingFlow({
 
   function startOver() {
     setHold(null);
+    setRequested(null);
     setSlot(null);
     setPayState("idle");
     setError(null);
@@ -405,6 +414,7 @@ export function BookingFlow({
                     <span className="option__meta">
                       {duration(s.durationMin)} · {s.type === "GROUP" ? `Group, up to ${s.capacity}` : "1:1"}
                     </span>
+                    {s.requiresApproval && <span className="option__meta">Needs {host.name}&rsquo;s approval before you pay</span>}
                     {s.description && <span className="option__meta">{s.description}</span>}
                   </span>
                   <span className="option__price">{money(s.priceMinor, s.currency)}</span>
@@ -567,10 +577,14 @@ export function BookingFlow({
                 {preview && <Alert tone="info">Holding is disabled in preview.</Alert>}
                 <div className="form-actions">
                   <Button type="submit" variant="primary" size="lg" loading={busy} disabled={preview}>
-                    Hold this time
+                    {service.requiresApproval ? "Send request" : "Hold this time"}
                   </Button>
                 </div>
-                <p className="subtle">We hold the time for 10 minutes while you pay. Nothing is charged yet.</p>
+                <p className="subtle">
+                  {service.requiresApproval
+                    ? `${host.name} approves each booking. Your time is held while they review it, and you only pay if they approve. Nothing is charged now.`
+                    : "We hold the time for 10 minutes while you pay. Nothing is charged yet."}
+                </p>
               </form>
             </section>
           )}
@@ -619,6 +633,38 @@ export function BookingFlow({
                   )}
                 </div>
               </Card>
+            </section>
+          )}
+
+          {step === 4 && service && slot && requested && (
+            <section aria-labelledby="requested-title" className="stack" aria-live="polite">
+              <Alert tone="success" title="Request sent">
+                {service.title} with {host.name}, {when(slot.start, tz)}.
+              </Alert>
+              <Card>
+                <div className="stack">
+                  <h2 id="requested-title" className="section-title">
+                    What happens next
+                  </h2>
+                  <ol className="stack stack--sm text-sm" style={{ paddingLeft: 20, margin: 0 }}>
+                    <li>We emailed a copy of your request to {email}.</li>
+                    <li>
+                      {host.name} reviews it
+                      {requested.decideWithinHours >= 48 ? " (usually within a couple of days)" : ""}. Your time is held until they answer.
+                    </li>
+                    <li>If they approve, we email you a link to pay and confirm. If not, you are not charged.</li>
+                  </ol>
+                  {service.prepNotes && (
+                    <Alert tone="info" title="Before your session">
+                      {service.prepNotes}
+                    </Alert>
+                  )}
+                </div>
+              </Card>
+              <p className="subtle">
+                <IconCheckCircle size={14} style={{ display: "inline", verticalAlign: "-2px" }} /> You can close this page.{" "}
+                <Link href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</Link>
+              </p>
             </section>
           )}
 

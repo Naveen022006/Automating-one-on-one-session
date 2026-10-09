@@ -2,6 +2,10 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 export const HOLD_MINUTES = 10;
+/** How long a booking REQUEST keeps its seat while the influencer decides. */
+export const REQUEST_TTL_HOURS = 48;
+/** After approval, how long the customer has to pay (never past the session start). */
+export const APPROVED_PAY_HOURS = 24;
 /** When checkout starts, the hold is pushed out to at least this long so a payment in progress keeps its seat. */
 export const PAYMENT_WINDOW_MINUTES = 20;
 
@@ -9,7 +13,7 @@ export const PAYMENT_WINDOW_MINUTES = 20;
 export const SEAT_STATUSES = ["PAID", "SCHEDULED", "COMPLETED"] as const;
 
 /** Statuses that occupy a seat only until `holdExpiresAt`. */
-export const TIMED_SEAT_STATUSES = ["HELD", "PENDING_PAYMENT"] as const;
+export const TIMED_SEAT_STATUSES = ["REQUESTED", "HELD", "PENDING_PAYMENT"] as const;
 
 /** Where-clause for bookings that currently occupy a seat. Unpaid bookings only count until their hold expires. */
 export function activeSeatWhere(now: Date): Prisma.BookingWhereInput {
@@ -38,6 +42,8 @@ export interface HoldInput {
   refundPolicy?: "FULL" | "NOTICE_24H" | "NONE";
   /** Validated answers to the service's intake questions (question text included). */
   intakeAnswers?: { id: string; label: string; answer: string }[];
+  /** The service needs approval: create a REQUESTED booking (long hold, nothing to pay yet) instead of HELD. */
+  requestApproval?: boolean;
 }
 
 /**
@@ -46,7 +52,7 @@ export interface HoldInput {
  */
 export async function createHold(input: HoldInput) {
   const now = new Date();
-  const holdExpiresAt = new Date(now.getTime() + HOLD_MINUTES * 60_000);
+  const holdExpiresAt = new Date(now.getTime() + (input.requestApproval ? REQUEST_TTL_HOURS * 3_600_000 : HOLD_MINUTES * 60_000));
 
   return prisma.$transaction(async (tx) => {
     // Idempotent create: the (service_id, start_time) unique constraint makes this race-safe.
@@ -72,7 +78,7 @@ export async function createHold(input: HoldInput) {
     return tx.booking.create({
       data: {
         sessionId,
-        status: "HELD",
+        status: input.requestApproval ? "REQUESTED" : "HELD",
         holdExpiresAt,
         customerName: input.customerName,
         customerEmail: input.customerEmail,

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { notifyRequestCreated } from "@/lib/booking-approval";
 import { windowProblem } from "@/lib/booking-window";
 import { prisma } from "@/lib/db";
 import { parseQuestions, validateAnswers } from "@/lib/intake";
@@ -7,6 +8,7 @@ import {
   createHold,
   DuplicateBookingError,
   HOLD_MINUTES,
+  REQUEST_TTL_HOURS,
   SlotUnavailableError,
 } from "@/lib/holds";
 import { toE164 } from "@/lib/phone";
@@ -109,7 +111,16 @@ export async function POST(req: Request) {
       customerTz: body.tz,
       refundPolicy: service.refundPolicy,
       intakeAnswers: answered.answers,
+      requestApproval: service.requiresApproval,
     });
+    if (service.requiresApproval) {
+      // A request: nothing to pay yet. The customer gets a receipt email and the influencer an alert.
+      await notifyRequestCreated(booking.id);
+      return NextResponse.json(
+        { bookingId: booking.id, requiresApproval: true, holdExpiresAt: booking.holdExpiresAt, decideWithinHours: REQUEST_TTL_HOURS },
+        { status: 201 },
+      );
+    }
     return NextResponse.json(
       {
         bookingId: booking.id,
