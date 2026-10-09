@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PageHead } from "@/components/app/AppShell";
-import { Badge, Breadcrumb, Card, StatusPill } from "@/components/ui/primitives";
+import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@/components/ui/primitives";
 import { PayoutPanel } from "@/components/admin/PayoutPanel";
 import { getInfluencerDetail } from "@/lib/admin/data";
+import { CreatePayoutButton, FeeForm, PayoutRowActions } from "@/components/admin/PayoutActions";
+import { prisma } from "@/lib/db";
 import { getPayoutAccountView } from "@/lib/payout-account";
+import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, loadPayable, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Influencer" };
@@ -15,6 +18,14 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   if (!detail) notFound();
   const { influencer: i, bookings } = detail;
   const payout = await getPayoutAccountView(id);
+  const feeBps = effectiveFeeBps(i.platformFeeBps);
+  const [payable, payouts] = await Promise.all([
+    loadPayable(id),
+    prisma.payout.findMany({ where: { influencerId: id }, orderBy: { createdAt: "desc" }, take: 20 }),
+  ]);
+  const currencies = summariseCurrencies(payable, feeBps);
+  const owed = new Map(await Promise.all(payouts.filter((p) => p.status === "PAID").map(async (p) => [p.id, await postPayoutRefunds(p.id)] as const)));
+  const verified = payout?.status === "VERIFIED";
 
   return (
     <div className="stack stack--lg">
@@ -50,6 +61,68 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
 
       <Card title="Payout details">
         <PayoutPanel influencerId={i.id} account={payout} />
+      </Card>
+
+      <Card title="Earnings and payouts">
+        <div className="stack">
+          <FeeForm influencerId={i.id} feeBps={i.platformFeeBps} defaultBps={defaultFeeBps()} />
+          <p className="subtle">Current fee: {formatFeePercent(feeBps)}. Changing it affects payouts created from now on, not ones already created.</p>
+          {!verified && <Alert tone="warning">Payouts can be created once this influencer&apos;s payout details are verified.</Alert>}
+          {currencies.length === 0 ? (
+            <p className="muted">No paid sessions waiting to be paid out.</p>
+          ) : (
+            currencies.map((c) => (
+              <div key={c.currency} className="card" style={{ padding: 16 }}>
+                <div className="row row--between">
+                  <div>
+                    <strong>{formatMoney(c.readyMinor, c.currency)}</strong> ready to pay out
+                    <div className="subtle">
+                      {c.readyCount} payment(s), {formatMoney(c.readyGrossMinor, c.currency)} after refunds, minus {formatMoney(c.readyFeeMinor, c.currency)} fee
+                    </div>
+                  </div>
+                  {c.readyCount > 0 && verified && <CreatePayoutButton influencerId={i.id} currency={c.currency} label={`Create ${c.currency} payout`} />}
+                </div>
+                {c.waitingCount > 0 && (
+                  <p className="subtle" style={{ marginTop: 8 }}>
+                    {formatMoney(c.waitingMinor, c.currency)} not payable yet:{" "}
+                    {(Object.entries(c.waitingByReason) as [Blocker, number][]).map(([r, n]) => `${n} ${BLOCKER_LABEL[r].toLowerCase()}`).join("; ")}.
+                  </p>
+                )}
+              </div>
+            ))
+          )}
+          {payouts.length > 0 && (
+            <div className="table-wrap">
+              <table className="table table--stack">
+                <caption className="sr-only">Payouts</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Created</th>
+                    <th scope="col">Send to</th>
+                    <th scope="col" className="num">Amount</th>
+                    <th scope="col">Status</th>
+                    <th scope="col"><span className="sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payouts.map((p) => (
+                    <tr key={p.id}>
+                      <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                      <td data-label="Send to">{p.destination}</td>
+                      <td data-label="Amount" className="num">{formatMoney(p.netMinor, p.currency)}</td>
+                      <td data-label="Status">
+                        {p.status === "PAID" ? <Badge tone="success">Paid</Badge> : p.status === "PENDING" ? <Badge tone="warning">To send</Badge> : <Badge>Cancelled</Badge>}
+                        {p.reference && <div className="subtle">UTR {p.reference}</div>}
+                        {(owed.get(p.id) ?? 0) > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(owed.get(p.id)!, p.currency)} to recover</Badge></div>}
+                      </td>
+                      <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </Card>
 
       <Card title={`Services (${i.services.length})`}>

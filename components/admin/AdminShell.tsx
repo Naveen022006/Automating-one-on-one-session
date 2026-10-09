@@ -11,6 +11,7 @@ import {
   IconSettings,
   IconShield,
   IconUsers,
+  IconWallet,
 } from "@/components/icons";
 import { Wordmark } from "@/components/site/SiteChrome";
 import { Menu, ToastProvider } from "@/components/ui/overlays";
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/admin", label: "Overview", icon: IconLayout, exact: true },
   { href: "/admin/influencers", label: "Influencers", icon: IconUsers },
   { href: "/admin/payments", label: "Payments", icon: IconCard },
+  { href: "/admin/payouts", label: "Payouts", icon: IconWallet },
   { href: "/admin/bookings", label: "Bookings", icon: IconCalendar },
   { href: "/admin/audit", label: "Audit log", icon: IconShield },
   { href: "/admin/settings", label: "Settings", icon: IconSettings },
@@ -92,7 +94,7 @@ export function AdminShell({
           </main>
         </div>
         <nav className="mobile-nav" aria-label="Sections">
-          {NAV.filter((n) => ["/admin", "/admin/influencers", "/admin/payments", "/admin/bookings", "/admin/settings"].includes(n.href)).map((n) => (
+          {NAV.filter((n) => ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts", "/admin/settings"].includes(n.href)).map((n) => (
             <Link key={n.href} href={n.href} aria-current={isActive(pathname, n.href, n.exact) ? "page" : undefined}>
               <n.icon size={20} />
               {n.label}

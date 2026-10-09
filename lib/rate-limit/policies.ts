@@ -35,6 +35,9 @@ export const ROUTE_RULES: RouteRule[] = [
   // --- Administrator console: sign-in is a brute-force target, everything else is low volume.
   { name: "admin-login", pattern: /^\/api\/admin\/auth\/login$/, methods: ["POST"], limit: 8, windowMs: 15 * MIN, by: "ip" },
   { name: "admin-payout-account", pattern: /^\/api\/admin\/influencers\/[^/]+\/payout-account$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
+  // Reconciliation calls Razorpay once per payment; payouts and fees move money. Tight, low-volume limits.
+  { name: "admin-reconcile", pattern: /^\/api\/admin\/payments\/reconcile$/, methods: ["POST"], limit: 20, windowMs: HOUR, by: "ip" },
+  { name: "admin-money", pattern: /^\/api\/admin\/(payouts\/|influencers\/[^/]+\/(payouts|fee)$|payments\/[^/]+\/unreconcile$)/, methods: ["POST", "PATCH"], limit: 60, windowMs: HOUR, by: "ip" },
   { name: "admin", pattern: /^\/api\/admin\//, limit: 120, windowMs: MIN, by: "ip" },
 
   // --- Public booking flow. Holds reserve a seat, so they are tightly limited to stop seat squatting.

@@ -176,7 +176,7 @@ export async function getInfluencerDetail(id: string) {
 }
 
 export interface PaymentFilter {
-  view?: "needs-refund" | "mismatch" | "captured" | "unpaid";
+  view?: "needs-refund" | "mismatch" | "captured" | "unpaid" | "unreconciled";
 }
 
 export function paymentWhere(filter: PaymentFilter): Prisma.PaymentWhereInput {
@@ -187,6 +187,8 @@ export function paymentWhere(filter: PaymentFilter): Prisma.PaymentWhereInput {
       return mismatchWhere;
     case "captured":
       return { status: { in: ["CAPTURED", "REFUNDED"] } };
+    case "unreconciled":
+      return { status: "CAPTURED", reconciledAt: null, payoutId: null };
     case "unpaid":
       return { status: { in: ["CREATED", "FAILED"] } };
     default:
@@ -219,14 +221,15 @@ export async function listPayments(page: number, filter: PaymentFilter) {
 }
 
 export async function paymentViewCounts() {
-  const [all, needsRefund, mismatch, captured, unpaid] = await Promise.all([
+  const [all, needsRefund, mismatch, captured, unpaid, unreconciled] = await Promise.all([
     prisma.payment.count(),
     prisma.payment.count({ where: paymentWhere({ view: "needs-refund" }) }),
     prisma.payment.count({ where: paymentWhere({ view: "mismatch" }) }),
     prisma.payment.count({ where: paymentWhere({ view: "captured" }) }),
     prisma.payment.count({ where: paymentWhere({ view: "unpaid" }) }),
+    prisma.payment.count({ where: paymentWhere({ view: "unreconciled" }) }),
   ]);
-  return { all, needsRefund, mismatch, captured, unpaid };
+  return { all, needsRefund, mismatch, captured, unpaid, unreconciled };
 }
 
 export async function listBookings(page: number, status?: string) {

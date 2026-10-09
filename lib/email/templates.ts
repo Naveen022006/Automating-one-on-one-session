@@ -178,3 +178,23 @@ export function payoutDetailsReviewedMessage(name: string, outcome: { verified: 
         paragraphs: [`Hi ${first}, we could not verify your payout details.`, outcome.reason, "Please correct them in your dashboard under Payouts."],
       });
 }
+
+export function payoutSentMessage(
+  name: string,
+  d: { netMinor: number; currency: string; destination: string; reference: string; paymentCount: number; feeMinor: number },
+): RenderedEmail {
+  return renderEmail(`${formatMoney(d.netMinor, d.currency)} is on its way to you`, {
+    preheader: `Payout sent to ${d.destination}.`,
+    heading: "Your payout was sent",
+    paragraphs: [
+      `Hi ${name.split(" ")[0] || name}, we have sent your payout. It usually reaches your account within one working day.`,
+    ],
+    details: [
+      ["Amount", formatMoney(d.netMinor, d.currency)],
+      ["Sent to", d.destination],
+      ["Bank reference", d.reference],
+      ["Sessions", String(d.paymentCount)],
+      ...(d.feeMinor > 0 ? ([["Platform fee deducted", formatMoney(d.feeMinor, d.currency)]] as [string, string][]) : []),
+    ],
+  });
+}

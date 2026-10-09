@@ -39,12 +39,16 @@ model Influencer {
   notifyByEmail Boolean   @default(true) @map("notify_by_email")
   createdAt     DateTime  @default(now()) @map("created_at")
 
-  services      Service[]
-  rules         AvailabilityRule[]
-  blockedDates  BlockedDate[]
-  googleToken   GoogleToken?
-  user          User?
-  payoutAccount PayoutAccount?
+  services       Service[]
+  rules          AvailabilityRule[]
+  blockedDates   BlockedDate[]
+  googleToken    GoogleToken?
+  user           User?
+  payoutAccount  PayoutAccount?
+  // Platform fee in basis points (1000 = 10%) taken from this influencer's payouts. Null = use the platform default
+  // (PLATFORM_FEE_BPS). Decided by the administrator.
+  platformFeeBps Int?               @map("platform_fee_bps")
+  payouts        Payout[]
 
   @@map("influencers")
 }
@@ -308,13 +312,21 @@ model Payment {
   refundStatus      String?       @map("refund_status")
   refundAmountMinor Int?          @map("refund_amount_minor")
   refundedAt        DateTime?     @map("refunded_at")
+  // Set by an administrator after checking the payment against Razorpay. Only reconciled payments are payable.
+  reconciledAt      DateTime?     @map("reconciled_at")
+  reconciledByEmail String?       @map("reconciled_by_email")
+  // The payout this payment was paid out in (set when the payout is created, cleared if it is cancelled).
+  payoutId          String?       @map("payout_id")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
   booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   refunds Refund[]
+  payout  Payout?  @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([bookingId])
+  @@index([payoutId])
+  @@index([status, reconciledAt])
   @@map("payments")
 }
 
@@ -490,4 +502,45 @@ model PayoutAccount {
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 
   @@map("payout_accounts")
+}
+
+enum PayoutStatus {
+  // Created by an administrator: the payments are locked to it and the money has not been sent yet.
+  PENDING
+  // The administrator sent the money and recorded the bank reference (UTR).
+  PAID
+  // Abandoned before sending: its payments are released and become payable again.
+  CANCELLED
+}
+
+// One manual transfer from the platform owner to an influencer. Amounts are a snapshot taken when the payout was
+// created: gross (what customers paid) minus refunds already made, minus the platform fee, equals net (what is sent).
+model Payout {
+  id             String       @id @default(cuid())
+  influencerId   String       @map("influencer_id")
+  status         PayoutStatus @default(PENDING)
+  currency       String
+  grossMinor     Int          @map("gross_minor")
+  refundsMinor   Int          @map("refunds_minor")
+  feeBps         Int          @map("fee_bps")
+  feeMinor       Int          @map("fee_minor")
+  netMinor       Int          @map("net_minor")
+  paymentCount   Int          @map("payment_count")
+  // What it was sent to (masked), copied at creation so history stays readable if the details change later.
+  destination    String
+  // Bank reference / UTR the administrator recorded when sending the money.
+  reference      String?
+  note           String?
+  createdByEmail String       @map("created_by_email")
+  paidByEmail    String?      @map("paid_by_email")
+  paidAt         DateTime?    @map("paid_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Restrict)
+  payments   Payment[]
+
+  @@index([influencerId, createdAt])
+  @@index([status])
+  @@map("payouts")
 }
