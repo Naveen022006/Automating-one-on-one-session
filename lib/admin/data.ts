@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { viewTemplates } from "@/lib/whatsapp-connection";
 
 export const PAGE_SIZE = 25;
 
@@ -82,6 +83,7 @@ export interface InfluencerRow {
   emailVerified: boolean;
   google: "connected" | "reconnect" | "none";
   payout: "none" | "pending" | "verified" | "rejected";
+  whatsapp: "none" | "ready" | "pending" | "error";
   services: number;
   bookings: number;
   grossMinor: number;
@@ -116,6 +118,7 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
         user: { select: { emailVerifiedAt: true } },
         googleToken: { select: { status: true } },
         payoutAccount: { select: { status: true } },
+        whatsappConnection: { select: { status: true, templates: true } },
         _count: { select: { services: true } },
       },
     }),
@@ -146,6 +149,7 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
       emailVerified: r.user?.emailVerifiedAt != null,
       google: !r.googleToken ? "none" : r.googleToken.status === "ACTIVE" ? "connected" : "reconnect",
       payout: !r.payoutAccount ? "none" : r.payoutAccount.status === "VERIFIED" ? "verified" : r.payoutAccount.status === "REJECTED" ? "rejected" : "pending",
+      whatsapp: !r.whatsappConnection ? "none" : r.whatsappConnection.status === "ERROR" ? "error" : viewTemplates(r.whatsappConnection.templates).every((t) => t.status === "APPROVED") ? "ready" : "pending",
       services: r._count.services,
       bookings: Number(byId.get(r.id)?.bookings ?? 0),
       grossMinor: Number(byId.get(r.id)?.gross ?? 0),
@@ -162,6 +166,7 @@ export async function getInfluencerDetail(id: string) {
     include: {
       user: { select: { emailVerifiedAt: true, createdAt: true } },
       googleToken: { select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true, scope: true } },
+      whatsappConnection: { select: { status: true, displayPhone: true, verifiedName: true, templates: true, lastError: true } },
       services: { orderBy: { createdAt: "desc" } },
     },
   });

@@ -11,6 +11,8 @@ import {
 } from "@/lib/message-templates";
 import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
+import { markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
+import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
 
 /** Template used for the booking confirmation message (must be approved in WhatsApp Business). */
 export { CONFIRMATION_TEMPLATE };
@@ -48,6 +50,8 @@ export interface SendBookingMessageResult {
 
 export interface MessagingDeps {
   sendWhatsApp: (input: {
+    /** Whose WhatsApp number to send from (their own connection). */
+    influencerId?: string;
     to: string;
     template: string;
     languageCode?: string;
@@ -58,7 +62,19 @@ export interface MessagingDeps {
 }
 
 const defaultDeps: MessagingDeps = {
-  sendWhatsApp: (input) => realSendWhatsApp(input as never),
+  sendWhatsApp: async (input) => {
+    // Each influencer messages from their own connected number. No healthy connection means this throws and the
+    // caller falls back to SMS; a rejected token flags the connection so the influencer is told once.
+    const credentials = input.influencerId ? await resolveSendCredentials(input.influencerId) : undefined;
+    try {
+      return await realSendWhatsApp({ ...(input as never as Parameters<typeof realSendWhatsApp>[0]), credentials });
+    } catch (e) {
+      if (input.influencerId && credentials && e instanceof WhatsAppGraphError && e.invalidToken) {
+        await markTokenInvalid(input.influencerId, e.message).catch(() => {});
+      }
+      throw e;
+    }
+  },
   sendSMS: (input) => realSendSMS(input),
   alert: alertInfluencer,
 };
@@ -141,6 +157,7 @@ export async function sendMessageForBooking(
   let result: SendResult;
   try {
     result = await deps.sendWhatsApp({
+      influencerId: influencer.id,
       to,
       template,
       languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en",

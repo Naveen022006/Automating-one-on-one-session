@@ -59,6 +59,7 @@ export const ROUTE_RULES: RouteRule[] = [
   // --- Influencer dashboard. Refunds move money, so they get their own tight limit.
   { name: "dashboard-refund", pattern: /^\/api\/dashboard\/bookings\/[^/]+\/refund$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-payout-account", pattern: /^\/api\/dashboard\/payout-account$/, methods: ["PUT"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
+  { name: "dashboard-whatsapp", pattern: /^\/api\/dashboard\/whatsapp$/, methods: ["POST", "DELETE"], limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-export", pattern: /^\/api\/dashboard\/earnings\/export$/, limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard", pattern: /^\/api\/dashboard\//, limit: 120, windowMs: MIN, by: "session-or-ip" },
 ];

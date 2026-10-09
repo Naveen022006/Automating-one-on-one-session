@@ -125,3 +125,17 @@ fails or is rate limited, the platform's email provider sends instead with the i
 never lost. A dead Google grant flags the influencer to reconnect. Account emails (verification, password reset, payout
 notices, alerts) always come from the platform. `gmail.send` is a restricted Google scope: it works for test users while
 the consent screen is in Testing, and needs Google verification before general use.
+
+## Influencer WhatsApp numbers
+Customers are messaged from the **influencer's own WhatsApp Business number**. In **Settings > WhatsApp** the influencer
+connects it either with Meta **Embedded Signup** (needs `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID` and a Meta app
+approved as a Tech Provider) or by entering their WhatsApp Business Account id, phone number id and a permanent system-user
+token. Credentials are verified against Meta before saving (the number must belong to the account) and the token is stored
+AES-256-GCM encrypted and never shown again.
+
+On connect we submit our five message templates (booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation)
+to the influencer's account for approval and keep their status current from Meta's template webhook and a Refresh button;
+the dashboard shows which are approved. Until a template is approved, or if there is no healthy connection, the message goes
+by SMS. A token Meta rejects flags the connection once and alerts the influencer. Set `WHATSAPP_PLATFORM_FALLBACK=true` only
+for testing with the platform's own number. Embedded Signup could not be exercised without an approved Meta app: the manual
+connect path is verified against Meta's real Graph API.

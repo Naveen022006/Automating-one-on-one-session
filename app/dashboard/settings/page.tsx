@@ -1,24 +1,28 @@
 import type { Metadata } from "next";
 import { PageHead } from "@/components/app/AppShell";
 import { GoogleConnect, type GoogleStatusView } from "@/components/app/GoogleConnect";
+import { WhatsAppConnect } from "@/components/app/WhatsAppConnect";
 import { DeviceSessions, NotificationPrefs, PasswordForm, ProfileForm, SlugForm, VerifyBanner } from "@/components/app/SettingsForms";
 import { Card } from "@/components/ui/primitives";
 import { requirePageAuth } from "@/lib/auth/guards";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { getGoogleStatus } from "@/lib/google-tokens";
+import { getConnectionView } from "@/lib/whatsapp-connection";
+import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 
 export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ google?: string }> }) {
   const auth = await requirePageAuth("/dashboard/settings");
   const { google: outcome } = await searchParams;
-  const [influencer, google] = await Promise.all([
+  const [influencer, google, whatsapp] = await Promise.all([
     prisma.influencer.findUniqueOrThrow({
       where: { id: auth.influencerId },
       select: { name: true, bio: true, photoUrl: true, timezone: true, slug: true, notifyByEmail: true },
     }),
     getGoogleStatus(auth.influencerId),
+    getConnectionView(auth.influencerId),
   ]);
   const googleView: GoogleStatusView =
     google.state === "connected"
@@ -39,6 +43,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </Card>
       <Card title={<h2 className="card__title" id="google">Google Calendar</h2>}>
         <GoogleConnect status={googleView} returnTo="/dashboard/settings" outcome={outcome ?? null} />
+      </Card>
+      <Card title={<h2 className="card__title" id="whatsapp">WhatsApp</h2>}>
+        <WhatsAppConnect
+          connection={whatsapp ? { displayPhone: whatsapp.displayPhone, verifiedName: whatsapp.verifiedName, source: whatsapp.source, status: whatsapp.status, lastError: whatsapp.lastError, templates: whatsapp.templates, ready: whatsapp.ready } : null}
+          embedded={embeddedSignupConfig()}
+        />
       </Card>
       <Card title="Notifications">
         <NotificationPrefs notifyByEmail={influencer.notifyByEmail} />
