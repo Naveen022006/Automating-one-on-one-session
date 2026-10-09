@@ -37,6 +37,7 @@ export default async function AdminInfluencersPage({ searchParams }: { searchPar
                 <th scope="col">Influencer</th>
                 <th scope="col">Status</th>
                 <th scope="col">Google</th>
+                <th scope="col">Payout details</th>
                 <th scope="col" className="num">Services</th>
                 <th scope="col" className="num">Bookings</th>
                 <th scope="col" className="num">Gross</th>
@@ -55,6 +56,9 @@ export default async function AdminInfluencersPage({ searchParams }: { searchPar
                   </td>
                   <td data-label="Google">
                     {r.google === "connected" ? <Badge tone="success">Connected</Badge> : r.google === "reconnect" ? <Badge tone="danger">Reconnect</Badge> : <Badge>Not connected</Badge>}
+                  </td>
+                  <td data-label="Payout details">
+                    {r.payout === "verified" ? <Badge tone="success">Verified</Badge> : r.payout === "pending" ? <Badge tone="warning">To review</Badge> : r.payout === "rejected" ? <Badge tone="danger">Needs correction</Badge> : <Badge>Not added</Badge>}
                   </td>
                   <td data-label="Services" className="num">{r.services}</td>
                   <td data-label="Bookings" className="num">{r.bookings}</td>

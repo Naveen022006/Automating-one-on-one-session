@@ -151,3 +151,30 @@ export function influencerAlertMessage(
     footnote: "You can change notification preferences in Settings.",
   });
 }
+
+/** Security notice: payout details were saved or changed. Sent regardless of notification preferences. */
+export function payoutDetailsSavedMessage(name: string, summary: string): RenderedEmail {
+  return renderEmail(`Your ${BRAND_NAME} payout details were updated`, {
+    preheader: "Your payout details were saved and are waiting for review.",
+    heading: "Payout details updated",
+    paragraphs: [
+      `Hi ${name.split(" ")[0] || name}, the payout details on your account were just saved: ${summary}.`,
+      "They need to be verified by our team before we can send you money. If you did not make this change, reset your password immediately and contact support.",
+    ],
+  });
+}
+
+export function payoutDetailsReviewedMessage(name: string, outcome: { verified: true } | { verified: false; reason: string }): RenderedEmail {
+  const first = name.split(" ")[0] || name;
+  return outcome.verified
+    ? renderEmail(`Your ${BRAND_NAME} payout details are verified`, {
+        preheader: "You are set up to receive payouts.",
+        heading: "Payout details verified",
+        paragraphs: [`Hi ${first}, your payout details have been verified. Your earnings will be paid out to this account.`],
+      })
+    : renderEmail(`Action needed: fix your ${BRAND_NAME} payout details`, {
+        preheader: outcome.reason.slice(0, 120),
+        heading: "We could not verify your payout details",
+        paragraphs: [`Hi ${first}, we could not verify your payout details.`, outcome.reason, "Please correct them in your dashboard under Payouts."],
+      });
+}

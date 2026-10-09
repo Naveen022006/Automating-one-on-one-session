@@ -39,11 +39,12 @@ model Influencer {
   notifyByEmail Boolean   @default(true) @map("notify_by_email")
   createdAt     DateTime  @default(now()) @map("created_at")
 
-  services     Service[]
-  rules        AvailabilityRule[]
-  blockedDates BlockedDate[]
-  googleToken  GoogleToken?
-  user         User?
+  services      Service[]
+  rules         AvailabilityRule[]
+  blockedDates  BlockedDate[]
+  googleToken   GoogleToken?
+  user          User?
+  payoutAccount PayoutAccount?
 
   @@map("influencers")
 }
@@ -449,4 +450,44 @@ model AdminAuditLog {
   @@index([targetType, targetId])
   @@index([adminId])
   @@map("admin_audit_logs")
+}
+
+enum PayoutMethod {
+  BANK
+  UPI
+}
+
+// PENDING_REVIEW: new or changed details, not payable until an administrator verifies them (this stops a hijacked
+// account from silently redirecting payouts). VERIFIED: payable. REJECTED: the admin found a problem; the
+// influencer must correct the details.
+enum PayoutAccountStatus {
+  PENDING_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+// Where the platform administrator sends an influencer's earnings. The account number and UPI id are stored
+// AES-256-GCM encrypted (aad binds each ciphertext to this influencer); only a masked form is ever shown in the
+// app, and an administrator revealing the full value is written to the audit log.
+model PayoutAccount {
+  id                  String              @id @default(cuid())
+  influencerId        String              @unique @map("influencer_id")
+  method              PayoutMethod        @default(BANK)
+  accountHolderName   String              @map("account_holder_name")
+  bankName            String?             @map("bank_name")
+  ifsc                String?
+  accountNumberEnc    String?             @map("account_number_enc")
+  accountNumberMasked String?             @map("account_number_masked")
+  upiIdEnc            String?             @map("upi_id_enc")
+  upiIdMasked         String?             @map("upi_id_masked")
+  status              PayoutAccountStatus @default(PENDING_REVIEW)
+  rejectionReason     String?             @map("rejection_reason")
+  reviewedAt          DateTime?           @map("reviewed_at")
+  reviewedByEmail     String?             @map("reviewed_by_email")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@map("payout_accounts")
 }

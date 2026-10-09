@@ -76,3 +76,9 @@ npm run admin:create -- --email you@company.com --name "Your Name"
 It prints a generated password once (or set `ADMIN_PASSWORD`); add `--reset` to change an existing admin's password.
 The console shows platform totals, every influencer with their connection status, every payment (with filters for
 "needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity.
+
+## Payout details
+Influencers add where to be paid under **Dashboard > Payouts** (bank account + IFSC, or UPI). Saving needs a recent
+password entry, stores the account number / UPI id AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`), shows only a masked
+value afterwards, and emails the influencer a security notice. New or changed details are `PENDING_REVIEW` until an
+administrator verifies them (admin console > influencer > Payout details). Revealing the full number is audit-logged.

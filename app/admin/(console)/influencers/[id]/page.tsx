@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PageHead } from "@/components/app/AppShell";
 import { Badge, Breadcrumb, Card, StatusPill } from "@/components/ui/primitives";
+import { PayoutPanel } from "@/components/admin/PayoutPanel";
 import { getInfluencerDetail } from "@/lib/admin/data";
+import { getPayoutAccountView } from "@/lib/payout-account";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Influencer" };
@@ -12,6 +14,7 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   const detail = await getInfluencerDetail(id);
   if (!detail) notFound();
   const { influencer: i, bookings } = detail;
+  const payout = await getPayoutAccountView(id);
 
   return (
     <div className="stack stack--lg">
@@ -44,6 +47,10 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
           </dl>
         </Card>
       </div>
+
+      <Card title="Payout details">
+        <PayoutPanel influencerId={i.id} account={payout} />
+      </Card>
 
       <Card title={`Services (${i.services.length})`}>
         {i.services.length === 0 ? (

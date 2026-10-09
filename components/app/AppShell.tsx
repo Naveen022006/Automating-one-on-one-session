@@ -12,6 +12,7 @@ import {
   IconMessage,
   IconSettings,
   IconSparkline,
+  IconWallet,
   IconUser,
   IconUsers,
   IconVideo,
@@ -28,6 +29,7 @@ const NAV = [
   { href: "/dashboard/availability", label: "Availability", icon: IconClock },
   { href: "/dashboard/customers", label: "Customers", icon: IconUsers },
   { href: "/dashboard/earnings", label: "Earnings", icon: IconSparkline },
+  { href: "/dashboard/payouts", label: "Payouts", icon: IconWallet },
   { href: "/dashboard/messages", label: "Messages", icon: IconMessage },
   { href: "/dashboard/settings", label: "Settings", icon: IconSettings },
 ];
