@@ -168,27 +168,39 @@ longest-unchecked (`payments.recovery_checked_at`). Each order is looked up with
 (`fetchOrderPayments` in `lib/payments.ts`). Orders are re-checked every run in their first hour, every 30 minutes for the rest of the
 first day, every 6 hours after that, so abandoned carts are not fetched over and over. If Razorpay reports a `captured` payment,
 `applyCapturedPayment` (`lib/payment-capture.ts`) applies it. The webhook calls the very same function, so the rules are identical:
-amount mismatch -> flagged `needsRefund` and the booking `FAILED`; hold expired and slot still free -> paid; slot taken -> flagged
-`needsRefund` and `FAILED`; otherwise `PAID` and one `create-meeting` job. It is idempotent with the webhook arriving before, after or at the
+amount mismatch -> flagged `needsRefund` and the booking `FAILED`; session already started -> flagged `needsRefund` and `FAILED` (a capture
+that surfaces days late is never booked); hold expired and slot still free -> paid; slot taken -> flagged `needsRefund` and `FAILED`;
+otherwise `PAID` and one `create-meeting` job. It is idempotent with the webhook arriving before, after or at the
 same moment (the booking row lock plus a re-read of the payment under it; recovery also records `recovery:<razorpayPaymentId>` in
-`webhook_events`). Every recovered or flagged payment is written to the admin audit log as `system:payment-recovery`
+`webhook_events`). Queueing the meeting job is bounded to 5 s inside that transaction (the BullMQ connection waits forever while Redis is
+down): on timeout everything rolls back, the booking is not marked paid without a job, `payments.recovery_error` records why and the next
+run retries; the queue helper used is `requeueCreateMeeting`, which first clears a finished job with the same id (BullMQ would ignore the new
+one). Every recovered or flagged payment is written to the admin audit log as `system:payment-recovery`
 (`payment.recovered` / `payment.recovered_needs_refund`) in the same transaction, and also sent to `ERROR_WEBHOOK_URL`, because finding one
-means the webhook did not arrive. Razorpay being unreachable is logged and never thrown; after 3 failures in a row a run stops. The job is
-skipped when `REDIS_URL` or the Razorpay keys are missing, or with `PAYMENT_RECOVERY_ENABLED=false`.
+means the webhook did not arrive. A payment Razorpay captured under 3 minutes ago is left for its webhook. Razorpay being unreachable is
+logged and never thrown; after 3 failures in a row a run stops. A 400/404 for an unknown order (for example test-mode orders after switching
+to live keys) counts as an answered lookup, not a failure. The job is skipped when `REDIS_URL` or the Razorpay keys are missing, or with
+`PAYMENT_RECOVERY_ENABLED=false`.
 
 **Heartbeat and monitor** (`lib/health.ts`, `lib/health-alerts.ts`, `worker/monitoring.ts`). The worker writes a heartbeat to Redis every
 30 s (an in-memory fallback when Redis is down) and every 5 minutes measures: payments Razorpay has captured that recovery could not apply
 (older than 10 min), whether recovery's lookups keep failing, paid bookings without a Meet link for 15 min, upcoming bookings whose
 confirmation failed on every channel, BullMQ counts (waiting, active, failed, delayed) for `meetings`, `messages` and `reminders`, unpaid
-holds that expired more than 5 min ago and are still open, and the heartbeat age (stale after 180 s). The evaluation is pure
+holds that expired more than 5 min ago and are still open, the heartbeat age (stale after 180 s), whether Redis itself answers (an outage is
+critical, because every other Redis-based check goes "unknown" during one) and whether the recovery loop's last-run timestamp is older than
+6 minutes (3 x its interval: a stuck loop under a live worker). The evaluation is pure
 (`lib/health-eval.ts`); thresholds are the `HEALTH_*` variables in `.env.example`. Recovery, monitor and heartbeat each run on their own timer
-and never overlap themselves.
+and never overlap themselves. The monitor also repairs: whenever a paid booking has had no Meet link for 15 minutes it re-queues
+`create-meeting` for such bookings (`requeuePendingMeetings`, which clears a finished job that would block the new one), so a lost job fixes
+itself instead of only alerting.
 
 **Alerts.** A condition that crosses its threshold is sent to `ERROR_WEBHOOK_URL` and emailed to `ADMIN_ALERT_EMAILS` (comma list, optional).
 The same alert key is sent at most once per hour (an atomic Redis `SET NX EX`, in-memory when Redis is down), and one "recovered" note is sent
-when it clears. A condition that cannot be measured never raises or clears an alert. The worker cannot report its own death, so
-`GET /api/health` is also a watchdog: point an uptime monitor at it (every 1 to 5 minutes). It answers `503` when the heartbeat is stale and
-raises the same alert; without such a poller a dead worker only shows on the admin page.
+when it clears (only the run that actually clears the marker sends it, so overlapping runs send one). If every email for an alert fails,
+its dedupe key is released so the next run retries. A condition that cannot be measured never raises or clears an alert, except that Redis
+being configured but unreachable is itself a critical alert. The worker cannot report its own death, so
+`GET /api/health` is also a watchdog: point an uptime monitor at it (every 1 to 5 minutes). It answers `503` when the heartbeat is stale or
+Redis is configured but not answering (after one retry) and raises the same alerts; without such a poller a dead worker only shows on the admin page.
 
 **Admin > System health** (`/admin/health`, with a count badge in the sidebar and on the overview): worker status and last heartbeat ("Worker is
 not running" in red when stale), every monitored condition with its count, queue counts, the recently recovered payments (from the audit

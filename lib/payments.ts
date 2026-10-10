@@ -114,6 +114,8 @@ export interface RazorpayPayment {
   /** "created" | "authorized" | "captured" | "refunded" | "failed" */
   status: string;
   amount_refunded?: number;
+  /** When the payment was created at Razorpay, in unix seconds. */
+  created_at?: number;
 }
 
 /** One payment as Razorpay holds it, used to reconcile our records before paying influencers. */

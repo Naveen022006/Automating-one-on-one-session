@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
-import { applyCapturedPayment } from "@/lib/payment-capture";
-import { enqueueCreateMeeting } from "@/lib/queue";
+import { applyCapturedPayment, type CaptureOptions } from "@/lib/payment-capture";
+import { requeueCreateMeeting } from "@/lib/queue";
 import { applyRefundWebhook } from "@/lib/refunds";
 
 export interface RazorpayWebhook {
@@ -28,7 +28,10 @@ export type WebhookOutcome = "processed" | "duplicate" | "ignored";
 export async function handleRazorpayEvent(
   eventId: string,
   event: RazorpayWebhook,
-  enqueue: (bookingId: string) => Promise<void> = enqueueCreateMeeting,
+  // requeueCreateMeeting, not the plain enqueue: it first clears a finished (completed or failed) job with this booking's
+  // id, which BullMQ would otherwise treat as "already queued" and silently skip, leaving a paid booking with no job.
+  enqueue: (bookingId: string) => Promise<void> = requeueCreateMeeting,
+  capture: CaptureOptions = {},
 ): Promise<WebhookOutcome> {
   return prisma.$transaction(
     async (tx) => {
@@ -50,7 +53,7 @@ export async function handleRazorpayEvent(
 
       if (event.event === "payment.captured" || event.event === "order.paid") {
         // The capture rules live in lib/payment-capture.ts, shared with the missed-webhook recovery job.
-        await applyCapturedPayment(tx, entity, enqueue);
+        await applyCapturedPayment(tx, entity, enqueue, capture);
         return "processed";
       }
       if (event.event === "payment.failed") {
