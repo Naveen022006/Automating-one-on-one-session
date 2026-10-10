@@ -17,6 +17,9 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // The Docker image (Dockerfile) builds a self-contained server in .next/standalone. It is opt-in, so `next build` /
+  // `next start` and Vercel builds behave exactly as before.
+  ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

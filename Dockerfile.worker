@@ -1,0 +1,56 @@
+# BullMQ worker: hold expiry, create-meeting, send-message, reminders and housekeeping (worker/index.ts).
+# It must run as a long-lived process (it is not a web request), so it cannot live on Vercel functions.
+#
+#   docker build -f Dockerfile.worker -t sessions-worker .
+#
+# The worker is TypeScript run with tsx, exactly like `npm run worker`. The image contains production dependencies
+# (tsx is one), the generated Prisma client, and only the source folders the worker imports (lib/, worker/).
+# No configuration or secret is baked in: pass DATABASE_URL, REDIS_URL, TOKEN_ENCRYPTION_KEY, ... at run time.
+#
+# See doc/08-deployment.md.
+
+ARG NODE_VERSION=22
+
+# ---- build: install, generate the Prisma client, drop what the worker does not use ----------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS build
+WORKDIR /app
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY prisma ./prisma
+COPY prisma.config.ts tsconfig.json ./
+RUN npx prisma generate
+COPY lib ./lib
+COPY worker ./worker
+COPY scripts/worker-healthcheck.ts ./scripts/worker-healthcheck.ts
+RUN npm prune --omit=dev
+# The worker never serves a page, so the web framework (Next.js and its compiler, React, image tooling) and TypeScript are
+# removed to keep the image small. This build step fails if the worker's import graph ever starts to need any of them,
+# instead of letting the container crash at start-up. esbuild (a dependency of tsx) lists the packages the code imports.
+RUN for entry in worker/index.ts scripts/worker-healthcheck.ts; do \
+      npx esbuild "$entry" --bundle --platform=node --packages=external --tsconfig=tsconfig.json \
+        --metafile=/tmp/graph.json --outfile=/tmp/graph-check.js --log-level=error \
+      && node -e "const m=require('/tmp/graph.json');const bad=new Set();for(const f of Object.values(m.inputs))for(const i of f.imports)if(i.external&&/^(next|@next|react|react-dom|typescript|sharp|@img)(\/|\$)/.test(i.path))bad.add(i.path);if(bad.size){console.error('$entry imports packages removed from the worker image: '+[...bad].join(', '));process.exit(1)}" \
+      || exit 1; \
+    done \
+ && rm -rf node_modules/next node_modules/@next node_modules/@img node_modules/sharp node_modules/react node_modules/react-dom node_modules/typescript
+
+# ---- runner ------------------------------------------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS runner
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/generated ./generated
+# tsconfig.json supplies the "@/" path alias that tsx resolves at run time.
+COPY --from=build --chown=node:node /app/package.json /app/tsconfig.json ./
+COPY --from=build --chown=node:node /app/lib ./lib
+COPY --from=build --chown=node:node /app/worker ./worker
+COPY --from=build --chown=node:node /app/scripts ./scripts
+USER node
+# Healthy = Redis answers and this process has its BullMQ workers attached to the queues (scripts/worker-healthcheck.ts).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD ["node_modules/.bin/tsx", "scripts/worker-healthcheck.ts"]
+# SIGTERM from `docker stop` is handled by worker/index.ts (closes the queue workers, then exits).
+CMD ["node_modules/.bin/tsx", "worker/index.ts"]

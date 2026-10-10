@@ -40,11 +40,70 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # Advisory: reports high-severity advisories in production dependencies on every run without failing the build.
+      # Known findings and why they are not exploitable are documented in doc/08-deployment.md ("Dependency audit");
+      # a NEW finding shows up here as a failed (but non-blocking) step. Triage it, then fix or document it.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
       - run: npx prisma generate
       - run: npx prisma migrate deploy
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # Builds the container images and proves the web image behaves: it refuses an invalid production configuration,
+  # starts with a valid one, answers liveness, reports not-ready (no database here) without leaking details, and
+  # carries no secrets in its environment.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images
+        run: |
+          docker build -t sessions-web .
+          docker build --target tools -t sessions-tools .
+          docker build -f Dockerfile.worker -t sessions-worker .
+      - name: No secrets baked into the images
+        run: |
+          for image in sessions-web sessions-tools sessions-worker; do
+            env_json=$(docker image inspect "$image" --format '{{json .Config.Env}}')
+            echo "$image: $env_json"
+            if echo "$env_json" | grep -Eiq 'secret|password|token|api_key|database_url|redis_url'; then
+              echo "::error::$image has a secret-looking variable in its environment"; exit 1
+            fi
+            docker run --rm --entrypoint sh "$image" -c 'test ! -e .env && test ! -e /app/.env'
+          done
+      - name: Web image refuses an invalid production configuration
+        run: |
+          set +e
+          docker run --rm sessions-web > refused.txt 2>&1
+          code=$?
+          cat refused.txt
+          test "$code" -eq 1
+          grep -q 'APP_SECRET: is not set' refused.txt
+      - name: Web image starts, is live, and is not ready without a database
+        run: |
+          docker run -d --name web -p 3000:3000 \
+            -e DATABASE_URL=postgresql://app:pw@127.0.0.1:1/app \
+            -e REDIS_URL=redis://127.0.0.1:1 \
+            -e APP_URL=https://sessions.example.com \
+            -e APP_SECRET=ci-only-app-secret-0123456789-abcdefghij \
+            -e TOKEN_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+            -e RAZORPAY_KEY_ID=rzp_test_ci -e RAZORPAY_KEY_SECRET=ci -e RAZORPAY_WEBHOOK_SECRET=ci \
+            -e EMAIL_PROVIDER=resend -e RESEND_API_KEY=re_ci -e 'EMAIL_FROM=Bookings <bookings@example.com>' \
+            sessions-web
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/api/health && break; sleep 2; done
+          curl -fsS http://127.0.0.1:3000/api/health | grep -q '"ok":true'
+          status=$(curl -s -o ready.json -w '%{http_code}' http://127.0.0.1:3000/api/ready)
+          cat ready.json; echo
+          test "$status" = 503
+          grep -q '"db":"fail"' ready.json
+          ! grep -Eiq 'postgres|127\.0\.0\.1|password|ECONN' ready.json
+      - name: Container logs
+        if: always()
+        run: docker logs web || true

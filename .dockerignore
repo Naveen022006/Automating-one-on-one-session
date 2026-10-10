@@ -1,0 +1,31 @@
+# Keep the build context small and, above all, keep secrets and local state out of image layers.
+
+# Secrets and local configuration: never copied into an image (pass configuration at runtime).
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output are produced inside the image.
+node_modules
+.next
+generated
+*.tsbuildinfo
+next-env.d.ts
+
+# Version control, CI, editor and agent tooling.
+.git
+.github
+.claude
+.agents
+.vscode
+.idea
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# Not needed at runtime.
+tests
+doc
+*.md
+coverage
+npm-debug.log*

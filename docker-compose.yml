@@ -1,0 +1,117 @@
+# Local, production-like run of the whole stack: web + worker + Postgres + Redis, with a one-shot migration job.
+# This is for trying the production images on your own machine. It is NOT a production deployment recipe
+# (single host, the databases live in local volumes, no TLS): see doc/08-deployment.md for real hosting.
+#
+#   cp .env.example .env     # then fill in at least APP_SECRET, TOKEN_ENCRYPTION_KEY and the RAZORPAY_* values
+#   docker compose up --build
+#   open http://localhost:3000        (readiness: http://localhost:3000/api/ready)
+#
+# Configuration comes from your .env file (read at run time, never copied into an image). The values that wire the
+# containers together (DATABASE_URL, REDIS_URL, NODE_ENV) are set below and override .env.
+#
+# The app validates its configuration at start-up (lib/env.ts) and, in production mode, refuses to start with the
+# development settings from .env.example (EMAIL_PROVIDER=log, MESSAGING_DRY_RUN, plain-http APP_URL). For this local run
+# ALLOW_INSECURE_LOCAL_RUN=true relaxes exactly those checks, and only while APP_URL is http://localhost:... .
+# Production mode also requires REDIS_URL and the Razorpay keys, so put Razorpay TEST keys in .env.
+
+name: session-automation
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-sessions}:${POSTGRES_PASSWORD:-local-only-password}@postgres:5432/${POSTGRES_DB:-sessions}
+  REDIS_URL: redis://redis:6379
+  APP_URL: ${APP_URL:-http://localhost:3000}
+  ALLOW_INSECURE_LOCAL_RUN: "true"
+  # Keep each process's pool small; Postgres allows 100 connections by default.
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-5}
+
+x-app-env-file: &app-env-file
+  - path: .env
+    required: false
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sessions}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-password}
+      POSTGRES_DB: ${POSTGRES_DB:-sessions}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: applies pending migrations, then exits. web and worker wait for it to finish successfully.
+  migrate:
+    build:
+      context: .
+      target: tools
+    command: ["npx", "prisma", "migrate", "deploy"]
+    env_file: *app-env-file
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build:
+      context: .
+      target: runner
+      args:
+        # Public branding values are compiled into the JavaScript at build time (they are not secrets).
+        NEXT_PUBLIC_BRAND_NAME: ${NEXT_PUBLIC_BRAND_NAME:-}
+        NEXT_PUBLIC_SUPPORT_EMAIL: ${NEXT_PUBLIC_SUPPORT_EMAIL:-}
+    env_file: *app-env-file
+    environment: *app-environment
+    ports:
+      # Loopback only. Change the host port with WEB_PORT (also change APP_URL to match).
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Readiness here (database + Redis answering), so `docker compose up --wait` means "serving".
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 6s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file: *app-env-file
+    environment: *app-environment
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
