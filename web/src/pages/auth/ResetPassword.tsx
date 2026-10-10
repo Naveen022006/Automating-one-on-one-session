@@ -1,5 +1,14 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { useSearchParams } from "react-router";
+import { ResetPasswordView } from "@/components/views/auth/ResetPasswordView";
+import { PageTitle } from "../../lib/head";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/10-public-auth replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** The token comes from the emailed link's query string; the shell answers this URL with `Referrer-Policy: no-referrer`. */
+export function Component() {
+  const [params] = useSearchParams();
+  return (
+    <>
+      <PageTitle title="Choose a new password" />
+      <ResetPasswordView token={params.get("token") ?? undefined} />
+    </>
+  );
+}

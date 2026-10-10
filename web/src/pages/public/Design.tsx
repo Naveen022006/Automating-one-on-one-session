@@ -1,5 +1,19 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { DesignShowcase } from "@/app/design/DesignShowcase";
+import { PageTitle } from "../../lib/head";
+import { NotFound } from "../NotFound";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/10-public-auth replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * The component catalogue (doc/07 C2), imported in place from the old page's folder. The router only has the /design route in
+ * a development build or one built with ENABLE_DESIGN_PAGE=true (`__DESIGN_PAGE__`); in any other build the constant is
+ * `false`, this module reduces to the 404 screen, and the catalogue code does not reach the browser bundle.
+ */
+function DesignPage() {
+  return (
+    <>
+      <PageTitle title="Design system" />
+      <DesignShowcase />
+    </>
+  );
+}
+
+export const Component = __DESIGN_PAGE__ ? DesignPage : NotFound;
