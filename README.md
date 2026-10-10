@@ -77,6 +77,12 @@ It prints a generated password once (or set `ADMIN_PASSWORD`); add `--reset` to 
 The console shows platform totals, every influencer with their connection status, every payment (with filters for
 "needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity.
 
+### Test logins for a development machine
+After `npm run db:seed`, `npm run dev:logins` creates a login for the demo influencer and two administrators with random
+passwords, and writes them to `dev-logins.local.md` (gitignored; the passwords are never printed). Run it again for new
+passwords, or with `-- --remove` to delete the logins. It refuses to run unless `APP_URL` is a local address, so it cannot
+create known logins on a deployed copy.
+
 ## Payout details
 Influencers add where to be paid under **Dashboard > Payouts** (bank account + IFSC, or UPI). Saving needs a recent
 password entry, stores the account number / UPI id AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`), shows only a masked
