@@ -155,6 +155,31 @@ export function influencerAlertMessage(
   });
 }
 
+/**
+ * Platform-owner notice from the system health monitor (sent to ADMIN_ALERT_EMAILS): something crossed its threshold,
+ * or conditions raised earlier have cleared. Several conditions found in one monitor run share one email.
+ */
+export function systemHealthMessage(d: {
+  recovered: boolean;
+  items: { label: string; detail: string; hint?: string }[];
+  healthUrl: string;
+}): RenderedEmail {
+  const first = d.items[0]?.label ?? "System health";
+  const more = d.items.length > 1 ? ` and ${d.items.length - 1} more` : "";
+  return renderEmail(`${BRAND_NAME} ${d.recovered ? "recovered" : "alert"}: ${first}${more}`, {
+    preheader: (d.items[0]?.detail ?? "").slice(0, 120),
+    heading: d.recovered ? "Back to normal" : "Something needs attention",
+    paragraphs: [
+      d.recovered
+        ? "The following problems raised earlier have cleared."
+        : "The system health monitor found the following. The same alert is not repeated within the hour.",
+    ],
+    details: d.items.map((i) => [i.label, i.hint ? `${i.detail} ${i.hint}` : i.detail] as [string, string]),
+    button: { label: "Open system health", url: d.healthUrl },
+    footnote: "You receive this because your address is listed in ADMIN_ALERT_EMAILS.",
+  });
+}
+
 /** Security notice: payout details were saved or changed. Sent regardless of notification preferences. */
 export function payoutDetailsSavedMessage(name: string, summary: string): RenderedEmail {
   return renderEmail(`Your ${BRAND_NAME} payout details were updated`, {
