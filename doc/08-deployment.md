@@ -140,7 +140,14 @@ the metadata routes (`/sitemap.xml`, `/robots.txt`, `/opengraph-image`, `/icon.s
   `HOSTNAME=0.0.0.0` (the image's default) or `localhost` and limit access with the firewall or reverse proxy; the web process
   refuses to start in production with that combination (section 5).
 * **Start-up check**: with a non-empty `SPA_GROUPS` the web process refuses to start (section 5) if `web/dist/index.html` is
-  missing or has no `__CSP_NONCE__` placeholder. The image copies the file explicitly; for a standalone/Vercel bundle
+  missing or has no `__CSP_NONCE__` placeholder. This applies where all code shares one directory (the Docker image,
+  `next start`, a VM). On **serverless platforms** (Vercel, AWS Lambda, Netlify, detected from their environment variables) it is
+  a **warning** only: every function, and the proxy, is its own bundle with its own traced files and the start-up hook runs in
+  each of them, so one bundle without the file must not make all requests through it fail. The same applies to the bind-address
+  check below. The shell route itself answers 500 with one log line (`[spa-shell] ...`) if it cannot read the template.
+  `next.config.ts` lists the template for the shell route and for all routes (`outputFileTracingIncludes`), but whether the
+  proxy bundle receives it is a platform detail: **check a Vercel preview deployment before the cut-over** (open one page of
+  every enabled group, and read the function logs for `[spa-shell]` and `[env] warning` lines). The image copies the file explicitly; for a standalone/Vercel bundle
   `next.config.ts` lists it in `outputFileTracingIncludes` (route `/spa-shell/[[...path]]`), because the file is read at run time and the
   tracer cannot see it. Vercel needs no setting change: the build script runs Vite then Next, `public/assets` goes to the CDN,
   and `proxy.ts` already runs on Node.

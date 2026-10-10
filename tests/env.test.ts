@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { keyFingerprint } from "../lib/crypto";
-import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, spaHostnameProblems, spaTemplateProblems, validateEnv, type EnvRecord } from "../lib/env";
+import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, isServerlessPlatform, spaHostnameProblems, spaTemplateProblems, validateEnv, type EnvRecord } from "../lib/env";
 
 // Pure tests: the validator takes an env record, so nothing here reads or changes the real environment
 // (except the few tests of the process wiring, which restore process.env).
@@ -349,6 +349,9 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
 
 /* ---------- React SPA (SPA_GROUPS), doc/10-react-migration-plan.md section 1.8 ---------- */
 
+/** Variables that make initEnv treat the process as serverless (warnings instead of a refusal); tests clear them for determinism. */
+const SERVERLESS_VARS = ["VERCEL", "AWS_LAMBDA_FUNCTION_NAME", "LAMBDA_TASK_ROOT", "NETLIFY"];
+
 test("SPA_GROUPS: valid values and an empty one are fine; unknown names are a warning that does not echo the value", () => {
   for (const value of [undefined, "", "all", "public", "public,auth,booking,dashboard,admin", "Public, AUTH"]) {
     const r = validateEnv({ ...good, ...(value === undefined ? {} : { SPA_GROUPS: value }) });
@@ -392,6 +395,7 @@ test("spaTemplateProblems: nothing to check without SPA_GROUPS; otherwise the te
 
 test("initEnv('web') refuses to start a production process whose SPA template is missing; other labels and development do not", () => {
   const saved = { ...process.env };
+  for (const k of SERVERLESS_VARS) delete process.env[k];
   const realWarn = console.warn;
   const realLog = console.log;
   const warned: string[] = [];
@@ -459,6 +463,7 @@ test("spaHostnameProblems: a standalone server bound to a loopback IP cannot ser
 
   // And it stops a production web start (the template being present does not help).
   const saved = { ...process.env };
+  for (const k of SERVERLESS_VARS) delete process.env[k];
   const realLog = console.log;
   try {
     console.log = () => {};
@@ -473,6 +478,53 @@ test("spaHostnameProblems: a standalone server bound to a loopback IP cannot ser
     resetConfigForTests();
     initEnv("web", fine);
   } finally {
+    console.log = realLog;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    resetConfigForTests();
+  }
+});
+
+test("serverless platforms: the SPA start-up checks are warnings there, because every function has its own file set and the hook runs in all of them", () => {
+  for (const env of [{ VERCEL: "1" }, { AWS_LAMBDA_FUNCTION_NAME: "fn" }, { LAMBDA_TASK_ROOT: "/var/task" }, { NETLIFY: "true" }]) {
+    assert.equal(isServerlessPlatform(env), true, JSON.stringify(env));
+  }
+  for (const env of [{}, { VERCEL: "" }, { HOSTNAME: "0.0.0.0" }, { NODE_ENV: "production" }]) assert.equal(isServerlessPlatform(env), false, JSON.stringify(env));
+
+  const saved = { ...process.env };
+  const realWarn = console.warn;
+  const realLog = console.log;
+  const warned: string[] = [];
+  try {
+    console.warn = (...a: unknown[]) => void warned.push(a.join(" "));
+    console.log = () => {};
+    const missing = {
+      readFile: (): string => {
+        throw new Error("ENOENT");
+      },
+      cwd: "/var/task",
+    };
+    for (const k of SERVERLESS_VARS) delete process.env[k];
+    Object.assign(process.env, good, { SPA_GROUPS: "all" });
+    resetConfigForTests();
+    // Anywhere else in production a missing template stops the process ...
+    assert.throws(() => initEnv("web", missing), EnvValidationError);
+
+    // ... on Vercel (a function or the proxy bundle without the file) it only warns, and so does the loopback HOSTNAME check.
+    process.env.VERCEL = "1";
+    process.env.HOSTNAME = "127.0.0.1";
+    resetConfigForTests();
+    warned.length = 0;
+    initEnv("web", missing);
+    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("web/dist/index.html")), warned.join("\n"));
+    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("HOSTNAME")));
+
+    // Other, real configuration errors are still fatal on a serverless platform.
+    process.env.APP_SECRET = "short";
+    resetConfigForTests();
+    assert.throws(() => initEnv("web", missing), EnvValidationError);
+  } finally {
+    console.warn = realWarn;
     console.log = realLog;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);

@@ -23,9 +23,14 @@ const nextConfig: NextConfig = {
   // The SPA shell template is read from disk at run time (lib/spa/shell.ts), which the file tracer cannot see through the
   // dynamic path, so a standalone/Vercel bundle would not contain it. The key is the ROUTE (picomatch against the route
   // path, brackets escaped as the Next docs require); the value is resolved from the project root. The Dockerfile also
-  // copies the file explicitly, and the production start-up check (lib/env.ts) refuses to boot without it.
+  // copies the file explicitly. The start-up hook (lib/env.ts) checks for the file too, and runs in every server bundle, so
+  // it is listed for all route bundles as well ("/*": one small file; verified: every route's .nft.json has it). Next offers
+  // no way to add it to the proxy and instrumentation bundles (their entries are not matched by these keys; tried
+  // `middleware`, `proxy`, `instrumentation`), which is why on a serverless platform that check is only a warning (see
+  // isServerlessPlatform / initEnv), and the shell route answers 500 with one log line if it cannot read the file.
   outputFileTracingIncludes: {
     "/spa-shell/\\[\\[\\.\\.\\.path\\]\\]": ["./web/dist/index.html"],
+    "/*": ["./web/dist/index.html"],
   },
   async headers() {
     return [

@@ -442,6 +442,17 @@ export function spaTemplateProblems(
 }
 
 /**
+ * True on platforms that run each route (and the proxy) as its own serverless function with its own traced file set: Vercel, AWS
+ * Lambda, Netlify. There "the file is on disk" is not a property of the deployment but of each function's bundle, and the
+ * start-up hook runs inside every one of them (the proxy's too), so a missing template or a startup refusal in one bundle must
+ * not take every request through it down. The checks below are warnings there. Elsewhere (the Docker image, `next start`, a VM)
+ * all bundles share one directory, so the checks are decisive. Pure.
+ */
+export function isServerlessPlatform(env: EnvRecord): boolean {
+  return Boolean(env.VERCEL || env.AWS_LAMBDA_FUNCTION_NAME || env.LAMBDA_TASK_ROOT || env.NETLIFY);
+}
+
+/**
  * A standalone Next.js server bound to a loopback IP (`HOSTNAME=127.0.0.1` or `::1`, a common way to keep it behind a reverse
  * proxy) breaks the SPA: Next builds the request URL the proxy sees from the configured hostname but normalises 127.x.x.x and
  * ::1 to "localhost" (NextURL), so the proxy's rewrite to the internal shell route looks like a rewrite to ANOTHER origin and
@@ -462,12 +473,15 @@ export function spaHostnameProblems(env: EnvRecord): string[] {
 /**
  * Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook.
  * For the "web" label it also checks the SPA shell template and the bind address (see spaTemplateProblems and
- * spaHostnameProblems): fatal in production, a warning elsewhere (a development server serves the SPA from Vite).
+ * spaHostnameProblems): fatal in production on a server that has one directory for all its code (Docker, `next start`, a VM),
+ * a warning everywhere else: in development (the dev server serves the SPA from Vite) and on serverless platforms (see
+ * isServerlessPlatform: each function has its own file set, and this hook runs in every one of them). The shell route itself
+ * answers 500 with one log line when it cannot read the template.
  */
 export function initEnv(label: string, deps: { readFile?: (file: string) => string; cwd?: string } = {}): AppConfig {
   const config = getConfig();
   const spaProblems = label === "web" ? [...spaTemplateProblems(process.env, deps.readFile, deps.cwd), ...spaHostnameProblems(process.env)] : [];
-  if (spaProblems.length && config.isProduction) throw new EnvValidationError(spaProblems);
+  if (spaProblems.length && config.isProduction && !isServerlessPlatform(process.env)) throw new EnvValidationError(spaProblems);
   if (!logged) {
     if (spaProblems.length) for (const p of spaProblems) console.warn(`[env] warning (${label}): ${p}`);
     logged = true;
