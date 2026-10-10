@@ -67,9 +67,25 @@ personal Gmail).
    money until a paid booking happens to notice (`worker/google-health.ts`). Network errors and Google outages are only
    logged; they never disconnect anyone.
 5. **Switch account** and **Disconnect** warn when upcoming bookings already have calendar events: those events and the
-   customers' invites stay on the old Google account, so later reschedules and cancels cannot update them. Switching
-   with such bookings needs an explicit confirmation, which `/api/google/connect` enforces itself (`confirm=1`); a
-   reconnect that lands on a different Google account than the stored one is refused and its grant revoked.
+   customers' invites stay on the old Google account, so later reschedules and cancels cannot update them. Both need an
+   explicit confirmation that the server enforces itself (`confirm=1` on `/api/google/connect`, `{ "confirm": true }` in the
+   body of `DELETE /api/dashboard/google`). Disconnecting remembers which Google account the events are on
+   (`influencers.disconnected_google_email`, cleared by the next connect), so connecting a different account afterwards is
+   still treated as a switch; a connect or reconnect that lands on a different account than the one on record, without the
+   confirmation, is refused and its grant revoked. A group session's people already booked are not moved to the new
+   calendar; a later booking of that session starts a second Meet there.
+6. **Group sessions share one Calendar event.** A cancel deletes it only when no other PAID/SCHEDULED booking of the
+   session is left in the database (decided under the session row lock, not from Google's attendee list), and attendee
+   edits are written with the event's etag (`If-Match`) and re-read on a conflict. Google never reuses a deleted event's id,
+   so the next payer's event gets the next id of a deterministic sequence; `sessions.event_generation` stores where the
+   sequence stands. If the shared event was deleted behind the app's back, bookings left on it are moved to the
+   replacement (invited, new link, confirmation emailed) and the influencer gets one alert.
+
+**Known limits.** `confirm=1` is not a secret: it only records that the influencer was warned (the dialog sends it), and
+they still have to pick an account on Google's own consent screen, so it cannot be used to attach an account they do not
+control. A cancel talks to Google before it cancels the reminders, issues the refund and notifies the customer, so a slow
+or hanging Google call (15 s timeout per request) delays those steps by that long; they still all run, because a Google
+error is captured and reported afterwards, never thrown in the middle.
 
 ## Design system
 Tokens: `app/styles/tokens.css`. Components: `components/ui/`. Every component and state is shown at `/design`
