@@ -1,0 +1,9 @@
+/*
+ * The SPA's stylesheet entry. Fonts come from @fontsource-variable (self-hosted files in /assets, so the CSP's
+ * `font-src 'self'` still holds), then the project's own design system, unchanged: tokens, base, components, layouts.
+ * Imports must stay first in this file.
+ */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/newsreader";
+@import "@/app/globals.css";
+@import "./spa.css";

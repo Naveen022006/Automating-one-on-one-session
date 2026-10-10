@@ -1,0 +1,16 @@
+/*
+ * What `next/font` and the Next app shell used to provide, and the few rules only the SPA needs.
+ */
+
+/* app/styles/tokens.css reads these two variables; next/font used to set them on <html> (see app/layout.tsx). The
+   family names are the ones @fontsource-variable registers. */
+:root {
+  --font-inter: "Inter Variable";
+  --font-newsreader: "Newsreader Variable";
+}
+
+/* #main is only ever a programmatic focus target (FocusOnNavigate moves focus there after a route change, so keyboard
+   and screen reader users start at the new page's content); a visible ring around the whole page would be noise. */
+main#main:focus {
+  outline: none;
+}

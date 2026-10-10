@@ -1,0 +1,6 @@
+{
+  "name": "session-automation-web",
+  "private": true,
+  "type": "module",
+  "description": "Marker only (no dependencies, not a workspace): tells Node and Vite that the TypeScript files under web/ (vite.config.ts and its plugin) are ES modules. The SPA's dependencies live in the root package.json so there is exactly one copy of React."
+}
