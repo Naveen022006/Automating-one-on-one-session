@@ -1,5 +1,24 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { useParams, useSearchParams } from "react-router";
+import { BookView } from "@/components/views/booking/BookView";
+import type { PublicProfile } from "@/lib/public-profile";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/20-booking replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * `/:slug/book?service=`. Shares the profile query with `/:slug` (same key), so moving from the profile to its booking
+ * page shows the cached profile at once. The title follows the same rule as Profile.tsx.
+ */
+export function Component() {
+  const { slug = "" } = useParams();
+  const [search] = useSearchParams();
+  const query = useApiQuery<Jsonify<PublicProfile>>(queryKeys.publicProfile(slug), `/api/public/profiles/${encodeURIComponent(slug)}`);
+  return (
+    <>
+      {query.data ? <PageTitle title={`Book ${query.data.name}`} /> : query.error?.status === 404 ? <PageTitle title="Not found" /> : null}
+      <QueryGate query={query}>{(profile) => <BookView data={profile} initialServiceId={search.get("service")} />}</QueryGate>
+    </>
+  );
+}
