@@ -38,6 +38,9 @@ export class WhatsAppNotConnectedError extends Error {}
 const aad = (influencerId: string) => `whatsapp:${influencerId}`;
 /** Shared with the key-rotation tool (lib/key-rotation-db.ts), so the two can never disagree on the AAD. */
 export { aad as whatsappTokenAad };
+/** The two-step PIN is bound to its owner the same way (and also listed for key rotation). */
+const pinAad = (influencerId: string) => `whatsapp-pin:${influencerId}`;
+export { pinAad as whatsappPinAad };
 const language = () => process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
 
 export interface ConnectDeps {

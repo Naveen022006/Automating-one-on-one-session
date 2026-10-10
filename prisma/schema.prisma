@@ -617,24 +617,31 @@ enum WhatsAppConnectionStatus {
 // permanent system-user token. The token is stored AES-256-GCM encrypted (aad binds it to this influencer) and is
 // never returned to the browser or shown to administrators.
 model WhatsAppConnection {
-  id                String                   @id @default(cuid())
-  influencerId      String                   @unique @map("influencer_id")
-  wabaId            String                   @map("waba_id")
+  id                  String                   @id @default(cuid())
+  influencerId        String                   @unique @map("influencer_id")
+  wabaId              String                   @map("waba_id")
   // A phone number can belong to only one influencer.
-  phoneNumberId     String                   @unique @map("phone_number_id")
-  displayPhone      String?                  @map("display_phone")
-  verifiedName      String?                  @map("verified_name")
-  tokenEnc          String                   @map("token_enc")
+  phoneNumberId       String                   @unique @map("phone_number_id")
+  displayPhone        String?                  @map("display_phone")
+  verifiedName        String?                  @map("verified_name")
+  tokenEnc            String                   @map("token_enc")
   // "embedded" (Meta Embedded Signup) or "manual" (ids + token entered by hand).
-  source            String                   @default("manual")
-  status            WhatsAppConnectionStatus @default(ACTIVE)
-  lastError         String?                  @map("last_error")
+  source              String                   @default("manual")
+  status              WhatsAppConnectionStatus @default(ACTIVE)
+  lastError           String?                  @map("last_error")
   // Template name -> { status: "APPROVED" | "PENDING" | "REJECTED" | ..., language }. Kept current by the template
   // status webhook and the Refresh button.
-  templates         Json?
-  templatesSyncedAt DateTime?                @map("templates_synced_at")
-  connectedAt       DateTime                 @default(now()) @map("connected_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  templates           Json?
+  templatesSyncedAt   DateTime?                @map("templates_synced_at")
+  // The two-step verification PIN this app registered the number with (Embedded Signup), AES-GCM encrypted with the
+  // owner's AAD (whatsappPinAad). A reconnect registers again with the same PIN instead of failing on a mismatch.
+  registrationPinEnc  String?                  @map("registration_pin_enc")
+  // When our Meta app was last subscribed to the account's webhooks (template and delivery updates), or why that failed.
+  // Null time and null error = never attempted (connections made before this was recorded).
+  webhookSubscribedAt DateTime?                @map("webhook_subscribed_at")
+  webhookError        String?                  @map("webhook_error")
+  connectedAt         DateTime                 @default(now()) @map("connected_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 

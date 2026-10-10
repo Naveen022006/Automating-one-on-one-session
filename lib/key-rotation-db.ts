@@ -3,7 +3,7 @@ import { totpAad } from "@/lib/admin/totp-aad";
 import { googleTokenAad } from "@/lib/google-tokens";
 import type { EncryptedColumn, RotationDb, RotationTx } from "@/lib/key-rotation";
 import { payoutAad } from "@/lib/payout-account";
-import { whatsappTokenAad } from "@/lib/whatsapp-connection";
+import { whatsappPinAad, whatsappTokenAad } from "@/lib/whatsapp-connection";
 
 /**
  * Every database column that holds a TOKEN_ENCRYPTION_KEY ciphertext, with the AAD each is encrypted with. The
@@ -23,6 +23,7 @@ export const ENCRYPTED_COLUMNS: EncryptedColumn[] = [
   { name: "payout_accounts.account_number_enc", table: "payout_accounts", column: "account_number_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "account") },
   { name: "payout_accounts.upi_id_enc", table: "payout_accounts", column: "upi_id_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "upi") },
   { name: "whatsapp_connections.token_enc", table: "whatsapp_connections", column: "token_enc", ownerColumn: "influencer_id", aad: whatsappTokenAad },
+  { name: "whatsapp_connections.registration_pin_enc", table: "whatsapp_connections", column: "registration_pin_enc", ownerColumn: "influencer_id", aad: whatsappPinAad },
   { name: "admin_users.totp_secret_enc", table: "admin_users", column: "totp_secret_enc", ownerColumn: "id", aad: totpAad },
 ];
 
