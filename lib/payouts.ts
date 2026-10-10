@@ -51,15 +51,75 @@ export function fourEyesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return parseFlag(env.PAYOUT_FOUR_EYES, env.NODE_ENV === "production");
 }
 
-/** PAYOUT_FOUR_EYES_MIN_MINOR: approval is only needed at or above this net payout (minor units). 0 (default) = always. */
+/**
+ * PAYOUT_FOUR_EYES_MIN_MINOR: approval is only needed at or above this net amount, in the MINOR units (paise, cents) of
+ * each payout's own currency; no conversion is made, so one number is applied to INR, USD and so on alike. The
+ * amount compared is the payout's net plus the other unapproved payouts of the same influencer and currency from the
+ * last 24 hours (see recentUnapprovedMinor), so splitting one transfer into several below-threshold ones does not
+ * avoid approval. 0 (default) = always.
+ */
 export function fourEyesMinMinor(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.PAYOUT_FOUR_EYES_MIN_MINOR);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-/** Whether a payout of this net amount must be approved before it can be marked as paid. */
-export function approvalRequired(netMinor: number, env: NodeJS.ProcessEnv = process.env): boolean {
-  return fourEyesEnabled(env) && netMinor >= fourEyesMinMinor(env);
+/** Look-back for the threshold: unapproved payouts created within this long before the check count together. */
+export const APPROVAL_WINDOW_MS = 24 * 3_600_000;
+
+/**
+ * Whether a payout of this net amount must be approved before it can be marked as paid. `recentUnapprovedMinor` is the
+ * net total of the same influencer's other unapproved payouts in the same currency from the last 24 hours (0 when the
+ * threshold is 0, because then every payout needs approval anyway).
+ */
+export function approvalRequired(netMinor: number, env: NodeJS.ProcessEnv = process.env, recentUnapprovedMinor = 0): boolean {
+  return fourEyesEnabled(env) && netMinor + recentUnapprovedMinor >= fourEyesMinMinor(env);
+}
+
+/**
+ * The net total of this influencer's OTHER payouts in the same currency that are not approved (pending or already paid
+ * without approval) and were created in the last 24 hours. Without it a single administrator could create several
+ * payouts each under PAYOUT_FOUR_EYES_MIN_MINOR (unreconciling payments and re-creating payouts is a one-person
+ * action) and pay them all unapproved. Cancelled payouts are not counted. Returns 0 without querying when four-eyes is
+ * off or the threshold is 0.
+ */
+export async function recentUnapprovedMinor(
+  payout: { id: string; influencerId: string; currency: string },
+  now = new Date(),
+  env: NodeJS.ProcessEnv = process.env,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<number> {
+  if (!fourEyesEnabled(env) || fourEyesMinMinor(env) === 0) return 0;
+  const sum = await db.payout.aggregate({
+    where: {
+      influencerId: payout.influencerId,
+      currency: payout.currency,
+      id: { not: payout.id },
+      approvedAt: null,
+      status: { in: ["PENDING", "PAID"] },
+      createdAt: { gte: new Date(now.getTime() - APPROVAL_WINDOW_MS) },
+    },
+    _sum: { netMinor: true },
+  });
+  return sum._sum.netMinor ?? 0;
+}
+
+/** For the console: the recent-unapproved total of each pending, unapproved payout in a list (one cheap query each). */
+export async function recentUnapprovedFor(
+  payouts: { id: string; influencerId: string; currency: string; status: string; approvedAt: Date | null }[],
+  now = new Date(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Map<string, number>> {
+  const open = payouts.filter((p) => p.status === "PENDING" && p.approvedAt === null);
+  return new Map(await Promise.all(open.map(async (p) => [p.id, await recentUnapprovedMinor(p, now, env)] as const)));
+}
+
+/** Whether this payout needs approval, counting its unapproved siblings of the last 24 hours towards the threshold. */
+export async function payoutNeedsApproval(
+  payout: { id: string; influencerId: string; currency: string; netMinor: number },
+  now = new Date(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  return approvalRequired(payout.netMinor, env, await recentUnapprovedMinor(payout, now, env));
 }
 
 export interface PayoutApprovalView {
@@ -82,8 +142,10 @@ export function payoutApprovalView(
   payout: { status: string; netMinor: number; createdByEmail: string; approvedAt: Date | null; approvedByEmail: string | null },
   viewerEmail: string,
   env: NodeJS.ProcessEnv = process.env,
+  /** From recentUnapprovedMinor(); only matters when PAYOUT_FOUR_EYES_MIN_MINOR > 0. */
+  recentUnapproved = 0,
 ): PayoutApprovalView {
-  const required = approvalRequired(payout.netMinor, env);
+  const required = approvalRequired(payout.netMinor, env, recentUnapproved);
   const approved = payout.approvedAt != null;
   const pending = payout.status === "PENDING";
   const createdByViewer = sameAdmin(payout.createdByEmail, viewerEmail);
@@ -410,9 +472,10 @@ export async function approvePayout(payoutId: string, adminEmail: string, now = 
 export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string, env: NodeJS.ProcessEnv = process.env) {
   const ref = reference.trim();
   if (ref.length < 6 || ref.length > 60) throw new PayoutError("Enter the bank reference (UTR) of the transfer.");
-  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true } });
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true, influencerId: true, currency: true } });
   if (!payout || payout.status !== "PENDING") throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
-  const needsApproval = approvalRequired(payout.netMinor, env);
+  // The threshold applies to this payout plus the influencer's other unapproved payouts of the last 24 hours (no splitting).
+  const needsApproval = await payoutNeedsApproval({ id: payoutId, influencerId: payout.influencerId, currency: payout.currency, netMinor: payout.netMinor }, new Date(), env);
   if (needsApproval && !payout.approvedAt) {
     throw new PayoutError("This payout has to be approved by a second administrator before it can be marked as paid.", 409);
   }
