@@ -11,9 +11,19 @@ function day(iso: string | null) {
   return iso ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(iso)) : "–";
 }
 
-/** The Customers page body. Rendered by the old Next page and by the SPA page from the same JSON. */
-export function CustomersView({ data }: { data: Jsonify<DashboardCustomersView> }) {
+/**
+ * The Customers page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA page
+ * while it still shows the previous result and the next one is loading (the old page leaves it undefined).
+ */
+export function CustomersView({ data, busy }: { data: Jsonify<DashboardCustomersView>; busy?: boolean }) {
   const { q, customers } = data;
+  // A search no longer reloads the page, so nothing announces its result: this line does (a live region whose text changes).
+  const found =
+    customers.length === 0
+      ? q
+        ? `No customers match “${q}”.`
+        : "No customers yet."
+      : `${customers.length} ${customers.length === 1 ? "customer" : "customers"}${q ? ` found for “${q}”` : ""}.`;
 
   return (
     <div className="stack stack--lg">
@@ -25,45 +35,48 @@ export function CustomersView({ data }: { data: Jsonify<DashboardCustomersView> 
           <IconSearch size={16} /> Search
         </Button>
       </GetForm>
-      {customers.length === 0 ? (
-        <EmptyState icon={<IconUsers />} title={q ? "No customers match" : "No customers yet"}>
-          {q ? "Try a different name or email." : "People appear here after their first paid booking."}
-        </EmptyState>
-      ) : (
-        <div className="table-wrap">
-          <table className="table table--stack">
-            <thead>
-              <tr>
-                <th scope="col">Customer</th>
-                <th scope="col" className="num">Bookings</th>
-                <th scope="col" className="num">Paid</th>
-                <th scope="col">Last session</th>
-                <th scope="col">Next session</th>
-                <th scope="col"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {customers.map((c) => (
-                <tr key={c.email}>
-                  <td data-label="Customer">
-                    <div style={{ fontWeight: 600 }}>{c.name}</div>
-                    <a href={`mailto:${c.email}`} className="text-sm">{c.email}</a>
-                  </td>
-                  <td data-label="Bookings" className="num">{c.bookings}</td>
-                  <td data-label="Paid" className="num">
-                    {c.spentByCurrency.length ? c.spentByCurrency.map((s) => formatMoney(s.amountMinor, s.currency)).join(" + ") : "–"}
-                  </td>
-                  <td data-label="Last session">{day(c.lastSession)}</td>
-                  <td data-label="Next session">{day(c.nextSession)}</td>
-                  <td data-label="">
-                    <EraseCustomer email={c.email} name={c.name} />
-                  </td>
+      <p role="status" className="sr-only">{found}</p>
+      <div className="stack stack--lg" aria-busy={busy || undefined}>
+        {customers.length === 0 ? (
+          <EmptyState icon={<IconUsers />} title={q ? "No customers match" : "No customers yet"}>
+            {q ? "Try a different name or email." : "People appear here after their first paid booking."}
+          </EmptyState>
+        ) : (
+          <div className="table-wrap">
+            <table className="table table--stack">
+              <thead>
+                <tr>
+                  <th scope="col">Customer</th>
+                  <th scope="col" className="num">Bookings</th>
+                  <th scope="col" className="num">Paid</th>
+                  <th scope="col">Last session</th>
+                  <th scope="col">Next session</th>
+                  <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {customers.map((c) => (
+                  <tr key={c.email}>
+                    <td data-label="Customer">
+                      <div style={{ fontWeight: 600 }}>{c.name}</div>
+                      <a href={`mailto:${c.email}`} className="text-sm">{c.email}</a>
+                    </td>
+                    <td data-label="Bookings" className="num">{c.bookings}</td>
+                    <td data-label="Paid" className="num">
+                      {c.spentByCurrency.length ? c.spentByCurrency.map((s) => formatMoney(s.amountMinor, s.currency)).join(" + ") : "–"}
+                    </td>
+                    <td data-label="Last session">{day(c.lastSession)}</td>
+                    <td data-label="Next session">{day(c.nextSession)}</td>
+                    <td data-label="">
+                      <EraseCustomer email={c.email} name={c.name} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
       <p className="subtle">Erasing removes a customer&rsquo;s contact details from past bookings. Cancel upcoming bookings first.</p>
     </div>
   );

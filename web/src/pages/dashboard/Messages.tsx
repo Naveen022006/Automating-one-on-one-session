@@ -23,7 +23,7 @@ export function Component() {
     <>
       <PageTitle title="Messages" template="dashboard" />
       <QueryGate query={query} embedded>
-        {(data) => <MessagesView data={data} />}
+        {(data) => <MessagesView data={data} busy={query.isPlaceholderData} />}
       </QueryGate>
     </>
   );

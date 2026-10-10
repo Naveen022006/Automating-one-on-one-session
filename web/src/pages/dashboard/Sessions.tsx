@@ -27,7 +27,7 @@ export function Component() {
     <>
       <PageTitle title="Sessions" template="dashboard" />
       <QueryGate query={query} embedded>
-        {(data) => <SessionsView data={data} bookingId={search.get("booking")} />}
+        {(data) => <SessionsView data={data} bookingId={search.get("booking")} busy={query.isPlaceholderData} />}
       </QueryGate>
     </>
   );

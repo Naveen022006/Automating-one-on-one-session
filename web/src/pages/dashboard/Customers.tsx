@@ -24,7 +24,7 @@ export function Component() {
     <>
       <PageTitle title="Customers" template="dashboard" />
       <QueryGate query={query} embedded>
-        {(data) => <CustomersView data={data} />}
+        {(data) => <CustomersView data={data} busy={query.isPlaceholderData} />}
       </QueryGate>
     </>
   );

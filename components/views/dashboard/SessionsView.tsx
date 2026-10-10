@@ -15,10 +15,13 @@ const VIEWS: { value: SessionView; label: string; empty: [string, string] }[] = 
 
 /**
  * The Sessions page body. `bookingId` is the `?booking=` URL parameter: it opens that booking's drawer when the board first
- * appears (a link from the Messages page).
+ * appears (a link from the Messages page). `busy` is set by the SPA page while it still shows the previous tab or page and the
+ * next one is loading (the old page leaves it undefined).
  */
-export function SessionsView({ data, bookingId = null }: { data: Jsonify<DashboardSessionsView>; bookingId?: string | null }) {
+export function SessionsView({ data, bookingId = null, busy }: { data: Jsonify<DashboardSessionsView>; bookingId?: string | null; busy?: boolean }) {
   const current = VIEWS.find((v) => v.value === data.view) ?? VIEWS[0];
+  // Tabs and pagination are links that no longer reload the page, so nothing announces the new list: this line does (a live region whose text changes).
+  const found = `${current.label}: ${data.total} ${data.total === 1 ? "session" : "sessions"}, page ${data.page} of ${data.pageCount}.`;
 
   return (
     <div className="stack stack--lg">
@@ -31,8 +34,11 @@ export function SessionsView({ data, bookingId = null }: { data: Jsonify<Dashboa
           count: v.value === current.value ? data.total : undefined,
         }))}
       />
-      <SessionsBoard sessions={data.sessions} emptyTitle={current.empty[0]} emptyBody={current.empty[1]} initialBookingId={bookingId} />
-      <Pagination page={data.page} pageCount={data.pageCount} hrefFor={(p) => `/dashboard/sessions?view=${current.value}&page=${p}`} />
+      <p role="status" className="sr-only">{found}</p>
+      <div className="stack stack--lg" aria-busy={busy || undefined}>
+        <SessionsBoard sessions={data.sessions} emptyTitle={current.empty[0]} emptyBody={current.empty[1]} initialBookingId={bookingId} />
+        <Pagination page={data.page} pageCount={data.pageCount} hrefFor={(p) => `/dashboard/sessions?view=${current.value}&page=${p}`} />
+      </div>
     </div>
   );
 }
