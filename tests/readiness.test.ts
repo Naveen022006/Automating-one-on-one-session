@@ -1,6 +1,8 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { Prisma } from "../generated/prisma/client";
+import { listInfluencers } from "../lib/admin/data";
 import { prisma } from "../lib/db";
 import { GMAIL_SEND_SCOPE } from "../lib/google";
 import { BLOCKED_TEMPLATE_STATUSES, KNOWN_TEMPLATES, TEMPLATE_STATUS_LABELS, templateState } from "../lib/message-templates";
@@ -10,6 +12,7 @@ import {
   loadReadiness,
   readinessInput,
   requiredConnections,
+  WHATSAPP_BADGE,
   type ReadinessInput,
 } from "../lib/readiness";
 
@@ -235,4 +238,40 @@ test("readinessInput maps the stored rows", { skip }, async () => {
   assert.equal(input.payout, "verified");
   assert.equal(input.activeServices, 1);
   assert.equal(input.availabilityRules, 1);
+});
+
+test("the admin console shows the same WhatsApp state as the influencer's checklist, not 'in review' for everything", { skip }, async () => {
+  const all = (status: string, over: Record<string, string> = {}) => Object.fromEntries(KNOWN_TEMPLATES.map((k) => [k, { status: over[k] ?? status, language: "en" }]));
+  const adminSays = async () => (await listInfluencers(1, `rd-${run}`)).rows.find((r) => r.id === id)?.whatsapp;
+  const checklistSays = async () =>
+    readinessInput(
+      await prisma.influencer.findUniqueOrThrow({
+        where: { id },
+        select: {
+          googleToken: { select: { status: true, scope: true } },
+          payoutAccount: { select: { status: true } },
+          whatsappConnection: { select: { status: true, templates: true } },
+          _count: { select: { rules: true, services: { where: { active: true } } } },
+        },
+      }),
+      true,
+    ).whatsapp;
+
+  const cases: [string, unknown, "ACTIVE" | "ERROR", ReadinessInput["whatsapp"]][] = [
+    ["nothing was ever submitted", null, "ACTIVE", "not-submitted"],
+    ["in review", all("PENDING"), "ACTIVE", "pending"],
+    ["one rejected", all("APPROVED", { reschedule: "REJECTED" }), "ACTIVE", "rejected"],
+    ["one has a name clash", all("APPROVED", { cancellation: "CONFLICT" }), "ACTIVE", "rejected"],
+    ["all approved", all("APPROVED"), "ACTIVE", "ready"],
+    ["flagged is still sent", all("APPROVED", { "reminder-15m": "FLAGGED" }), "ACTIVE", "ready"],
+    ["the connection stopped working", all("APPROVED"), "ERROR", "error"],
+  ];
+  for (const [name, templates, status, expected] of cases) {
+    await prisma.whatsAppConnection.update({ where: { influencerId: id }, data: { templates: templates === null ? Prisma.DbNull : (templates as object), status } });
+    assert.equal(await adminSays(), expected, `admin: ${name}`);
+    assert.equal(await checklistSays(), expected, `checklist: ${name}`);
+  }
+  for (const state of ["none", "ready", "pending", "rejected", "not-submitted", "error"] as const) assert.ok(WHATSAPP_BADGE[state].label, `a badge for ${state}`);
+  assert.notEqual(WHATSAPP_BADGE.rejected.label, WHATSAPP_BADGE.pending.label);
+  assert.notEqual(WHATSAPP_BADGE["not-submitted"].label, WHATSAPP_BADGE.pending.label);
 });

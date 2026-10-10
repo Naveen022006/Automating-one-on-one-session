@@ -7,8 +7,7 @@ import { activeAdminCount, getInfluencerDetail } from "@/lib/admin/data";
 import { requireAdminPage } from "@/lib/admin/session";
 import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@/components/admin/PayoutActions";
 import { prisma } from "@/lib/db";
-import { evaluateReadiness, readinessInput } from "@/lib/readiness";
-import { viewTemplates } from "@/lib/whatsapp-connection";
+import { WHATSAPP_BADGE, evaluateReadiness, readinessInput } from "@/lib/readiness";
 import { getPayoutAccountView } from "@/lib/payout-account";
 import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, fourEyesEnabled, loadPayable, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor, summariseCurrencies, type Blocker } from "@/lib/payouts";
 import { formatMoney } from "@/lib/format";
@@ -32,7 +31,9 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   const recentUnapproved = await recentUnapprovedFor(payouts);
   const verified = payout?.status === "VERIFIED";
   const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
-  const readiness = evaluateReadiness(readinessInput({ ...i, payoutAccount: payout ? { status: payout.status } : null, _count: { rules: await prisma.availabilityRule.count({ where: { influencerId: id } }), services: i.services.filter((s) => s.active).length } }, i.user?.emailVerifiedAt != null || !i.user));
+  const input = readinessInput({ ...i, payoutAccount: payout ? { status: payout.status } : null, _count: { rules: await prisma.availabilityRule.count({ where: { influencerId: id } }), services: i.services.filter((s) => s.active).length } }, i.user?.emailVerifiedAt != null || !i.user);
+  const readiness = evaluateReadiness(input);
+  const waState = input.whatsapp;
 
   return (
     <div className="stack stack--lg">
@@ -74,15 +75,10 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
             </dd>
             <dt>WhatsApp</dt>
             <dd>
-              {!i.whatsappConnection ? (
-                <Badge>Not connected</Badge>
-              ) : i.whatsappConnection.status === "ERROR" ? (
-                <Badge tone="danger">Reconnect needed</Badge>
-              ) : viewTemplates(i.whatsappConnection.templates).every((t) => t.status === "APPROVED") ? (
-                <Badge tone="success">{i.whatsappConnection.displayPhone ?? "Ready"}</Badge>
-              ) : (
-                <Badge tone="warning">{i.whatsappConnection.displayPhone ?? "Connected"}, templates in review</Badge>
-              )}
+              {/* The same state as the influencer's own checklist (lib/readiness.ts), with the number when there is one. */}
+              <Badge tone={WHATSAPP_BADGE[waState].tone}>
+                {i.whatsappConnection?.displayPhone && waState !== "error" ? `${i.whatsappConnection.displayPhone}, ${WHATSAPP_BADGE[waState].label.toLowerCase()}` : WHATSAPP_BADGE[waState].label}
+              </Badge>
             </dd>
             <dt>Email from Gmail</dt>
             <dd>

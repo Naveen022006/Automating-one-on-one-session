@@ -43,6 +43,16 @@ export interface ReadinessInput {
   payout: "none" | "pending" | "verified" | "rejected";
 }
 
+/** The short badge the admin console shows for each WhatsApp state, the same states as the influencer's own checklist. */
+export const WHATSAPP_BADGE: Record<ReadinessInput["whatsapp"], { label: string; tone?: "success" | "warning" | "danger" }> = {
+  none: { label: "Not connected" },
+  ready: { label: "Ready", tone: "success" },
+  pending: { label: "Templates in review", tone: "warning" },
+  rejected: { label: "Templates need fixing", tone: "danger" },
+  "not-submitted": { label: "Templates not submitted", tone: "warning" },
+  error: { label: "Reconnect needed", tone: "danger" },
+};
+
 export interface ReadinessItem {
   key: ReadinessKey;
   label: string;
