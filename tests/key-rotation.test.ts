@@ -7,10 +7,12 @@ import { after, before, test } from "node:test";
 import { decryptSecret, encryptSecret, parseKeyBytes, tryDecryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/db";
 import { getRefreshToken, googleTokenAad, saveGoogleToken } from "../lib/google-tokens";
-import { rotateEncryptedColumns, rotateValue, type EncryptedColumn, type RotationDb, type RotationTx } from "../lib/key-rotation";
+import { checkColumnCoverage, discoverEncryptedColumns, rotateEncryptedColumns, rotateValue, verifyEncryptedColumns } from "../lib/key-rotation";
 import { ENCRYPTED_COLUMNS, prismaRotationDb } from "../lib/key-rotation-db";
+import type { EncryptedColumn } from "../lib/key-rotation";
 import { payoutAad, payoutInputSchema, revealPayoutAccount, savePayoutAccount } from "../lib/payout-account";
 import { resolveSendCredentials, whatsappTokenAad } from "../lib/whatsapp-connection";
+import { COL_A, COL_B, FakeDb, seed } from "./helpers/fake-rotation-db";
 
 /** An empty environment for resolveSendCredentials (no MESSAGING_DRY_RUN, no platform fallback). */
 const NO_ENV = {} as NodeJS.ProcessEnv;
@@ -122,69 +124,6 @@ test("rotateValue re-encrypts, skips what is already on the new key, and fails w
 });
 
 /* ---------- rotation: the runner, against an in-memory fake database ---------- */
-
-interface FakeRow {
-  influencerId: string;
-  value: string | null;
-}
-
-/** In-memory RotationDb with real transaction semantics (staged writes, committed on success, rolled back on throw). */
-class FakeDb implements RotationDb {
-  tables = new Map<string, Map<string, FakeRow>>();
-  transactions = 0;
-  writes = 0;
-  locks = 0;
-  failWriteFor = new Set<string>();
-  onBeforeRead?: (column: EncryptedColumn, id: string) => void;
-
-  table(name: string) {
-    let t = this.tables.get(name);
-    if (!t) this.tables.set(name, (t = new Map()));
-    return t;
-  }
-  set(col: EncryptedColumn, id: string, influencerId: string, value: string) {
-    this.table(col.name).set(id, { influencerId, value });
-  }
-  get(col: EncryptedColumn, id: string) {
-    return this.table(col.name).get(id)?.value ?? null;
-  }
-  async listIds(col: EncryptedColumn) {
-    return [...this.table(col.name)].filter(([, r]) => r.value !== null).map(([id]) => id);
-  }
-  async transaction<T>(fn: (tx: RotationTx) => Promise<T>): Promise<T> {
-    this.transactions++;
-    const staged: [EncryptedColumn, string, string][] = [];
-    const tx: RotationTx = {
-      read: async (col, id, lock) => {
-        if (lock) this.locks++;
-        this.onBeforeRead?.(col, id);
-        const row = this.table(col.name).get(id);
-        return row && row.value ? { influencerId: row.influencerId, value: row.value } : null;
-      },
-      write: async (col, id, value) => {
-        if (this.failWriteFor.has(id)) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
-        staged.push([col, id, value]);
-      },
-    };
-    const out = await fn(tx);
-    for (const [col, id, value] of staged) {
-      this.table(col.name).get(id)!.value = value;
-      this.writes++;
-    }
-    return out;
-  }
-}
-
-const COL_A: EncryptedColumn = { name: "a.secret_enc", table: "a", column: "secret_enc", aad: (id) => `a:${id}` };
-const COL_B: EncryptedColumn = { name: "b.token_enc", table: "b", column: "token_enc", aad: (id) => id };
-
-function seed(oldKey: Buffer) {
-  const db = new FakeDb();
-  db.set(COL_A, "a1", "inf1", encryptSecret("A-ONE", "a:inf1", oldKey));
-  db.set(COL_A, "a2", "inf2", encryptSecret("A-TWO", "a:inf2", oldKey));
-  db.set(COL_B, "b1", "inf1", encryptSecret("B-ONE", "inf1", oldKey));
-  return db;
-}
 
 test("dry run reads and verifies everything but writes nothing and takes no locks", async () => {
   const oldKey = randomBytes(32);
@@ -302,17 +241,94 @@ test("identical or malformed keys are refused before anything is read", async ()
 
 /* ---------- the column list must cover every encrypted column in the schema ---------- */
 
-test("every *_enc column in prisma/schema.prisma is covered by the rotation tool", () => {
-  const schema = readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8");
-  const found: string[] = [];
-  for (const block of schema.split(/\n(?=model )/)) {
-    const table = block.match(/@@map\("([a-z_]+)"\)/)?.[1];
-    if (!table) continue;
-    for (const m of block.matchAll(/@map\("([a-z_]+_enc)"\)/g)) found.push(`${table}.${m[1]}`);
-  }
-  assert.ok(found.length >= 4, "the schema scan found the known encrypted columns");
-  assert.deepEqual([...found].sort(), ENCRYPTED_COLUMNS.map((c) => c.name).sort(), "add new encrypted columns to ENCRYPTED_COLUMNS (lib/key-rotation-db.ts)");
+const schemaText = () => readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8");
+
+test("every *_enc / *Enc column in prisma/schema.prisma is covered by the rotation list (auto-discovered)", () => {
+  const discovered = discoverEncryptedColumns(schemaText());
+  assert.ok(discovered.length >= 4, "the schema scan found the known encrypted columns");
+  const problems = checkColumnCoverage(schemaText(), ENCRYPTED_COLUMNS);
+  // If this fails: a column that holds a TOKEN_ENCRYPTION_KEY ciphertext is not in ENCRYPTED_COLUMNS
+  // (lib/key-rotation-db.ts), so a key rotation would leave its values stranded on the old key. Add an entry.
+  assert.deepEqual(problems.missing, [], "encrypted columns in the schema that the rotation tool does not know about");
+  assert.deepEqual(problems.unknown, [], "rotation entries that are not encrypted columns of the schema");
+  assert.deepEqual(problems.badColumns, [], "rotation entries naming a column that does not exist");
   for (const c of ENCRYPTED_COLUMNS) assert.equal(c.name, `${c.table}.${c.column}`);
+  assert.deepEqual([...discovered], ENCRYPTED_COLUMNS.map((c) => c.name).sort());
+});
+
+test("the coverage check really notices a new encrypted column (the admin 2FA secret, in a camelCase and a snake_case spelling)", () => {
+  const schema =
+    schemaText() +
+    `
+model AdminUser {
+  id             String  @id
+  totpSecretEnc  String? @map("totp_secret_enc")
+  other_enc      String?
+  name           String
+  @@map("admin_users")
+}
+`;
+  const discovered = discoverEncryptedColumns(schema);
+  assert.ok(discovered.includes("admin_users.totp_secret_enc"), "@map'd camelCase field");
+  assert.ok(discovered.includes("admin_users.other_enc"), "snake_case field without @map");
+
+  const problems = checkColumnCoverage(schema, ENCRYPTED_COLUMNS);
+  assert.deepEqual(problems.missing, ["admin_users.other_enc", "admin_users.totp_secret_enc"]);
+
+  // With the entry described through the generalised fields (own-id owner column), the 2FA column is covered...
+  const admin: EncryptedColumn = {
+    name: "admin_users.totp_secret_enc",
+    table: "admin_users",
+    column: "totp_secret_enc",
+    ownerColumn: "id",
+    aad: (adminId) => `admin-totp:${adminId}`,
+  };
+  const covered = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, admin]);
+  assert.deepEqual(covered.missing, ["admin_users.other_enc"]);
+  assert.deepEqual(covered.badColumns, []);
+  // ...and a typo in the owner column is caught.
+  const typo = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, { ...admin, ownerColumn: "admin_id" }]);
+  assert.match(typo.badColumns.join("\n"), /ownerColumn "admin_id" is not a column of admin_users/);
+  // A listed column that is not in the schema is reported as unknown.
+  assert.deepEqual(checkColumnCoverage(schemaText(), [...ENCRYPTED_COLUMNS, admin]).unknown, ["admin_users.totp_secret_enc"]);
+});
+
+test("a column whose AAD is its own row id rotates and verifies like any other (ownerColumn = id)", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = new FakeDb();
+  const admin: EncryptedColumn = { name: "admin_users.totp_secret_enc", table: "admin_users", column: "totp_secret_enc", ownerColumn: "id", aad: (id) => `admin-totp:${id}` };
+  db.set(admin, "admin1", "admin1", encryptSecret("TOTP-SECRET", "admin-totp:admin1", oldKey));
+  const report = await rotateEncryptedColumns({ db, columns: [admin], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 1, rotated: 1, skipped: 0, failed: 0 });
+  assert.equal(decryptSecret(db.get(admin, "admin1")!, "admin-totp:admin1", newKey), "TOTP-SECRET");
+  const verified = await verifyEncryptedColumns({ db, columns: [admin], currentKey: newKey, previousKey: oldKey });
+  assert.deepEqual(verified.totals, { scanned: 1, current: 1, previousOnly: 0, unreadable: 0 });
+});
+
+/* ---------- verification (decrypt only) ---------- */
+
+test("verifyEncryptedColumns counts what the current key reads, what only the previous key reads, and what nothing reads", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  db.set(COL_A, "a3", "inf3", encryptSecret("X", "a:inf3", newKey)); // already on the new key
+  db.set(COL_A, "a4", "inf4", encryptSecret("Y", "a:inf4", randomBytes(32))); // a third key: unreadable
+
+  const before = JSON.stringify([...db.tables].map(([k, v]) => [k, [...v]]));
+  const r = await verifyEncryptedColumns({ db, columns: [COL_A, COL_B], currentKey: newKey, previousKey: oldKey });
+  assert.deepEqual(r.columns["a.secret_enc"], { scanned: 4, current: 1, previousOnly: 2, unreadable: 1 });
+  assert.deepEqual(r.columns["b.token_enc"], { scanned: 1, current: 0, previousOnly: 1, unreadable: 0 });
+  assert.deepEqual(r.totals, { scanned: 5, current: 1, previousOnly: 3, unreadable: 1 });
+  assert.deepEqual(r.failures.map((f) => f.rowId), ["a4"]);
+  assert.equal(db.writes, 0);
+  assert.equal(db.locks, 0, "no row locks");
+  assert.equal(JSON.stringify([...db.tables].map(([k, v]) => [k, [...v]])), before, "nothing changed");
+
+  // Without a previous key, old rows are simply unreadable.
+  const noPrev = await verifyEncryptedColumns({ db, columns: [COL_A], currentKey: newKey });
+  assert.deepEqual(noPrev.totals, { scanned: 4, current: 1, previousOnly: 0, unreadable: 3 });
+  assert.ok(!JSON.stringify(r).includes("A-ONE") && !JSON.stringify(r).includes(newKey.toString("base64")));
 });
 
 /* ---------- integration: the real tables, the real modules, rows of our own ---------- */
@@ -359,7 +375,7 @@ test("integration: dry run counts our rows, changes nothing, and proves every AA
   const oldKey = parseKeyBytes(realKey)!;
   const payoutBefore = await prisma.payoutAccount.findUnique({ where: { influencerId: a } });
   const report = await rotateEncryptedColumns({
-    db: prismaRotationDb(prisma, { influencerIds: ids }),
+    db: prismaRotationDb(prisma, { ownerIds: ids }),
     columns: ENCRYPTED_COLUMNS,
     oldKey,
     newKey: parseKeyBytes(newKey)!,
@@ -387,7 +403,7 @@ test("integration: apply rotates our rows to the new key, keeps updated_at, and 
   const nk = parseKeyBytes(newKey)!;
   const payoutBefore = await prisma.payoutAccount.findUnique({ where: { influencerId: a } });
   const googleBefore = await prisma.googleToken.findUnique({ where: { influencerId: a } });
-  const opts = { db: prismaRotationDb(prisma, { influencerIds: ids }), columns: ENCRYPTED_COLUMNS, oldKey, newKey: nk, apply: true };
+  const opts = { db: prismaRotationDb(prisma, { ownerIds: ids }), columns: ENCRYPTED_COLUMNS, oldKey, newKey: nk, apply: true };
 
   const first = await rotateEncryptedColumns(opts);
   assert.deepEqual(first.totals, { scanned: 5, rotated: 5, skipped: 0, failed: 0 }, JSON.stringify(first.failures));

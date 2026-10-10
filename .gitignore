@@ -1,7 +1,14 @@
 node_modules
 .next
 generated
+# Secrets and local configuration: .env, .env.local, prod.env, deploy.env, ... and key/certificate files. Only the
+# documented template is tracked.
 .env
+.env*
+*.env
+!.env.example
+*.pem
+*.key
 *.tsbuildinfo
 next-env.d.ts
 

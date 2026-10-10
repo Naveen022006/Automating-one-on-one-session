@@ -14,6 +14,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "admin:create": "tsx scripts/create-admin.ts",
     "keys:rotate": "tsx scripts/rotate-encryption-key.ts",
+    "keys:verify": "tsx scripts/verify-encryption-keys.ts",
     "expire-holds": "tsx worker/index.ts",
     "worker": "tsx worker/index.ts",
     "test": "tsx --test --experimental-test-module-mocks tests/*.test.ts",

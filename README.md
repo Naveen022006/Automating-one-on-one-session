@@ -218,9 +218,13 @@ backups and restore drill, key rotation, Razorpay and Google go-live checklists,
   `REDIS_URL` is set; 503 names the failing check). Both bypass the per-IP rate limit.
 - **Start-up validation:** `lib/env.ts` checks the environment when the web app and the worker start. With
   `NODE_ENV=production` it refuses to start on a bad configuration (http `APP_URL`, short `APP_SECRET`, missing Redis or
-  Razorpay keys, `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN`, `READINESS_BYPASS`, `RATE_LIMIT_ENABLED=false`) and lists every
-  problem at once without printing a value. In development it only warns.
-- **Encryption key rotation:** `npm run keys:rotate` re-encrypts Google tokens, payout details and WhatsApp tokens under a
-  new `TOKEN_ENCRYPTION_KEY` (dry run by default, `-- --apply` to write). The app reads with the current key, then
-  `TOKEN_ENCRYPTION_KEY_PREVIOUS`, so a rolling deploy works. Back up the key: without it those values are unreadable.
+  Razorpay keys, `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN`, `WHATSAPP_DISABLED`, `READINESS_BYPASS`, `RATE_LIMIT_ENABLED=false`,
+  or a value with leading/trailing whitespace) and lists every problem at once without printing a value. In development it
+  only warns. Upgrading? `APP_SECRET` must now be 32+ characters in production: see "Upgrade notes" in the guide.
+- **Encryption key rotation:** `npm run keys:rotate` re-encrypts Google tokens, payout details and WhatsApp tokens onto
+  `TOKEN_ENCRYPTION_KEY` from `TOKEN_ENCRYPTION_KEY_PREVIOUS` (the services' own variables; run it with their environment).
+  Dry run by default; `-- --apply --confirm-new-fingerprint=<8 hex>` writes, and refuses unless the fingerprint matches the one
+  your services log at start-up. `npm run keys:verify` (decrypt-only) checks every value reads with the current key. The app
+  reads with the current key, then the previous one, so a rolling deploy works. Back up the key: without it those values are
+  unreadable.
 - **Dependencies:** Node 22+ (`.nvmrc`); Dependabot and an advisory `npm audit` step in CI; see the audit notes in the guide.

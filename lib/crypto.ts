@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 const VERSION = "v1";
 
@@ -11,6 +11,16 @@ export function parseKeyBytes(raw: string | undefined | null): Buffer | null {
   if (!raw) return null;
   const key = Buffer.from(raw, "base64");
   return key.length === 32 ? key : null;
+}
+
+/**
+ * A short, non-reversible label for a key: the first 8 hex characters of SHA-256 over a domain tag plus the key.
+ * Safe to print and log (it reveals nothing usable about the key), and enough to tell two keys apart. Services log
+ * it at start-up and the key tools print it, so an operator can check that every process and every maintenance
+ * command is looking at the same key before anything is changed.
+ */
+export function keyFingerprint(key: Buffer): string {
+  return createHash("sha256").update("session-automation:key-fingerprint:v1:").update(key).digest("hex").slice(0, 8);
 }
 
 function loadNamedKey(name: string): Buffer {

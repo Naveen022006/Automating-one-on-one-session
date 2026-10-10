@@ -1,8 +1,13 @@
 # Keep the build context small and, above all, keep secrets and local state out of image layers.
 
-# Secrets and local configuration: never copied into an image (pass configuration at runtime).
-.env
-.env.*
+# Secrets and local configuration: never copied into an image (pass configuration at runtime). Patterns start with **/
+# because .dockerignore (unlike .gitignore) only matches the context root without it. The last line re-includes the
+# documented template.
+**/.env
+**/.env*
+**/*.env
+**/*.pem
+**/*.key
 !.env.example
 
 # Dependencies and build output are produced inside the image.
