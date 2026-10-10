@@ -7,14 +7,18 @@ import {
   WhatsAppGraphError,
   ensureTemplates,
   exchangeEmbeddedCode,
+  checkTokenInfo,
+  debugToken,
   getPhoneNumber,
   isApproved,
   listTemplates,
+  metaAppCredentials,
   registerNumber,
   subscribeApp,
   wabaOwnsNumber,
   type PhoneNumberInfo,
   type TemplateSyncResult,
+  type TokenInfo,
 } from "@/lib/whatsapp-connect";
 
 /**
@@ -51,6 +55,8 @@ export interface ConnectDeps {
   exchangeCode: (code: string) => Promise<string>;
   subscribeApp: (wabaId: string, token: string) => Promise<void>;
   registerNumber: (phoneNumberId: string, token: string, pin: string) => Promise<void>;
+  /** Meta's view of the token (permissions, expiry), or null when this server has no Meta app id and secret to ask with. */
+  inspectToken: (token: string) => Promise<TokenInfo | null>;
 }
 
 const defaultDeps: ConnectDeps = {
@@ -60,6 +66,10 @@ const defaultDeps: ConnectDeps = {
   exchangeCode: (c) => exchangeEmbeddedCode(c),
   subscribeApp: (w, t) => subscribeApp(w, t),
   registerNumber: (p, t, pin) => registerNumber(p, t, pin),
+  inspectToken: async (t) => {
+    const app = metaAppCredentials();
+    return app ? debugToken(t, app.appId, app.appSecret) : null;
+  },
 };
 
 const ID = /^\d{5,30}$/;
@@ -118,6 +128,25 @@ function registrationError(e: unknown, supplied: boolean): WhatsAppConnectError 
   return friendly(e);
 }
 
+/**
+ * Asks Meta whether the token is fit to connect with: valid, both WhatsApp permissions, not about to expire. Refuses a
+ * bad one. Where the check cannot be made (no Meta app id and secret here, or Meta did not answer) it does not stand in
+ * the way, but says so in the notes returned to the influencer: the number may still be fine.
+ */
+async function vetToken(token: string, deps: ConnectDeps): Promise<string[]> {
+  let info: TokenInfo | null;
+  try {
+    info = await deps.inspectToken(token);
+  } catch (e) {
+    console.error("[whatsapp] could not inspect the token", e instanceof Error ? e.message : e);
+    return ["We could not check this token's permissions and expiry with Meta just now. It needs whatsapp_business_management and whatsapp_business_messaging, and should not expire."];
+  }
+  if (!info) return ["This server has no Meta app id and secret configured, so the token's permissions and expiry were not checked."];
+  const check = checkTokenInfo(info);
+  if (!check.ok) throw new WhatsAppConnectError(check.message, 400, "accessToken");
+  return check.notes;
+}
+
 /** Subscribes our Meta app to the account's webhooks and says how it went, in the shape stored on the connection. */
 async function subscribeWebhooks(wabaId: string, token: string, deps: ConnectDeps): Promise<{ webhookSubscribedAt: Date | null; webhookError: string | null }> {
   try {
@@ -134,7 +163,8 @@ async function persist(
   influencerId: string,
   c: { wabaId: string; phoneNumberId: string; token: string; source: "manual" | "embedded"; pin?: string; pinSupplied?: boolean },
   deps: ConnectDeps,
-): Promise<WhatsAppConnectionView> {
+): Promise<WhatsAppConnectionView & { notes: string[] }> {
+  const notes = await vetToken(c.token, deps);
   let phone: PhoneNumberInfo;
   try {
     phone = await deps.getPhoneNumber(c.phoneNumberId, c.token);
@@ -185,7 +215,7 @@ async function persist(
     ...webhook,
   };
   await prisma.whatsAppConnection.upsert({ where: { influencerId }, create: { influencerId, ...data }, update: { ...data, connectedAt: new Date() } });
-  return (await getConnectionView(influencerId))!;
+  return { ...(await getConnectionView(influencerId))!, notes };
 }
 
 /**

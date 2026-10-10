@@ -9,14 +9,19 @@ import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {
+  REQUIRED_SCOPES,
   WhatsAppGraphError,
+  checkTokenInfo,
+  debugToken,
   embeddedSignupConfig,
   ensureTemplates,
   exchangeEmbeddedCode,
   getPhoneNumber,
+  metaAppCredentials,
   registerNumber,
   templatePayload,
   wabaOwnsNumber,
+  webhookAppSecret,
 } from "../lib/whatsapp-connect";
 import {
   WhatsAppConnectError,
@@ -158,6 +163,74 @@ test("Embedded Signup exchanges the code and needs the Meta app configured", asy
   assert.equal(embeddedSignupConfig({ META_APP_ID: "app" } as unknown as NodeJS.ProcessEnv), null);
 });
 
+test("the Meta app secret is accepted under either name, for the webhook and for Embedded Signup", () => {
+  const e = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv;
+  assert.equal(webhookAppSecret(e({ WHATSAPP_APP_SECRET: "a" })), "a");
+  assert.equal(webhookAppSecret(e({ META_APP_SECRET: "m" })), "m", "the webhook can be verified with META_APP_SECRET");
+  assert.equal(webhookAppSecret(e({ WHATSAPP_APP_SECRET: "a", META_APP_SECRET: "m" })), "a", "each use keeps the name it read first");
+  assert.equal(webhookAppSecret(e({})), undefined);
+  assert.deepEqual(metaAppCredentials(e({ META_APP_ID: "app", WHATSAPP_APP_SECRET: "a" })), { appId: "app", appSecret: "a" }, "Embedded Signup and the token check work with WHATSAPP_APP_SECRET");
+  assert.deepEqual(metaAppCredentials(e({ META_APP_ID: "app", META_APP_SECRET: "m", WHATSAPP_APP_SECRET: "a" })), { appId: "app", appSecret: "m" });
+  assert.equal(metaAppCredentials(e({ META_APP_SECRET: "m" })), null, "no app id");
+  assert.deepEqual(embeddedSignupConfig(e({ META_APP_ID: "app", META_ES_CONFIG_ID: "cfg", WHATSAPP_APP_SECRET: "a" })), { appId: "app", configId: "cfg" });
+});
+
+test("a permission error is a bad token, like an expired one; other errors are not", () => {
+  const bad = (code: number | null, status = 400) => new WhatsAppGraphError("x", status, code).invalidToken;
+  for (const code of [190, 10, 200, 210, 299]) assert.equal(bad(code), true, `code ${code}`);
+  assert.equal(bad(null, 401), true, "HTTP 401");
+  for (const code of [100, 4, 17, 131030, 131047, 133005, 300, 9, 11]) assert.equal(bad(code), false, `code ${code} is not a token problem`);
+  assert.equal(bad(null, 500), false);
+});
+
+test("the token check judges what Meta says about the token", () => {
+  const now = new Date("2026-11-02T00:00:00Z");
+  const hours = (h: number) => new Date(now.getTime() + h * 3_600_000);
+  const ok = { valid: true, expiresAt: null, scopes: [...REQUIRED_SCOPES, "business_management"] };
+
+  assert.deepEqual(checkTokenInfo(ok, now), { ok: true, notes: [] }, "a permanent token with both permissions is healthy");
+
+  const invalid = checkTokenInfo({ ...ok, valid: false }, now);
+  assert.equal(invalid.ok, false);
+
+  const noMessaging = checkTokenInfo({ ...ok, scopes: ["whatsapp_business_management"] }, now);
+  assert.ok(!noMessaging.ok && /whatsapp_business_messaging/.test(noMessaging.message) && !/whatsapp_business_management/.test(noMessaging.message));
+  const neither = checkTokenInfo({ ...ok, scopes: ["business_management"] }, now);
+  assert.ok(!neither.ok && /whatsapp_business_management and whatsapp_business_messaging/.test(neither.message));
+
+  const day = checkTokenInfo({ ...ok, expiresAt: hours(23) }, now);
+  assert.ok(!day.ok && /expires in 23 hour/.test(day.message) && /System User/.test(day.message), "the 24-hour API Setup token is refused");
+  const sixDays = checkTokenInfo({ ...ok, expiresAt: hours(6 * 24) }, now);
+  assert.ok(!sixDays.ok && /expires in 6 days/.test(sixDays.message));
+  assert.equal(checkTokenInfo({ ...ok, expiresAt: hours(7 * 24 + 1) }, now).ok, true, "just over a week is accepted");
+
+  const later = checkTokenInfo({ ...ok, expiresAt: hours(60 * 24) }, now);
+  assert.ok(later.ok && later.notes.length === 1 && /expires on 2027-01-01/.test(later.notes[0]), "a token that does expire later is accepted with a note");
+
+  const unlisted = checkTokenInfo({ ...ok, scopes: null }, now);
+  assert.ok(unlisted.ok && /could not check them/.test(unlisted.notes[0]), "unknown permissions are noted, not refused");
+});
+
+test("debug_token is read with the app's token, and its answer is turned into token info", async () => {
+  const seen: { url: string; auth: string | null }[] = [];
+  const answer = (data: unknown) => (async (url: string, init?: RequestInit) => {
+    seen.push({ url, auth: new Headers(init?.headers).get("authorization") });
+    return json(200, { data });
+  }) as unknown as typeof fetch;
+
+  const forever = await debugToken("USER-TOKEN", "app1", "secret1", answer({ is_valid: true, expires_at: 0, scopes: ["whatsapp_business_management", "whatsapp_business_messaging"] }));
+  assert.deepEqual(forever, { valid: true, expiresAt: null, scopes: ["whatsapp_business_management", "whatsapp_business_messaging"] });
+  assert.match(seen[0].url, /\/debug_token\?input_token=USER-TOKEN$/);
+  assert.equal(seen[0].auth, "Bearer app1|secret1", "asked as the app, not with the influencer's own token");
+
+  const soon = await debugToken("t", "a", "s", answer({ is_valid: true, expires_at: 1_800_000_000, granular_scopes: [{ scope: "whatsapp_business_messaging", target_ids: ["1"] }, { scope: "whatsapp_business_management" }] }));
+  assert.equal(soon.expiresAt?.getTime(), 1_800_000_000_000);
+  assert.deepEqual(soon.scopes?.sort(), ["whatsapp_business_management", "whatsapp_business_messaging"], "granular permissions count");
+
+  assert.deepEqual(await debugToken("t", "a", "s", answer({ is_valid: false, scopes: [] })), { valid: false, expiresAt: null, scopes: null });
+  await assert.rejects(debugToken("t", "a", "s", (async () => json(200, {})) as unknown as typeof fetch), WhatsAppGraphError);
+});
+
 test("registering a number: a PIN mismatch is recognised, 'already registered' is fine, 'not registered' is not", async () => {
   const fail = (status: number, error: Record<string, unknown>) => (async () => json(status, { error })) as unknown as typeof fetch;
   await assert.rejects(registerNumber("111", "tok", "123456", fail(400, { message: "Two step verification PIN Mismatch", code: 133005 })), (e: unknown) => e instanceof WhatsAppGraphError && e.pinMismatch && !e.pinLocked && !e.invalidToken);
@@ -225,6 +298,7 @@ function fakeDeps(over: Partial<ConnectDeps> = {}): ConnectDeps {
     exchangeCode: async () => "business-token-from-meta-0123456789",
     subscribeApp: async () => {},
     registerNumber: async () => {},
+    inspectToken: async () => ({ valid: true, expiresAt: null, scopes: [...REQUIRED_SCOPES, "business_management"] }),
     ...over,
   };
 }
@@ -393,6 +467,37 @@ test("connecting subscribes the app to the account's webhooks (manual too) and r
   assert.ok(!/live updates/i.test(healed?.lastError ?? ""));
   await refreshTemplates(b, fakeDeps({ subscribeApp: async () => void retried.push("again"), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
   assert.deepEqual(retried, [WABA], "already subscribed: not asked again");
+  await disconnect(b);
+});
+
+test("connecting checks the token with Meta: a short-lived or under-permissioned token is refused before anything is saved", { skip }, async () => {
+  const phone = String(Number(PHONE) + 9);
+  const input = { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-vetted-token-for-tests-1234567890" };
+  const day = { valid: true, expiresAt: new Date(Date.now() + 23 * 3_600_000), scopes: [...REQUIRED_SCOPES] };
+  let looked = 0;
+  const watch = { getPhoneNumber: async (id: string) => (looked++, { id, displayPhone: "+91 98765 43210", verifiedName: "Sam", qualityRating: null }) };
+
+  await assert.rejects(connectManual(b, input, fakeDeps({ ...watch, inspectToken: async () => day })), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "accessToken" && /expires in 23 hour/.test(e.message));
+  await assert.rejects(
+    connectManual(b, input, fakeDeps({ ...watch, inspectToken: async () => ({ valid: true, expiresAt: null, scopes: ["whatsapp_business_management"] }) })),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "accessToken" && /whatsapp_business_messaging/.test(e.message),
+  );
+  await assert.rejects(connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps({ ...watch, inspectToken: async () => ({ valid: false, expiresAt: null, scopes: null }) })), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "accessToken");
+  assert.equal(looked, 0, "refused before the number was even looked up");
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
+
+  // Where it cannot be checked (no Meta app id/secret, or Meta did not answer) the number still connects, and the influencer is told.
+  const unchecked = await connectManual(b, input, fakeDeps({ inspectToken: async () => null }));
+  assert.equal(unchecked.status, "ACTIVE");
+  assert.match(unchecked.notes.join(" "), /no Meta app id and secret configured/);
+  const down = await connectManual(b, input, fakeDeps({ inspectToken: async () => { throw new WhatsAppGraphError("Could not reach WhatsApp", 0); } }));
+  assert.match(down.notes.join(" "), /could not check this token/);
+
+  const healthy = await connectManual(b, input, fakeDeps());
+  assert.deepEqual(healthy.notes, []);
+  const expiring = await connectManual(b, input, fakeDeps({ inspectToken: async () => ({ valid: true, expiresAt: new Date(Date.now() + 40 * 86_400_000), scopes: [...REQUIRED_SCOPES] }) }));
+  assert.equal(expiring.notes.length, 1);
+  assert.match(expiring.notes[0], /expires on/);
   await disconnect(b);
 });
 

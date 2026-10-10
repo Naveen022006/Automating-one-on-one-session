@@ -58,6 +58,7 @@ export async function POST(req: Request) {
       body.action === "connect-manual"
         ? await connectManual(auth.influencerId, { wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, accessToken: body.accessToken, pin: body.pin })
         : await connectEmbedded(auth.influencerId, { code: body.code, wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, pin: body.pin });
+    // connection.notes: things worth telling the influencer that did not stop the connection (a token that could not be checked).
     return NextResponse.json({ connection });
   } catch (e) {
     if (e instanceof WhatsAppConnectError) return jsonError(e.message, e.status, e.field ? { field: e.field } : {});

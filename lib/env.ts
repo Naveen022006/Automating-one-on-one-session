@@ -324,8 +324,9 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
           : [!env.SMS_API_KEY && "SMS_API_KEY", !env.SMS_API_URL && "SMS_API_URL"];
     const missing = smsMissing.filter(Boolean);
     if (missing.length) warn("SMS_PROVIDER", `${sms} needs ${missing.join(", ")}: the SMS fallback for WhatsApp will fail`);
-    if (!env.WHATSAPP_APP_SECRET || !env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
-      warn("WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_VERIFY_TOKEN", "are not both set: Meta's webhook handshake and delivery/template status callbacks will be rejected");
+    // The Meta app secret has two names (WHATSAPP_APP_SECRET, META_APP_SECRET); either one verifies the callbacks.
+    if (!(env.WHATSAPP_APP_SECRET || env.META_APP_SECRET) || !env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+      warn("WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_VERIFY_TOKEN", "are not both set (META_APP_SECRET also works for the secret): Meta's webhook handshake and delivery/template status callbacks will be rejected");
     }
   }
 

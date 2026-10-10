@@ -17,9 +17,13 @@ export class WhatsAppGraphError extends Error {
   ) {
     super(message);
   }
-  /** The access token is no longer valid (revoked, expired, wrong app, or the user removed access). */
+  /**
+   * The access token cannot be used any more: revoked, expired, wrong app, the user removed access (190, HTTP 401), or
+   * it lacks a permission the call needs (10, and the 200-299 range, "API permission denied"). A permission error is
+   * as final as an expired token, so it counts: otherwise every message would go by SMS forever, unflagged.
+   */
   get invalidToken(): boolean {
-    return this.status === 401 || this.code === 190;
+    return this.status === 401 || this.code === 190 || this.code === 10 || (this.code !== null && this.code >= 200 && this.code <= 299);
   }
   /** Registering the number failed because it already has a two-step verification PIN, and not the one we sent. */
   get pinMismatch(): boolean {
@@ -159,16 +163,100 @@ export function isApproved(status: string | undefined): boolean {
   return status === "APPROVED";
 }
 
+/* ---------- Is this token one we can rely on? ---------- */
+
+/** The permissions a token needs to manage templates and send messages for an account. */
+export const REQUIRED_SCOPES = ["whatsapp_business_management", "whatsapp_business_messaging"] as const;
+/** A token that expires sooner than this is refused: it would stop working right after the influencer connects. */
+export const MIN_TOKEN_LIFETIME_DAYS = 7;
+
+export interface TokenInfo {
+  valid: boolean;
+  /** When the token stops working, or null when it does not expire (a System User token). */
+  expiresAt: Date | null;
+  /** The permissions granted, or null when Meta did not list any (so they cannot be checked). */
+  scopes: string[] | null;
+}
+
+/** What Meta's debug_token says about `token`. Needs the Meta app's id and secret, which are not the influencer's. */
+export async function debugToken(token: string, appId: string, appSecret: string, fetchFn?: FetchFn): Promise<TokenInfo> {
+  const qs = new URLSearchParams({ input_token: token });
+  const r = await graph<{ data?: { is_valid?: boolean; expires_at?: number; scopes?: string[]; granular_scopes?: { scope?: string }[] } }>(
+    `/debug_token?${qs}`,
+    { token: `${appId}|${appSecret}` }, // an app access token; the influencer's token is only the thing being inspected
+    fetchFn,
+  );
+  const d = r.data;
+  if (!d) throw new WhatsAppGraphError("Meta did not return details for the token", 0);
+  const scopes = [...new Set([...(d.scopes ?? []), ...(d.granular_scopes ?? []).map((g) => g.scope ?? "").filter(Boolean)])];
+  return {
+    valid: d.is_valid === true,
+    expiresAt: d.expires_at ? new Date(d.expires_at * 1000) : null, // 0 or missing: never
+    scopes: scopes.length ? scopes : null,
+  };
+}
+
+export type TokenCheck = { ok: true; notes: string[] } | { ok: false; message: string };
+
+const ago = (ms: number) => (ms < 48 * 3_600_000 ? `${Math.max(1, Math.round(ms / 3_600_000))} hour(s)` : `${Math.round(ms / 86_400_000)} days`);
+
+/**
+ * Judges what debug_token said: refuses a token that is not valid, lacks a permission, or expires within
+ * MIN_TOKEN_LIFETIME_DAYS (the 24-hour token on the API Setup page); notes (does not refuse) a token that expires later,
+ * or whose permissions Meta did not list. Pure, so it is tested without Graph.
+ */
+export function checkTokenInfo(info: TokenInfo, now = new Date()): TokenCheck {
+  if (!info.valid) return { ok: false, message: "Meta says this access token is not valid (it may be revoked, expired or from another app). Create a new one." };
+  if (info.scopes) {
+    const missing = REQUIRED_SCOPES.filter((s) => !info.scopes!.includes(s));
+    if (missing.length) {
+      return { ok: false, message: `This access token is missing the ${missing.join(" and ")} permission${missing.length > 1 ? "s" : ""}. Generate it again for a System User with both WhatsApp permissions.` };
+    }
+  }
+  const notes: string[] = [];
+  if (!info.scopes) notes.push("Meta did not list this token's permissions, so we could not check them. It needs whatsapp_business_management and whatsapp_business_messaging.");
+  if (info.expiresAt) {
+    const left = info.expiresAt.getTime() - now.getTime();
+    if (left < MIN_TOKEN_LIFETIME_DAYS * 86_400_000) {
+      return { ok: false, message: `This access token expires in ${ago(Math.max(0, left))}. Use a permanent System User token (Business settings, System users, Generate token, expiry Never).` };
+    }
+    notes.push(`This access token expires on ${info.expiresAt.toISOString().slice(0, 10)}. Connect again with a new token before then, or use a permanent System User token.`);
+  }
+  return { ok: true, notes };
+}
+
+/* ---------- The Meta app ---------- */
+
+/**
+ * The Meta app's secret. It is one value that the settings used to call by two names: WHATSAPP_APP_SECRET (verifying
+ * webhook callbacks) and META_APP_SECRET (Embedded Signup). Either name works for both; when both are set each use
+ * keeps the name it always read first.
+ */
+export function webhookAppSecret(env = process.env): string | undefined {
+  return env.WHATSAPP_APP_SECRET || env.META_APP_SECRET || undefined;
+}
+
+export function metaAppSecret(env = process.env): string | undefined {
+  return env.META_APP_SECRET || env.WHATSAPP_APP_SECRET || undefined;
+}
+
+/** The Meta app's id and secret, or null when this server does not have both. */
+export function metaAppCredentials(env = process.env): { appId: string; appSecret: string } | null {
+  const appSecret = metaAppSecret(env);
+  return env.META_APP_ID && appSecret ? { appId: env.META_APP_ID, appSecret } : null;
+}
+
 /* ---------- Embedded Signup ---------- */
 
 export function embeddedSignupConfig(env = process.env): { appId: string; configId: string } | null {
-  return env.META_APP_ID && env.META_ES_CONFIG_ID && env.META_APP_SECRET ? { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID } : null;
+  return env.META_APP_ID && env.META_ES_CONFIG_ID && metaAppSecret(env) ? { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID } : null;
 }
 
 /** Exchanges the code from the Embedded Signup dialog for the business token. */
 export async function exchangeEmbeddedCode(code: string, env = process.env, fetchFn?: FetchFn): Promise<string> {
-  if (!env.META_APP_ID || !env.META_APP_SECRET) throw new WhatsAppGraphError("Meta app credentials are not configured", 0);
-  const qs = new URLSearchParams({ client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, code });
+  const app = metaAppCredentials(env);
+  if (!app) throw new WhatsAppGraphError("Meta app credentials are not configured", 0);
+  const qs = new URLSearchParams({ client_id: app.appId, client_secret: app.appSecret, code });
   const r = await graph<{ access_token?: string }>(`/oauth/access_token?${qs}`, {}, fetchFn);
   if (!r.access_token) throw new WhatsAppGraphError("Meta did not return an access token", 0);
   return r.access_token;

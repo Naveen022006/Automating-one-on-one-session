@@ -86,6 +86,8 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   // The number's own two-step verification PIN, only for a number that already has one. Optional everywhere.
   const [pin, setPin] = useState("");
   const [showPin, setShowPin] = useState(false);
+  // Things the server noticed while connecting that did not stop it (a token it could not check, one that expires later).
+  const [notes, setNotes] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [busy, setBusy] = useState<"manual" | "embedded" | "refresh" | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -140,7 +142,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     e.preventDefault();
     setBusy("manual");
     setErrors({});
-    const r = await api<{ details?: { fieldErrors?: Record<string, string[]> } }>("/api/dashboard/whatsapp", {
+    const r = await api<{ details?: { fieldErrors?: Record<string, string[]> }; connection?: { notes?: string[] } }>("/api/dashboard/whatsapp", {
       method: "POST",
       body: { action: "connect-manual", wabaId: waba, phoneNumberId: phoneId, accessToken: token, pin: pin.trim() || undefined },
     });
@@ -155,6 +157,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     }
     setToken("");
     setPin("");
+    setNotes(r.data.connection?.notes ?? []);
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
   }
@@ -172,7 +175,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       setBusy(null);
       return toast(failure ?? "WhatsApp did not finish creating your account. Please try again.", "error");
     }
-    const r = await api("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId, pin: pin.trim() || undefined } });
+    const r = await api<{ connection?: { notes?: string[] } }>("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId, pin: pin.trim() || undefined } });
     setBusy(null);
     if (!r.ok) {
       // The number already has a two-step PIN we do not know: ask for it, then they connect again.
@@ -183,6 +186,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
     }
     setPin("");
+    setNotes(r.data.connection?.notes ?? []);
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
   }
@@ -256,6 +260,11 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
           </Alert>
         )}
         {connection.status === "ACTIVE" && connection.lastError && <Alert tone="warning">{connection.lastError}</Alert>}
+        {connection.status === "ACTIVE" && notes.map((n) => (
+          <Alert key={n} tone="info">
+            {n}
+          </Alert>
+        ))}
         {!connection.ready && connection.status === "ACTIVE" && (
           <Alert tone="info">
             Meta reviews each message template, usually within minutes to a day. Until every one is approved, customers get their
