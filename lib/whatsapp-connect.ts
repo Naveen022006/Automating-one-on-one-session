@@ -1,4 +1,4 @@
-import { TEMPLATE_SPECS, type TemplateSpec } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, isMetaTemplateName, type TemplateSpec } from "@/lib/message-templates";
 
 /**
  * Meta Graph API calls for connecting an influencer's own WhatsApp Business number: checking credentials, reading and
@@ -90,10 +90,15 @@ export async function listTemplates(wabaId: string, token: string, fetchFn?: Fet
   return (r.data ?? []).map((t) => ({ name: t.name, language: t.language, status: t.status, rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null }));
 }
 
-/** The Graph payload that submits one of our templates for approval as a UTILITY template. */
-export function templatePayload(name: string, spec: TemplateSpec, language: string) {
+/**
+ * The Graph payload that submits one of our templates for approval as a UTILITY template. The name is the Meta name
+ * (spec.name), and is checked here too: Meta refuses anything but lowercase letters, digits and underscores, and a
+ * name it refuses means that template can never be approved.
+ */
+export function templatePayload(spec: TemplateSpec, language: string) {
+  if (!isMetaTemplateName(spec.name)) throw new Error(`"${spec.name}" is not a valid WhatsApp template name (lowercase letters, digits and underscores only)`);
   return {
-    name,
+    name: spec.name,
     language,
     category: "UTILITY",
     components: [{ type: "BODY", text: spec.body, example: { body_text: [spec.examples] } }],
@@ -117,25 +122,26 @@ export interface TemplateSyncResult {
  */
 export async function ensureTemplates(wabaId: string, token: string, language: string, fetchFn?: FetchFn): Promise<TemplateSyncResult> {
   const remote = await listTemplates(wabaId, token, fetchFn);
+  // Keyed by the name Meta knows (spec.name); everything we return is keyed by our own template key.
   const have = new Map(remote.filter((t) => t.language === language).map((t) => [t.name, t]));
   const submitted: string[] = [];
   const failed: { name: string; error: string }[] = [];
 
-  for (const [name, spec] of Object.entries(TEMPLATE_SPECS)) {
-    if (have.has(name)) continue;
+  for (const [key, spec] of Object.entries(TEMPLATE_SPECS)) {
+    if (have.has(spec.name)) continue;
     try {
-      const created = await graph<{ id?: string; status?: string }>(`/${encodeURIComponent(wabaId)}/message_templates`, { method: "POST", token, body: JSON.stringify(templatePayload(name, spec, language)) }, fetchFn);
-      have.set(name, { name, language, status: created.status ?? "PENDING" });
-      submitted.push(name);
+      const created = await graph<{ id?: string; status?: string }>(`/${encodeURIComponent(wabaId)}/message_templates`, { method: "POST", token, body: JSON.stringify(templatePayload(spec, language)) }, fetchFn);
+      have.set(spec.name, { name: spec.name, language, status: created.status ?? "PENDING" });
+      submitted.push(key);
     } catch (e) {
       if (isAlreadyExists(e)) continue;
-      failed.push({ name, error: e instanceof Error ? e.message.slice(0, 200) : "failed" });
+      failed.push({ name: key, error: e instanceof Error ? e.message.slice(0, 200) : "failed" });
     }
   }
   const templates: TemplateSyncResult["templates"] = {};
-  for (const name of Object.keys(TEMPLATE_SPECS)) {
-    const t = have.get(name);
-    if (t) templates[name] = { status: t.status, language, ...(t.rejectedReason ? { reason: t.rejectedReason } : {}) };
+  for (const [key, spec] of Object.entries(TEMPLATE_SPECS)) {
+    const t = have.get(spec.name);
+    if (t) templates[key] = { status: t.status, language, ...(t.rejectedReason ? { reason: t.rejectedReason } : {}) };
   }
   return { templates, submitted, failed };
 }

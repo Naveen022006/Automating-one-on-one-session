@@ -2,8 +2,9 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { prisma } from "../lib/db";
-import { KNOWN_TEMPLATES, TEMPLATE_SPECS, templateParams } from "../lib/message-templates";
+import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, metaTemplateName, templateKeyFromMetaName, templateParams } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
+import { sendWhatsApp } from "../lib/whatsapp";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {
   WhatsAppGraphError,
@@ -42,12 +43,55 @@ test("every template we send has a Meta body that matches its parameters", () =>
   }
 });
 
+test("every template name sent to Meta follows Meta's rule (lowercase letters, digits, underscores), and maps back to our key", () => {
+  // Meta refuses a name like "booking-confirmation", so a hyphenated name means that template can never be approved.
+  assert.equal(isMetaTemplateName("booking-confirmation"), false);
+  assert.equal(isMetaTemplateName("Booking_confirmation"), false);
+  assert.equal(isMetaTemplateName(""), false);
+  const seen = new Set<string>();
+  for (const key of KNOWN_TEMPLATES) {
+    const name = TEMPLATE_SPECS[key].name;
+    assert.match(name, /^[a-z0-9_]{1,512}$/, `${key}: "${name}" is not a name Meta accepts`);
+    assert.equal(name, metaTemplateName(key));
+    assert.equal(templateKeyFromMetaName(name), key, `${key}: the name maps back`);
+    assert.equal(templatePayload(TEMPLATE_SPECS[key], "en").name, name, `${key}: the submitted payload carries the Meta name`);
+    assert.ok(!seen.has(name), `${key}: names are unique`);
+    seen.add(name);
+  }
+  assert.equal(metaTemplateName("booking-confirmation"), "booking_confirmation");
+  assert.equal(metaTemplateName("reminder-24h"), "reminder_24h");
+  assert.equal(metaTemplateName("reminder-15m"), "reminder_15m");
+  assert.equal(templateKeyFromMetaName("not_ours"), null);
+  assert.equal(metaTemplateName("something-else"), "something-else", "a key we do not know passes through");
+  assert.throws(() => templatePayload({ ...TEMPLATE_SPECS.reschedule, name: "re-schedule" }, "en"), /not a valid WhatsApp template name/);
+});
+
 test("the submitted payload is a UTILITY template with examples", () => {
-  const p = templatePayload("booking-confirmation", TEMPLATE_SPECS["booking-confirmation"], "en");
+  const p = templatePayload(TEMPLATE_SPECS["booking-confirmation"], "en");
   assert.equal(p.category, "UTILITY");
-  assert.equal(p.name, "booking-confirmation");
+  assert.equal(p.name, "booking_confirmation");
   assert.equal(p.components[0].type, "BODY");
   assert.equal(p.components[0].example.body_text[0].length, 4);
+});
+
+test("sending uses the Meta name of the template, not our key", async () => {
+  let sent: { template?: { name?: string } } = {};
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    sent = JSON.parse(String(init?.body));
+    return json(200, { messages: [{ id: "wamid.1" }] });
+  }) as unknown as typeof fetch;
+  const prev = { dry: process.env.MESSAGING_DRY_RUN, off: process.env.WHATSAPP_DISABLED };
+  delete process.env.MESSAGING_DRY_RUN;
+  delete process.env.WHATSAPP_DISABLED;
+  try {
+    for (const key of KNOWN_TEMPLATES) {
+      await sendWhatsApp({ to: "+919876543210", template: key, credentials: { token: "t", phoneNumberId: "1" } }, fetchImpl);
+      assert.equal(sent.template?.name, TEMPLATE_SPECS[key].name, key);
+    }
+  } finally {
+    if (prev.dry !== undefined) process.env.MESSAGING_DRY_RUN = prev.dry;
+    if (prev.off !== undefined) process.env.WHATSAPP_DISABLED = prev.off;
+  }
 });
 
 /* ---------- Graph client (no network) ---------- */
@@ -76,15 +120,16 @@ test("ensureTemplates submits only what is missing and survives per-template fai
     if (init?.method === "POST") {
       const name = JSON.parse(String(init.body)).name as string;
       posted.push(name);
-      if (name === "reminder-15m") return json(400, { error: { message: "Invalid parameter", code: 100 } });
+      if (name === "reminder_15m") return json(400, { error: { message: "Invalid parameter", code: 100 } });
       if (name === "cancellation") return json(400, { error: { message: "Content in this language already exists", code: 100, error_subcode: 2388024 } });
       return json(200, { id: `t_${name}`, status: "PENDING" });
     }
-    return json(200, { data: [{ name: "booking-confirmation", language: "en", status: "APPROVED" }, { name: "other-template", language: "en", status: "APPROVED" }] });
+    return json(200, { data: [{ name: "booking_confirmation", language: "en", status: "APPROVED" }, { name: "other-template", language: "en", status: "APPROVED" }] });
   }) as unknown as typeof fetch;
 
   const r = await ensureTemplates("waba1", "tok", "en", fetchImpl);
-  assert.ok(!posted.includes("booking-confirmation"), "an existing template is not submitted again");
+  assert.ok(posted.every(isMetaTemplateName), `every submitted name is one Meta accepts: ${posted.join(", ")}`);
+  assert.ok(!posted.includes("booking_confirmation"), "an existing template is not submitted again");
   assert.deepEqual(r.submitted.sort(), ["reminder-24h", "reschedule"]);
   assert.deepEqual(r.failed.map((f) => f.name), ["reminder-15m"]);
   assert.equal(r.templates["booking-confirmation"].status, "APPROVED");
@@ -228,7 +273,11 @@ test("template status webhooks update the matching account", { skip }, async () 
   await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE" } });
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "reschedule", language: "en", status: "APPROVED" }), true);
   assert.equal((await getConnectionView(a))?.templates.find((t) => t.name === "reschedule")?.status, "APPROVED");
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "booking_confirmation", language: "en", status: "REJECTED", reason: "INVALID_FORMAT" }), true, "Meta's name maps to our key");
+  const confirmation = (await getConnectionView(a))?.templates.find((t) => t.name === "booking-confirmation");
+  assert.deepEqual([confirmation?.status, confirmation?.reason], ["REJECTED", "INVALID_FORMAT"]);
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "not-ours", language: "en", status: "APPROVED" }), false);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "booking-confirmation", language: "en", status: "APPROVED" }), false, "our key is not a name Meta uses");
   assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "reschedule", language: "en", status: "APPROVED" }), false);
 });
 

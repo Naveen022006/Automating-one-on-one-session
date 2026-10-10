@@ -1,7 +1,7 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
-import { TEMPLATE_SPECS } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, templateKeyFromMetaName } from "@/lib/message-templates";
 import {
   WhatsAppGraphError,
   ensureTemplates,
@@ -240,12 +240,14 @@ export async function disconnect(influencerId: string): Promise<boolean> {
 
 /** Applies a `message_template_status_update` webhook event. Unknown accounts and templates are ignored. */
 export async function applyTemplateStatusUpdate(update: { wabaId: string; name: string; language: string; status: string; reason?: string | null }): Promise<boolean> {
-  if (!(update.name in TEMPLATE_SPECS)) return false;
+  // Meta reports its own name (booking_confirmation); we store by our key (booking-confirmation).
+  const key = templateKeyFromMetaName(update.name);
+  if (!key) return false;
   const rows = await prisma.whatsAppConnection.findMany({ where: { wabaId: update.wabaId } });
   let changed = false;
   for (const row of rows) {
     const stored = ((row.templates && typeof row.templates === "object" ? row.templates : {}) as StoredTemplates);
-    stored[update.name] = { status: update.status, ...(update.reason ? { reason: update.reason } : {}) };
+    stored[key] = { status: update.status, ...(update.reason ? { reason: update.reason } : {}) };
     await prisma.whatsAppConnection.update({ where: { id: row.id }, data: { templates: stored } });
     changed = true;
   }

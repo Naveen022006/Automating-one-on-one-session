@@ -1,3 +1,4 @@
+import { metaTemplateName } from "@/lib/message-templates";
 import { toE164 } from "@/lib/phone";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
 
@@ -44,7 +45,7 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
   // SMS fallback (used to verify the fallback path, doc/07 A3.6).
   if (process.env.WHATSAPP_DISABLED === "true") throw new Error("WhatsApp is disabled (WHATSAPP_DISABLED=true)");
   if (process.env.MESSAGING_DRY_RUN === "true") {
-    console.log("[whatsapp:dry-run]", JSON.stringify({ to, template: input.template, components: input.components }));
+    console.log("[whatsapp:dry-run]", JSON.stringify({ to, template: metaTemplateName(input.template), components: input.components }));
     return { providerMessageId: `dry-run-wa-${Date.now()}` };
   }
   const token = input.credentials?.token ?? env("WHATSAPP_TOKEN");
@@ -59,7 +60,8 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
       to,
       type: "template",
       template: {
-        name: input.template,
+        // Our template key (booking-confirmation) to the name Meta has it under (booking_confirmation).
+        name: metaTemplateName(input.template),
         language: { code: input.languageCode ?? "en" },
         components: input.components ?? [],
       },

@@ -4,12 +4,17 @@
  * order. The SMS fallback text is rendered from the same values so both channels say the same thing, with the
  * session time in the customer's timezone (never a raw ISO timestamp).
  *
- *   Template               Body variables ({{n}})               Body submitted to Meta (see TEMPLATE_SPECS)
- *   booking-confirmation   1 link, 2 service, 3 host, 4 time   "Your booking is confirmed. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
- *   reminder-24h           1 link, 2 service, 3 host, 4 time   "Reminder: your session is tomorrow. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you soon."
- *   reminder-15m           1 link, 2 service, 3 host, 4 time   "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
- *   reschedule             1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
- *   cancellation           1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
+ * Two names per template. The KEY (booking-confirmation, ...) is what the rest of the app stores and passes around:
+ * message rows, job data, the stored template status. The META NAME is what is sent to Meta, which only allows
+ * lowercase letters, digits and underscores in a template name. They are translated only at the Graph boundary
+ * (lib/whatsapp.ts, lib/whatsapp-connect.ts, the template status webhook).
+ *
+ *   Key                    Meta name              Body variables ({{n}})               Body submitted to Meta (see TEMPLATE_SPECS)
+ *   booking-confirmation   booking_confirmation   1 link, 2 service, 3 host, 4 time   "Your booking is confirmed. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
+ *   reminder-24h           reminder_24h           1 link, 2 service, 3 host, 4 time   "Reminder: your session is tomorrow. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you soon."
+ *   reminder-15m           reminder_15m           1 link, 2 service, 3 host, 4 time   "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
+ *   reschedule             reschedule             1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
+ *   cancellation           cancellation           1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
  *
  * Meta rejects a template body that starts or ends with a variable, so each body begins and ends with fixed text.
  */
@@ -29,6 +34,8 @@ export interface MessageContext {
 type Field = keyof MessageContext;
 
 interface TemplateDef {
+  /** The name submitted to and sent through Meta (see the header: lowercase letters, digits, underscores). */
+  meta: string;
   params: Field[];
   sms: (c: Required<{ [K in Field]: string }>) => string;
 }
@@ -37,28 +44,50 @@ const LINK_PENDING = "(link coming soon)";
 
 const DEFS: Record<string, TemplateDef> = {
   "booking-confirmation": {
+    meta: "booking_confirmation",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} on ${c.when} is confirmed. Join here: ${c.link}`,
   },
   "reminder-24h": {
+    meta: "reminder_24h",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Reminder: ${c.serviceTitle} with ${c.influencerName} is tomorrow, ${c.when}. Join link: ${c.link}`,
   },
   "reminder-15m": {
+    meta: "reminder_15m",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `${c.serviceTitle} with ${c.influencerName} starts in 15 minutes (${c.when}). Join here: ${c.link}`,
   },
   reschedule: {
+    meta: "reschedule",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} was moved to ${c.when}. Updated link: ${c.link}`,
   },
   cancellation: {
+    meta: "cancellation",
     params: ["serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} on ${c.when} was cancelled. Any refund follows our policy.`,
   },
 };
 
 export const KNOWN_TEMPLATES = Object.keys(DEFS);
+
+/** Meta's rule for a template name: lowercase letters, digits and underscores, at most 512 characters. */
+export const META_TEMPLATE_NAME = /^[a-z0-9_]{1,512}$/;
+
+export function isMetaTemplateName(name: string): boolean {
+  return META_TEMPLATE_NAME.test(name);
+}
+
+/** The name Meta knows a template by. A key we do not know is passed through unchanged. */
+export function metaTemplateName(key: string): string {
+  return DEFS[key]?.meta ?? key;
+}
+
+/** Back from Meta's name (as seen in the template list and status webhooks) to our key, or null if it is not one of ours. */
+export function templateKeyFromMetaName(name: string): string | null {
+  return Object.keys(DEFS).find((key) => DEFS[key].meta === name) ?? null;
+}
 
 /**
  * WhatsApp rejects body parameters that are empty or contain newlines, tabs or more than four consecutive
@@ -101,6 +130,8 @@ export function smsBody(template: string, c: MessageContext): string {
 }
 
 export interface TemplateSpec {
+  /** The name to submit to Meta (metaTemplateName(key)). */
+  name: string;
   /** Body text with {{n}} placeholders, in the same order as the parameters sent by whatsappComponents(). */
   body: string;
   /** One realistic example per variable (Meta requires examples for review). */
@@ -122,7 +153,7 @@ const BODIES: Record<string, string> = {
   cancellation: "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy.",
 };
 
-/** What gets submitted to each influencer's WhatsApp Business Account for approval. */
+/** What gets submitted to each influencer's WhatsApp Business Account for approval, keyed by our template key. */
 export const TEMPLATE_SPECS: Record<string, TemplateSpec> = Object.fromEntries(
-  Object.entries(DEFS).map(([name, d]) => [name, { body: BODIES[name], examples: d.params.map((f) => EXAMPLES[f]) }]),
+  Object.entries(DEFS).map(([key, d]) => [key, { name: d.meta, body: BODIES[key], examples: d.params.map((f) => EXAMPLES[f]) }]),
 );
