@@ -1057,6 +1057,32 @@ test("template status webhooks update the matching account", { skip }, async () 
   assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "sa_reschedule", language: "en", status: "APPROVED" }), false);
 });
 
+test("a webhook does not turn a template we refused to adopt into one we send", { skip }, async () => {
+  const waba = String(Number(WABA) + 2); // its own account, so the other tests' connections are not touched
+  const clash = "A template named \"sa_reschedule\" already exists on your WhatsApp account and is not ours: it has 1 variable and our message needs 4.";
+  const templates = {
+    reschedule: { status: "CONFLICT", language: "en", reason: clash },
+    cancellation: { status: "PENDING", language: "en" },
+  };
+  await connectManual(b, { wabaId: waba, phoneNumberId: String(Number(PHONE) + 33), accessToken: "EAAG-conflict-token-for-tests-1234567890" }, fakeDeps({ ensureTemplates: async () => ({ templates, submitted: [], failed: [] }) }));
+  const status = async (name: string) => (await getConnectionView(b))?.templates.find((t) => t.name === name);
+
+  // Meta approves (or reinstates, or flags) the other person's sa_reschedule: it is still not ours to send with.
+  for (const s of ["APPROVED", "FLAGGED"]) {
+    assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "sa_reschedule", language: "en", status: s }), false, s);
+    assert.deepEqual([(await status("reschedule"))?.status, (await status("reschedule"))?.reason], ["CONFLICT", clash]);
+  }
+  assert.equal((await getConnectionView(b))?.ready, false);
+  // Everything else still follows the webhook.
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "sa_cancellation", language: "en", status: "APPROVED" }), true);
+  assert.equal((await status("cancellation"))?.status, "APPROVED");
+
+  // The next sync reads the template again and clears the conflict once it says what ours says.
+  await refreshTemplates(b, fakeDeps({ ensureTemplates: async () => ({ templates: { reschedule: { status: "APPROVED", language: "en" } }, submitted: [], failed: [] }) }));
+  assert.equal((await status("reschedule"))?.status, "APPROVED");
+  await disconnect(b);
+});
+
 test("a template status update for another language of the same name is ignored", { skip }, async () => {
   const lang = process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
   const other = lang === "hi" ? "ta" : "hi";

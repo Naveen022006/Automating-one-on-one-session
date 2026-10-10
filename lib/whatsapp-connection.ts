@@ -550,6 +550,9 @@ export async function applyTemplateStatusUpdate(update: { wabaId: string; name: 
   let changed = false;
   for (const row of rows) {
     const stored = ((row.templates && typeof row.templates === "object" ? row.templates : {}) as StoredTemplates);
+    // A template we refused to adopt (a wrong number of variables under our name) stays refused: Meta approving it says
+    // nothing about our parameters fitting it. The next sync, which reads its text again, is what clears the conflict.
+    if (stored[key]?.status === "CONFLICT") continue;
     stored[key] = { status: update.status, language: update.language, ...(update.reason ? { reason: update.reason } : {}) };
     await prisma.whatsAppConnection.update({ where: { id: row.id }, data: { templates: stored } });
     changed = true;
