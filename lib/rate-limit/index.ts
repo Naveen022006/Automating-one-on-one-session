@@ -105,6 +105,13 @@ export async function hit(rule: RateLimitRule, identifier: string): Promise<Rate
 }
 
 export function tooManyRequests(result: RateLimitResult, message = "Too many requests. Please wait and try again."): NextResponse {
+  if (result.degraded) {
+    // A fail-closed rule with no working store: refuse, but say it is the check that is down, not the caller's volume.
+    return NextResponse.json(
+      { error: "This check is temporarily unavailable. Please try again in a few minutes.", retryAfterSec: result.retryAfterSec },
+      { status: 503, headers: rateLimitHeaders(result) },
+    );
+  }
   return NextResponse.json(
     { error: message, retryAfterSec: result.retryAfterSec },
     { status: 429, headers: rateLimitHeaders(result) },

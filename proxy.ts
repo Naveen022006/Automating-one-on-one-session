@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { isCsrfExempt, isSameOriginRequest } from "@/lib/auth/csrf";
 import { rateLimitHeaders, type RateLimitResult } from "@/lib/rate-limit/core";
-import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule } from "@/lib/rate-limit";
+import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule, tooManyRequests } from "@/lib/rate-limit";
 
 /**
  * Next.js 16 proxy (formerly middleware; runs on the Node.js runtime). The single request boundary for:
@@ -70,11 +70,9 @@ async function handleApi(req: NextRequest): Promise<NextResponse> {
   const result = strictest([global, route]);
 
   if (result && !result.allowed) {
-    console.warn(`[rate-limit] 429 ${method} ${pathname} rule=${route && !route.allowed ? rule?.name : "api"} key=${routeId}`);
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a moment and try again.", retryAfterSec: result.retryAfterSec },
-      { status: 429, headers: rateLimitHeaders(result) },
-    );
+    console.warn(`[rate-limit] ${result.degraded ? 503 : 429} ${method} ${pathname} rule=${route && !route.allowed ? rule?.name : "api"} key=${routeId}`);
+    // 429, or 503 when a fail-closed rule (administrator code checks) could not be evaluated because no store is up.
+    return tooManyRequests(result, "Too many requests. Please wait a moment and try again.");
   }
 
   const res = NextResponse.next();

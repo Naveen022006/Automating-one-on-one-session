@@ -26,6 +26,12 @@ export interface RateLimitRule {
   /** Maximum requests allowed per window. */
   limit: number;
   windowMs: number;
+  /**
+   * What to do when every store is down. Default (false): let the request through, because availability matters more
+   * than strict limiting for most routes. true: refuse it. Set on rules that are the only brake on guessing a secret
+   * (administrator code and password re-entry), where "limiter down" must not mean "unlimited guesses".
+   */
+  failClosed?: boolean;
 }
 
 export interface RateLimitResult {
@@ -37,8 +43,10 @@ export interface RateLimitResult {
   resetSec: number;
   /** Seconds the client should wait before retrying (only meaningful when !allowed). */
   retryAfterSec: number;
-  /** Which store answered, or "none" when every store failed and the request was let through. */
+  /** Which store answered, or "none" when every store failed (the request was let through, or refused if `failClosed`). */
   store: string;
+  /** Every store failed and the rule is `failClosed`, so the request was refused for lack of an answer, not for volume. */
+  degraded?: boolean;
 }
 
 /** Pure: turns raw bucket counts into an allow/deny decision. Exported for tests. */
@@ -77,7 +85,8 @@ export function windowStartFor(now: number, windowMs: number): number {
  * Checks and records one hit for `identifier` under `rule`. Never throws: if the store fails the request is
  * allowed (fail open) and the failure is reported through `onError`. Availability of the booking/payment flow
  * matters more than strict limiting during a Redis + database outage, and every sensitive endpoint has its own
- * defence (password hashing cost, signed tokens, payment provider checks).
+ * defence (password hashing cost, signed tokens, payment provider checks). A rule marked `failClosed` is the
+ * exception: it refuses the request (result.degraded) when no store can answer.
  */
 export async function consume(
   store: RateLimitStore,
@@ -93,14 +102,11 @@ export async function consume(
     return { ...evaluate(rule, counts, now, windowStart), store: store.name };
   } catch (e) {
     opts.onError?.(e);
-    return {
-      allowed: true,
-      limit: rule.limit,
-      remaining: rule.limit,
-      resetSec: Math.max(1, Math.ceil((windowStart + rule.windowMs - now) / 1000)),
-      retryAfterSec: 0,
-      store: "none",
-    };
+    const resetSec = Math.max(1, Math.ceil((windowStart + rule.windowMs - now) / 1000));
+    if (rule.failClosed) {
+      return { allowed: false, limit: rule.limit, remaining: 0, resetSec, retryAfterSec: Math.min(resetSec, 30), store: "none", degraded: true };
+    }
+    return { allowed: true, limit: rule.limit, remaining: rule.limit, resetSec, retryAfterSec: 0, store: "none" };
   }
 }
 

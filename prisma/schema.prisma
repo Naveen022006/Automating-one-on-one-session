@@ -446,6 +446,14 @@ model AdminUser {
   totpEnabledAt DateTime? @map("totp_enabled_at")
   totpLastStep  Int?      @map("totp_last_step")
 
+  // Durable lockout for code guessing (login second step and the Security page), independent of the rate limiter:
+  // every code attempt is counted atomically; after 10 without a success the account's authenticator codes are refused
+  // until `mfaLockedUntil` (15 min, then x4 per repeat, at most 24 h). Recovery codes still work while locked.
+  // A success resets all three.
+  mfaFailedCount Int       @default(0) @map("mfa_failed_count")
+  mfaLockLevel   Int       @default(0) @map("mfa_lock_level")
+  mfaLockedUntil DateTime? @map("mfa_locked_until")
+
   sessions      AdminSession[]
   audits        AdminAuditLog[]
   recoveryCodes AdminRecoveryCode[]

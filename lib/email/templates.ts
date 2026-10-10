@@ -265,3 +265,49 @@ export function requestEmail(kind: RequestEmailKind, d: RequestEmailData): Rende
       });
   }
 }
+
+/** Security notices to an administrator about their own account. Pure; every field is HTML-escaped by renderEmail. */
+export type AdminSecurityEvent = "2fa-enabled" | "2fa-disabled" | "recovery-regenerated" | "mfa-locked";
+
+export function adminSecurityMessage(
+  name: string,
+  event: AdminSecurityEvent,
+  d: { at: Date; ip?: string | null; lockedUntil?: Date | null },
+): RenderedEmail {
+  const first = name.split(" ")[0] || name;
+  const details: [string, string][] = [["When", d.at.toUTCString()], ...(d.ip ? ([["From IP address", d.ip]] as [string, string][]) : [])];
+  const notYou = "If this was not you, someone has your password and a signed-in session. Change your password now and ask the platform owner to review the audit log.";
+  switch (event) {
+    case "2fa-enabled":
+      return renderEmail(`Two-factor authentication was turned on for your ${BRAND_NAME} admin account`, {
+        preheader: "Your administrator sign-in now asks for a code.",
+        heading: "Two-factor authentication is on",
+        paragraphs: [`Hi ${first}, two-factor authentication was just turned on for your administrator account. Your other sessions were signed out.`, notYou],
+        details,
+      });
+    case "2fa-disabled":
+      return renderEmail(`Two-factor authentication was turned off for your ${BRAND_NAME} admin account`, {
+        preheader: "Your administrator sign-in no longer asks for a code.",
+        heading: "Two-factor authentication is off",
+        paragraphs: [`Hi ${first}, two-factor authentication was just turned off for your administrator account. Your other sessions were signed out.`, notYou],
+        details,
+      });
+    case "recovery-regenerated":
+      return renderEmail(`New recovery codes for your ${BRAND_NAME} admin account`, {
+        preheader: "Your previous recovery codes no longer work.",
+        heading: "New recovery codes were generated",
+        paragraphs: [`Hi ${first}, a new set of recovery codes was just generated for your administrator account. The previous codes no longer work.`, notYou],
+        details,
+      });
+    case "mfa-locked":
+      return renderEmail(`Authenticator sign-in is locked for your ${BRAND_NAME} admin account`, {
+        preheader: "Too many incorrect codes were entered.",
+        heading: "Authenticator codes are locked for now",
+        paragraphs: [
+          `Hi ${first}, too many incorrect authentication codes were entered for your administrator account, so authenticator codes are refused${d.lockedUntil ? ` until ${d.lockedUntil.toUTCString()}` : " for a while"}. You can still sign in with a recovery code.`,
+          "If you did not try to sign in, someone knows your password. Change it now and tell the platform owner.",
+        ],
+        details,
+      });
+  }
+}
