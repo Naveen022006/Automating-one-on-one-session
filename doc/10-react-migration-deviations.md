@@ -102,4 +102,6 @@ stops. Group branches: read sections 1 and 3 before relying on the plan's wordin
 | F14 endpoints A1 to A4, view functions, `jsonView`, `jsonify`, `safe-next-path`, layout refactors, `requireAdminMfa(opts)`, rate-limit rules | done |
 | F15 `scripts/spa-postbuild.mjs`, `scripts/spa-smoke.mjs` | done |
 | F16 Dockerfile, compose, CI, README, `doc/08-deployment.md`, `.env.example` | done |
-| F tests | done (see the final report for counts) |
+| F tests | done |
+| Merge of `main` (Google and WhatsApp connection fixes) | done, no conflicts; typecheck, build, smoke and the touched tests re-run on the merged tree |
+| Verification (merged tree) | typecheck both projects, `npm run build` (guard + secret scan + Next), smoke 207/207 with `SPA_GROUPS=all`, 108/108 with it empty (`--old`), 137 SPA/rate-limit/env tests, `spa-session-endpoints` 5/5, `admin-mfa-routes` 16/16. Full suite before the merge: 495 of 498 (the 2 hold-concurrency tests need a bigger pool, 1 payment-recovery timing test passes alone). Docker image build: not completed, `npm ci` inside the build stalled on this machine's network twice; the standalone server (`HOSTNAME=0.0.0.0`) was exercised locally instead (206/206, no database) |
