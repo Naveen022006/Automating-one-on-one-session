@@ -855,6 +855,35 @@ test("a saved PIN that can no longer be read asks the influencer, instead of cra
   await disconnect(b);
 });
 
+test("after a successful reset, a failure of the second register is reported as itself, not as the old PIN mismatch", { skip }, async () => {
+  const phone = String(Number(PHONE) + 52);
+  const meta = strictMeta({ [phone]: "777777" });
+  let registers = 0;
+  const deps = fakeDeps({
+    ...meta.deps,
+    registerNumber: async (p, t, pin) => {
+      if (++registers === 2) {
+        meta.calls.push(`register:${pin}`);
+        throw new WhatsAppGraphError("Service temporarily unavailable", 503, 133004);
+      }
+      return meta.deps.registerNumber(p, t, pin);
+    },
+  });
+  await assert.rejects(
+    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, resetPin: true }, deps, NO_ENV),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field !== "pin" && e.status === 502 && /Service temporarily unavailable/.test(e.message) && !/PIN/.test(e.message),
+  );
+  assert.deepEqual(meta.calls.map((c) => c.split(":")[0]), ["register", "setpin", "register"], "the reset did happen");
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0);
+
+  // The PIN we set is saved, so trying again once Meta is back works with no further reset.
+  const pin = (await storedPin(phone))!.pin;
+  assert.equal(meta.onNumber.get(phone), pin);
+  assert.equal((await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), NO_ENV)).status, "ACTIVE");
+  assert.deepEqual(meta.calls.map((c) => c.split(":")[0]), ["register", "setpin", "register", "register"]);
+  await disconnect(b);
+});
+
 test("a number registered by an older version with the shared WHATSAPP_REGISTRATION_PIN is recognised, not reset", { skip }, async () => {
   const phone = String(Number(PHONE) + 45);
   const meta = strictMeta({ [phone]: "654321" });

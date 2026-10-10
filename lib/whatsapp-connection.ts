@@ -290,11 +290,15 @@ async function registerWithPin(
     if (!(opts.resetPin && plan.generated)) throw registrationError(first, false, plan.generated);
     try {
       await deps.setPin(phoneNumberId, token, plan.pin);
+    } catch {
+      // The reset was refused: the problem is still the original one (the reset was already chosen, so it is not offered again).
+      throw registrationError(first, false, false);
+    }
+    try {
       await deps.registerNumber(phoneNumberId, token, plan.pin);
     } catch (second) {
-      // The reset did not work (or Meta still refuses): tell the influencer about the original problem, not the retry.
-      // (The reset was already chosen, so it is not offered again.)
-      throw registrationError(second instanceof WhatsAppGraphError && (second.pinMismatch || second.pinLocked) ? second : first, false, false);
+      // The PIN WAS reset, so what went wrong now is something else (Meta busy, a timeout): say that, not the old mismatch.
+      throw registrationError(second, false, false);
     }
   }
 }
