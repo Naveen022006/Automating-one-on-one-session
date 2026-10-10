@@ -11,7 +11,7 @@ import { checkColumnCoverage, discoverEncryptedColumns, rotateEncryptedColumns, 
 import { ENCRYPTED_COLUMNS, prismaRotationDb } from "../lib/key-rotation-db";
 import type { EncryptedColumn } from "../lib/key-rotation";
 import { payoutAad, payoutInputSchema, revealPayoutAccount, savePayoutAccount } from "../lib/payout-account";
-import { resolveSendCredentials, whatsappTokenAad } from "../lib/whatsapp-connection";
+import { resolveSendCredentials, whatsappLegacyPinAad, whatsappPinAad, whatsappTokenAad } from "../lib/whatsapp-connection";
 import { COL_A, COL_B, FakeDb, seed } from "./helpers/fake-rotation-db";
 
 /** An empty environment for resolveSendCredentials (no MESSAGING_DRY_RUN, no platform fallback). */
@@ -309,6 +309,19 @@ test("a column whose AAD is its own row id rotates and verifies like any other (
   assert.deepEqual(verified.totals, { scanned: 1, current: 1, previousOnly: 0, unreadable: 0 });
 });
 
+test("a WhatsApp PIN, bound to its phone number (not to a connection), rotates and verifies like any other column", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const col = ENCRYPTED_COLUMNS.find((c) => c.name === "whatsapp_registration_pins.pin_enc")!;
+  const db = new FakeDb();
+  db.set(col, "109283746501928", "109283746501928", encryptSecret("482913", whatsappPinAad("109283746501928"), oldKey));
+  const report = await rotateEncryptedColumns({ db, columns: [col], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 1, rotated: 1, skipped: 0, failed: 0 });
+  assert.equal(decryptSecret(db.get(col, "109283746501928")!, whatsappPinAad("109283746501928"), newKey), "482913");
+  const verified = await verifyEncryptedColumns({ db, columns: [col], currentKey: newKey, previousKey: oldKey });
+  assert.deepEqual(verified.totals, { scanned: 1, current: 1, previousOnly: 0, unreadable: 0 });
+});
+
 /* ---------- verification (decrypt only) ---------- */
 
 test("verifyEncryptedColumns counts what the current key reads, what only the previous key reads, and what nothing reads", async () => {
@@ -365,7 +378,13 @@ before(async () => {
   await savePayoutAccount(a, bank);
   await savePayoutAccount(b, upi);
   await prisma.whatsAppConnection.create({
-    data: { influencerId: a, wabaId: "111111", phoneNumberId: `9${run}`, tokenEnc: encryptSecret("wa-token-A", whatsappTokenAad(a)) },
+    data: {
+      influencerId: a,
+      wabaId: "111111",
+      phoneNumberId: `9${run}`,
+      tokenEnc: encryptSecret("wa-token-A", whatsappTokenAad(a)),
+      registrationPinEnc: encryptSecret("482913", whatsappLegacyPinAad(a)),
+    },
   });
 });
 
@@ -383,8 +402,8 @@ test("integration: dry run counts our rows, changes nothing, and proves every AA
     oldKey,
     newKey: parseKeyBytes(newKey)!,
   });
-  // google x2, bank account number x1, upi x1, whatsapp x1: exactly our rows, so the influencer filter works.
-  assert.deepEqual(report.totals, { scanned: 5, rotated: 5, skipped: 0, failed: 0 }, JSON.stringify(report.failures));
+  // google x2, bank account number x1, upi x1, whatsapp token x1, whatsapp PIN x1: exactly our rows, so the influencer filter works.
+  assert.deepEqual(report.totals, { scanned: 6, rotated: 6, skipped: 0, failed: 0 }, JSON.stringify(report.failures));
   assert.deepEqual(await prisma.payoutAccount.findUnique({ where: { influencerId: a } }), payoutBefore);
 });
 
@@ -410,7 +429,7 @@ test("integration: apply rotates our rows to the new key, keeps updated_at, and 
   const opts = { db: prismaRotationDb(prisma, { ownerIds: ids }), columns: ENCRYPTED_COLUMNS, oldKey, newKey: nk, apply: true };
 
   const first = await rotateEncryptedColumns(opts);
-  assert.deepEqual(first.totals, { scanned: 5, rotated: 5, skipped: 0, failed: 0 }, JSON.stringify(first.failures));
+  assert.deepEqual(first.totals, { scanned: 6, rotated: 6, skipped: 0, failed: 0 }, JSON.stringify(first.failures));
 
   // Stored values now decrypt with the new key and the app's own AAD, and no longer with the old key.
   const g = await prisma.googleToken.findUniqueOrThrow({ where: { influencerId: a } });
@@ -422,6 +441,7 @@ test("integration: apply rotates our rows to the new key, keeps updated_at, and 
   assert.equal(decryptSecret(pb.upiIdEnc!, payoutAad(b, "upi"), nk), "ravi@okhdfcbank");
   const w = await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: a } });
   assert.equal(decryptSecret(w.tokenEnc, whatsappTokenAad(a), nk), "wa-token-A");
+  assert.equal(decryptSecret(w.registrationPinEnc!, whatsappLegacyPinAad(a), nk), "482913");
 
   // Rotating a key is not an edit: updated_at is untouched, and nothing but the ciphertext changed.
   assert.equal(p.updatedAt.getTime(), payoutBefore!.updatedAt.getTime());
@@ -442,5 +462,5 @@ test("integration: apply rotates our rows to the new key, keeps updated_at, and 
   });
 
   const second = await rotateEncryptedColumns(opts);
-  assert.deepEqual(second.totals, { scanned: 5, rotated: 0, skipped: 5, failed: 0 });
+  assert.deepEqual(second.totals, { scanned: 6, rotated: 0, skipped: 6, failed: 0 });
 });

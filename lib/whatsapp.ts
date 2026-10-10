@@ -1,7 +1,7 @@
+import { metaTemplateName } from "@/lib/message-templates";
 import { toE164 } from "@/lib/phone";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
-
-const GRAPH_API = "https://graph.facebook.com/v21.0";
+import { graphBase } from "@/lib/whatsapp-graph-version";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -44,13 +44,13 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
   // SMS fallback (used to verify the fallback path, doc/07 A3.6).
   if (process.env.WHATSAPP_DISABLED === "true") throw new Error("WhatsApp is disabled (WHATSAPP_DISABLED=true)");
   if (process.env.MESSAGING_DRY_RUN === "true") {
-    console.log("[whatsapp:dry-run]", JSON.stringify({ to, template: input.template, components: input.components }));
+    console.log("[whatsapp:dry-run]", JSON.stringify({ to, template: metaTemplateName(input.template), components: input.components }));
     return { providerMessageId: `dry-run-wa-${Date.now()}` };
   }
   const token = input.credentials?.token ?? env("WHATSAPP_TOKEN");
   const phoneNumberId = input.credentials?.phoneNumberId ?? env("WHATSAPP_PHONE_NUMBER_ID");
 
-  const res = await fetchFn(`${GRAPH_API}/${phoneNumberId}/messages`, {
+  const res = await fetchFn(`${graphBase()}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(15_000),
@@ -59,7 +59,8 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
       to,
       type: "template",
       template: {
-        name: input.template,
+        // Our template key (booking-confirmation) to the name Meta has it under (booking_confirmation).
+        name: metaTemplateName(input.template),
         language: { code: input.languageCode ?? "en" },
         components: input.components ?? [],
       },

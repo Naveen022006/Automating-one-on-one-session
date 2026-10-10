@@ -83,18 +83,24 @@ Manual steps (cannot be coded; owner or implementer does them in Meta's UI):
    `WHATSAPP_PHONE_NUMBER_ID`.
 3. Webhook: callback URL `<APP_URL>/api/webhooks/whatsapp`, verify token → `WHATSAPP_WEBHOOK_VERIFY_TOKEN`, subscribe to
    `messages`. App secret → `WHATSAPP_APP_SECRET` (used to verify `X-Hub-Signature-256`).
-4. Submit these **utility** templates for approval (language `en`; approval takes hours to days). The template names are
-   fixed by the code, so they must match exactly:
+4. The five **utility** templates (language `en`) are submitted **automatically** to each influencer's own WhatsApp Business
+   Account when they connect, and re-checked every 30 minutes until approved (approval takes minutes to a day); nothing needs
+   submitting by hand except on the platform's own account (`WHATSAPP_PLATFORM_FALLBACK`, testing only). The names are fixed
+   by the code and follow Meta's rule (lowercase letters, digits and underscores only, so no hyphens) with a `sa_` prefix so
+   they cannot clash with templates the account already has. If you do submit them by hand, use these exact Meta names and
+   the same number of variables in the same order. A template already on an account under one of these names is used only if
+   it takes the same number of variables as ours (the wording is not compared); otherwise it is reported ("Name already used") and not used.
 
-| Template name (code) | Purpose | Body variables (order matters) | Suggested body |
-|---|---|---|---|
-| `booking-confirmation` | After payment, with the link | 1 link, 2 service, 3 host, 4 time | "Your {{2}} session with {{3}} on {{4}} is confirmed. Join here: {{1}}" |
-| `reminder-24h` | 24 hours before | 1 link, 2 service, 3 host, 4 time | "Reminder: {{2}} with {{3}} is tomorrow, {{4}}. Join link: {{1}}" |
-| `reminder-15m` | 15 minutes before | 1 link, 2 service, 3 host, 4 time | "{{2}} with {{3}} starts in 15 minutes ({{4}}). Join here: {{1}}" |
-| `reschedule` | After a reschedule | 1 link, 2 service, 3 host, 4 time | "Your {{2}} session with {{3}} was moved to {{4}}. Updated link: {{1}}" |
-| `cancellation` | After a cancel | 1 service, 2 host, 3 time | "Your {{1}} session with {{2}} on {{3}} was cancelled. Any refund follows our policy." |
+| Key (code) | Meta name | Purpose | Body variables (order matters) | Body submitted |
+|---|---|---|---|---|
+| `booking-confirmation` | `sa_booking_confirmation` | After payment, with the link | 1 link, 2 service, 3 host, 4 time | "Your booking is confirmed. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there." |
+| `reminder-24h` | `sa_reminder_24h` | 24 hours before | 1 link, 2 service, 3 host, 4 time | "Reminder: your session is tomorrow. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you soon." |
+| `reminder-15m` | `sa_reminder_15m` | 15 minutes before | 1 link, 2 service, 3 host, 4 time | "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there." |
+| `reschedule` | `sa_reschedule` | After a reschedule | 1 link, 2 service, 3 host, 4 time | "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then." |
+| `cancellation` | `sa_cancellation` | After a cancel | 1 service, 2 host, 3 time | "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy." |
 
-(Updated in Phase 7 when the extra variables were added; the source of truth is `lib/message-templates.ts`.)
+(The keys are what the app stores and passes around; the Meta name is derived from the key only when talking to Meta. The
+source of truth is `lib/message-templates.ts`, and a body never starts or ends with a variable, which Meta rejects.)
 
 5. **Improve the code** (small, in this part): every template currently receives only the link as `{{1}}`. Add the
    service title, influencer name and the session time **formatted in the customer's timezone** (`booking.customerTz`) as

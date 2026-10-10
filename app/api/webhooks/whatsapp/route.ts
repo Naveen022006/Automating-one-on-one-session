@@ -7,6 +7,7 @@ import {
   verifyMetaSignature,
 } from "@/lib/whatsapp-webhook";
 import { applyTemplateStatusUpdate } from "@/lib/whatsapp-connection";
+import { webhookAppSecret } from "@/lib/whatsapp-connect";
 
 // Meta's verification handshake: echo hub.challenge back as plain text when the verify token matches.
 export async function GET(req: Request) {
@@ -33,7 +34,7 @@ export async function POST(req: Request) {
     !verifyMetaSignature(
       raw,
       req.headers.get("x-hub-signature-256"),
-      process.env.WHATSAPP_APP_SECRET,
+      webhookAppSecret(), // WHATSAPP_APP_SECRET, or META_APP_SECRET: the same Meta app secret under either name
     )
   ) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });

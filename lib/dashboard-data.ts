@@ -136,7 +136,7 @@ export async function listSessions(influencerId: string, view: SessionView, opts
 }
 
 export interface AttentionItem {
-  kind: "google" | "booking-request" | "failed-message" | "needs-refund" | "booking-error" | "verify-email";
+  kind: "google" | "whatsapp" | "booking-request" | "failed-message" | "needs-refund" | "booking-error" | "verify-email";
   title: string;
   detail: string;
   href: string;
@@ -153,7 +153,7 @@ export interface Overview {
 export async function getOverview(influencerId: string, emailVerified: boolean, now = new Date()): Promise<Overview> {
   const weekAhead = new Date(now.getTime() + 7 * 86_400_000);
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const [upcoming, monthPayments, google, failedMessages, refunds, errored, requests] = await Promise.all([
+  const [upcoming, monthPayments, google, whatsapp, failedMessages, refunds, errored, requests] = await Promise.all([
     prisma.session.findMany({
       where: { service: { influencerId }, startTime: { lt: weekAhead }, endTime: { gte: now }, bookings: { some: { status: { in: ["PAID", "SCHEDULED"] } } } },
       include: sessionInclude,
@@ -162,6 +162,7 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
     }),
     earningsPayments(influencerId, monthStart, null),
     getGoogleStatus(influencerId),
+    prisma.whatsAppConnection.findFirst({ where: { influencerId, status: "ERROR" }, select: { lastError: true } }),
     prisma.message.count({
       where: { status: "FAILED", updatedAt: { gte: new Date(now.getTime() - 14 * 86_400_000) }, booking: { session: { service: { influencerId } } } },
     }),
@@ -183,6 +184,14 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
           ? `Google stopped accepting the connection${google.reason ? `: ${google.reason}` : ""}. Paid bookings are waiting for their Meet links.`
           : "Meet links are created on your Google Calendar. Connect it before you take bookings.",
       href: "/dashboard/settings#google",
+    });
+  }
+  if (whatsapp) {
+    attention.push({
+      kind: "whatsapp",
+      title: "Reconnect WhatsApp",
+      detail: `WhatsApp stopped accepting the connection${whatsapp.lastError ? `: ${whatsapp.lastError}` : ""}. Customer messages are going out by SMS until you reconnect.`,
+      href: "/dashboard/settings#whatsapp",
     });
   }
   if (requests > 0) {

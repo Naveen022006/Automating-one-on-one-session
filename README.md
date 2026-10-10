@@ -225,12 +225,49 @@ approved as a Tech Provider) or by entering their WhatsApp Business Account id, 
 token. Credentials are verified against Meta before saving (the number must belong to the account) and the token is stored
 AES-256-GCM encrypted and never shown again.
 
-On connect we submit our five message templates (booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation)
-to the influencer's account for approval and keep their status current from Meta's template webhook and a Refresh button;
-the dashboard shows which are approved. Until a template is approved, or if there is no healthy connection, the message goes
-by SMS. A token Meta rejects flags the connection once and alerts the influencer. Set `WHATSAPP_PLATFORM_FALLBACK=true` only
-for testing with the platform's own number. Embedded Signup could not be exercised without an approved Meta app: the manual
-connect path is verified against Meta's real Graph API.
+On connect we submit our five message templates to the influencer's account for approval. Meta only accepts lowercase
+letters, digits and underscores in a template name, and a plain name could clash with a template the influencer already has,
+so they go out as `sa_booking_confirmation`, `sa_reminder_24h`, `sa_reminder_15m`, `sa_reschedule` and `sa_cancellation`;
+inside the app the keys stay `booking-confirmation`, `reminder-24h`, `reminder-15m`, `reschedule` and `cancellation`
+(`lib/message-templates.ts` translates at the Graph boundary). A template that already has one of those names is adopted only
+if it takes the same number of variables as ours (the wording is not compared, so rewording a message never disables approved
+templates); otherwise the card says so (status "Name already used") and it is not used. Statuses are kept current from Meta's template
+webhook, a "Check template status" button, and a worker job (`worker/whatsapp-sync.ts`) that asks Meta every 30 minutes
+about connections that still have an unapproved template. The dashboard shows which are approved. A message whose template is
+not approved yet, or for an influencer with no healthy connection, goes straight to SMS (no WhatsApp attempt is made or
+recorded). A token Meta rejects, including a permission error, flags the connection once and alerts the influencer, and the
+dashboard overview lists it until they reconnect (Reconnect in the settings card, no need to disconnect first). Set
+`WHATSAPP_PLATFORM_FALLBACK=true` only for testing with the platform's own number.
+
+- **Webhooks.** Both ways of connecting call `subscribed_apps` (best effort) and then read the list back: "subscribed" is
+  recorded only when our own Meta app (`META_APP_ID`) is in it. A hand-pasted token usually belongs to the influencer's OWN Meta
+  app, which subscribes theirs and sends us nothing; then the card says live updates are not available and the 30-minute sync
+  keeps template statuses fresh. The result is saved and shown, and Check template status tries again.
+- **Pasted tokens are checked.** We ask Meta's `debug_token` about the token, as our app when `META_APP_ID` and the app secret
+  are configured and, when our app cannot inspect it (a token of the influencer's own app), by having the token inspect
+  itself. We refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within
+  7 days (the 24-hour token on the API Setup page); a token that expires later, or one neither way could check, connects with
+  a note. Use a System User token that never expires.
+- **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN. Meta keeps the PIN on the number, so
+  it is saved (AES-GCM encrypted, bound to the phone number, listed in the key-rotation tool, in `whatsapp_registration_pins`)
+  BEFORE the number is registered, and it is kept when the influencer disconnects or a connection fails to save; a reconnect
+  registers with the same PIN. If Meta refuses a PIN we just made up, the number may carry a PIN an older version registered it
+  with (the shared `WHATSAPP_REGISTRATION_PIN`), which is tried once; if that fails too, the number holds a PIN that is not
+  ours to know, perhaps the owner's own, so it is NOT changed behind their back: they are asked for it (optional field in the
+  connect form), told where to look in WhatsApp Manager, and offered "I don't have it, reset it for me". Only when they tick
+  that, and only for a PIN we generated ourselves, do we set a new one with Meta's set-PIN call and register again. A PIN the
+  influencer typed is never overwritten, ticked or not.
+  `WHATSAPP_REGISTRATION_PIN` is a development default only and is ignored in production. A manual connection registers the
+  number only if given a PIN.
+- **The Meta app secret** is one value with two names: `WHATSAPP_APP_SECRET` (webhook signatures) and `META_APP_SECRET`
+  (Embedded Signup, token checks). Set either; both uses read it.
+- **Graph API version.** `WHATSAPP_GRAPH_VERSION` (default in `lib/whatsapp-graph-version.ts`) is used for every Meta call and for
+  the Facebook SDK in the sign-up window. Meta retires versions on a schedule, so check
+  <https://developers.facebook.com/docs/graph-api/changelog/versions> from time to time.
+
+Embedded Signup could not be exercised without an approved Meta app. The newer Graph calls (the Meta template names, token
+check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
+against a real Meta account.
 
 ## Go-live readiness
 A booking page only takes bookings (and money) once the influencer has what the product needs. The same rules drive the
