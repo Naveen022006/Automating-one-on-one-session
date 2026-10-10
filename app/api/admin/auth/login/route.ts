@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { recordAnonymousAudit, recordAudit } from "@/lib/admin/audit";
 import { issueAdminPendingToken, PENDING_TOKEN_TTL_SEC } from "@/lib/admin/mfa";
-import { authenticateAdmin, createAdminSession, setAdminCookie } from "@/lib/admin/session";
+import { AdminMfaRequiredError, authenticateAdmin, createAdminSession, setAdminCookie } from "@/lib/admin/session";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { jsonError, parseJson, requestMeta, safeNextPath } from "@/lib/http";
 import { clientIp, enforce, IDENTITY_RULES } from "@/lib/rate-limit";
@@ -37,7 +37,7 @@ export async function POST(req: Request) {
   }
 
   const actor = { adminId: result.adminId, email: email.toLowerCase() };
-  if (result.totpEnabled) {
+  const challenge = async () => {
     await recordAudit(actor, { action: "admin.login_mfa_challenge", ip });
     return NextResponse.json({
       ok: true,
@@ -45,9 +45,17 @@ export async function POST(req: Request) {
       pendingToken: issueAdminPendingToken(result.adminId, result.passwordFingerprint),
       expiresInSec: PENDING_TOKEN_TTL_SEC,
     });
-  }
+  };
+  if (result.totpEnabled) return challenge();
 
-  const token = await createAdminSession(result.adminId, requestMeta(req, ip));
+  let token: string;
+  try {
+    token = await createAdminSession(result.adminId, requestMeta(req, ip));
+  } catch (e) {
+    // The admin enrolled between the password check and here: never hand out a password-only session, ask for the code.
+    if (e instanceof AdminMfaRequiredError) return challenge();
+    throw e;
+  }
   await recordAudit(actor, { action: "admin.login", detail: { mfa: false }, ip });
   return setAdminCookie(NextResponse.json({ ok: true, redirect: safeNextPath(next, "/admin") }), token);
 }

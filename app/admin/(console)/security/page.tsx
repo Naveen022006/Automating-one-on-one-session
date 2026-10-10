@@ -5,7 +5,7 @@ import { Badge, Card } from "@/components/ui/primitives";
 import { listAdministrators } from "@/lib/admin/data";
 import { getMfaStatus } from "@/lib/admin/mfa";
 import { admin2faRequired } from "@/lib/admin/policy";
-import { requireAdminPage } from "@/lib/admin/session";
+import { canViewAdminList, requireAdminPage } from "@/lib/admin/session";
 import { fourEyesEnabled, fourEyesMinMinor } from "@/lib/payouts";
 
 export const metadata: Metadata = { title: "Security" };
@@ -13,7 +13,10 @@ export const metadata: Metadata = { title: "Security" };
 // The only console page open to an administrator who still has to set up two-factor (ADMIN_REQUIRE_2FA).
 export default async function AdminSecurityPage() {
   const admin = await requireAdminPage("/admin/security");
-  const [status, admins] = await Promise.all([getMfaStatus(admin.adminId), listAdministrators()]);
+  // The administrator list (who has 2FA, who signed in when) is only shown once this session has passed what it must: a
+  // stolen cookie of an admin who has not enrolled yet must not be able to read it.
+  const showAdmins = canViewAdminList(admin);
+  const [status, admins] = await Promise.all([getMfaStatus(admin.adminId), showAdmins ? listAdministrators() : Promise.resolve([])]);
   const required = admin2faRequired();
   const fourEyes = fourEyesEnabled();
   const minMinor = fourEyesMinMinor();
@@ -31,11 +34,16 @@ export default async function AdminSecurityPage() {
       <Card title="Payout approval">
         <p className="muted">
           {fourEyes
-            ? `A second administrator has to approve each payout before it can be marked as paid${minMinor > 0 ? ` (for net amounts of ${minMinor} minor units and above)` : ""}.`
+            ? `A second administrator has to approve each payout before it can be marked as paid${minMinor > 0 ? ` (when the payout plus that influencer's other unapproved payouts of the last 24 hours reach ${minMinor} minor units of its currency)` : ""}.`
             : "Payout approval by a second administrator is off (PAYOUT_FOUR_EYES=false). One administrator can create and pay a payout."}
         </p>
       </Card>
 
+      {!showAdmins ? (
+        <Card title="Administrators">
+          <p className="muted">The list of administrators is shown after you have set up two-factor authentication and signed in with it.</p>
+        </Card>
+      ) : (
       <Card title={`Administrators (${admins.length})`}>
         <div className="table-wrap">
           <table className="table table--stack">
@@ -67,6 +75,7 @@ export default async function AdminSecurityPage() {
         </div>
         <p className="subtle">Administrators are created from the command line: <code>npm run admin:create</code>.</p>
       </Card>
+      )}
     </div>
   );
 }
