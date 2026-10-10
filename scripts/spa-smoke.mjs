@@ -127,9 +127,6 @@ async function main() {
   // --- pages
   let shellBody = "";
   for (const s of SAMPLES) {
-    if (OLD && s.path.startsWith("/admin/login")) {
-      // the old admin login page is a Next page too; same generic checks
-    }
     const r = await shellSample(s);
     if (s.path === "/") shellBody = r.body;
   }
