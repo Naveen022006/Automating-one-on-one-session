@@ -112,7 +112,8 @@ test("/design is a 404 in production unless ENABLE_DESIGN_PAGE=true, and a norma
 });
 
 test("a Next client prefetch or RSC navigation to an SPA path gets an empty 204, so Next falls back to a normal page load", async () => {
-  for (const headers of [{ "x-nonce": NONCE, rsc: "1" }, { "x-nonce": NONCE, "next-router-prefetch": "1" }, { "x-nonce": NONCE, rsc: "1", "next-router-prefetch": "1" }]) {
+  const variants: Record<string, string>[] = [{ "x-nonce": NONCE, rsc: "1" }, { "x-nonce": NONCE, "next-router-prefetch": "1" }, { "x-nonce": NONCE, rsc: "1", "next-router-prefetch": "1" }];
+  for (const headers of variants) {
     const res = await call("/terms", headers);
     assert.equal(res.status, 204);
     assert.equal(await res.text(), "");
