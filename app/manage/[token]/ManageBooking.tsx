@@ -6,25 +6,7 @@ import { FocusedLayout } from "@/components/site/SiteChrome";
 import { ConfirmDialog } from "@/components/ui/overlays";
 import { Alert, Button, Card, StatusPill } from "@/components/ui/primitives";
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@/components/ui/scheduling";
-
-export interface ManageBookingData {
-  token: string;
-  bookingId: string;
-  serviceId: string;
-  serviceTitle: string;
-  serviceType: "ONE_TO_ONE" | "GROUP";
-  durationMin: number;
-  influencerName: string;
-  customerName: string;
-  status: string;
-  startTime: string;
-  meetLink: string | null;
-  canManage: boolean;
-  /** False for group sessions and inside a 24-hour notice window. */
-  canReschedule: boolean;
-  refundPolicyText: string;
-  cancelRefundText: string | null;
-}
+import type { ManageBookingData } from "@/lib/views/booking-manage";
 
 function when(iso: string, tz: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short", timeZone: tz }).format(new Date(iso));

@@ -1,6 +1,6 @@
 // Integration test of the customer-facing view endpoints the SPA's booking pages read (needs DATABASE_URL,
 // TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise):
-//   P1 GET /api/public/profiles/:slug   P2 GET /api/pay/:token
+//   P1 GET /api/public/profiles/:slug   P2 GET /api/pay/:token   P3 GET /api/manage/:token
 // Only `next/headers` is replaced (the cookies a request carries are chosen per call). Every body goes through
 // assertNoSecretKeys, and the exact key set of each DTO is pinned, so adding a field is a deliberate act.
 import "dotenv/config";
@@ -9,7 +9,8 @@ import { after, before, mock, test } from "node:test";
 import type { BookingStatus, PaymentStatus, RefundPolicy } from "../generated/prisma/client";
 import { prisma } from "../lib/db";
 import { formatMoney, formatSessionTime } from "../lib/format";
-import { BOOKING_PAY_PURPOSE, SELF_SERVICE_PURPOSE, buildSelfServiceUrl, verifyBookingPollToken, verifySelfServiceToken } from "../lib/self-service";
+import { describeRefundPolicy } from "../lib/refund-policy";
+import { BOOKING_PAY_PURPOSE, SELF_SERVICE_PURPOSE, verifyBookingPollToken, verifySelfServiceToken } from "../lib/self-service";
 import { signToken } from "../lib/signing";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
 
@@ -22,6 +23,7 @@ const jar = new Map<string, string>();
 type Ctx<K extends string> = { params: Promise<Record<K, string>> };
 let profileRoute: (req: Request, ctx: Ctx<"slug">) => Promise<Response>;
 let payRoute: (req: Request, ctx: Ctx<"token">) => Promise<Response>;
+let manageRoute: (req: Request, ctx: Ctx<"token">) => Promise<Response>;
 let authLib: typeof import("../lib/auth/session");
 
 // Rows created by this file (all deleted in `after`).
@@ -57,6 +59,7 @@ async function getProfile(slug: string, cookies: Record<string, string> = {}): P
   return answer(await profileRoute(new Request(`http://localhost/api/public/profiles/${slug}`), { params: Promise.resolve({ slug }) }));
 }
 const getPay = async (token: string) => answer(await payRoute(new Request("http://localhost/api/pay/x"), { params: Promise.resolve({ token }) }));
+const getManage = async (token: string) => answer(await manageRoute(new Request("http://localhost/api/manage/x"), { params: Promise.resolve({ token }) }));
 const keys = (o: unknown) => Object.keys(o as object).sort();
 
 let seq = 0;
@@ -121,6 +124,7 @@ before(async () => {
   authLib = await import("../lib/auth/session");
   profileRoute = (await import("../app/api/public/profiles/[slug]/route")).GET;
   payRoute = (await import("../app/api/pay/[token]/route")).GET;
+  manageRoute = (await import("../app/api/manage/[token]/route")).GET;
 
   // A live page: onboarded, no login of its own (like a profile that predates accounts), three services of which one is hidden.
   const live = await prisma.influencer.create({
@@ -385,4 +389,129 @@ test("P2: the token is decoded from the URL path, exactly as the old page did", 
   assert.equal((await getPay(encoded)).body.state, "payable");
   assert.equal((await getPay(encodeURIComponent(token))).body.state, "payable");
   assert.equal((await getPay(token)).body.state, "payable");
+});
+
+// ---- P3: GET /api/manage/:token ----
+
+const MANAGE_KEYS = [
+  "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "influencerName", "meetLink",
+  "refundPolicyText", "serviceId", "serviceTitle", "serviceType", "startTime", "status", "token",
+];
+
+/** The answer is the booking's owner's own page: their name is theirs to see, their email and number never are sent back. */
+function assertManageSafe(out: Answer, who: { customerEmail: string; whatsapp: string }) {
+  const text = JSON.stringify(out.body);
+  assert.ok(!text.includes(who.customerEmail) && !text.includes(who.whatsapp), "no email or phone in the manage view");
+  assertNoSecretKeys(out.body, ["token"]);
+}
+
+test("P3 GET /api/manage/:token: a link that is invalid or expired is a 403 `expired`", { skip }, async () => {
+  const b = await seed(svc.plain, { status: "PAID", payment: "CAPTURED" });
+  const cases: Array<[string, string]> = [
+    ["garbage", "not-a-token"],
+    ["tampered", `${selfServiceToken(b.booking.id)}x`],
+    ["expired", selfServiceToken(b.booking.id, -10)],
+    ["a pay token is not a self-service token", payToken(b.booking.id)],
+  ];
+  for (const [label, token] of cases) {
+    const out = await getManage(token);
+    assert.equal(out.status, 403, label);
+    assert.deepEqual(out.body, { state: "expired" }, label);
+    assert.equal(out.headers.get("cache-control"), "private, no-store", label);
+    assert.equal(out.headers.get("access-control-allow-origin"), null, label);
+  }
+});
+
+test("P3: a valid link whose booking is gone, or was erased on request, is a 404 `not-found`", { skip }, async () => {
+  const gone = await getManage(selfServiceToken(`no-such-booking-${run}`));
+  assert.equal(gone.status, 404);
+  assert.deepEqual(gone.body, { state: "not-found" });
+
+  const erased = await seed(svc.plain, { status: "PAID", payment: "CAPTURED", redactedAt: new Date(), customerName: "Erased Customer" });
+  const out = await getManage(selfServiceToken(erased.booking.id));
+  assert.equal(out.status, 404);
+  assert.deepEqual(out.body, { state: "not-found" }, "an erased booking is shown as missing, not as a page about a person who asked to be forgotten");
+});
+
+test("P3: a paid booking is `ok` with exactly the fields the manage page needs", { skip }, async () => {
+  const b = await seed(svc.full, { status: "PAID", payment: "CAPTURED", meetLink: "https://meet.google.com/abc-defg-hij", customerName: "Asha Rao" });
+  const token = selfServiceToken(b.booking.id);
+  const out = await getManage(token);
+  assert.equal(out.status, 200);
+  assert.equal(out.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(keys(out.body), ["booking", "state"]);
+  assert.equal(out.body.state, "ok");
+  const booking = out.body.booking as Record<string, unknown>;
+  assert.deepEqual(keys(booking), MANAGE_KEYS);
+  assert.deepEqual(booking, {
+    token,
+    bookingId: b.booking.id,
+    serviceId: svc.full,
+    serviceTitle: "Full refund session",
+    serviceType: "ONE_TO_ONE",
+    durationMin: 30,
+    influencerName: `Spa Host ${run}`,
+    customerName: "Asha Rao",
+    status: "PAID",
+    startTime: b.start.toISOString(),
+    meetLink: "https://meet.google.com/abc-defg-hij",
+    canManage: true,
+    canReschedule: true,
+    refundPolicyText: describeRefundPolicy("FULL"),
+    cancelRefundText: "If you cancel now, you will be refunded in full to your original payment method.",
+  });
+  assertManageSafe(out, b);
+  assert.ok(!JSON.stringify(out.body).includes(hostId), "no influencer id");
+  assert.ok(!JSON.stringify(out.body).includes(b.session.id), "no session id");
+});
+
+test("P3: what the customer may do follows the policy, the type of session and the clock", { skip }, async () => {
+  // Cancelling inside the 24-hour notice window: allowed, but not refunded, and no rescheduling either.
+  const late = await seed(svc.notice, { status: "SCHEDULED", payment: "CAPTURED", startIn: 3 * HOUR });
+  const lateOut = (await getManage(selfServiceToken(late.booking.id))).body.booking as Record<string, unknown>;
+  assert.equal(lateOut.canManage, true);
+  assert.equal(lateOut.canReschedule, false);
+  assert.equal(lateOut.cancelRefundText, "If you cancel now, no refund is due under this session's policy.");
+
+  // The same policy with plenty of notice: refundable and movable.
+  const early = await seed(svc.notice, { status: "PAID", payment: "CAPTURED", startIn: 3 * DAY });
+  const earlyOut = (await getManage(selfServiceToken(early.booking.id))).body.booking as Record<string, unknown>;
+  assert.equal(earlyOut.canReschedule, true);
+  assert.equal(earlyOut.cancelRefundText, "If you cancel now, you will be refunded in full to your original payment method.");
+
+  // A booking carries the policy it was sold under: the service's later edits do not change it.
+  const sold = await seed(svc.full, { status: "PAID", payment: "CAPTURED", refundPolicy: "NONE" });
+  const soldOut = (await getManage(selfServiceToken(sold.booking.id))).body.booking as Record<string, unknown>;
+  assert.equal(soldOut.refundPolicyText, describeRefundPolicy("NONE"));
+  assert.equal(soldOut.cancelRefundText, "If you cancel now, no refund is due under this session's policy.");
+
+  // Only captured money counts: with no captured payment there is nothing to say about a refund.
+  const unpaid = await seed(svc.plain, { status: "PAID", payment: "CREATED" });
+  assert.equal(((await getManage(selfServiceToken(unpaid.booking.id))).body.booking as Record<string, unknown>).cancelRefundText, null);
+
+  // Finished or cancelled bookings are shown but cannot be changed.
+  const past = await seed(svc.plain, { status: "COMPLETED", payment: "CAPTURED", startIn: -2 * HOUR });
+  assert.equal(((await getManage(selfServiceToken(past.booking.id))).body.booking as Record<string, unknown>).canManage, false);
+  const started = await seed(svc.plain, { status: "PAID", payment: "CAPTURED", startIn: -HOUR });
+  assert.equal(((await getManage(selfServiceToken(started.booking.id))).body.booking as Record<string, unknown>).canManage, false, "not after the start");
+  const cancelled = await seed(svc.plain, { status: "CANCELLED", payment: "REFUNDED" });
+  const cancelledOut = await getManage(selfServiceToken(cancelled.booking.id));
+  assert.equal(cancelledOut.status, 200);
+  assert.equal((cancelledOut.body.booking as Record<string, unknown>).status, "CANCELLED");
+  assert.equal((cancelledOut.body.booking as Record<string, unknown>).canManage, false);
+});
+
+test("P3: the meeting link falls back to the shared one of a group session, which never shows another attendee", { skip }, async () => {
+  const first = await seed(svc.group, { status: "PAID", payment: "CAPTURED", sessionMeetLink: "https://meet.google.com/grp-aaaa-bbb", customerName: "Group Member One" });
+  const second = await seed(svc.group, { status: "PAID", payment: "CAPTURED", sessionId: first.session.id, customerName: "Group Member Two" });
+  const out = await getManage(selfServiceToken(second.booking.id));
+  assert.equal(out.status, 200);
+  const booking = out.body.booking as Record<string, unknown>;
+  assert.equal(booking.meetLink, "https://meet.google.com/grp-aaaa-bbb");
+  assert.equal(booking.serviceType, "GROUP");
+  assert.equal(booking.canReschedule, false, "a group session is moved by the host for everyone");
+  assert.equal(booking.customerName, "Group Member Two");
+  const text = JSON.stringify(out.body);
+  assert.ok(!text.includes("Group Member One") && !text.includes(first.customerEmail) && !text.includes(first.whatsapp), "another attendee's data never appears");
+  assertManageSafe(out, second);
 });
