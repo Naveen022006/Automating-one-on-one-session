@@ -23,12 +23,17 @@ export function useAdminSession() {
   return useApiQuery<AdminSessionView>(queryKeys.adminSession(), "/api/admin/session", { staleTime: 60_000 });
 }
 
-/** Dashboard frame data: the signed-in influencer for the sidebar, plus the badge count. Also the dashboard auth check. */
+/**
+ * Dashboard frame data: the signed-in influencer for the sidebar, plus the badge count. Also the dashboard auth check.
+ * Read twice per page load (the guard, then the layout it renders); a few seconds of freshness make that ONE request
+ * instead of two (the database has 15 connections in total). `router.refresh()` still refetches it: invalidation ignores
+ * staleTime.
+ */
 export function useDashboardShell() {
-  return useApiQuery<DashboardShellView>(queryKeys.dashboardShell(), "/api/dashboard/shell");
+  return useApiQuery<DashboardShellView>(queryKeys.dashboardShell(), "/api/dashboard/shell", { staleTime: 5_000 });
 }
 
-/** Admin console frame data: badges and the account menu. */
+/** Admin console frame data: badges and the account menu. Same freshness reasoning as the dashboard shell. */
 export function useAdminShell() {
-  return useApiQuery<AdminShellView>(queryKeys.adminShell(), "/api/admin/shell");
+  return useApiQuery<AdminShellView>(queryKeys.adminShell(), "/api/admin/shell", { staleTime: 5_000 });
 }
