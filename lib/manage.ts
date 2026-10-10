@@ -157,7 +157,8 @@ export interface CancelResult {
  *
  *  - 1:1    -> delete the booking's own event.
  *  - GROUP  -> remove ONLY this attendee from the shared session event; delete the event (and clear the
- *              session's shared fields) only when the last attendee has left.
+ *              session's shared fields) only when no other PAID/SCHEDULED booking of the session remains in the
+ *              database (see releaseSharedEvent).
  *  - Refund -> eligible payments are flagged `needsRefund` (and the influencer alerted), or refunded straight
  *              away through Razorpay when AUTO_REFUND_ON_CANCEL=true.
  */
@@ -204,12 +205,10 @@ export async function cancelBooking(
     try {
       const accessToken = await accessTokenFor(deps, booking);
       if (isGroup) {
-        const eventId = session.eventId ?? sessionEventId(session.id);
-        const { remaining } = await deps.google.removeAttendee(accessToken, eventId, booking.customerEmail);
-        if (remaining === 0) {
-          await deps.google.deleteEvent(accessToken, eventId);
-          await prisma.session.update({ where: { id: session.id }, data: { eventId: null, meetLink: null } });
-        }
+        const shared = await releaseSharedEvent(session.id, booking.id);
+        const eventId = shared.eventId ?? booking.eventId ?? sessionEventId(session.id);
+        if (shared.last) await deps.google.deleteEvent(accessToken, eventId);
+        else await deps.google.removeAttendee(accessToken, eventId, booking.customerEmail);
       } else if (booking.eventId) {
         await deps.google.deleteEvent(accessToken, booking.eventId);
       }
@@ -272,6 +271,33 @@ export async function cancelBooking(
     refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued },
     ...(problem ? { warning: problem.detail } : {}),
   };
+}
+
+/**
+ * Group cancel, database side: decides whether the cancelled booking was the last one that depends on the session's
+ * shared Calendar event. That is decided here, under the session row lock (SELECT ... FOR UPDATE, as lib/holds.ts
+ * does), from the bookings in OUR database, not from Google's attendee list: that list can miss paying customers
+ * (earlier race losers, two attendee edits at once, two bookings sharing one email), and deleting the event on its
+ * say-so would leave them holding a Meet link to a deleted event. When nobody else is PAID or SCHEDULED the event is
+ * retired in the same transaction (the session forgets it and its generation moves on, so the next payer starts a fresh
+ * event, see lib/meeting.ts ensureGroupEvent) and the caller deletes it at Google. Otherwise the caller only removes
+ * this attendee. `eventId` is the event as the session recorded it, null if it had none.
+ */
+async function releaseSharedEvent(sessionId: string, bookingId: string): Promise<{ eventId: string | null; last: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<{ event_id: string | null; event_generation: number }[]>`
+      SELECT event_id, event_generation FROM sessions WHERE id = ${sessionId} FOR UPDATE`;
+    const eventId = rows[0]?.event_id ?? null;
+    const others = await tx.booking.count({ where: { sessionId, id: { not: bookingId }, status: { in: ["PAID", "SCHEDULED"] } } });
+    if (others > 0) return { eventId, last: false };
+    if (eventId) {
+      await tx.session.update({
+        where: { id: sessionId },
+        data: { eventId: null, meetLink: null, eventGeneration: (rows[0]?.event_generation ?? 0) + 1 },
+      });
+    }
+    return { eventId, last: true };
+  });
 }
 
 /** AUTO_REFUND_ON_CANCEL=true makes eligible cancellations refund immediately through Razorpay. */

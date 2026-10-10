@@ -17,6 +17,8 @@ export interface InfluencerAlert {
   bookingId?: string;
   /** Where the influencer should go to fix it. Defaults per kind (settings for Google, sessions otherwise). */
   actionUrl?: string;
+  /** Heading of the alert email, when the kind's default does not describe this particular case. */
+  title?: string;
 }
 
 export interface AlertRecipient {
@@ -58,7 +60,7 @@ const defaultSender: AlertSender = async (to, alert) => {
   await sendAccountEmail(
     { email: to.email, name: to.name },
     influencerAlertMessage(to.name, {
-      title: t.title,
+      title: alert.title ?? t.title,
       detail: alert.detail,
       actionLabel: t.action,
       actionUrl: alert.actionUrl ?? defaultActionUrl(alert),
