@@ -1,0 +1,425 @@
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import { decryptSecret, encryptSecret, parseKeyBytes, tryDecryptSecret } from "../lib/crypto";
+import { prisma } from "../lib/db";
+import { getRefreshToken, googleTokenAad, saveGoogleToken } from "../lib/google-tokens";
+import { rotateEncryptedColumns, rotateValue, type EncryptedColumn, type RotationDb, type RotationTx } from "../lib/key-rotation";
+import { ENCRYPTED_COLUMNS, prismaRotationDb } from "../lib/key-rotation-db";
+import { payoutAad, payoutInputSchema, revealPayoutAccount, savePayoutAccount } from "../lib/payout-account";
+import { resolveSendCredentials, whatsappTokenAad } from "../lib/whatsapp-connection";
+
+/** An empty environment for resolveSendCredentials (no MESSAGING_DRY_RUN, no platform fallback). */
+const NO_ENV = {} as NodeJS.ProcessEnv;
+const newKeyB64 = () => randomBytes(32).toString("base64");
+
+/** Runs `fn` with the given encryption-key env vars, restoring the originals afterwards. */
+async function withKeys<T>(keys: { current?: string; previous?: string }, fn: () => T | Promise<T>): Promise<T> {
+  const saved = { c: process.env.TOKEN_ENCRYPTION_KEY, p: process.env.TOKEN_ENCRYPTION_KEY_PREVIOUS };
+  const set = (name: string, v: string | undefined) => (v === undefined ? delete process.env[name] : (process.env[name] = v));
+  set("TOKEN_ENCRYPTION_KEY", keys.current);
+  set("TOKEN_ENCRYPTION_KEY_PREVIOUS", keys.previous);
+  try {
+    return await fn();
+  } finally {
+    set("TOKEN_ENCRYPTION_KEY", saved.c);
+    set("TOKEN_ENCRYPTION_KEY_PREVIOUS", saved.p);
+  }
+}
+
+/* ---------- crypto: current key, then the previous key ---------- */
+
+test("parseKeyBytes accepts exactly 32 bytes of base64", () => {
+  assert.equal(parseKeyBytes(newKeyB64())?.length, 32);
+  assert.equal(parseKeyBytes(randomBytes(16).toString("base64")), null);
+  assert.equal(parseKeyBytes(randomBytes(33).toString("base64")), null);
+  assert.equal(parseKeyBytes(""), null);
+  assert.equal(parseKeyBytes(undefined), null);
+  assert.equal(parseKeyBytes(`${newKeyB64()}\n`)?.length, 32, "same lenient decoding the app has always used (a trailing newline is skipped)");
+});
+
+test("encryption always uses the current key, never the previous one", async () => {
+  const oldKey = newKeyB64();
+  const newKey = newKeyB64();
+  await withKeys({ current: newKey, previous: oldKey }, () => {
+    const payload = encryptSecret("secret-value", "row-1");
+    assert.equal(tryDecryptSecret(payload, "row-1", parseKeyBytes(newKey)!), "secret-value");
+    assert.equal(tryDecryptSecret(payload, "row-1", parseKeyBytes(oldKey)!), null, "must not be readable with the previous key");
+  });
+});
+
+test("decryption tries the current key, then the previous key", async () => {
+  const oldKey = newKeyB64();
+  const newKey = newKeyB64();
+  const oldPayload = await withKeys({ current: oldKey }, () => encryptSecret("written-with-old", "row-1"));
+  const newPayload = await withKeys({ current: newKey }, () => encryptSecret("written-with-new", "row-1"));
+
+  // Mid-rotation: current = new, previous = old. Both generations of rows are readable.
+  await withKeys({ current: newKey, previous: oldKey }, () => {
+    assert.equal(decryptSecret(newPayload, "row-1"), "written-with-new");
+    assert.equal(decryptSecret(oldPayload, "row-1"), "written-with-old");
+  });
+  // Before the previous key is configured the old rows are unreadable, which is what the fallback is for.
+  await withKeys({ current: newKey }, () => assert.throws(() => decryptSecret(oldPayload, "row-1")));
+  // An instance that has not been updated yet (current = old, no previous) still reads old rows.
+  await withKeys({ current: oldKey }, () => assert.equal(decryptSecret(oldPayload, "row-1"), "written-with-old"));
+});
+
+test("the fallback never weakens the AAD binding or accepts garbage", async () => {
+  const oldKey = newKeyB64();
+  const newKey = newKeyB64();
+  const stranger = newKeyB64();
+  const oldPayload = await withKeys({ current: oldKey }, () => encryptSecret("value", "row-1"));
+  await withKeys({ current: newKey, previous: oldKey }, () => {
+    assert.throws(() => decryptSecret(oldPayload, "row-2"), "a ciphertext moved to another row must still fail");
+    assert.throws(() => decryptSecret("not-a-payload", "row-1"), /Unrecognised encrypted payload format/);
+    assert.throws(() => decryptSecret("v2.a.b.c", "row-1"), /Unrecognised/);
+  });
+  // A key that is neither current nor previous reads nothing.
+  await withKeys({ current: stranger, previous: newKey }, () => assert.throws(() => decryptSecret(oldPayload, "row-1")));
+  // An explicit key is used on its own, with no fallback.
+  await withKeys({ current: newKey, previous: oldKey }, () => assert.throws(() => decryptSecret(oldPayload, "row-1", parseKeyBytes(newKey)!)));
+});
+
+test("a malformed previous key is reported only when it is needed", async () => {
+  const oldKey = newKeyB64();
+  const newKey = newKeyB64();
+  const newPayload = await withKeys({ current: newKey }, () => encryptSecret("value", "row-1"));
+  const oldPayload = await withKeys({ current: oldKey }, () => encryptSecret("value", "row-1"));
+  await withKeys({ current: newKey, previous: "garbage" }, () => {
+    assert.equal(decryptSecret(newPayload, "row-1"), "value", "current-key rows keep working");
+    assert.throws(() => decryptSecret(oldPayload, "row-1"), /TOKEN_ENCRYPTION_KEY_PREVIOUS must be 32 bytes/);
+  });
+});
+
+/* ---------- rotation: the pure per-value logic ---------- */
+
+test("rotateValue re-encrypts, skips what is already on the new key, and fails what neither key can read", () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const other = randomBytes(32);
+  const old = encryptSecret("plaintext-123", "aad-1", oldKey);
+
+  const r = rotateValue(old, "aad-1", oldKey, newKey);
+  assert.equal(r.outcome, "rotated");
+  if (r.outcome !== "rotated") return;
+  assert.equal(decryptSecret(r.next, "aad-1", newKey), "plaintext-123");
+  assert.equal(tryDecryptSecret(r.next, "aad-1", oldKey), null, "the new ciphertext is not readable with the old key");
+  assert.notEqual(r.next, old);
+
+  assert.deepEqual(rotateValue(r.next, "aad-1", oldKey, newKey), { outcome: "skipped" }, "idempotent: running again changes nothing");
+
+  const unreadable = rotateValue(encryptSecret("x", "aad-1", other), "aad-1", oldKey, newKey);
+  assert.equal(unreadable.outcome, "failed");
+  assert.equal(rotateValue(old, "wrong-aad", oldKey, newKey).outcome, "failed", "the AAD must match");
+  assert.equal(rotateValue("garbage", "aad-1", oldKey, newKey).outcome, "failed");
+  for (const f of [unreadable, rotateValue("garbage", "aad-1", oldKey, newKey)]) {
+    if (f.outcome === "failed") assert.ok(!f.reason.includes("plaintext") && !f.reason.includes(oldKey.toString("base64")), "reasons carry no secrets");
+  }
+});
+
+/* ---------- rotation: the runner, against an in-memory fake database ---------- */
+
+interface FakeRow {
+  influencerId: string;
+  value: string | null;
+}
+
+/** In-memory RotationDb with real transaction semantics (staged writes, committed on success, rolled back on throw). */
+class FakeDb implements RotationDb {
+  tables = new Map<string, Map<string, FakeRow>>();
+  transactions = 0;
+  writes = 0;
+  locks = 0;
+  failWriteFor = new Set<string>();
+  onBeforeRead?: (column: EncryptedColumn, id: string) => void;
+
+  table(name: string) {
+    let t = this.tables.get(name);
+    if (!t) this.tables.set(name, (t = new Map()));
+    return t;
+  }
+  set(col: EncryptedColumn, id: string, influencerId: string, value: string) {
+    this.table(col.name).set(id, { influencerId, value });
+  }
+  get(col: EncryptedColumn, id: string) {
+    return this.table(col.name).get(id)?.value ?? null;
+  }
+  async listIds(col: EncryptedColumn) {
+    return [...this.table(col.name)].filter(([, r]) => r.value !== null).map(([id]) => id);
+  }
+  async transaction<T>(fn: (tx: RotationTx) => Promise<T>): Promise<T> {
+    this.transactions++;
+    const staged: [EncryptedColumn, string, string][] = [];
+    const tx: RotationTx = {
+      read: async (col, id, lock) => {
+        if (lock) this.locks++;
+        this.onBeforeRead?.(col, id);
+        const row = this.table(col.name).get(id);
+        return row && row.value ? { influencerId: row.influencerId, value: row.value } : null;
+      },
+      write: async (col, id, value) => {
+        if (this.failWriteFor.has(id)) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+        staged.push([col, id, value]);
+      },
+    };
+    const out = await fn(tx);
+    for (const [col, id, value] of staged) {
+      this.table(col.name).get(id)!.value = value;
+      this.writes++;
+    }
+    return out;
+  }
+}
+
+const COL_A: EncryptedColumn = { name: "a.secret_enc", table: "a", column: "secret_enc", aad: (id) => `a:${id}` };
+const COL_B: EncryptedColumn = { name: "b.token_enc", table: "b", column: "token_enc", aad: (id) => id };
+
+function seed(oldKey: Buffer) {
+  const db = new FakeDb();
+  db.set(COL_A, "a1", "inf1", encryptSecret("A-ONE", "a:inf1", oldKey));
+  db.set(COL_A, "a2", "inf2", encryptSecret("A-TWO", "a:inf2", oldKey));
+  db.set(COL_B, "b1", "inf1", encryptSecret("B-ONE", "inf1", oldKey));
+  return db;
+}
+
+test("dry run reads and verifies everything but writes nothing and takes no locks", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  const before = [db.get(COL_A, "a1"), db.get(COL_A, "a2"), db.get(COL_B, "b1")];
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey });
+  assert.equal(report.apply, false);
+  assert.deepEqual(report.totals, { scanned: 3, rotated: 3, skipped: 0, failed: 0 });
+  assert.deepEqual(report.columns["a.secret_enc"], { scanned: 2, rotated: 2, skipped: 0, failed: 0 });
+  assert.equal(db.writes, 0);
+  assert.equal(db.locks, 0);
+  assert.deepEqual([db.get(COL_A, "a1"), db.get(COL_A, "a2"), db.get(COL_B, "b1")], before);
+});
+
+test("apply rotates every row in its own locked transaction, with the right AAD per column", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 3, rotated: 3, skipped: 0, failed: 0 });
+  assert.equal(db.transactions, 3, "one transaction per row");
+  assert.equal(db.locks, 3);
+  assert.equal(db.writes, 3);
+  assert.equal(decryptSecret(db.get(COL_A, "a1")!, "a:inf1", newKey), "A-ONE");
+  assert.equal(decryptSecret(db.get(COL_A, "a2")!, "a:inf2", newKey), "A-TWO");
+  assert.equal(decryptSecret(db.get(COL_B, "b1")!, "inf1", newKey), "B-ONE");
+  assert.equal(tryDecryptSecret(db.get(COL_A, "a1")!, "a:inf1", oldKey), null);
+});
+
+test("a second run is a no-op (idempotent), and an interrupted run resumes where it stopped", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  // Simulate an interrupted run: only a1 got rotated.
+  db.set(COL_A, "a1", "inf1", rotateValueNext(db.get(COL_A, "a1")!, "a:inf1", oldKey, newKey));
+
+  const resumed = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(resumed.totals, { scanned: 3, rotated: 2, skipped: 1, failed: 0 });
+
+  const again = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(again.totals, { scanned: 3, rotated: 0, skipped: 3, failed: 0 });
+});
+
+function rotateValueNext(payload: string, aad: string, oldKey: Buffer, newKey: Buffer): string {
+  const r = rotateValue(payload, aad, oldKey, newKey);
+  assert.equal(r.outcome, "rotated");
+  return r.outcome === "rotated" ? r.next : "";
+}
+
+test("a row that cannot be read is left untouched and counted; the rest still rotate", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  const poisoned = encryptSecret("from-a-third-key", "a:inf3", randomBytes(32));
+  db.set(COL_A, "a3", "inf3", poisoned);
+
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 4, rotated: 3, skipped: 0, failed: 1 });
+  assert.equal(db.get(COL_A, "a3"), poisoned, "the unreadable row is not modified");
+  assert.deepEqual(report.failures.map((f) => [f.column, f.rowId]), [["a.secret_enc", "a3"]]);
+  const printed = JSON.stringify(report);
+  for (const secret of ["A-ONE", "B-ONE", oldKey.toString("base64"), newKey.toString("base64")]) assert.ok(!printed.includes(secret), "the report holds no plaintext or key");
+});
+
+test("a database error on one row fails that row only, rolls it back, and does not stop the run", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  db.failWriteFor.add("a2");
+  const original = db.get(COL_A, "a2");
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 3, rotated: 2, skipped: 0, failed: 1 });
+  assert.equal(db.get(COL_A, "a2"), original, "rolled back");
+  assert.match(report.failures[0].reason, /database error \(40P01\)/);
+  assert.ok(!report.failures[0].reason.includes("deadlock"), "driver messages are not echoed");
+  // Once the fault is gone, a re-run finishes the job.
+  db.failWriteFor.clear();
+  const rerun = await rotateEncryptedColumns({ db, columns: [COL_A, COL_B], oldKey, newKey, apply: true });
+  assert.deepEqual(rerun.totals, { scanned: 3, rotated: 1, skipped: 2, failed: 0 });
+});
+
+test("the row is re-read under the lock: a value the app rewrote meanwhile is not overwritten with stale data", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  // After the scan, the app saves a new value for a1 (encrypted with the new key by an already-updated instance).
+  const appWrote = encryptSecret("A-ONE-EDITED", "a:inf1", newKey);
+  db.onBeforeRead = (col, id) => {
+    if (col === COL_A && id === "a1") db.table(col.name).get(id)!.value = appWrote;
+  };
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A], oldKey, newKey, apply: true });
+  assert.equal(db.get(COL_A, "a1"), appWrote);
+  assert.deepEqual(report.columns["a.secret_enc"], { scanned: 2, rotated: 1, skipped: 1, failed: 0 });
+});
+
+test("a row deleted between the scan and the read is skipped, not an error", async () => {
+  const oldKey = randomBytes(32);
+  const newKey = randomBytes(32);
+  const db = seed(oldKey);
+  db.onBeforeRead = (col, id) => {
+    if (id === "a2") db.table(col.name).delete(id);
+  };
+  const report = await rotateEncryptedColumns({ db, columns: [COL_A], oldKey, newKey, apply: true });
+  assert.deepEqual(report.totals, { scanned: 2, rotated: 1, skipped: 1, failed: 0 });
+});
+
+test("identical or malformed keys are refused before anything is read", async () => {
+  const key = randomBytes(32);
+  const db = seed(key);
+  await assert.rejects(rotateEncryptedColumns({ db, columns: [COL_A], oldKey: key, newKey: Buffer.from(key) }), /identical/);
+  await assert.rejects(rotateEncryptedColumns({ db, columns: [COL_A], oldKey: key, newKey: randomBytes(16) }), /32 bytes/);
+  assert.equal(db.transactions, 0);
+});
+
+/* ---------- the column list must cover every encrypted column in the schema ---------- */
+
+test("every *_enc column in prisma/schema.prisma is covered by the rotation tool", () => {
+  const schema = readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8");
+  const found: string[] = [];
+  for (const block of schema.split(/\n(?=model )/)) {
+    const table = block.match(/@@map\("([a-z_]+)"\)/)?.[1];
+    if (!table) continue;
+    for (const m of block.matchAll(/@map\("([a-z_]+_enc)"\)/g)) found.push(`${table}.${m[1]}`);
+  }
+  assert.ok(found.length >= 4, "the schema scan found the known encrypted columns");
+  assert.deepEqual([...found].sort(), ENCRYPTED_COLUMNS.map((c) => c.name).sort(), "add new encrypted columns to ENCRYPTED_COLUMNS (lib/key-rotation-db.ts)");
+  for (const c of ENCRYPTED_COLUMNS) assert.equal(c.name, `${c.table}.${c.column}`);
+});
+
+/* ---------- integration: the real tables, the real modules, rows of our own ---------- */
+
+const realKey = process.env.TOKEN_ENCRYPTION_KEY;
+const skip = process.env.DATABASE_URL && realKey ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY not set";
+const run = Date.now();
+const ids: string[] = [];
+let a = "";
+let b = "";
+const newKey = newKeyB64();
+
+const bank = payoutInputSchema.parse({
+  method: "BANK",
+  accountHolderName: "Asha Rao",
+  bankName: "HDFC Bank",
+  ifsc: "HDFC0001234",
+  accountNumber: "123456789012",
+  confirmAccountNumber: "123456789012",
+});
+const upi = payoutInputSchema.parse({ method: "UPI", accountHolderName: "Ravi Kumar", upiId: "ravi@okhdfcbank" });
+
+before(async () => {
+  if (skip) return;
+  a = (await prisma.influencer.create({ data: { slug: `kr-a-${run}`, name: "A", email: `kr-a-${run}@example.com` } })).id;
+  b = (await prisma.influencer.create({ data: { slug: `kr-b-${run}`, name: "B", email: `kr-b-${run}@example.com` } })).id;
+  ids.push(a, b);
+  // Written exactly as the app writes them, with the real (old) key.
+  await saveGoogleToken(a, "google-refresh-A", "calendar");
+  await saveGoogleToken(b, "google-refresh-B", "calendar");
+  await savePayoutAccount(a, bank);
+  await savePayoutAccount(b, upi);
+  await prisma.whatsAppConnection.create({
+    data: { influencerId: a, wabaId: "111111", phoneNumberId: `9${run}`, tokenEnc: encryptSecret("wa-token-A", whatsappTokenAad(a)) },
+  });
+});
+
+after(async () => {
+  if (!skip) await prisma.influencer.deleteMany({ where: { id: { in: ids } } }); // cascades to the rows above
+  await prisma.$disconnect();
+});
+
+test("integration: dry run counts our rows, changes nothing, and proves every AAD matches the app's", { skip }, async () => {
+  const oldKey = parseKeyBytes(realKey)!;
+  const payoutBefore = await prisma.payoutAccount.findUnique({ where: { influencerId: a } });
+  const report = await rotateEncryptedColumns({
+    db: prismaRotationDb(prisma, { influencerIds: ids }),
+    columns: ENCRYPTED_COLUMNS,
+    oldKey,
+    newKey: parseKeyBytes(newKey)!,
+  });
+  // google x2, bank account number x1, upi x1, whatsapp x1: exactly our rows, so the influencer filter works.
+  assert.deepEqual(report.totals, { scanned: 5, rotated: 5, skipped: 0, failed: 0 }, JSON.stringify(report.failures));
+  assert.deepEqual(await prisma.payoutAccount.findUnique({ where: { influencerId: a } }), payoutBefore);
+});
+
+test("integration: during a rolling deploy (current = new, previous = old) un-rotated rows are still readable", { skip }, async () => {
+  await withKeys({ current: newKey, previous: realKey }, async () => {
+    assert.deepEqual(await getRefreshToken(a), { state: "ok", refreshToken: "google-refresh-A" });
+    assert.equal((await revealPayoutAccount(a))?.accountNumber, "123456789012");
+    assert.equal((await revealPayoutAccount(b))?.upiId, "ravi@okhdfcbank");
+    assert.equal((await resolveSendCredentials(a, NO_ENV))?.token, "wa-token-A");
+  });
+  // Without the fallback the same instance cannot read them.
+  await withKeys({ current: newKey }, async () => {
+    await assert.rejects(revealPayoutAccount(a));
+  });
+});
+
+test("integration: apply rotates our rows to the new key, keeps updated_at, and is idempotent", { skip }, async () => {
+  const oldKey = parseKeyBytes(realKey)!;
+  const nk = parseKeyBytes(newKey)!;
+  const payoutBefore = await prisma.payoutAccount.findUnique({ where: { influencerId: a } });
+  const googleBefore = await prisma.googleToken.findUnique({ where: { influencerId: a } });
+  const opts = { db: prismaRotationDb(prisma, { influencerIds: ids }), columns: ENCRYPTED_COLUMNS, oldKey, newKey: nk, apply: true };
+
+  const first = await rotateEncryptedColumns(opts);
+  assert.deepEqual(first.totals, { scanned: 5, rotated: 5, skipped: 0, failed: 0 }, JSON.stringify(first.failures));
+
+  // Stored values now decrypt with the new key and the app's own AAD, and no longer with the old key.
+  const g = await prisma.googleToken.findUniqueOrThrow({ where: { influencerId: a } });
+  assert.equal(decryptSecret(g.refreshTokenEnc, googleTokenAad(a), nk), "google-refresh-A");
+  assert.equal(tryDecryptSecret(g.refreshTokenEnc, googleTokenAad(a), oldKey), null);
+  const p = await prisma.payoutAccount.findUniqueOrThrow({ where: { influencerId: a } });
+  assert.equal(decryptSecret(p.accountNumberEnc!, payoutAad(a, "account"), nk), "123456789012");
+  const pb = await prisma.payoutAccount.findUniqueOrThrow({ where: { influencerId: b } });
+  assert.equal(decryptSecret(pb.upiIdEnc!, payoutAad(b, "upi"), nk), "ravi@okhdfcbank");
+  const w = await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: a } });
+  assert.equal(decryptSecret(w.tokenEnc, whatsappTokenAad(a), nk), "wa-token-A");
+
+  // Rotating a key is not an edit: updated_at is untouched, and nothing but the ciphertext changed.
+  assert.equal(p.updatedAt.getTime(), payoutBefore!.updatedAt.getTime());
+  assert.equal(g.updatedAt.getTime(), googleBefore!.updatedAt.getTime());
+  assert.equal(p.status, payoutBefore!.status);
+  assert.equal(g.scope, googleBefore!.scope);
+
+  // The app, running with the new key as current and the old as previous, reads everything.
+  await withKeys({ current: newKey, previous: realKey }, async () => {
+    assert.deepEqual(await getRefreshToken(b), { state: "ok", refreshToken: "google-refresh-B" });
+    assert.equal((await revealPayoutAccount(a))?.accountNumber, "123456789012");
+    assert.equal((await resolveSendCredentials(a, NO_ENV))?.token, "wa-token-A");
+  });
+  // ...and with the old key retired (current = new only) too: nothing depends on it any more.
+  await withKeys({ current: newKey }, async () => {
+    assert.equal((await revealPayoutAccount(b))?.upiId, "ravi@okhdfcbank");
+  });
+
+  const second = await rotateEncryptedColumns(opts);
+  assert.deepEqual(second.totals, { scanned: 5, rotated: 0, skipped: 5, failed: 0 });
+});

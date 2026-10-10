@@ -36,6 +36,8 @@ export class WhatsAppConnectError extends Error {
 export class WhatsAppNotConnectedError extends Error {}
 
 const aad = (influencerId: string) => `whatsapp:${influencerId}`;
+/** Shared with the key-rotation tool (lib/key-rotation-db.ts), so the two can never disagree on the AAD. */
+export { aad as whatsappTokenAad };
 const language = () => process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
 
 export interface ConnectDeps {
