@@ -209,7 +209,8 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
   const loopback = host !== undefined && LOOPBACK.has(host);
   const localRun = production && parsed.ALLOW_INSECURE_LOCAL_RUN === true && loopback;
   /** Dev-only settings: refused in production, except under the local-run escape hatch. */
-  const devOnly = (variable: string, message: string) => (production && !localRun ? errors : warnings).push(`${variable}: ${message}`);
+  const devOnly = (variable: string, message: string) =>
+    (production && !localRun ? errors : warnings).push(`${variable}: ${message}${localRun ? " [tolerated: ALLOW_INSECURE_LOCAL_RUN=true]" : ""}`);
 
   if (production && parsed.ALLOW_INSECURE_LOCAL_RUN === true && !loopback) {
     errors.push("ALLOW_INSECURE_LOCAL_RUN: only honoured when APP_URL is http(s)://localhost, 127.0.0.1 or [::1]; remove it from real deployments");
