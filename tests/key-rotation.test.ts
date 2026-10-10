@@ -256,41 +256,44 @@ test("every *_enc / *Enc column in prisma/schema.prisma is covered by the rotati
   assert.deepEqual([...discovered], ENCRYPTED_COLUMNS.map((c) => c.name).sort());
 });
 
-test("the coverage check really notices a new encrypted column (the admin 2FA secret, in a camelCase and a snake_case spelling)", () => {
+test("the coverage check really notices a new encrypted column (in a camelCase and a snake_case spelling)", () => {
+  // The admin 2FA secret is a real, listed column now, so this uses a made-up model to prove the check still notices
+  // the NEXT encrypted column someone adds and forgets to list.
   const schema =
     schemaText() +
     `
-model AdminUser {
+model Widget {
   id             String  @id
-  totpSecretEnc  String? @map("totp_secret_enc")
+  secretEnc      String? @map("secret_enc")
   other_enc      String?
   name           String
-  @@map("admin_users")
+  @@map("widgets")
 }
 `;
   const discovered = discoverEncryptedColumns(schema);
-  assert.ok(discovered.includes("admin_users.totp_secret_enc"), "@map'd camelCase field");
-  assert.ok(discovered.includes("admin_users.other_enc"), "snake_case field without @map");
+  assert.ok(discovered.includes("widgets.secret_enc"), "@map'd camelCase field");
+  assert.ok(discovered.includes("widgets.other_enc"), "snake_case field without @map");
 
   const problems = checkColumnCoverage(schema, ENCRYPTED_COLUMNS);
-  assert.deepEqual(problems.missing, ["admin_users.other_enc", "admin_users.totp_secret_enc"]);
+  assert.deepEqual(problems.missing, ["widgets.other_enc", "widgets.secret_enc"]);
 
-  // With the entry described through the generalised fields (own-id owner column), the 2FA column is covered...
-  const admin: EncryptedColumn = {
-    name: "admin_users.totp_secret_enc",
-    table: "admin_users",
-    column: "totp_secret_enc",
-    ownerColumn: "id",
-    aad: (adminId) => `admin-totp:${adminId}`,
-  };
-  const covered = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, admin]);
-  assert.deepEqual(covered.missing, ["admin_users.other_enc"]);
+  // The real schema: every encrypted column is listed, including the admin 2FA secret (an own-id owner column).
+  const real = checkColumnCoverage(schemaText(), ENCRYPTED_COLUMNS);
+  assert.deepEqual(real.missing, []);
+  assert.deepEqual(real.badColumns, []);
+  assert.deepEqual(real.unknown, []);
+  assert.ok(ENCRYPTED_COLUMNS.some((c) => c.name === "admin_users.totp_secret_enc" && c.ownerColumn === "id"), "admin 2FA secret is rotated");
+  assert.equal(ENCRYPTED_COLUMNS.find((c) => c.name === "admin_users.totp_secret_enc")!.aad("admin1"), "admin-totp:admin1");
+
+  // Describing the new column through the generalised fields covers it, and a typo in the owner column is caught.
+  const widget: EncryptedColumn = { name: "widgets.secret_enc", table: "widgets", column: "secret_enc", ownerColumn: "id", aad: (id) => `widget:${id}` };
+  const covered = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, widget]);
+  assert.deepEqual(covered.missing, ["widgets.other_enc"]);
   assert.deepEqual(covered.badColumns, []);
-  // ...and a typo in the owner column is caught.
-  const typo = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, { ...admin, ownerColumn: "admin_id" }]);
-  assert.match(typo.badColumns.join("\n"), /ownerColumn "admin_id" is not a column of admin_users/);
+  const typo = checkColumnCoverage(schema, [...ENCRYPTED_COLUMNS, { ...widget, ownerColumn: "widget_id" }]);
+  assert.match(typo.badColumns.join("\n"), /ownerColumn "widget_id" is not a column of widgets/);
   // A listed column that is not in the schema is reported as unknown.
-  assert.deepEqual(checkColumnCoverage(schemaText(), [...ENCRYPTED_COLUMNS, admin]).unknown, ["admin_users.totp_secret_enc"]);
+  assert.deepEqual(checkColumnCoverage(schemaText(), [...ENCRYPTED_COLUMNS, widget]).unknown, ["widgets.secret_enc"]);
 });
 
 test("a column whose AAD is its own row id rotates and verifies like any other (ownerColumn = id)", async () => {
