@@ -1,5 +1,15 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { RegisterView } from "@/components/views/auth/RegisterView";
+import { PageTitle } from "../../lib/head";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/10-public-auth replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * Under the GuestOnly layout route: a signed-in visitor never sees this form, the guard sends them on to `safeNextPath(next)`
+ * (the dashboard unless there is a valid `?next=`). The old page always redirected to /dashboard.
+ */
+export function Component() {
+  return (
+    <>
+      <PageTitle title="Create your account" />
+      <RegisterView />
+    </>
+  );
+}
