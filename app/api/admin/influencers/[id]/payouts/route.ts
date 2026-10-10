@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { recordAudit } from "@/lib/admin/audit";
-import { requireAdminApi } from "@/lib/admin/session";
+import { requireAdminMfa } from "@/lib/admin/session";
 import { jsonError, parseJson } from "@/lib/http";
 import { createPayout, PayoutError } from "@/lib/payouts";
 import { clientIp } from "@/lib/rate-limit";
@@ -10,7 +10,7 @@ const schema = z.object({ currency: z.string().length(3).transform((c) => c.toUp
 
 // Creates a PENDING payout from everything currently payable for this influencer in one currency.
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdminApi();
+  const admin = await requireAdminMfa();
   if (admin instanceof NextResponse) return admin;
   const { id } = await ctx.params;
   const parsed = await parseJson(req, schema);

@@ -94,9 +94,36 @@ Customers pay the platform's Razorpay account; the owner pays influencers by han
    payable payments into a `PENDING` payout (a row lock stops two admins paying the same money twice):
    `payout = (paid - refunded) - platform fee`. The fee is `PLATFORM_FEE_BPS` by default, overridable per influencer, and
    is floored to a whole paisa.
-4. Reveal the account (audit-logged), send the money yourself, then **Payouts > Mark as paid** with the bank reference (UTR).
-   The influencer is emailed. **Cancel** releases the payments. A refund made after a payout was paid is flagged
-   "refunded since, to recover".
+4. A second administrator **approves** the payout (see below). Reveal the account (audit-logged), send the money yourself,
+   then **Payouts > Mark as paid** with the bank reference (UTR). The influencer is emailed. **Cancel** releases the
+   payments. A refund made after a payout was paid is flagged "refunded since, to recover".
+
+## Admin two-factor and payout approval
+Revealing bank details and moving money used to need only an admin password. Now:
+
+- **Two-factor sign-in (TOTP, RFC 6238; authenticator app, no extra dependency).** Under **Admin > Security** an
+  administrator adds a key (or the `otpauth://` link) to Google Authenticator, Authy, 1Password etc., confirms one code,
+  and is shown 10 single-use **recovery codes** once (they are stored only as SHA-256). From then on sign-in is two
+  steps: email + password gives a 5-minute signed token and no session; the session is created only after a valid
+  6-digit code or a recovery code. A code works once (the last accepted 30-second step is stored, so a code that was
+  seen cannot be replayed), +-1 step of clock drift is tolerated, and the second step is rate limited per admin and IP.
+  The secret is stored AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`). Regenerating recovery codes and turning 2FA off
+  both need a fresh code, and enabling 2FA signs out the admin's other sessions.
+- **`ADMIN_REQUIRE_2FA`** (default `true` in production, `false` elsewhere). When on, an administrator who has not enrolled
+  is redirected to `/admin/security` from every other admin page, and every admin API except the enrolment one answers
+  `403 { error, mfaRequired: true }`. If an admin loses both the authenticator and the recovery codes, the owner runs
+  `npm run admin:create -- --email them@company.com --reset-2fa` (ends their sessions, writes an audit entry).
+- **Sensitive actions need an MFA-verified session** whenever 2FA is required or enabled: reveal / verify / reject payout
+  details, reconcile and undo, create, approve, pay and cancel payouts, change a fee. A password-only session (for
+  example one that predates enrolment) gets `403 mfaRequired` and has to sign in again.
+- **`PAYOUT_FOUR_EYES`** (default `true` in production, `false` elsewhere): a payout can only be marked as paid after a
+  second administrator has **approved** it, and the approver must not be the administrator who created it (enforced in
+  `lib/payouts.ts`, not just hidden in the UI). The payout list shows "Awaiting approval" and an Approve button for
+  the other administrator; Mark as paid stays disabled until then. `PAYOUT_FOUR_EYES_MIN_MINOR` (default `0` = always)
+  limits approval to payouts whose net amount, in minor units, is at or above it. With four-eyes on and only one active
+  administrator the console says so: create a second one (`npm run admin:create`) or set `PAYOUT_FOUR_EYES=false`.
+  Approvals are audit-logged as `payout.approved`.
+- **Security page** also lists every administrator (2FA on or off, last sign-in, disabled).
 
 ## Custom services
 Every service is influencer-defined: title, length, price, 1:1 or group (any seat count), cancellation policy, plus:

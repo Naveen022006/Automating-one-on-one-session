@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { recordAudit } from "@/lib/admin/audit";
-import { requireAdminApi } from "@/lib/admin/session";
+import { requireAdminMfa } from "@/lib/admin/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
 import { clientIp } from "@/lib/rate-limit";
@@ -10,7 +10,7 @@ import { clientIp } from "@/lib/rate-limit";
 const schema = z.object({ feePercent: z.number().min(0).max(50).nullable() });
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdminApi();
+  const admin = await requireAdminMfa();
   if (admin instanceof NextResponse) return admin;
   const { id } = await ctx.params;
   const parsed = await parseJson(req, schema);

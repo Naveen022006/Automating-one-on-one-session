@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
+import { ADMIN_SECURITY_PATH, admin2faRequired } from "@/lib/admin/policy";
 import { hashToken, randomToken } from "@/lib/auth/tokens";
 import { dummyPasswordHash, hashPassword, passwordProblem, verifyPassword } from "@/lib/auth/password";
 import { isSecureCookies } from "@/lib/auth/session";
@@ -11,6 +12,10 @@ import { prisma } from "@/lib/db";
  * Administrator sessions. A deliberately separate plane from influencer sessions: its own accounts, its own
  * cookie, SameSite=Strict, and a hard 12-hour lifetime (no sliding expiry), so an influencer session can never
  * reach /admin and a stolen admin cookie stops working by the end of the working day.
+ *
+ * Two-factor: an admin with TOTP enabled only gets a session after a second factor (lib/admin/mfa.ts), and that
+ * session carries `mfaVerifiedAt`. Sensitive actions call requireAdminMfa(); with ADMIN_REQUIRE_2FA on, an admin
+ * who has not enrolled can reach nothing but the enrollment page and its API.
  */
 
 export const ADMIN_SESSION_TTL_MS = 12 * 3_600_000;
@@ -28,39 +33,64 @@ export interface AdminContext {
   adminId: string;
   email: string;
   name: string;
+  /** The admin has finished enrolling a second factor. */
+  totpEnabled: boolean;
+  /** This session passed a second factor. */
+  mfaVerified: boolean;
 }
 
 export function normaliseAdminEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+export interface AdminPasswordLogin {
+  adminId: string;
+  /** The admin must now present a second factor; do not create a session yet. */
+  totpEnabled: boolean;
+  /** Changes when the password changes, so a half-finished sign-in cannot outlive a password change. */
+  passwordFingerprint: string;
+}
+
+/** Ties a pending sign-in to the password it was started with. */
+export function adminPasswordFingerprint(passwordHash: string): string {
+  return hashToken(`admin-2fa-pw:${passwordHash}`).slice(0, 16);
+}
+
 /**
  * Checks an email + password. Always spends a password hash (a dummy one for unknown or disabled accounts) so the
- * response time does not reveal which emails are administrators. Returns the admin id, or null.
+ * response time does not reveal which emails are administrators. Returns the admin id (and whether a second
+ * factor is due), or null. It does not create a session.
  */
-export async function authenticateAdmin(emailInput: string, password: string): Promise<{ adminId: string } | null> {
+export async function authenticateAdmin(emailInput: string, password: string): Promise<AdminPasswordLogin | null> {
   const admin = await prisma.adminUser.findUnique({ where: { email: normaliseAdminEmail(emailInput) } });
   const usable = admin && !admin.disabledAt;
   const ok = await verifyPassword(password, usable ? admin.passwordHash : await dummyPasswordHash());
   if (!usable || !ok) return null;
-  await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
-  return { adminId: admin.id };
+  return { adminId: admin.id, totpEnabled: admin.totpEnabledAt != null, passwordFingerprint: adminPasswordFingerprint(admin.passwordHash) };
 }
 
+/**
+ * Creates the session row and returns the raw cookie token. Call it only once sign-in is complete: after the
+ * password for an admin without 2FA, or after the second factor (`mfaVerified: true`) for one with it.
+ */
 export async function createAdminSession(
   adminId: string,
   meta: { userAgent?: string | null; ip?: string | null } = {},
+  opts: { mfaVerified?: boolean } = {},
 ): Promise<string> {
   const token = randomToken();
+  const now = new Date();
   await prisma.adminSession.create({
     data: {
       tokenHash: hashToken(token),
       adminId,
-      expiresAt: new Date(Date.now() + ADMIN_SESSION_TTL_MS),
+      expiresAt: new Date(now.getTime() + ADMIN_SESSION_TTL_MS),
       userAgent: meta.userAgent?.slice(0, 300) ?? null,
       ip: meta.ip?.slice(0, 64) ?? null,
+      mfaVerifiedAt: opts.mfaVerified ? now : null,
     },
   });
+  await prisma.adminUser.update({ where: { id: adminId }, data: { lastLoginAt: now } });
   return token;
 }
 
@@ -69,14 +99,21 @@ export async function resolveAdminSession(token: string | null | undefined): Pro
   if (!token || token.length > 200) return null;
   const row = await prisma.adminSession.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: { admin: { select: { id: true, email: true, name: true, disabledAt: true } } },
+    include: { admin: { select: { id: true, email: true, name: true, disabledAt: true, totpEnabledAt: true } } },
   });
   if (!row) return null;
   if (row.expiresAt.getTime() <= Date.now() || row.admin.disabledAt) {
     await prisma.adminSession.delete({ where: { id: row.id } }).catch(() => {});
     return null;
   }
-  return { sessionId: row.id, adminId: row.admin.id, email: row.admin.email, name: row.admin.name };
+  return {
+    sessionId: row.id,
+    adminId: row.admin.id,
+    email: row.admin.email,
+    name: row.admin.name,
+    totpEnabled: row.admin.totpEnabledAt != null,
+    mfaVerified: row.mfaVerifiedAt != null,
+  };
 }
 
 /** The signed-in admin for this request (server components and route handlers), memoised per request. */
@@ -85,18 +122,77 @@ export const getAdminAuth = cache(async (): Promise<AdminContext | null> => {
   return resolveAdminSession(jar.get(adminCookieName())?.value);
 });
 
-/** Page guard: unauthenticated visitors go to the admin login. */
-export async function requireAdminPage(path = "/admin"): Promise<AdminContext> {
+/* ---------- Two-factor gate ---------- */
+
+/**
+ *  - "ok":     nothing more is needed (2FA is on and this session passed it, or 2FA is neither enabled nor required)
+ *  - "enroll": 2FA is required (ADMIN_REQUIRE_2FA) but this admin has not set it up
+ *  - "verify": 2FA is enabled but this session did not pass it (a session older than the enrollment)
+ */
+export type MfaGate = "ok" | "enroll" | "verify";
+
+export function mfaGateStatus(admin: Pick<AdminContext, "totpEnabled" | "mfaVerified">, env: NodeJS.ProcessEnv = process.env): MfaGate {
+  if (admin.totpEnabled) return admin.mfaVerified ? "ok" : "verify";
+  return admin2faRequired(env) ? "enroll" : "ok";
+}
+
+/** 403 with `mfaRequired: true`; `mfaAction` says whether to enrol or to sign in again with a code. */
+export function mfaDeniedResponse(gate: "enroll" | "verify"): NextResponse {
+  const error =
+    gate === "enroll"
+      ? "Two-factor authentication is required. Set it up under Security before using the admin console."
+      : "This action needs a session verified with your authenticator. Sign out and sign in again with your code.";
+  return NextResponse.json({ error, mfaRequired: true, mfaAction: gate }, { status: 403 });
+}
+
+/**
+ * The response to send for this admin on a route, or null to continue. `mfa` marks a sensitive action that needs a
+ * verified session; every route (except the enrollment ones, `allowEnrollment`) is closed to an admin who must enrol.
+ */
+export function adminApiGate(
+  admin: Pick<AdminContext, "totpEnabled" | "mfaVerified">,
+  opts: { mfa?: boolean; allowEnrollment?: boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): NextResponse | null {
+  const gate = mfaGateStatus(admin, env);
+  if (gate === "enroll" && !opts.allowEnrollment) return mfaDeniedResponse("enroll");
+  if (gate === "verify" && opts.mfa) return mfaDeniedResponse("verify");
+  return null;
+}
+
+/**
+ * Page guard: unauthenticated visitors go to the admin login, and an admin who must enrol is sent to the Security
+ * page (the only page open to them). `mfaGate: false` skips the enrollment redirect for callers that cannot tell
+ * which page they are guarding.
+ */
+export async function requireAdminPage(path = "/admin", opts: { mfaGate?: boolean } = {}): Promise<AdminContext> {
   const admin = await getAdminAuth();
   if (!admin) redirect(`/admin/login?next=${encodeURIComponent(path)}`);
+  if (opts.mfaGate !== false && path.split("?")[0] !== ADMIN_SECURITY_PATH && mfaGateStatus(admin) === "enroll") {
+    redirect(ADMIN_SECURITY_PATH);
+  }
   return admin;
 }
 
-/** Route-handler guard: the admin context, or a 401 response to return. */
-export async function requireAdminApi(): Promise<AdminContext | NextResponse> {
+/**
+ * Route-handler guard: the admin context, or a 401 (not signed in) / 403 `{ mfaRequired: true }` (must enrol first)
+ * response to return. Enrollment routes pass `allowEnrollment`.
+ */
+export async function requireAdminApi(opts: { allowEnrollment?: boolean } = {}): Promise<AdminContext | NextResponse> {
   const admin = await getAdminAuth();
   if (!admin) return NextResponse.json({ error: "Please sign in to the admin console." }, { status: 401 });
-  return admin;
+  return adminApiGate(admin, opts) ?? admin;
+}
+
+/**
+ * Route-handler guard for sensitive actions (revealing bank details, reviewing payout details, reconciling, creating,
+ * approving, paying or cancelling payouts, changing fees). As requireAdminApi, and additionally the session must have
+ * passed a second factor whenever the admin has one enabled.
+ */
+export async function requireAdminMfa(): Promise<AdminContext | NextResponse> {
+  const admin = await getAdminAuth();
+  if (!admin) return NextResponse.json({ error: "Please sign in to the admin console." }, { status: 401 });
+  return adminApiGate(admin, { mfa: true }) ?? admin;
 }
 
 export async function revokeAdminSession(sessionId: string): Promise<void> {

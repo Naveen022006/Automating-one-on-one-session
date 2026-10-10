@@ -3,19 +3,21 @@ import { notFound } from "next/navigation";
 import { PageHead } from "@/components/app/AppShell";
 import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@/components/ui/primitives";
 import { PayoutPanel } from "@/components/admin/PayoutPanel";
-import { getInfluencerDetail } from "@/lib/admin/data";
-import { CreatePayoutButton, FeeForm, PayoutRowActions } from "@/components/admin/PayoutActions";
+import { activeAdminCount, getInfluencerDetail } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
+import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@/components/admin/PayoutActions";
 import { prisma } from "@/lib/db";
 import { evaluateReadiness, readinessInput } from "@/lib/readiness";
 import { viewTemplates } from "@/lib/whatsapp-connection";
 import { getPayoutAccountView } from "@/lib/payout-account";
-import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, loadPayable, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
+import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, fourEyesEnabled, loadPayable, payoutApprovalView, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Influencer" };
 
 export default async function AdminInfluencerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const admin = await requireAdminPage(`/admin/influencers/${id}`);
   const detail = await getInfluencerDetail(id);
   if (!detail) notFound();
   const { influencer: i, bookings } = detail;
@@ -28,6 +30,7 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   const currencies = summariseCurrencies(payable, feeBps);
   const owed = new Map(await Promise.all(payouts.filter((p) => p.status === "PAID").map(async (p) => [p.id, await postPayoutRefunds(p.id)] as const)));
   const verified = payout?.status === "VERIFIED";
+  const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
   const readiness = evaluateReadiness(readinessInput({ ...i, payoutAccount: payout ? { status: payout.status } : null, _count: { rules: await prisma.availabilityRule.count({ where: { influencerId: id } }), services: i.services.filter((s) => s.active).length } }, i.user?.emailVerifiedAt != null || !i.user));
 
   return (
@@ -97,6 +100,12 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
           <FeeForm influencerId={i.id} feeBps={i.platformFeeBps} defaultBps={defaultFeeBps()} />
           <p className="subtle">Current fee: {formatFeePercent(feeBps)}. Changing it affects payouts created from now on, not ones already created.</p>
           {!verified && <Alert tone="warning">Payouts can be created once this influencer&apos;s payout details are verified.</Alert>}
+          {onlyOneAdmin && (
+            <Alert tone="warning" title="Payouts need a second administrator">
+              Payout approval is on, but there is only one active administrator, and nobody can approve a payout they created. Create a second administrator
+              with <code>npm run admin:create</code>, or set <code>PAYOUT_FOUR_EYES=false</code> if one person really handles payouts alone.
+            </Alert>
+          )}
           {currencies.length === 0 ? (
             <p className="muted">No paid sessions waiting to be paid out.</p>
           ) : (
@@ -134,19 +143,22 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
                   </tr>
                 </thead>
                 <tbody>
-                  {payouts.map((p) => (
-                    <tr key={p.id}>
-                      <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
-                      <td data-label="Send to">{p.destination}</td>
-                      <td data-label="Amount" className="num">{formatMoney(p.netMinor, p.currency)}</td>
-                      <td data-label="Status">
-                        {p.status === "PAID" ? <Badge tone="success">Paid</Badge> : p.status === "PENDING" ? <Badge tone="warning">To send</Badge> : <Badge>Cancelled</Badge>}
-                        {p.reference && <div className="subtle">UTR {p.reference}</div>}
-                        {(owed.get(p.id) ?? 0) > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(owed.get(p.id)!, p.currency)} to recover</Badge></div>}
-                      </td>
-                      <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} /></td>
-                    </tr>
-                  ))}
+                  {payouts.map((p) => {
+                    const approval = payoutApprovalView(p, admin.email);
+                    return (
+                      <tr key={p.id}>
+                        <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                        <td data-label="Send to">{p.destination}</td>
+                        <td data-label="Amount" className="num">{formatMoney(p.netMinor, p.currency)}</td>
+                        <td data-label="Status">
+                          <PayoutStatusBadges status={p.status} approval={approval} />
+                          {p.reference && <div className="subtle">UTR {p.reference}</div>}
+                          {(owed.get(p.id) ?? 0) > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(owed.get(p.id)!, p.currency)} to recover</Badge></div>}
+                        </td>
+                        <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} approval={approval} /></td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

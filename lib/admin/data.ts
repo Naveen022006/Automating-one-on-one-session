@@ -275,3 +275,26 @@ export async function listAudit(page: number) {
   ]);
   return paged(rows, total, page);
 }
+
+export interface AdministratorRow {
+  id: string;
+  email: string;
+  name: string;
+  totpEnabled: boolean;
+  lastLoginAt: Date | null;
+  disabled: boolean;
+}
+
+/** Read-only list of administrator accounts (never includes secrets). */
+export async function listAdministrators(): Promise<AdministratorRow[]> {
+  const rows = await prisma.adminUser.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { id: true, email: true, name: true, totpEnabledAt: true, lastLoginAt: true, disabledAt: true },
+  });
+  return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, totpEnabled: r.totpEnabledAt != null, lastLoginAt: r.lastLoginAt, disabled: r.disabledAt != null }));
+}
+
+/** How many administrators can currently sign in. With four-eyes payout approval on, fewer than two means nobody can approve. */
+export async function activeAdminCount(): Promise<number> {
+  return prisma.adminUser.count({ where: { disabledAt: null } });
+}

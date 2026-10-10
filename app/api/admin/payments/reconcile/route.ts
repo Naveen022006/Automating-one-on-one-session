@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { recordAudit } from "@/lib/admin/audit";
-import { requireAdminApi } from "@/lib/admin/session";
+import { requireAdminMfa } from "@/lib/admin/session";
 import { parseJson } from "@/lib/http";
 import { reconcilePayments } from "@/lib/payouts";
 import { clientIp } from "@/lib/rate-limit";
@@ -10,7 +10,7 @@ const schema = z.object({ paymentIds: z.array(z.string().min(1).max(40)).min(1).
 
 // Confirms each payment with Razorpay and marks it reconciled. Only reconciled payments can be paid out.
 export async function POST(req: Request) {
-  const admin = await requireAdminApi();
+  const admin = await requireAdminMfa();
   if (admin instanceof NextResponse) return admin;
   const parsed = await parseJson(req, schema);
   if (!parsed.ok) return parsed.response;

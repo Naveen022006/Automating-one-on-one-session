@@ -4,11 +4,13 @@ import { PageHead } from "@/components/app/AppShell";
 import { Badge, Button, Card, EmptyState, Input, Pagination } from "@/components/ui/primitives";
 import { IconUsers } from "@/components/icons";
 import { listInfluencers, parsePage } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Influencers" };
 
 export default async function AdminInfluencersPage({ searchParams }: { searchParams: Promise<{ page?: string; q?: string }> }) {
+  await requireAdminPage("/admin/influencers");
   const sp = await searchParams;
   const page = parsePage(sp.page);
   const q = sp.q?.slice(0, 80);

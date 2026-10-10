@@ -3,10 +3,12 @@ import { PageHead } from "@/components/app/AppShell";
 import { IconShield } from "@/components/icons";
 import { EmptyState, Pagination } from "@/components/ui/primitives";
 import { listAudit, parsePage } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 
 export const metadata: Metadata = { title: "Audit log" };
 
 export default async function AdminAuditPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  await requireAdminPage("/admin/audit");
   const sp = await searchParams;
   const data = await listAudit(parsePage(sp.page));
 

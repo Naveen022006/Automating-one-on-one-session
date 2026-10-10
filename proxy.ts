@@ -129,6 +129,9 @@ function handlePage(req: NextRequest): NextResponse {
   const csp = contentSecurityPolicy(nonce);
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set("x-nonce", nonce);
+  // Server layouts do not receive the pathname; the admin console layout needs it to send an admin who must enrol
+  // two-factor to /admin/security (and only there). Overwritten here, so a client cannot choose it.
+  requestHeaders.set("x-pathname", pathname);
   requestHeaders.set("Content-Security-Policy", csp);
 
   const res = NextResponse.next({ request: { headers: requestHeaders } });

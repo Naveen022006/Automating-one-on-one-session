@@ -445,21 +445,46 @@ model AdminUser {
   lastLoginAt  DateTime? @map("last_login_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  sessions AdminSession[]
-  audits   AdminAuditLog[]
+  // Two-factor sign-in (TOTP, RFC 6238). The secret is AES-256-GCM encrypted (aad `admin-totp:<id>`); it exists
+  // from the start of enrollment, but 2FA only counts once `totpEnabledAt` is set by confirming a first code.
+  // `totpLastStep` is the last accepted 30-second time step, so a code can never be used twice.
+  totpSecretEnc String?   @map("totp_secret_enc")
+  totpEnabledAt DateTime? @map("totp_enabled_at")
+  totpLastStep  Int?      @map("totp_last_step")
+
+  sessions      AdminSession[]
+  audits        AdminAuditLog[]
+  recoveryCodes AdminRecoveryCode[]
 
   @@map("admin_users")
 }
 
+// Single-use recovery codes for an admin who has lost their authenticator. Only the SHA-256 of each code is stored
+// (see lib/admin/totp.ts); the plain codes are shown once, at enrollment or when regenerated.
+model AdminRecoveryCode {
+  id        String    @id @default(cuid())
+  adminId   String    @map("admin_id")
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  admin AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@unique([adminId, codeHash])
+  @@map("admin_recovery_codes")
+}
+
 // Absolute 12-hour sessions (no sliding expiry). Only the SHA-256 of the cookie token is stored.
 model AdminSession {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique @map("token_hash")
-  adminId   String   @map("admin_id")
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  userAgent String?  @map("user_agent")
-  ip        String?
+  id            String    @id @default(cuid())
+  tokenHash     String    @unique @map("token_hash")
+  adminId       String    @map("admin_id")
+  expiresAt     DateTime  @map("expires_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  userAgent     String?   @map("user_agent")
+  ip            String?
+  // Set when this session passed a second factor at sign-in (or enrolled one). Sensitive actions require it.
+  mfaVerifiedAt DateTime? @map("mfa_verified_at")
 
   admin AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
@@ -541,26 +566,29 @@ enum PayoutStatus {
 // One manual transfer from the platform owner to an influencer. Amounts are a snapshot taken when the payout was
 // created: gross (what customers paid) minus refunds already made, minus the platform fee, equals net (what is sent).
 model Payout {
-  id             String       @id @default(cuid())
-  influencerId   String       @map("influencer_id")
-  status         PayoutStatus @default(PENDING)
-  currency       String
-  grossMinor     Int          @map("gross_minor")
-  refundsMinor   Int          @map("refunds_minor")
-  feeBps         Int          @map("fee_bps")
-  feeMinor       Int          @map("fee_minor")
-  netMinor       Int          @map("net_minor")
-  paymentCount   Int          @map("payment_count")
+  id              String       @id @default(cuid())
+  influencerId    String       @map("influencer_id")
+  status          PayoutStatus @default(PENDING)
+  currency        String
+  grossMinor      Int          @map("gross_minor")
+  refundsMinor    Int          @map("refunds_minor")
+  feeBps          Int          @map("fee_bps")
+  feeMinor        Int          @map("fee_minor")
+  netMinor        Int          @map("net_minor")
+  paymentCount    Int          @map("payment_count")
   // What it was sent to (masked), copied at creation so history stays readable if the details change later.
-  destination    String
+  destination     String
   // Bank reference / UTR the administrator recorded when sending the money.
-  reference      String?
-  note           String?
-  createdByEmail String       @map("created_by_email")
-  paidByEmail    String?      @map("paid_by_email")
-  paidAt         DateTime?    @map("paid_at")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  reference       String?
+  note            String?
+  createdByEmail  String       @map("created_by_email")
+  paidByEmail     String?      @map("paid_by_email")
+  paidAt          DateTime?    @map("paid_at")
+  // Four-eyes approval: a second administrator (not `createdByEmail`) approves before the money is marked as sent.
+  approvedAt      DateTime?    @map("approved_at")
+  approvedByEmail String?      @map("approved_by_email")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Restrict)
   payments   Payment[]

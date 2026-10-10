@@ -5,6 +5,7 @@ import { ReconcileButton, UnreconcileButton } from "@/components/admin/PayoutAct
 import { IconCard } from "@/components/icons";
 import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@/components/ui/primitives";
 import { listPayments, MISMATCH_BOOKING_STATUSES, paymentViewCounts, parsePage, type PaymentFilter } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Payments" };
@@ -20,6 +21,7 @@ const VIEWS: { key: ViewKey; label: string }[] = [
 ];
 
 export default async function AdminPaymentsPage({ searchParams }: { searchParams: Promise<{ page?: string; view?: string }> }) {
+  await requireAdminPage("/admin/payments");
   const sp = await searchParams;
   const view = VIEWS.find((v) => v.key === sp.view)?.key ?? "all";
   const page = parsePage(sp.page);
