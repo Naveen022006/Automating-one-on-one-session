@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseKeyBytes } from "./crypto";
+import { keyFingerprint, parseKeyBytes } from "./crypto";
 
 /**
  * Start-up configuration validation.
@@ -17,9 +17,12 @@ import { parseKeyBytes } from "./crypto";
  *     process carries on. Production-only strictness (https, real email provider, Razorpay keys, ...) is not
  *     enforced in development, where `.env.example` deliberately uses dev-only settings.
  *
- * Settings that exist only for development (EMAIL_PROVIDER=log, MESSAGING_DRY_RUN=true, READINESS_BYPASS=true,
- * RATE_LIMIT_ENABLED=false) are refused in production, because each one silently disables something that real
- * customers depend on (emails, messages, go-live checks, abuse protection).
+ * Settings that exist only for development (EMAIL_PROVIDER=log, MESSAGING_DRY_RUN=true, WHATSAPP_DISABLED=true,
+ * READINESS_BYPASS=true, RATE_LIMIT_ENABLED=false) are refused in production, because each one silently disables
+ * something that real customers depend on (emails, messages, go-live checks, abuse protection).
+ *
+ * Values are never trimmed: the code reads `process.env` exactly as given, so in production a variable with leading
+ * or trailing whitespace is rejected by name (its value is never printed).
  *
  * The one escape hatch is ALLOW_INSECURE_LOCAL_RUN=true, for running the production containers on your own machine
  * (docker-compose.yml). It is honoured ONLY when APP_URL points at localhost / 127.0.0.1 / [::1], and it turns
@@ -48,6 +51,8 @@ export interface AppConfig {
   appUrl: string;
   database: { poolMax: number; statementTimeoutMs: number; connectTimeoutMs: number; idleTimeoutMs: number };
   redisConfigured: boolean;
+  /** Fingerprints (8 hex characters of a hash, safe to log) of the encryption keys; see keyFingerprint in lib/crypto.ts. */
+  encryption: { fingerprint: string | undefined; previousFingerprint: string | undefined };
   rateLimit: { enabled: boolean; store: "auto" | "redis" | "postgres" | "memory"; multiplier: number };
   email: { provider: "log" | "resend" | "postmark" };
   sms: { provider: "msg91" | "twilio" | "generic" };
@@ -114,7 +119,6 @@ const envSchema = z.object({
   APP_SECRET: z.string().optional(),
   TOKEN_ENCRYPTION_KEY: keyString.optional(),
   TOKEN_ENCRYPTION_KEY_PREVIOUS: keyString.optional(),
-  TOKEN_ENCRYPTION_KEY_NEW: keyString.optional(),
 
   EMAIL_PROVIDER: lowerEnum(["log", "resend", "postmark"], "resend, postmark, log").optional(),
   SMS_PROVIDER: lowerEnum(["msg91", "twilio", "generic"], "msg91, twilio, generic").optional(),
@@ -149,9 +153,37 @@ const envSchema = z.object({
 
 type ParsedEnv = z.infer<typeof envSchema>;
 
+/**
+ * Every variable this app reads (the names in .env.example plus a few others). In production a value with leading or
+ * trailing whitespace is REJECTED rather than trimmed, because the code reads `process.env` exactly as given: an
+ * `EMAIL_PROVIDER` of "resend\n" passes a trimmed check and then silently falls back to logging every email, and a
+ * padded `APP_URL` builds broken links. A test keeps this list in step with .env.example.
+ */
+export const KNOWN_ENV_VARS = [
+  "NODE_ENV", "DATABASE_URL", "DATABASE_POOL_MAX", "DATABASE_STATEMENT_TIMEOUT_MS", "DATABASE_CONNECT_TIMEOUT_MS", "DATABASE_IDLE_TIMEOUT_MS",
+  "APP_URL", "APP_SECRET", "APP_LOCALE", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "REDIS_URL",
+  "RATE_LIMIT_STORE", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MULTIPLIER", "CLIENT_IP_HEADER",
+  "NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL",
+  "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "AUTO_REFUND_ON_CANCEL",
+  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_REQUEST_GMAIL_SEND",
+  "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_WEBHOOK_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_TEMPLATE_LANGUAGE",
+  "WHATSAPP_DISABLED", "WHATSAPP_PLATFORM_FALLBACK", "WHATSAPP_REGISTRATION_PIN", "META_APP_ID", "META_APP_SECRET", "META_ES_CONFIG_ID",
+  "MESSAGING_DRY_RUN", "SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL",
+  "MSG91_TEMPLATE_DEFAULT", "MSG91_TEMPLATE_BOOKING_CONFIRMATION", "MSG91_TEMPLATE_REMINDER_24H", "MSG91_TEMPLATE_REMINDER_15M",
+  "MSG91_TEMPLATE_RESCHEDULE", "MSG91_TEMPLATE_CANCELLATION",
+  "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_MESSAGING_SERVICE_SID", "TWILIO_FROM",
+  "EMAIL_PROVIDER", "EMAIL_FROM", "RESEND_API_KEY", "POSTMARK_SERVER_TOKEN", "POSTMARK_MESSAGE_STREAM",
+  "ERROR_WEBHOOK_URL", "ENABLE_DESIGN_PAGE", "PAYOUT_HOLD_DAYS", "PLATFORM_FEE_BPS",
+  "READINESS_REQUIRED", "READINESS_BYPASS", "ALLOW_INSECURE_LOCAL_RUN",
+] as const;
+
 /* ---------- helpers ---------- */
 
-/** Trims every value and treats blank values as unset, which is how `KEY=` lines in .env files behave in practice. */
+/**
+ * Trims every value and treats blank values as unset, which is how `KEY=` lines in .env files behave in practice.
+ * The checks run on this normalised view only to avoid piling up follow-on messages; padded values are reported
+ * separately from the raw input (see KNOWN_ENV_VARS) and are fatal in production.
+ */
 function normalise(env: EnvRecord): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
@@ -159,6 +191,11 @@ function normalise(env: EnvRecord): Record<string, string> {
     if (t) out[k] = t;
   }
   return out;
+}
+
+function keyFingerprintOf(raw: string | undefined): string | undefined {
+  const key = parseKeyBytes(raw);
+  return key ? keyFingerprint(key) : undefined;
 }
 
 function hostOf(url: string | undefined): string | undefined {
@@ -188,6 +225,14 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
   /** Problems the app cannot run properly with: an error in production, a warning in development. */
   const essential = (variable: string, message: string) => (production ? errors : warnings).push(`${variable}: ${message}`);
   const warn = (variable: string, message: string) => warnings.push(`${variable}: ${message}`);
+
+  // 0. Padding. The app reads values exactly as given, so a stray newline or space is a real difference, not noise.
+  for (const name of KNOWN_ENV_VARS) {
+    const raw = input[name];
+    if (raw !== undefined && raw !== "" && raw !== raw.trim()) {
+      essential(name, "has leading or trailing whitespace (often a stray newline or space from pasting); remove it, the value is used exactly as given");
+    }
+  }
 
   // 1. Shape and format of every variable that is set. Bad values are dropped before the config is built.
   let parsed: ParsedEnv;
@@ -248,6 +293,7 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
       if (!env.EMAIL_FROM) errors.push(`EMAIL_FROM: is not set (EMAIL_PROVIDER=${emailProvider})`);
     }
     if (parsed.MESSAGING_DRY_RUN === true) devOnly("MESSAGING_DRY_RUN", "must not be true in production (messages would be logged, never sent)");
+    if (parsed.WHATSAPP_DISABLED === true) devOnly("WHATSAPP_DISABLED", "must not be true in production (every WhatsApp message would silently go by SMS instead)");
     if (parsed.READINESS_BYPASS === true) devOnly("READINESS_BYPASS", "must not be true in production (it skips the go-live checks)");
     if (parsed.RATE_LIMIT_ENABLED === false) devOnly("RATE_LIMIT_ENABLED", "must not be false in production (rate limits protect login, holds and checkout)");
 
@@ -259,7 +305,7 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     else if (env.RAZORPAY_KEY_ID && !/^rzp_(test|live)_/.test(env.RAZORPAY_KEY_ID)) warn("RAZORPAY_KEY_ID", "does not look like a Razorpay key id (rzp_live_... / rzp_test_...)");
     if (parsed.WHATSAPP_PLATFORM_FALLBACK === true) warn("WHATSAPP_PLATFORM_FALLBACK", "is true: meant for testing with the platform's own number");
     if (parsed.ENABLE_DESIGN_PAGE === true) warn("ENABLE_DESIGN_PAGE", "is true: the /design catalogue is publicly reachable");
-    if (parsed.TOKEN_ENCRYPTION_KEY_NEW) warn("TOKEN_ENCRYPTION_KEY_NEW", "is set on a running service; it belongs only to the keys:rotate run");
+    if (parsed.TOKEN_ENCRYPTION_KEY_PREVIOUS) warn("TOKEN_ENCRYPTION_KEY_PREVIOUS", "is set: a key rotation is in progress. Run keys:rotate and keys:verify, then remove it (doc/08-deployment.md)");
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REDIRECT_URI) {
       warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REDIRECT_URI", "are not all set: influencers cannot connect Google Calendar, so no Meet links");
     } else if (parsed.APP_URL && hostOf(env.GOOGLE_REDIRECT_URI) !== hostOf(parsed.APP_URL)) {
@@ -293,6 +339,10 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
         idleTimeoutMs: parsed.DATABASE_IDLE_TIMEOUT_MS ?? 30_000,
       },
       redisConfigured: Boolean(parsed.REDIS_URL),
+      encryption: {
+        fingerprint: keyFingerprintOf(parsed.TOKEN_ENCRYPTION_KEY),
+        previousFingerprint: keyFingerprintOf(parsed.TOKEN_ENCRYPTION_KEY_PREVIOUS),
+      },
       rateLimit: {
         enabled: parsed.RATE_LIMIT_ENABLED !== false,
         store: parsed.RATE_LIMIT_STORE ?? "auto",
@@ -356,6 +406,12 @@ export function initEnv(label: string): AppConfig {
     const warnings = cached?.warnings ?? [];
     for (const w of warnings) console.warn(`[env] warning (${label}): ${w}`);
     if (config.isProduction) console.log(`[env] ${label}: configuration valid for production (${warnings.length} warning${warnings.length === 1 ? "" : "s"})`);
+    // Fingerprint only, never the key. Compare it across web and worker instances, and with `keys:rotate`/`keys:verify`
+    // output, to be sure every process and every maintenance command is looking at the same key.
+    const { fingerprint, previousFingerprint } = config.encryption;
+    if (fingerprint) {
+      console.log(`[env] ${label}: encryption key fingerprint ${fingerprint}${previousFingerprint ? ` (previous key fingerprint ${previousFingerprint})` : ""}`);
+    }
   }
   return config;
 }

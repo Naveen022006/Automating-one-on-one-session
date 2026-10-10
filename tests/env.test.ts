@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { EnvValidationError, getConfig, initEnv, initEnvOrExit, resetConfigForTests, validateEnv, type EnvRecord } from "../lib/env";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { keyFingerprint } from "../lib/crypto";
+import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, validateEnv, type EnvRecord } from "../lib/env";
 
 // Pure tests: the validator takes an env record, so nothing here reads or changes the real environment
 // (except the few tests of the process wiring, which restore process.env).
@@ -65,6 +68,7 @@ const failures: [string, EnvRecord, string][] = [
   ["postmark without POSTMARK_SERVER_TOKEN", { ...without("RESEND_API_KEY"), EMAIL_PROVIDER: "postmark" }, "POSTMARK_SERVER_TOKEN"],
   ["no EMAIL_FROM", without("EMAIL_FROM"), "EMAIL_FROM"],
   ["MESSAGING_DRY_RUN=true", { ...good, MESSAGING_DRY_RUN: "true" }, "MESSAGING_DRY_RUN"],
+  ["WHATSAPP_DISABLED=true", { ...good, WHATSAPP_DISABLED: "true" }, "WHATSAPP_DISABLED"],
   ["READINESS_BYPASS=true", { ...good, READINESS_BYPASS: "true" }, "READINESS_BYPASS"],
   ["RATE_LIMIT_ENABLED=false", { ...good, RATE_LIMIT_ENABLED: "false" }, "RATE_LIMIT_ENABLED"],
   ["unknown RATE_LIMIT_STORE", { ...good, RATE_LIMIT_STORE: "memcached" }, "RATE_LIMIT_STORE"],
@@ -91,11 +95,12 @@ test("every problem is reported at once, in one message, without any secret valu
     TOKEN_ENCRYPTION_KEY: SECRET_B,
     EMAIL_PROVIDER: "log",
     MESSAGING_DRY_RUN: "true",
+    WHATSAPP_DISABLED: "true",
     READINESS_BYPASS: "true",
     RATE_LIMIT_ENABLED: "false",
   };
   const r = validateEnv(env);
-  const variables = ["DATABASE_URL", "APP_URL", "APP_SECRET", "TOKEN_ENCRYPTION_KEY", "REDIS_URL", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "EMAIL_PROVIDER", "MESSAGING_DRY_RUN", "READINESS_BYPASS", "RATE_LIMIT_ENABLED"];
+  const variables = ["DATABASE_URL", "APP_URL", "APP_SECRET", "TOKEN_ENCRYPTION_KEY", "REDIS_URL", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "EMAIL_PROVIDER", "MESSAGING_DRY_RUN", "WHATSAPP_DISABLED", "READINESS_BYPASS", "RATE_LIMIT_ENABLED"];
   for (const v of variables) assert.ok(r.errors.some((e) => e.startsWith(`${v}:`)), `${v} should be reported`);
 
   const error = new EnvValidationError(r.errors);
@@ -108,11 +113,56 @@ test("every problem is reported at once, in one message, without any secret valu
   assert.match(error.message, /\d+ problems/);
 });
 
-test("blank values count as unset, and surrounding whitespace is ignored", () => {
-  const r = validateEnv({ ...good, RAZORPAY_KEY_ID: "   ", REDIS_URL: "", APP_URL: ` ${good.APP_URL} ` });
-  assert.ok(r.errors.some((e) => e.startsWith("RAZORPAY_KEY_ID:")));
-  assert.ok(r.errors.some((e) => e.startsWith("REDIS_URL:")));
-  assert.ok(!r.errors.some((e) => e.startsWith("APP_URL:")));
+test("blank values count as unset", () => {
+  const r = validateEnv({ ...good, RAZORPAY_KEY_ID: "", REDIS_URL: "" });
+  assert.ok(r.errors.some((e) => e.startsWith("REDIS_URL:") && e.includes("is not set")));
+  assert.ok(r.errors.some((e) => e.startsWith("RAZORPAY_KEY_ID:") && e.includes("is not set")));
+});
+
+// The app reads process.env exactly as given, so padding is a real difference. In production it is rejected, by name,
+// without echoing the value; nothing is trimmed on the app's behalf.
+const padded: [string, string, string][] = [
+  ["EMAIL_PROVIDER with a trailing newline (the app would silently log every email)", "EMAIL_PROVIDER", "resend\n"],
+  ["APP_URL with a leading space", "APP_URL", " https://sessions.example.com"],
+  ["APP_URL with a trailing space", "APP_URL", "https://sessions.example.com "],
+  ["RESEND_API_KEY with a trailing CR (CRLF env file)", "RESEND_API_KEY", "re_123\r"],
+  ["DATABASE_URL with a trailing newline", "DATABASE_URL", `${good.DATABASE_URL}\n`],
+  ["TOKEN_ENCRYPTION_KEY with a trailing newline", "TOKEN_ENCRYPTION_KEY", `${KEY}\n`],
+  ["APP_SECRET padded", "APP_SECRET", ` ${APP_SECRET} `],
+  ["a whitespace-only value", "RAZORPAY_KEY_SECRET", "   "],
+  ["RATE_LIMIT_ENABLED padded", "RATE_LIMIT_ENABLED", "true "],
+];
+for (const [name, variable, value] of padded) {
+  test(`production rejects whitespace: ${name}`, () => {
+    const r = validateEnv({ ...good, [variable]: value });
+    const hits = r.errors.filter((e) => e.startsWith(`${variable}:`) && e.includes("whitespace"));
+    assert.equal(hits.length, 1, `expected exactly one whitespace error for ${variable}, got: ${r.errors.join(" | ")}`);
+    const printed = JSON.stringify([r.errors, r.warnings]);
+    for (const part of [value.trim(), KEY, APP_SECRET].filter((p) => p.length > 8)) assert.ok(!printed.includes(part), "never print the value");
+    assert.equal(new EnvValidationError(r.errors).issues.length, r.errors.length);
+  });
+}
+
+test("whitespace outside the variables this app reads is none of our business", () => {
+  const r = validateEnv({ ...good, SOME_OTHER_TOOL: " padded ", LS_COLORS: "x\n", HOSTNAME: "host " });
+  assert.deepEqual(r.errors, []);
+});
+
+test("whitespace is only a warning in development", () => {
+  const r = validateEnv({ NODE_ENV: "development", EMAIL_PROVIDER: "log\n", APP_URL: " http://localhost:3000" });
+  assert.deepEqual(r.errors, []);
+  assert.ok(r.warnings.some((w) => w.startsWith("APP_URL:") && w.includes("whitespace")));
+  assert.ok(r.warnings.some((w) => w.startsWith("EMAIL_PROVIDER:") && w.includes("whitespace")));
+});
+
+test("KNOWN_ENV_VARS covers every variable in .env.example, so none can escape the whitespace check", () => {
+  const example = readFileSync(join(process.cwd(), ".env.example"), "utf8");
+  const names = [...example.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]);
+  assert.ok(names.length > 40, "parsed the example file");
+  const known = new Set<string>(KNOWN_ENV_VARS);
+  assert.deepEqual(names.filter((n) => !known.has(n)), [], "add new .env.example variables to KNOWN_ENV_VARS (lib/env.ts)");
+  assert.ok(!known.has("TOKEN_ENCRYPTION_KEY_NEW"), "the rotation tool uses the app's own variables now");
+  assert.ok(!names.includes("TOKEN_ENCRYPTION_KEY_NEW"), ".env.example must not document a variable that no longer exists");
 });
 
 test("development only warns: dev-only settings are fine, missing essentials are warnings", () => {
@@ -149,6 +199,7 @@ test("local production run: the escape hatch relaxes only dev-only settings, onl
     EMAIL_PROVIDER: "log",
     RESEND_API_KEY: undefined,
     MESSAGING_DRY_RUN: "true",
+    WHATSAPP_DISABLED: "true",
     ALLOW_INSECURE_LOCAL_RUN: "true",
   };
   const ok = validateEnv(local);
@@ -156,7 +207,8 @@ test("local production run: the escape hatch relaxes only dev-only settings, onl
   assert.equal(ok.localRun, true);
   assert.ok(ok.warnings.some((w) => w.startsWith("APP_URL:")));
   assert.ok(ok.warnings.some((w) => w.startsWith("EMAIL_PROVIDER:")));
-  assert.ok(ok.warnings.some((w) => w.startsWith("MESSAGING_DRY_RUN:")));
+  assert.ok(ok.warnings.some((w) => w.startsWith("MESSAGING_DRY_RUN:") && w.includes("ALLOW_INSECURE_LOCAL_RUN")));
+  assert.ok(ok.warnings.some((w) => w.startsWith("WHATSAPP_DISABLED:")));
 
   // Without the flag the same environment is rejected.
   const strict = validateEnv({ ...local, ALLOW_INSECURE_LOCAL_RUN: undefined });
@@ -175,9 +227,9 @@ test("local production run: the escape hatch relaxes only dev-only settings, onl
 });
 
 test("advisory warnings in production", () => {
-  const r = validateEnv({ ...without("CLIENT_IP_HEADER"), RAZORPAY_KEY_ID: "rzp_test_abc", TOKEN_ENCRYPTION_KEY_NEW: randomBytes(32).toString("base64") });
+  const r = validateEnv({ ...without("CLIENT_IP_HEADER"), RAZORPAY_KEY_ID: "rzp_test_abc", TOKEN_ENCRYPTION_KEY_PREVIOUS: randomBytes(32).toString("base64") });
   assert.deepEqual(r.errors, []);
-  for (const v of ["CLIENT_IP_HEADER", "ERROR_WEBHOOK_URL", "RAZORPAY_KEY_ID", "TOKEN_ENCRYPTION_KEY_NEW", "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REDIRECT_URI"]) {
+  for (const v of ["CLIENT_IP_HEADER", "ERROR_WEBHOOK_URL", "RAZORPAY_KEY_ID", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REDIRECT_URI"]) {
     assert.ok(r.warnings.some((w) => w.startsWith(`${v}:`)), `${v} should warn`);
   }
 });
@@ -195,6 +247,8 @@ test("typed config: defaults mirror the code, trailing slash is stripped, secret
   assert.equal(c.redisConfigured, true);
   assert.equal(c.razorpay.testMode, false);
 
+  assert.equal(c.encryption.fingerprint, keyFingerprint(Buffer.from(KEY, "base64")));
+  assert.match(c.encryption.previousFingerprint ?? "", /^[0-9a-f]{8}$/);
   assert.equal(c.secrets.appSecret, APP_SECRET);
   assert.equal(c.secrets.tokenEncryptionKey?.length, 32);
   assert.equal(c.secrets.tokenEncryptionKeyPrevious?.length, 32);
@@ -233,10 +287,11 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
   const realExit = process.exit;
   const warned: string[] = [];
   const errored: string[] = [];
+  const logged: string[] = [];
   let exitCode: number | undefined;
   try {
     console.warn = (...a: unknown[]) => void warned.push(a.join(" "));
-    console.log = () => {};
+    console.log = (...a: unknown[]) => void logged.push(a.join(" "));
     console.error = (...a: unknown[]) => void errored.push(a.join(" "));
     process.exit = ((code?: number) => {
       exitCode = code;
@@ -246,7 +301,13 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
     Object.assign(process.env, good);
     delete process.env.CLIENT_IP_HEADER;
     resetConfigForTests();
+    process.env.TOKEN_ENCRYPTION_KEY_PREVIOUS = randomBytes(32).toString("base64");
     initEnv("test");
+    // Start-up logs the key fingerprints (never the keys) so operators can compare instances with the key tools' output.
+    const fingerprintLine = logged.find((l) => l.includes("encryption key fingerprint")) ?? "";
+    assert.ok(fingerprintLine.includes(keyFingerprint(Buffer.from(KEY, "base64"))), fingerprintLine);
+    assert.match(fingerprintLine, /previous key fingerprint [0-9a-f]{8}/);
+    for (const secret of [KEY, process.env.TOKEN_ENCRYPTION_KEY_PREVIOUS!, APP_SECRET]) assert.ok(!logged.concat(warned).join("\n").includes(secret), "no key material in the log");
     const firstCount = warned.length;
     assert.ok(firstCount > 0 && warned.some((w) => w.includes("CLIENT_IP_HEADER")));
     initEnv("test");
@@ -257,7 +318,7 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
     assert.throws(() => initEnvOrExit("worker"), /exit/);
     assert.equal(exitCode, 1);
     assert.ok(errored.join("\n").includes("APP_SECRET"));
-    assert.ok(!errored.join("\n").includes("short\n"), "no values in the output");
+    assert.ok(!errored.join("\n").includes("SENTINEL"), "the output must not include the secret value");
   } finally {
     console.warn = realWarn;
     console.log = realLog;
