@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PageHead } from "@/components/app/AppShell";
-import { PayoutRowActions } from "@/components/admin/PayoutActions";
+import { PayoutRowActions, PayoutStatusBadges } from "@/components/admin/PayoutActions";
 import { IconWallet } from "@/components/icons";
-import { Badge, EmptyState, LinkTabs, Pagination } from "@/components/ui/primitives";
-import { PAGE_SIZE, parsePage } from "@/lib/admin/data";
+import { Alert, Badge, EmptyState, LinkTabs, Pagination } from "@/components/ui/primitives";
+import { activeAdminCount, PAGE_SIZE, parsePage } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 import { prisma } from "@/lib/db";
 import { formatMoney } from "@/lib/format";
-import { formatFeePercent, postPayoutRefunds } from "@/lib/payouts";
+import { fourEyesEnabled, formatFeePercent, payoutApprovalView, postPayoutRefunds } from "@/lib/payouts";
 
 export const metadata: Metadata = { title: "Payouts" };
 
@@ -19,6 +20,7 @@ const FILTERS = [
 ] as const;
 
 export default async function AdminPayoutsPage({ searchParams }: { searchParams: Promise<{ page?: string; status?: string }> }) {
+  const admin = await requireAdminPage("/admin/payouts");
   const sp = await searchParams;
   const status = FILTERS.find((f) => f.key === sp.status)?.key ?? "PENDING";
   const page = parsePage(sp.page);
@@ -30,10 +32,17 @@ export default async function AdminPayoutsPage({ searchParams }: { searchParams:
   ]);
   const owed = new Map(await Promise.all(rows.filter((r) => r.status === "PAID").map(async (r) => [r.id, await postPayoutRefunds(r.id)] as const)));
   const countOf = (k: string) => (k === "all" ? counts.reduce((n, c) => n + c._count._all, 0) : (counts.find((c) => c.status === k)?._count._all ?? 0));
+  const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
 
   return (
     <div className="stack stack--lg">
-      <PageHead title="Payouts" description="Transfers to influencers. Create them from an influencer's page, send the money yourself, then record the bank reference here." />
+      <PageHead title="Payouts" description="Transfers to influencers. Create them from an influencer's page, have a second administrator approve them, send the money yourself, then record the bank reference here." />
+      {onlyOneAdmin && (
+        <Alert tone="warning" title="Payouts need a second administrator">
+          Payout approval is on, but there is only one active administrator, and nobody can approve a payout they created. Create a second administrator
+          with <code>npm run admin:create</code>, or set <code>PAYOUT_FOUR_EYES=false</code> if one person really handles payouts alone.
+        </Alert>
+      )}
       <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/admin/payouts?status=${f.key}`, current: status === f.key, count: countOf(f.key) }))} />
       {rows.length === 0 ? (
         <EmptyState icon={<IconWallet />} title="No payouts here">
@@ -56,22 +65,25 @@ export default async function AdminPayoutsPage({ searchParams }: { searchParams:
               </tr>
             </thead>
             <tbody>
-              {rows.map((p) => (
-                <tr key={p.id}>
-                  <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
-                  <td data-label="Influencer"><Link href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</Link></td>
-                  <td data-label="Send to">{p.destination}</td>
-                  <td data-label="Gross" className="num">{formatMoney(p.grossMinor - p.refundsMinor, p.currency)}</td>
-                  <td data-label="Fee" className="num">{formatMoney(p.feeMinor, p.currency)} <span className="subtle">({formatFeePercent(p.feeBps)})</span></td>
-                  <td data-label="To send" className="num"><strong>{formatMoney(p.netMinor, p.currency)}</strong></td>
-                  <td data-label="Status">
-                    {p.status === "PAID" ? <Badge tone="success">Paid</Badge> : p.status === "PENDING" ? <Badge tone="warning">To send</Badge> : <Badge>Cancelled</Badge>}
-                    {p.reference && <div className="subtle">UTR {p.reference}</div>}
-                    {(owed.get(p.id) ?? 0) > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(owed.get(p.id)!, p.currency)} to recover</Badge></div>}
-                  </td>
-                  <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} /></td>
-                </tr>
-              ))}
+              {rows.map((p) => {
+                const approval = payoutApprovalView(p, admin.email);
+                return (
+                  <tr key={p.id}>
+                    <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                    <td data-label="Influencer"><Link href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</Link></td>
+                    <td data-label="Send to">{p.destination}</td>
+                    <td data-label="Gross" className="num">{formatMoney(p.grossMinor - p.refundsMinor, p.currency)}</td>
+                    <td data-label="Fee" className="num">{formatMoney(p.feeMinor, p.currency)} <span className="subtle">({formatFeePercent(p.feeBps)})</span></td>
+                    <td data-label="To send" className="num"><strong>{formatMoney(p.netMinor, p.currency)}</strong></td>
+                    <td data-label="Status">
+                      <PayoutStatusBadges status={p.status} approval={approval} />
+                      {p.reference && <div className="subtle">UTR {p.reference}</div>}
+                      {(owed.get(p.id) ?? 0) > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(owed.get(p.id)!, p.currency)} to recover</Badge></div>}
+                    </td>
+                    <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} approval={approval} /></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

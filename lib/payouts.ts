@@ -1,4 +1,5 @@
 import { Prisma } from "@/generated/prisma/client";
+import { parseFlag } from "@/lib/admin/policy";
 import { prisma } from "@/lib/db";
 import { fetchPayment, type RazorpayPayment } from "@/lib/payments";
 
@@ -40,6 +41,60 @@ export function effectiveFeeBps(override: number | null | undefined, env = proce
 
 export function formatFeePercent(bps: number): string {
   return `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}%`;
+}
+
+/**
+ * PAYOUT_FOUR_EYES: a second administrator must approve a payout before it can be marked as paid. Default on in
+ * production, off elsewhere (so a developer with one admin account is not blocked).
+ */
+export function fourEyesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseFlag(env.PAYOUT_FOUR_EYES, env.NODE_ENV === "production");
+}
+
+/** PAYOUT_FOUR_EYES_MIN_MINOR: approval is only needed at or above this net payout (minor units). 0 (default) = always. */
+export function fourEyesMinMinor(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.PAYOUT_FOUR_EYES_MIN_MINOR);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** Whether a payout of this net amount must be approved before it can be marked as paid. */
+export function approvalRequired(netMinor: number, env: NodeJS.ProcessEnv = process.env): boolean {
+  return fourEyesEnabled(env) && netMinor >= fourEyesMinMinor(env);
+}
+
+export interface PayoutApprovalView {
+  /** This payout needs a second administrator's approval before it can be paid. */
+  required: boolean;
+  approved: boolean;
+  approvedByEmail: string | null;
+  /** The viewing administrator may approve it now (pending, not approved, and not the one who created it). */
+  canApprove: boolean;
+  /** The viewing administrator created it, so someone else has to approve. */
+  createdByViewer: boolean;
+  /** Mark as paid is allowed (pending, and approved if approval is required). */
+  canMarkPaid: boolean;
+}
+
+const sameAdmin = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** What the admin console shows and enables for one payout, from the viewer's point of view. */
+export function payoutApprovalView(
+  payout: { status: string; netMinor: number; createdByEmail: string; approvedAt: Date | null; approvedByEmail: string | null },
+  viewerEmail: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PayoutApprovalView {
+  const required = approvalRequired(payout.netMinor, env);
+  const approved = payout.approvedAt != null;
+  const pending = payout.status === "PENDING";
+  const createdByViewer = sameAdmin(payout.createdByEmail, viewerEmail);
+  return {
+    required,
+    approved,
+    approvedByEmail: payout.approvedByEmail,
+    canApprove: pending && !approved && !createdByViewer,
+    createdByViewer,
+    canMarkPaid: pending && (!required || approved),
+  };
 }
 
 /* ---------- Pure rules (unit-tested) ---------- */
@@ -327,12 +382,43 @@ export async function createPayout(influencerId: string, currency: string, admin
   );
 }
 
-/** PENDING -> PAID once the administrator has sent the money. Needs the bank reference (UTR). */
-export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string) {
+/**
+ * Four-eyes approval: a PENDING payout gets `approvedAt` / `approvedByEmail`, and only an administrator OTHER than the
+ * one who created it may do this. Enforced here (not just hidden in the UI), and the update is conditional on the
+ * payout still being pending and unapproved, so concurrent approvals cannot overwrite each other.
+ */
+export async function approvePayout(payoutId: string, adminEmail: string, now = new Date()) {
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true } });
+  if (!payout) throw new PayoutError("Payout not found", 404);
+  if (payout.status !== "PENDING") throw new PayoutError("Only a pending payout can be approved.", 409);
+  if (sameAdmin(payout.createdByEmail, adminEmail)) {
+    throw new PayoutError("You created this payout, so a different administrator has to approve it.", 403);
+  }
+  if (payout.approvedAt) throw new PayoutError("This payout is already approved.", 409);
+  const { count } = await prisma.payout.updateMany({
+    where: { id: payoutId, status: "PENDING", approvedAt: null },
+    data: { approvedAt: now, approvedByEmail: adminEmail },
+  });
+  if (count === 0) throw new PayoutError("This payout changed while you were approving it. Reload and try again.", 409);
+  return prisma.payout.findUniqueOrThrow({ where: { id: payoutId } });
+}
+
+/**
+ * PENDING -> PAID once the administrator has sent the money. Needs the bank reference (UTR), and, when four-eyes
+ * approval applies to this payout (PAYOUT_FOUR_EYES, PAYOUT_FOUR_EYES_MIN_MINOR), an approval from a second admin.
+ */
+export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string, env: NodeJS.ProcessEnv = process.env) {
   const ref = reference.trim();
   if (ref.length < 6 || ref.length > 60) throw new PayoutError("Enter the bank reference (UTR) of the transfer.");
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true } });
+  if (!payout || payout.status !== "PENDING") throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
+  const needsApproval = approvalRequired(payout.netMinor, env);
+  if (needsApproval && !payout.approvedAt) {
+    throw new PayoutError("This payout has to be approved by a second administrator before it can be marked as paid.", 409);
+  }
   const { count } = await prisma.payout.updateMany({
-    where: { id: payoutId, status: "PENDING" },
+    // The approval is part of the condition too, so the check cannot be raced.
+    where: { id: payoutId, status: "PENDING", ...(needsApproval ? { approvedAt: { not: null } } : {}) },
     data: { status: "PAID", reference: ref, paidAt: new Date(), paidByEmail: adminEmail },
   });
   if (count === 0) throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
