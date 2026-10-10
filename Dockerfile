@@ -6,8 +6,9 @@
 #
 # No configuration or secret is baked into any image: DATABASE_URL, APP_SECRET, TOKEN_ENCRYPTION_KEY, Razorpay keys,
 # and everything else in .env.example are supplied at RUN time (docker run -e / --env-file, or your platform's
-# secret store). The only build-time inputs are the two public NEXT_PUBLIC_* branding values, which Next.js compiles
-# into the JavaScript; they are not secrets.
+# secret store). The only build-time inputs are the public branding/locale values (NEXT_PUBLIC_*, APP_LOCALE) and the
+# ENABLE_DESIGN_PAGE flag, which are compiled into the JavaScript (Next.js and the Vite-built React SPA); they are not
+# secrets, and the SPA build (scripts/spa-postbuild.mjs) fails if a secret-looking value ever reaches the browser bundle.
 #
 # See doc/08-deployment.md.
 
@@ -30,11 +31,18 @@ RUN npm ci
 FROM deps AS build
 ARG NEXT_PUBLIC_BRAND_NAME
 ARG NEXT_PUBLIC_SUPPORT_EMAIL
+# Also inputs of the React SPA bundle (web/vite.config.ts reads exactly these four names, nothing else). Build stage only:
+# the runner stage below starts from a clean base, so these are not in the final image's environment.
+ARG APP_LOCALE=en-IN
+ARG ENABLE_DESIGN_PAGE=false
 ENV NEXT_PUBLIC_BRAND_NAME=${NEXT_PUBLIC_BRAND_NAME} \
-    NEXT_PUBLIC_SUPPORT_EMAIL=${NEXT_PUBLIC_SUPPORT_EMAIL}
+    NEXT_PUBLIC_SUPPORT_EMAIL=${NEXT_PUBLIC_SUPPORT_EMAIL} \
+    APP_LOCALE=${APP_LOCALE} \
+    ENABLE_DESIGN_PAGE=${ENABLE_DESIGN_PAGE}
 COPY . .
 RUN npx prisma generate
 # BUILD_STANDALONE switches next.config.ts to output: "standalone" (traced, minimal node_modules in .next/standalone).
+# `npm run build` is `vite build` (the React SPA: web/dist, then public/assets) followed by `next build`.
 RUN BUILD_STANDALONE=1 npm run build
 
 # ---- tools: Prisma CLI + scripts for one-off jobs (migrations, admin user, key rotation). Not a long-running service.
@@ -57,7 +65,12 @@ ENV NODE_ENV=production \
 # The base image already provides an unprivileged `node` user (uid 1000).
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
-# (This app has no public/ directory; if one is added, copy it here as well.)
+# The SPA's hashed files (public/assets, written by scripts/spa-postbuild.mjs). Next serves public/ as static files.
+COPY --from=build --chown=node:node /app/public ./public
+# The SPA's HTML shell, read at run time by the /spa-shell route. next.config.ts (outputFileTracingIncludes) puts it in the
+# standalone trace as well; copying it explicitly keeps the image correct even if tracing ever changes, and the web process
+# refuses to start without it when SPA_GROUPS enables a group (lib/env.ts).
+COPY --from=build --chown=node:node /app/web/dist/index.html ./web/dist/index.html
 USER node
 EXPOSE 3000
 # Liveness only (/api/health has no dependencies). Readiness (/api/ready) is for the load balancer, not for restarts.

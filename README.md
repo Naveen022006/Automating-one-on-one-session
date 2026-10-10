@@ -23,6 +23,28 @@ UI, rate limiting). See `doc/07-product-ui-auth-and-integrations.md` section 11 
 CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests, `next build` and an
 advisory `npm audit` against Postgres and Redis service containers, and builds the Docker images with a start-up smoke test.
 
+## Front end (React SPA)
+The UI is being moved from Next-rendered pages to a standalone React app (Vite + React Router + TanStack Query) in `web/`;
+Next keeps the JSON API, webhooks, metadata routes and the worker. Plan: `doc/10-react-migration-plan.md`; what differs from
+it and how far the work is: `doc/10-react-migration-deviations.md`. Until a page group is switched on, **nothing changes**:
+`SPA_GROUPS` (in `.env`) is empty and every page is the old Next page.
+
+- **Develop with two processes.** Terminal 1: `npm run dev` (Next, :3000, the API). Terminal 2: `npm run dev:web` (Vite, :5173,
+  hot reload; it proxies `/api` and the metadata routes to Next, `SPA_API_TARGET` if Next is on another port). Open
+  http://localhost:5173 and set `APP_URL=http://localhost:5173` in `.env`, so links in e-mails and redirects point at the Vite
+  origin (the Origin/CSRF check already accepts the origin a request arrives on). A page that has not been ported shows "Not
+  migrated yet" with a link to the old Next version. Log in on the old Next page (:3000/login) or on the SPA's own login once
+  ported: browsers share cookies between ports of the same host, so the session works on both.
+- **Production-like check** (CSP, the HTML shell, assets): `npm run build`, then `SPA_GROUPS=all npm start`, then
+  `node scripts/spa-smoke.mjs http://localhost:3000`. The Vite dev server applies no CSP, so CSP behaviour is only
+  verified in this mode. Add `--no-db` when the server has no database, `--old` when `SPA_GROUPS` is empty.
+- **Switching a group on/off**: `SPA_GROUPS=all`, or a list of `public,auth,booking,dashboard,admin`; restart to apply. Removing
+  a group is the rollback. See `doc/08-deployment.md` section 3.2 (build outputs, cache headers, start-up check, Vercel).
+- **Where things are**: route table `lib/spa/routes.ts` (shared by the proxy, the HTML head and the router); JSON endpoints for
+  pages `lib/views/*` and `app/api/...`; SPA code `web/src/` (`router.tsx`, `pages/<group>/`, `lib/`); `npm run typecheck`
+  checks both TypeScript projects. `NEXT_PUBLIC_*`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE` are also build inputs of the browser
+  bundle; no other environment variable can reach it (the build fails if a secret value does).
+
 ## Accounts
 Influencers have accounts (email + password, verified email, password reset). Customers stay guests and manage their
 own booking through the signed `/manage/<token>` link in their confirmation email. Sessions are opaque, HttpOnly
