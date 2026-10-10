@@ -487,7 +487,12 @@ export async function refreshTemplates(influencerId: string, deps: ConnectDeps =
     });
     return { submitted: sync.submitted, failed: sync.failed };
   } catch (e) {
-    if (e instanceof WhatsAppGraphError && e.invalidToken) await markTokenInvalid(influencerId, e.message);
+    // Only what Meta said is translated for the influencer. Anything else (the stored token no longer decrypts after a key
+    // rotation, the database failed) is OUR problem: it must not read as "Could not reach WhatsApp", and the worker's
+    // template sync reports it (worker/whatsapp-sync.ts) because it is not a WhatsAppConnectError.
+    if (e instanceof WhatsAppConnectError) throw e;
+    if (!(e instanceof WhatsAppGraphError)) throw e;
+    if (e.invalidToken) await markTokenInvalid(influencerId, e.message);
     throw friendly(e);
   }
 }
