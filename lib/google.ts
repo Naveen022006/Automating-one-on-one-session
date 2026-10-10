@@ -20,6 +20,11 @@ export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 export class GoogleReconnectError extends Error {}
 export class GoogleTransientError extends Error {}
 export class GoogleRequestError extends Error {}
+/**
+ * The Calendar event this call needed is gone: deleted (404/410) or left as a "cancelled" tombstone. Still a
+ * GoogleRequestError for callers that do not care, but lib/meeting.ts reacts to it by creating a replacement.
+ */
+export class GoogleEventGoneError extends GoogleRequestError {}
 
 export interface CalendarEvent {
   id: string;
@@ -262,13 +267,17 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
       });
       if (getRes.status === 404 || getRes.status === 410) {
         // The shared event vanished (deleted off the calendar). Caller can recreate; this is request-specific.
-        throw new GoogleRequestError("The shared calendar event for this group session no longer exists");
+        throw new GoogleEventGoneError("The shared calendar event for this group session no longer exists");
       }
       if (!getRes.ok) {
         const { reason, message } = await readError(getRes);
         throw classifyCalendarError(getRes.status, reason, message);
       }
       const raw = (await getRes.json()) as RawEvent;
+      // A deleted event can still be readable as a "cancelled" tombstone; attendees patched onto it would get no invite.
+      if (raw.status === "cancelled") {
+        throw new GoogleEventGoneError("The shared calendar event for this group session was deleted");
+      }
       const email = attendee.email.toLowerCase();
       const existing = raw.attendees ?? [];
       const already = existing.some((a) => (a.email ?? "").toLowerCase() === email);
@@ -305,7 +314,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
         },
       );
       if (res.status === 404 || res.status === 410) {
-        throw new GoogleRequestError("The calendar event for this booking no longer exists");
+        throw new GoogleEventGoneError("The calendar event for this booking no longer exists");
       }
       if (!res.ok) {
         const { reason, message } = await readError(res);

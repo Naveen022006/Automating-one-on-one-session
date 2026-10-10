@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mock, test } from "node:test";
+import { GoogleEventGoneError } from "../lib/google";
 
 /**
  * Group-session shared-event behaviour for lib/meeting.ts.
@@ -316,5 +317,180 @@ test("sessionEventId and calendarEventId are distinct, deterministic and base32h
   assert.equal(calendarEventId("b1"), BOOKING_EVENT_ID("b1"));
   assert.notEqual(sessionEventId("x"), calendarEventId("x"), "session and booking ids must never collide");
   assert.match(sessionEventId("sess1"), /^[0-9a-f]+$/);
+  mock.reset();
+});
+
+// --- A2 / A7: a group session whose shared event was deleted, and a payer who loses the create race ---
+
+const GEN_EVENT_ID = (id: string, generation: number) =>
+  createHash("sha256").update(generation === 0 ? `session:${id}` : `session:${id}:${generation}`).digest("hex");
+
+/**
+ * A Calendar stand-in that behaves like Google for the cases that matter here: an id is never reusable once its event
+ * was deleted (insert answers "exists"), a deleted event reads back as a "cancelled" tombstone or, once purged, as null,
+ * and attendees cannot be added to a deleted event.
+ */
+function makeEventStore(opts: { tombstones?: string[]; purged?: string[]; live?: string[] } = {}) {
+  const state = new Map<string, "live" | "cancelled" | "purged">();
+  for (const id of opts.live ?? []) state.set(id, "live");
+  for (const id of opts.tombstones ?? []) state.set(id, "cancelled");
+  for (const id of opts.purged ?? []) state.set(id, "purged");
+  const link = (eventId: string) => `https://meet.google.com/${eventId.slice(0, 12)}`;
+  const rec = {
+    inserts: [] as { id: string; conferenceRequestId: string }[],
+    adds: [] as { eventId: string; email: string }[],
+  };
+  const google = {
+    refreshAccessToken: async () => "access-token",
+    insertEvent: async (_t: string, event: { id: string; conferenceRequestId: string }) => {
+      rec.inserts.push({ id: event.id, conferenceRequestId: event.conferenceRequestId });
+      if (state.has(event.id)) return "exists" as const;
+      state.set(event.id, "live");
+      return { id: event.id, status: "confirmed", meetLink: link(event.id), conferenceStatus: "success" as const };
+    },
+    getEvent: async (_t: string, eventId: string) => {
+      const s = state.get(eventId);
+      if (!s || s === "purged") return null;
+      return { id: eventId, status: s === "cancelled" ? "cancelled" : "confirmed", meetLink: link(eventId), conferenceStatus: "success" as const };
+    },
+    addAttendee: async (_t: string, eventId: string, attendee: { email: string }) => {
+      if (state.get(eventId) !== "live") throw new GoogleEventGoneError("The shared calendar event for this group session no longer exists");
+      rec.adds.push({ eventId, email: attendee.email });
+      return { id: eventId, status: "confirmed", meetLink: link(eventId), conferenceStatus: "success" as const };
+    },
+  };
+  return { google, rec, state, link };
+}
+
+test("after the last attendee cancelled (event deleted), the next payer gets a new live event and a working link", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  const store = makeEventStore({ tombstones: [v0] });
+  const session = groupSession(); // lib/manage.ts cleared eventId and meetLink when it deleted the event
+  const b = paidBooking("b1", "a@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  const outcome = await mod.createMeetingForBooking("b1", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) });
+
+  assert.equal(outcome, "scheduled");
+  assert.deepEqual(store.rec.inserts.map((i) => i.id), [v0, v1], "the dead id answers 409, so the next id of the sequence is used");
+  assert.notEqual(store.rec.inserts[0].conferenceRequestId, store.rec.inserts[1].conferenceRequestId, "a new event needs a new Meet request id");
+  assert.equal(session.eventId, v1, "the session records the new event id");
+  assert.equal(b.eventId, v1, "so does the booking");
+  assert.equal(session.meetLink, store.link(v1));
+  assert.equal(b.meetLink, store.link(v1));
+  assert.equal(b.status, "SCHEDULED");
+  assert.deepEqual(emailed, [{ bookingId: "b1", kind: "booking-confirmation" }]);
+  mock.reset();
+});
+
+test("a purged event (read gives 404/410) is treated the same way", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  const store = makeEventStore({ purged: [v0] });
+  const session = groupSession();
+  const b = paidBooking("b1", "a@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b1", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+  assert.equal(b.eventId, v1);
+  assert.equal(b.status, "SCHEDULED");
+  mock.reset();
+});
+
+test("a job retried after it created the replacement but crashed before saving finds it instead of creating another", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  const store = makeEventStore({ tombstones: [v0], live: [v1] }); // v1 was created by the crashed attempt
+  const session = groupSession();
+  session.eventId = v0; // ...which had already claimed the session
+  const b = paidBooking("b1", "a@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b1", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+
+  assert.deepEqual(store.rec.inserts.map((i) => i.id), [v0, v1], "no third event");
+  assert.equal(session.eventId, v1);
+  assert.equal(b.eventId, v1);
+  assert.equal(b.status, "SCHEDULED");
+  mock.reset();
+});
+
+test("a payer joining a session whose recorded shared event was deleted behind our back gets a replacement", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  const store = makeEventStore({ tombstones: [v0] });
+  const session = groupSession();
+  session.eventId = v0; // the influencer deleted the event in Google Calendar; our link is stale
+  session.meetLink = "https://meet.google.com/stale";
+  const b = paidBooking("b2", "b@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b2", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+
+  assert.equal(session.eventId, v1);
+  assert.equal(session.meetLink, store.link(v1), "the stale link is replaced");
+  assert.equal(b.meetLink, store.link(v1));
+  assert.equal(b.status, "SCHEDULED");
+  mock.reset();
+});
+
+test("later attendees join the event the session records, even when it is not the first id", async () => {
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  const store = makeEventStore({ tombstones: [GEN_EVENT_ID("sess1", 0)], live: [v1] });
+  const session = groupSession();
+  session.eventId = v1;
+  session.meetLink = store.link(v1);
+  const b = paidBooking("b2", "b@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b2", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+
+  assert.deepEqual(store.rec.inserts, [], "nothing is created");
+  assert.deepEqual(store.rec.adds, [{ eventId: v1, email: "b@example.com" }]);
+  assert.equal(b.eventId, v1);
+  assert.equal(b.meetLink, store.link(v1));
+  mock.reset();
+});
+
+test("A7: a payer who loses the create race to the first payer is added to the event as an attendee", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const store = makeEventStore({ live: [v0] }); // the creator's event is already on the calendar...
+  const session = groupSession();
+  session.eventId = v0; // ...and it claimed the session...
+  session.meetLink = null; // ...but has not saved the link yet, so this payer cannot take the fast path
+  const b = paidBooking("b2", "b@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b2", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+
+  assert.deepEqual(store.rec.inserts.map((i) => i.id), [v0], "the insert answered 409");
+  assert.deepEqual(store.rec.adds, [{ eventId: v0, email: "b@example.com" }], "so this customer is patched in and gets an invite");
+  assert.equal(b.status, "SCHEDULED");
+  assert.equal(b.meetLink, store.link(v0));
+  mock.reset();
+});
+
+test("a 1:1 booking is unaffected by the event-id sequence", async () => {
+  const session = groupSession();
+  session.service.type = "ONE_TO_ONE";
+  const store = makeEventStore();
+  const b = paidBooking("b1", "a@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b1", { google: store.google, sleep: async () => {}, sendBookingEmail: async (bookingId: string, kind: string) => void emailed.push({ bookingId, kind }) }), "scheduled");
+
+  assert.deepEqual(store.rec.inserts.map((i) => i.id), [BOOKING_EVENT_ID("b1")]);
+  assert.equal(session.eventId, null);
+  mock.reset();
+});
+
+test("sessionEventId generations are distinct, and generation 0 is the original id", async () => {
+  const { sessionEventId } = await import("../lib/meeting");
+  assert.equal(sessionEventId("sess1"), SESSION_EVENT_ID("sess1"));
+  assert.equal(sessionEventId("sess1", 0), SESSION_EVENT_ID("sess1"));
+  assert.equal(sessionEventId("sess1", 1), GEN_EVENT_ID("sess1", 1));
+  assert.equal(new Set([0, 1, 2, 3].map((g) => sessionEventId("sess1", g))).size, 4);
+  assert.match(sessionEventId("sess1", 2), /^[0-9a-f]{64}$/);
   mock.reset();
 });

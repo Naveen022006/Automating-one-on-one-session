@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import {
+  GoogleEventGoneError,
   GoogleReconnectError,
   GoogleRequestError,
   GoogleTransientError,
   google as defaultGoogle,
   type CalendarEvent,
+  type EventAttendee,
   type GoogleClient,
 } from "@/lib/google";
 import { sendBookingEmail } from "@/lib/email";
@@ -72,9 +74,12 @@ export function calendarEventId(bookingId: string): string {
  * Event id for a GROUP session. Every booking in the session derives the SAME id, so they all converge on
  * one shared Calendar event: the first paid attendee creates it, the rest are added to it. Keyed on the
  * session (not the booking) and using the same sha256 hex scheme as {@link calendarEventId}.
+ *
+ * `generation` 0 is the original id. Google never lets an event id be used twice, so once a session's shared event
+ * has been deleted the next one gets generation 1, then 2... (see {@link ensureGroupEvent}).
  */
-export function sessionEventId(sessionId: string): string {
-  return createHash("sha256").update(`session:${sessionId}`).digest("hex");
+export function sessionEventId(sessionId: string, generation = 0): string {
+  return createHash("sha256").update(generation === 0 ? `session:${sessionId}` : `session:${sessionId}:${generation}`).digest("hex");
 }
 
 const LINK_POLLS = 3;
@@ -99,6 +104,43 @@ async function waitForMeetLink(
   }
   // The event exists now, so the retry takes the "already exists" path and just re-reads it.
   throw new GoogleTransientError(`Meet link not ready yet (conference status: ${current?.conferenceStatus ?? "unknown"})`);
+}
+
+/** How many times a session's shared event may have been deleted and recreated before we give up. */
+const MAX_EVENT_GENERATIONS = 10;
+
+/**
+ * Makes sure a LIVE shared Calendar event exists for a group session and returns it with its id. `created` is false
+ * when the event was already there (someone else made it first), so the caller must still add its own attendee.
+ *
+ * Why not simply insert `sessionEventId(sessionId)`: when the last attendee cancels, lib/manage.ts deletes the shared
+ * event, and Google never lets a deleted event's id be reused. The next payer's insert answers 409 and the read gives a
+ * "cancelled" tombstone (or 404/410 once it is purged), so their paid booking would fail for good. Two fixes were weighed:
+ *  - restore the event (events.patch status "confirmed"): only works while Google still keeps the deleted event, and the
+ *    Meet conference of a deleted event is not guaranteed to come back, so we could end up with a link that does not work;
+ *  - create a new event under the next id of the deterministic sequence (generation 1, 2...): always works and gets a
+ *    fresh Meet link. Chosen.
+ * No counter is stored: every caller (the elected creator, a payer racing it, a job retried after a crash) walks the same
+ * sequence from generation 0, skips ids whose event is dead and stops at the first live one, so they all converge on the
+ * same event and a repeat run creates nothing new. The caller records the returned id on the session and the booking.
+ */
+async function ensureGroupEvent(
+  deps: MeetingDeps,
+  accessToken: string,
+  sessionId: string,
+  event: { summary: string; description: string; start: Date; end: Date; attendee: EventAttendee },
+): Promise<{ eventId: string; event: CalendarEvent; created: boolean }> {
+  for (let generation = 0; generation < MAX_EVENT_GENERATIONS; generation++) {
+    const id = sessionEventId(sessionId, generation);
+    // A new event also needs a new Meet request id: Google ignores a request id it has already seen.
+    const conferenceRequestId = generation === 0 ? sessionId : `${sessionId}:${generation}`;
+    const inserted = await deps.google.insertEvent(accessToken, { ...event, id, conferenceRequestId });
+    if (inserted !== "exists") return { eventId: id, event: inserted, created: true };
+    const existing = await deps.google.getEvent(accessToken, id);
+    if (existing && existing.status !== "cancelled") return { eventId: id, event: existing, created: false };
+    // Deleted (tombstone or purged): this id can never be used again, try the next one.
+  }
+  throw new GoogleRequestError(`Could not create a calendar event for this group session: its ${MAX_EVENT_GENERATIONS} event ids are all used`);
 }
 
 /**
@@ -146,7 +188,8 @@ export async function createMeetingForBooking(
   const { influencer } = service;
   const isGroup = service.type === "GROUP";
   // GROUP: one shared event per session (id derived from the session). 1:1: one event per booking (unchanged).
-  const eventId = isGroup ? sessionEventId(session.id) : calendarEventId(booking.id);
+  // `let`: a group session whose shared event was deleted moves on to the next id (see ensureGroupEvent).
+  let eventId = isGroup ? sessionEventId(session.id) : calendarEventId(booking.id);
 
   if (isGroup && service.durationMin > 60) {
     console.warn(
@@ -195,47 +238,44 @@ export async function createMeetingForBooking(
       });
       const weAreCreator = claim.count > 0;
 
-      if (weAreCreator) {
-        const created = await deps.google.insertEvent(accessToken, {
-          id: eventId,
+      // Another attendee already claimed the event. If its link is saved we reuse it and just add THIS customer to
+      // the shared event. If that event has since been deleted (the last attendee cancelled, or the influencer removed
+      // it) the add fails with "gone" and we fall through to make sure a live one exists.
+      let sharedLink: string | null = null;
+      if (!weAreCreator) {
+        const fresh = await prisma.session.findUnique({ where: { id: session.id }, select: { eventId: true, meetLink: true } });
+        if (fresh?.meetLink) {
+          // The session's recorded id is the truth: it may be a later generation than the one derived above.
+          const sharedId = fresh.eventId ?? eventId;
+          try {
+            await deps.google.addAttendee(accessToken, sharedId, attendee);
+            eventId = sharedId;
+            sharedLink = fresh.meetLink;
+          } catch (e) {
+            if (!(e instanceof GoogleEventGoneError)) throw e;
+          }
+        }
+      }
+      if (sharedLink === null) {
+        // We are the creator, or the creator has not finished (or crashed), or the shared event is gone: ensure a live
+        // event exists (idempotent, see ensureGroupEvent) and its link is ready, then persist both so the stuck
+        // creator and other attendees converge on the same event.
+        const ensured = await ensureGroupEvent(deps, accessToken, session.id, {
           summary: `${service.title} with ${influencer.name}`,
           description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
           start,
           end,
           attendee,
-          conferenceRequestId: session.id,
         });
-        const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
-        if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
-        meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
-        // Store the shared link on the session so later attendees copy it without another Google round-trip.
-        await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
-      } else {
-        // Another attendee already claimed the event. If its link is saved we reuse it; otherwise the creator is
-        // still mid-flight (or crashed), so insertEvent on the deterministic id gives us the event (409 -> read)
-        // and we poll for the link. Either way we add THIS customer to the shared event.
-        const fresh = await prisma.session.findUnique({ where: { id: session.id }, select: { meetLink: true } });
-        if (fresh?.meetLink) {
-          meetLink = fresh.meetLink;
-          await deps.google.addAttendee(accessToken, eventId, attendee);
-        } else {
-          // Creator has not finished. Ensure the event exists (insert is idempotent via the deterministic id)
-          // and the link is ready, then persist it so the stuck creator and other attendees converge.
-          const created = await deps.google.insertEvent(accessToken, {
-            id: eventId,
-            summary: `${service.title} with ${influencer.name}`,
-            description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
-            start,
-            end,
-            attendee,
-            conferenceRequestId: session.id,
-          });
-          const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
-          if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
-          meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
-          await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
-        }
+        eventId = ensured.eventId;
+        // Lost the create race (or retrying after a crash): the event was made without this customer on it, so they
+        // would get no invite. addAttendee is a no-op when they are already listed.
+        if (!ensured.created) await deps.google.addAttendee(accessToken, eventId, attendee);
+        sharedLink = await waitForMeetLink(deps, accessToken, ensured.event, eventId);
+        // Store the shared event id and link on the session so later attendees reuse them without another round-trip.
+        await prisma.session.update({ where: { id: session.id }, data: { eventId, meetLink: sharedLink } });
       }
+      meetLink = sharedLink;
     } else {
       const created = await deps.google.insertEvent(accessToken, {
         id: eventId,
