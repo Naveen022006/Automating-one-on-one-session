@@ -240,7 +240,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `ERROR_WEBHOOK_URL` | recommended | none | Every reported error is POSTed here (Slack/Discord compatible). Unset = a start-up warning |
 | `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time (also compiled into the SPA bundle) |
 | `APP_LOCALE` | no | `en-IN` | Formatting of money and times. Also a **build** input of the SPA bundle |
-| `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production. Also a **build** input: the SPA only includes the page when built with `true` |
+| `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production. Also a **build** input: the SPA only includes the page when built with `true`. **Use the same value at build and at run time**: the SPA decides at build time, the server (the shell's status code and the old Next page) at run time. Built `false` and run `true` serves the shell with status 200 but the SPA shows its 404 screen; built `true` and run `false` answers 404 while the SPA still draws the catalogue |
 | `SPA_GROUPS` | no | empty | Page groups served by the React SPA: empty (none, the old Next pages), `all`, or a comma list of `public,auth,booking,dashboard,admin`. Run time; unknown names are a start-up warning; with a group enabled the web process needs `web/dist/index.html` (section 3.2) |
 | `SPA_API_TARGET` | no | `http://localhost:3000` | **Dev only**: where the Vite dev server (`npm run dev:web`) proxies `/api` |
 | `ADMIN_PASSWORD` | no | generated | Read by `npm run admin:create` only |
