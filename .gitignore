@@ -17,3 +17,6 @@ AGENTS.md
 
 # Agent worktrees
 .claude/worktrees/
+
+# Generated local test logins (npm run dev:logins)
+dev-logins.local.md
