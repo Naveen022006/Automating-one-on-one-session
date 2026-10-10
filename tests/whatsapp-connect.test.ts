@@ -5,7 +5,7 @@ import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { getOverview } from "../lib/dashboard-data";
 import { prisma } from "../lib/db";
 import { ENCRYPTED_COLUMNS } from "../lib/key-rotation-db";
-import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, metaTemplateName, templateKeyFromMetaName, templateParams } from "../lib/message-templates";
+import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, metaTemplateName, normalizeTemplateStatus, templateKeyFromMetaName, templateParams, templateState } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
 import { DEFAULT_GRAPH_VERSION, graphBase, graphVersion } from "../lib/whatsapp-graph-version";
@@ -131,28 +131,126 @@ test("phone number lookup, account ownership and token errors", async () => {
   await assert.rejects(getPhoneNumber("111", "tok", down), (e: unknown) => e instanceof WhatsAppGraphError && e.status === 0 && !e.invalidToken);
 });
 
-test("ensureTemplates submits only what is missing and survives per-template failures", async () => {
-  const posted: string[] = [];
-  const fetchImpl = (async (url: string, init?: RequestInit) => {
-    if (init?.method === "POST") {
-      const name = JSON.parse(String(init.body)).name as string;
-      posted.push(name);
-      if (name === "reminder_15m") return json(400, { error: { message: "Invalid parameter", code: 100 } });
-      if (name === "cancellation") return json(400, { error: { message: "Content in this language already exists", code: 100, error_subcode: 2388024 } });
-      return json(200, { id: `t_${name}`, status: "PENDING" });
-    }
-    return json(200, { data: [{ name: "booking_confirmation", language: "en", status: "APPROVED" }, { name: "other-template", language: "en", status: "APPROVED" }] });
-  }) as unknown as typeof fetch;
+interface FakeTemplate {
+  name: string;
+  language?: string;
+  status: string;
+  body?: string;
+  reason?: string;
+}
 
-  const r = await ensureTemplates("waba1", "tok", "en", fetchImpl);
-  assert.ok(posted.every(isMetaTemplateName), `every submitted name is one Meta accepts: ${posted.join(", ")}`);
-  assert.ok(!posted.includes("booking_confirmation"), "an existing template is not submitted again");
-  assert.deepEqual(r.submitted.sort(), ["reminder-24h", "reschedule"]);
+/**
+ * A fake WhatsApp Business Account's message templates. The list is paged (`pageSize`) the way Graph pages it, a name
+ * filter works, `hidden` templates exist but are left out of the plain list (created a moment ago, or on a page we
+ * did not read), creating a template that exists answers "already exists", and names in `rejectCreate` are refused.
+ */
+function fakeWaba(initial: FakeTemplate[], opts: { pageSize?: number; hidden?: string[]; rejectCreate?: string[]; lookupFails?: boolean; alwaysExists?: string[] } = {}) {
+  const rows = initial.map((t) => ({ language: "en", ...t }));
+  const requests: string[] = [];
+  const posted: string[] = [];
+  const asGraph = (t: (typeof rows)[number]) => ({
+    name: t.name,
+    language: t.language,
+    status: t.status,
+    ...(t.reason ? { rejected_reason: t.reason } : {}),
+    ...(t.body === undefined ? {} : { components: [{ type: "BODY", text: t.body }] }),
+  });
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    requests.push(`${init?.method ?? "GET"} ${url}`);
+    const u = new URL(url);
+    if (init?.method === "POST") {
+      const sent = JSON.parse(String(init.body)) as { name: string; language: string; components: { text: string }[] };
+      posted.push(sent.name);
+      if (opts.alwaysExists?.includes(sent.name) || rows.some((t) => t.name === sent.name && t.language === sent.language)) return json(400, { error: { message: "Content in this language already exists", code: 100, error_subcode: 2388024 } });
+      if (opts.rejectCreate?.includes(sent.name)) return json(400, { error: { message: "Invalid parameter", code: 100 } });
+      rows.push({ name: sent.name, language: sent.language, status: "PENDING", body: sent.components[0].text });
+      return json(200, { id: `t_${sent.name}`, status: "PENDING" });
+    }
+    const byName = u.searchParams.get("name");
+    if (byName) {
+      if (opts.lookupFails) return json(500, { error: { message: "Meta is down", code: 2 } });
+      return json(200, { data: rows.filter((t) => t.name.includes(byName)).map(asGraph) });
+    }
+    const visible = rows.filter((t) => !opts.hidden?.includes(t.name));
+    const size = opts.pageSize ?? 100;
+    const start = Number(u.searchParams.get("after") ?? 0);
+    const page = visible.slice(start, start + size);
+    const more = start + size < visible.length;
+    return json(200, { data: page.map(asGraph), ...(more ? { paging: { cursors: { after: String(start + size) }, next: `${url}&more` } } : { paging: { cursors: { after: String(start + size) } } }) });
+  }) as unknown as typeof fetch;
+  return { rows, requests, posted, fetchImpl };
+}
+
+const spec = (key: string) => TEMPLATE_SPECS[key];
+
+test("ensureTemplates submits only what is missing and survives per-template failures", async () => {
+  const waba = fakeWaba(
+    [
+      { name: spec("booking-confirmation").name, status: "APPROVED", body: spec("booking-confirmation").body },
+      { name: "other-template", status: "APPROVED", body: "Hello {{1}}" },
+    ],
+    { rejectCreate: [spec("reminder-15m").name] },
+  );
+  const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+  assert.ok(waba.posted.every(isMetaTemplateName), `every submitted name is one Meta accepts: ${waba.posted.join(", ")}`);
+  assert.ok(!waba.posted.includes(spec("booking-confirmation").name), "an existing template is not submitted again");
+  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-24h", "reschedule"]);
   assert.deepEqual(r.failed.map((f) => f.name), ["reminder-15m"]);
   assert.equal(r.templates["booking-confirmation"].status, "APPROVED");
   assert.equal(r.templates["reminder-24h"].status, "PENDING");
   assert.equal(r.templates["reminder-15m"], undefined, "a failed submission is not reported as present");
   assert.ok(!("other-template" in r.templates), "templates we do not own are ignored");
+});
+
+test("every page of the template list is read, so a template on a later page is not submitted again", async () => {
+  const others = Array.from({ length: 7 }, (_, i) => ({ name: `their_template_${i}`, status: "APPROVED", body: "Hi {{1}}" }));
+  const waba = fakeWaba([...others, { name: spec("reschedule").name, status: "APPROVED", body: spec("reschedule").body }, { name: spec("cancellation").name, status: "REJECTED", body: spec("cancellation").body, reason: "INVALID_FORMAT" }], { pageSize: 3 });
+  const listed = await listTemplates("waba1", "tok", waba.fetchImpl);
+  assert.equal(listed.length, 9, "all three pages");
+  assert.ok(waba.requests.filter((q) => q.includes("after=")).length >= 2, "followed the cursor");
+
+  const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+  assert.ok(!waba.posted.includes(spec("reschedule").name) && !waba.posted.includes(spec("cancellation").name), "the two on the last page were found, not submitted again");
+  assert.equal(r.templates.reschedule.status, "APPROVED");
+  assert.deepEqual([r.templates.cancellation.status, r.templates.cancellation.reason], ["REJECTED", "INVALID_FORMAT"]);
+});
+
+test("when Meta says a template already exists, its real status is fetched by name and recorded", async () => {
+  // The list we read does not show it (hidden), but creating it says it exists.
+  const waba = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: spec("cancellation").body }], { hidden: [spec("cancellation").name] });
+  const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+  assert.equal(r.templates.cancellation?.status, "APPROVED", "recorded as it is, not left unknown (which would read as not sendable)");
+  assert.ok(!r.submitted.includes("cancellation") && !r.failed.some((f) => f.name === "cancellation"));
+  assert.ok(waba.requests.some((q) => q.startsWith("GET") && q.includes(`name=${spec("cancellation").name}`)), "asked for it by name");
+
+  // If it cannot be found by name either, that is reported, not swallowed.
+  const gone = fakeWaba([], { alwaysExists: [spec("cancellation").name] });
+  const g = await ensureTemplates("waba1", "tok", "en", gone.fetchImpl);
+  assert.equal(g.templates.cancellation, undefined);
+  assert.ok(g.failed.some((f) => f.name === "cancellation"));
+  const down = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: "x" }], { hidden: [spec("cancellation").name], lookupFails: true });
+  assert.ok((await ensureTemplates("waba1", "tok", "en", down.fetchImpl)).failed.some((f) => f.name === "cancellation"), "a failed lookup is reported too");
+});
+
+test("a template that Meta flagged is still sent; a reinstated one is approved; the rule is one function", () => {
+  for (const [status, sendable] of [["APPROVED", true], ["FLAGGED", true], ["PENDING", false], ["IN_APPEAL", false], ["REJECTED", false], ["PAUSED", false], ["DISABLED", false], ["DELETED", false], ["PENDING_DELETION", false], ["LIMIT_EXCEEDED", false], ["NOT_SUBMITTED", false], ["CONFLICT", false], [undefined, false]] as const) {
+    assert.equal(isSendableStatus(status), sendable, String(status));
+  }
+  assert.equal(normalizeTemplateStatus("REINSTATED"), "APPROVED");
+  assert.equal(normalizeTemplateStatus("flagged"), "FLAGGED");
+  assert.equal(normalizeTemplateStatus("Paused"), "PAUSED");
+
+  // The checklist and the card follow the same rule: all sendable is ready, flagged included.
+  assert.equal(templateState(["APPROVED", "FLAGGED"]), "ready");
+  assert.equal(templateState(["APPROVED", "PENDING_DELETION"]), "rejected");
+  assert.equal(templateState(["APPROVED", "LIMIT_EXCEEDED"]), "rejected");
+  assert.equal(templateState(["APPROVED", "CONFLICT"]), "rejected");
+
+  // The webhook stores Meta's event as the status, with REINSTATED meaning approved again.
+  const updates = parseTemplateStatusUpdates({
+    entry: [{ id: "w", changes: ["REINSTATED", "FLAGGED", "PAUSED"].map((event) => ({ field: "message_template_status_update", value: { event, message_template_name: "n", message_template_language: "en" } })) }],
+  });
+  assert.deepEqual(updates.map((u) => u.status), ["APPROVED", "FLAGGED", "PAUSED"]);
 });
 
 test("Embedded Signup exchanges the code and needs the Meta app configured", async () => {
@@ -802,7 +900,7 @@ test("a template that is not approved is not attempted over WhatsApp: straight t
   const templates = {
     "booking-confirmation": { status: "PENDING", language: "en" },
     "reminder-24h": { status: "APPROVED", language: "en" },
-    "reminder-15m": { status: "APPROVED", language: "en" },
+    "reminder-15m": { status: "FLAGGED", language: "en" }, // low quality, but Meta still delivers it
     reschedule: { status: "REJECTED", language: "en" },
   };
   await connectManual(b, { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-unapproved-token-for-tests-1234567890" }, fakeDeps({ ensureTemplates: async () => ({ templates, submitted: [], failed: [] }) }));
@@ -810,6 +908,7 @@ test("a template that is not approved is not attempted over WhatsApp: straight t
 
   // The credentials are handed out per template.
   assert.ok((await resolveSendCredentials(b, env, "reminder-24h"))?.token, "an approved template can be sent");
+  assert.ok((await resolveSendCredentials(b, env, "reminder-15m"))?.token, "a flagged template is still sent");
   assert.ok((await resolveSendCredentials(b, env))?.token, "without naming a template the connection alone decides");
   for (const [template, status] of [["booking-confirmation", "PENDING"], ["reschedule", "REJECTED"], ["cancellation", "NOT_SUBMITTED"]] as const) {
     await assert.rejects(

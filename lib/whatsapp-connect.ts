@@ -1,4 +1,4 @@
-import { TEMPLATE_SPECS, isMetaTemplateName, type TemplateSpec } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, type TemplateSpec } from "@/lib/message-templates";
 import { graphBase, graphVersion } from "@/lib/whatsapp-graph-version";
 
 /**
@@ -90,15 +90,53 @@ export interface RemoteTemplate {
   language: string;
   status: string;
   rejectedReason?: string | null;
+  /** The text of the BODY component, when Meta returned the components. */
+  bodyText?: string | null;
 }
 
+type RemoteTemplateRow = { name: string; language: string; status: string; rejected_reason?: string; components?: { type?: string; text?: string }[] };
+
+const TEMPLATE_FIELDS = "name,language,status,rejected_reason,components";
+/** Pages of 100: more than this many pages means something is wrong, not that the account has 10,000 templates. */
+const MAX_TEMPLATE_PAGES = 100;
+
+function toRemoteTemplate(t: RemoteTemplateRow): RemoteTemplate {
+  return {
+    name: t.name,
+    language: t.language,
+    status: normalizeTemplateStatus(t.status),
+    rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null,
+    bodyText: t.components?.find((c) => c.type === "BODY")?.text ?? null,
+  };
+}
+
+/** Every page of `/{waba}/message_templates` for `query`: an account with many templates does not fit in one answer. */
+async function readTemplates(wabaId: string, token: string, query: string, fetchFn?: FetchFn): Promise<RemoteTemplate[]> {
+  const out: RemoteTemplate[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < MAX_TEMPLATE_PAGES; page++) {
+    const cursor = after ? `&after=${encodeURIComponent(after)}` : "";
+    const r = await graph<{ data?: RemoteTemplateRow[]; paging?: { cursors?: { after?: string }; next?: string } }>(
+      `/${encodeURIComponent(wabaId)}/message_templates?fields=${TEMPLATE_FIELDS}&limit=100${query}${cursor}`,
+      { token },
+      fetchFn,
+    );
+    out.push(...(r.data ?? []).map(toRemoteTemplate));
+    after = r.paging?.next ? r.paging.cursors?.after : undefined;
+    if (!after) return out;
+  }
+  throw new WhatsAppGraphError("Meta kept returning more pages of templates than any account has", 0);
+}
+
+/** All the account's templates, every page. */
 export async function listTemplates(wabaId: string, token: string, fetchFn?: FetchFn): Promise<RemoteTemplate[]> {
-  const r = await graph<{ data?: { name: string; language: string; status: string; rejected_reason?: string }[] }>(
-    `/${encodeURIComponent(wabaId)}/message_templates?fields=name,language,status,rejected_reason&limit=200`,
-    { token },
-    fetchFn,
-  );
-  return (r.data ?? []).map((t) => ({ name: t.name, language: t.language, status: t.status, rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null }));
+  return readTemplates(wabaId, token, "", fetchFn);
+}
+
+/** One template by exact name and language, or null. Used when Meta says it exists but the list did not show it. */
+export async function getTemplateByName(wabaId: string, name: string, language: string, token: string, fetchFn?: FetchFn): Promise<RemoteTemplate | null> {
+  const found = await readTemplates(wabaId, token, `&name=${encodeURIComponent(name)}`, fetchFn);
+  return found.find((t) => t.name === name && t.language === language) ?? null;
 }
 
 /**
@@ -142,11 +180,22 @@ export async function ensureTemplates(wabaId: string, token: string, language: s
     if (have.has(spec.name)) continue;
     try {
       const created = await graph<{ id?: string; status?: string }>(`/${encodeURIComponent(wabaId)}/message_templates`, { method: "POST", token, body: JSON.stringify(templatePayload(spec, language)) }, fetchFn);
-      have.set(spec.name, { name: spec.name, language, status: created.status ?? "PENDING" });
+      have.set(spec.name, { name: spec.name, language, status: normalizeTemplateStatus(created.status ?? "PENDING") });
       submitted.push(key);
     } catch (e) {
-      if (isAlreadyExists(e)) continue;
-      failed.push({ name: key, error: e instanceof Error ? e.message.slice(0, 200) : "failed" });
+      if (!isAlreadyExists(e)) {
+        failed.push({ name: key, error: e instanceof Error ? e.message.slice(0, 200) : "failed" });
+        continue;
+      }
+      // Meta says it is there but the list we read did not show it (created a moment ago, or on a page we could not
+      // see). Ask for it by name and record what it really is, rather than leaving it unknown (which reads as "not sendable").
+      try {
+        const existing = await getTemplateByName(wabaId, spec.name, language, token, fetchFn);
+        if (existing) have.set(spec.name, existing);
+        else failed.push({ name: key, error: `Meta says a template like "${spec.name}" already exists, but it is not on this account's list in this language` });
+      } catch (lookup) {
+        failed.push({ name: key, error: lookup instanceof Error ? lookup.message.slice(0, 200) : "could not read the existing template" });
+      }
     }
   }
   const templates: TemplateSyncResult["templates"] = {};
@@ -155,11 +204,6 @@ export async function ensureTemplates(wabaId: string, token: string, language: s
     if (t) templates[key] = { status: t.status, language, ...(t.rejectedReason ? { reason: t.rejectedReason } : {}) };
   }
   return { templates, submitted, failed };
-}
-
-/** Statuses we treat as "this template can be sent". */
-export function isApproved(status: string | undefined): boolean {
-  return status === "APPROVED";
 }
 
 /* ---------- Is this token one we can rely on? ---------- */

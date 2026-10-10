@@ -1,6 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { GMAIL_SEND_SCOPE } from "@/lib/google";
+import { TEMPLATE_STATE_NOTICE } from "@/lib/message-templates";
 import { whatsappTemplateState } from "@/lib/whatsapp-connection";
 
 /**
@@ -94,15 +95,11 @@ export function evaluateReadiness(input: ReadinessInput, required: ConnectionKey
       input.whatsapp === "ready" || input.whatsapp === "pending" ? "done" : input.whatsapp === "none" ? "todo" : "attention",
       input.whatsapp === "ready"
         ? "Customers are messaged from your number."
-        : input.whatsapp === "pending"
-          ? "Connected. Meta is reviewing your message templates; until they are approved customers get SMS."
-          : input.whatsapp === "rejected"
-            ? "Meta rejected or paused one or more of your message templates, so those messages go by SMS. Open WhatsApp settings to see why."
-            : input.whatsapp === "not-submitted"
-              ? "Connected, but some message templates were never sent to Meta for review, so those messages go by SMS. Open WhatsApp settings and press Check template status."
-              : input.whatsapp === "error"
-                ? "WhatsApp stopped accepting the connection. Reconnect it."
-                : "Message customers from your own WhatsApp number. Without it they get SMS.",
+        : input.whatsapp === "pending" || input.whatsapp === "rejected" || input.whatsapp === "not-submitted"
+          ? `Connected. ${TEMPLATE_STATE_NOTICE[input.whatsapp].body}` // the same text as the settings card
+          : input.whatsapp === "error"
+            ? "WhatsApp stopped accepting the connection. Reconnect it."
+            : "Message customers from your own WhatsApp number. Without it they get SMS.",
       "/dashboard/settings#whatsapp",
     ),
     item(

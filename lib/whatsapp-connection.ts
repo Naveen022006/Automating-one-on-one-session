@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { alertInfluencer } from "@/lib/alerts";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
-import { TEMPLATE_SPECS, templateKeyFromMetaName, templateState, type TemplateState } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, isSendableStatus, templateKeyFromMetaName, templateState, type TemplateState } from "@/lib/message-templates";
 import {
   WhatsAppGraphError,
   ensureTemplates,
@@ -10,7 +10,6 @@ import {
   checkTokenInfo,
   debugToken,
   getPhoneNumber,
-  isApproved,
   listTemplates,
   metaAppCredentials,
   registerNumber,
@@ -412,7 +411,7 @@ export async function getConnectionView(influencerId: string): Promise<WhatsAppC
     lastError: [row.lastError, webhookNote].filter(Boolean).join(" ") || null,
     connectedAt: row.connectedAt,
     templates,
-    ready: row.status === "ACTIVE" && templates.every((t) => isApproved(t.status)),
+    ready: row.status === "ACTIVE" && templates.every((t) => isSendableStatus(t.status)),
     webhook: { subscribed, error: row.webhookError },
   };
 }
@@ -420,7 +419,7 @@ export async function getConnectionView(influencerId: string): Promise<WhatsAppC
 /** Connections that are healthy but still have templates that are not approved: the ones worth asking Meta about. */
 export async function connectionsAwaitingTemplates(): Promise<string[]> {
   const rows = await prisma.whatsAppConnection.findMany({ where: { status: "ACTIVE" }, select: { influencerId: true, templates: true } });
-  return rows.filter((r) => !viewTemplates(r.templates).every((t) => isApproved(t.status))).map((r) => r.influencerId);
+  return rows.filter((r) => whatsappTemplateState(r.templates) !== "ready").map((r) => r.influencerId);
 }
 
 export interface SendCredentials {
@@ -442,7 +441,7 @@ export async function resolveSendCredentials(influencerId: string, env = process
     // failed WhatsApp row behind for every message.
     if (template) {
       const status = viewTemplates(row.templates).find((t) => t.name === template)?.status ?? "NOT_SUBMITTED";
-      if (!isApproved(status)) throw new WhatsAppNotConnectedError(`The "${template}" WhatsApp template is not approved yet (${status})`);
+      if (!isSendableStatus(status)) throw new WhatsAppNotConnectedError(`The "${template}" WhatsApp template is not approved yet (${status})`);
     }
     return { token: decryptSecret(row.tokenEnc, aad(influencerId)), phoneNumberId: row.phoneNumberId };
   }

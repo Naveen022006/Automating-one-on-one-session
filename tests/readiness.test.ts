@@ -74,7 +74,7 @@ test("the WhatsApp checklist item says what is actually wrong: in review, reject
   const rejected = detail("rejected");
   const notSubmitted = detail("not-submitted");
   assert.match(pending, /Meta is reviewing/);
-  assert.match(rejected, /rejected or paused/);
+  assert.match(rejected, /rejected, paused or disabled/);
   assert.match(notSubmitted, /never sent to Meta/);
   assert.match(notSubmitted, /Check template status/, "says how to fix it");
   assert.doesNotMatch(rejected, /reviewing/, "rejected templates are not 'being reviewed'");

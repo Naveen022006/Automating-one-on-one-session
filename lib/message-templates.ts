@@ -84,22 +84,62 @@ export function metaTemplateName(key: string): string {
   return DEFS[key]?.meta ?? key;
 }
 
-/** Meta statuses that mean "this template will not be sent unless someone acts", as opposed to waiting for a review. */
-const BLOCKED_STATUSES = new Set(["REJECTED", "PAUSED", "DISABLED", "DELETED"]);
+/**
+ * Meta's template status as we store it. Meta reports a flagged template that recovered as REINSTATED, which means it is
+ * approved again. Everything else is kept as Meta says it (FLAGGED stays FLAGGED so the settings card can say so).
+ */
+export function normalizeTemplateStatus(status: string): string {
+  const s = status.trim().toUpperCase();
+  return s === "REINSTATED" ? "APPROVED" : s;
+}
+
+/**
+ * THE rule for "can a message be sent with a template in this status", used by the sender, the checklist and the settings
+ * card so they cannot disagree. Approved, and FLAGGED: Meta flags a template whose quality is dropping but keeps
+ * delivering it until it pauses it, so we keep using it (the card shows it as low quality).
+ */
+export function isSendableStatus(status: string | undefined): boolean {
+  return status === "APPROVED" || status === "FLAGGED";
+}
+
+/**
+ * Statuses that mean "this template will not be sent unless someone acts", as opposed to waiting for a review. CONFLICT is
+ * ours: a template with that name already exists on the account with different text, so we did not adopt it.
+ */
+const BLOCKED_STATUSES = new Set(["REJECTED", "PAUSED", "DISABLED", "DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED", "CONFLICT"]);
 
 export type TemplateState = "ready" | "pending" | "rejected" | "not-submitted";
 
 /**
- * Where a set of template statuses stands, worst first: `rejected` (Meta rejected, paused or disabled at least one: needs
- * the influencer's attention), `not-submitted` (at least one never reached Meta: a sync would send it), `pending`
- * (everything submitted, Meta is still reviewing), `ready` (all approved). `NOT_SUBMITTED` is our own marker for a
- * template with no status stored. Pure, and shared with the settings card in the browser.
+ * Where a set of template statuses stands, worst first: `rejected` (Meta rejected, paused or disabled at least one, or it
+ * cannot be used: needs the influencer's attention), `not-submitted` (at least one never reached Meta: a sync would send
+ * it), `pending` (everything submitted, Meta is still reviewing), `ready` (all sendable). `NOT_SUBMITTED` is our own marker
+ * for a template with no status stored. Pure, and shared with the settings card in the browser.
  */
 export function templateState(statuses: string[]): TemplateState {
   if (statuses.some((s) => BLOCKED_STATUSES.has(s))) return "rejected";
   if (statuses.includes("NOT_SUBMITTED")) return "not-submitted";
-  return statuses.every((s) => s === "APPROVED") ? "ready" : "pending";
+  return statuses.every((s) => isSendableStatus(s)) ? "ready" : "pending";
 }
+
+/**
+ * What to tell the influencer about each state that is not ready. One text, used by the go-live checklist and by the
+ * settings card, so the two say the same thing about the same state (and only `pending` mentions a review).
+ */
+export const TEMPLATE_STATE_NOTICE: Record<Exclude<TemplateState, "ready">, { title: string; body: string }> = {
+  pending: {
+    title: "Meta is reviewing your message templates",
+    body: "Meta is reviewing your message templates, usually within minutes to a day. Until each one is approved, customers get that message by SMS.",
+  },
+  rejected: {
+    title: "Some message templates cannot be used",
+    body: "Meta rejected, paused or disabled a message template, or it cannot be used (deleted, over its limit, or its name is taken by a different template on your account). Customers get those messages by SMS until it is fixed. The reason is shown next to each template.",
+  },
+  "not-submitted": {
+    title: "Some message templates were never sent to Meta",
+    body: "Some message templates were never sent to Meta for review. Customers get those messages by SMS until you press Check template status.",
+  },
+};
 
 /** Back from Meta's name (as seen in the template list and status webhooks) to our key, or null if it is not one of ours. */
 export function templateKeyFromMetaName(name: string): string | null {

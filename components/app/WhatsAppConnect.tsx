@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Field, Input, describedBy } from "@/components/ui/primitives";
-import { templateState } from "@/lib/message-templates";
+import { TEMPLATE_STATE_NOTICE, templateState } from "@/lib/message-templates";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
 
@@ -316,7 +316,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
             ) : connection.ready ? (
               <Badge tone="success">Ready</Badge>
             ) : templatesState === "rejected" ? (
-              <Badge tone="danger">Templates rejected</Badge>
+              <Badge tone="danger">Templates need attention</Badge>
             ) : templatesState === "not-submitted" ? (
               <Badge tone="warning">Templates not submitted</Badge>
             ) : (
@@ -345,21 +345,10 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
             {n}
           </Alert>
         ))}
-        {connection.status === "ACTIVE" && templatesState === "rejected" && (
-          <Alert tone="warning" title="Meta rejected or paused some message templates">
-            Customers get those messages by SMS. The reason is shown next to each one below. Fix it in WhatsApp Manager, then press
-            Check template status.
-          </Alert>
-        )}
-        {connection.status === "ACTIVE" && templatesState === "not-submitted" && (
-          <Alert tone="warning" title="Some message templates were never sent to Meta">
-            Customers get those messages by SMS until they are approved. Press Check template status to send them for review.
-          </Alert>
-        )}
-        {connection.status === "ACTIVE" && templatesState === "pending" && (
-          <Alert tone="info">
-            Meta reviews each message template, usually within minutes to a day. Until every one is approved, customers get those
-            messages by SMS instead.
+        {/* The same wording as the go-live checklist, from one place (TEMPLATE_STATE_NOTICE). */}
+        {connection.status === "ACTIVE" && templatesState !== "ready" && (
+          <Alert tone={templatesState === "pending" ? "info" : "warning"} title={TEMPLATE_STATE_NOTICE[templatesState].title}>
+            {TEMPLATE_STATE_NOTICE[templatesState].body}
           </Alert>
         )}
         <div className="table-wrap">
