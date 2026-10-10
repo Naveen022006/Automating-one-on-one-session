@@ -134,6 +134,11 @@ the metadata routes (`/sitemap.xml`, `/robots.txt`, `/opengraph-image`, `/icon.s
   (title, robots, canonical, Open Graph, JSON-LD; every inserted value HTML-escaped) and the right status (a real 404 for an
   unknown profile, 503 + `Retry-After` if the lookup fails). Pages in a group that is not listed are served by the old Next pages,
   exactly as before: **with `SPA_GROUPS` empty nothing changes**. `/spa-shell/...` answers 404 when requested directly.
+* **Bind address**: do not run the standalone server with `HOSTNAME=127.0.0.1` or `::1` while `SPA_GROUPS` is set. Next.js builds
+  the request URL the proxy sees from `HOSTNAME` but rewrites loopback IPs to `localhost`, so the proxy's rewrite to the internal
+  shell route is treated as a request to another origin, proxied without the nonce, and every SPA page answers 404. Use
+  `HOSTNAME=0.0.0.0` (the image's default) or `localhost` and limit access with the firewall or reverse proxy; the web process
+  refuses to start in production with that combination (section 5).
 * **Start-up check**: with a non-empty `SPA_GROUPS` the web process refuses to start (section 5) if `web/dist/index.html` is
   missing or has no `__CSP_NONCE__` placeholder. The image copies the file explicitly; for a standalone/Vercel bundle
   `next.config.ts` lists it in `outputFileTracingIncludes` (route `/spa-shell/[[...path]]`), because the file is read at run time and the

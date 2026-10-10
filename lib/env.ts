@@ -439,13 +439,31 @@ export function spaTemplateProblems(
 }
 
 /**
+ * A standalone Next.js server bound to a loopback IP (`HOSTNAME=127.0.0.1` or `::1`, a common way to keep it behind a reverse
+ * proxy) breaks the SPA: Next builds the request URL the proxy sees from the configured hostname but normalises 127.x.x.x and
+ * ::1 to "localhost" (NextURL), so the proxy's rewrite to the internal shell route looks like a rewrite to ANOTHER origin and
+ * is proxied as an external request instead; it arrives without the nonce and every SPA page answers 404. `HOSTNAME=0.0.0.0`
+ * (what the Docker image sets) and `localhost` work, as does the default of `next start`. Verified against Next 16.4. Pure.
+ */
+export function spaHostnameProblems(env: EnvRecord): string[] {
+  if (parseSpaGroups(env.SPA_GROUPS).size === 0) return [];
+  const host = env.HOSTNAME?.trim();
+  if (host && /^(127(\.\d{1,3}){3}|\[?::1\]?)$/.test(host)) {
+    return [
+      "SPA_GROUPS: is set while HOSTNAME is a loopback IP address (127.x.x.x or ::1). Next.js then treats the SPA's internal rewrite as an external request and every SPA page answers 404. Use HOSTNAME=0.0.0.0 (as the Docker image does) or HOSTNAME=localhost, and restrict who can connect with the firewall or the reverse proxy",
+    ];
+  }
+  return [];
+}
+
+/**
  * Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook.
- * For the "web" label it also checks the SPA shell template (see spaTemplateProblems): fatal in production, a warning
- * elsewhere (a development server serves the SPA from Vite, not from a build).
+ * For the "web" label it also checks the SPA shell template and the bind address (see spaTemplateProblems and
+ * spaHostnameProblems): fatal in production, a warning elsewhere (a development server serves the SPA from Vite).
  */
 export function initEnv(label: string, deps: { readFile?: (file: string) => string; cwd?: string } = {}): AppConfig {
   const config = getConfig();
-  const spaProblems = label === "web" ? spaTemplateProblems(process.env, deps.readFile, deps.cwd) : [];
+  const spaProblems = label === "web" ? [...spaTemplateProblems(process.env, deps.readFile, deps.cwd), ...spaHostnameProblems(process.env)] : [];
   if (spaProblems.length && config.isProduction) throw new EnvValidationError(spaProblems);
   if (!logged) {
     if (spaProblems.length) for (const p of spaProblems) console.warn(`[env] warning (${label}): ${p}`);

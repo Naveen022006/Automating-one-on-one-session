@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { keyFingerprint } from "../lib/crypto";
-import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, spaTemplateProblems, validateEnv, type EnvRecord } from "../lib/env";
+import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, spaHostnameProblems, spaTemplateProblems, validateEnv, type EnvRecord } from "../lib/env";
 
 // Pure tests: the validator takes an env record, so nothing here reads or changes the real environment
 // (except the few tests of the process wiring, which restore process.env).
@@ -417,6 +417,45 @@ test("initEnv('web') refuses to start a production process whose SPA template is
     assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("web/dist/index.html")), warned.join("\n"));
   } finally {
     console.warn = realWarn;
+    console.log = realLog;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    resetConfigForTests();
+  }
+});
+
+test("spaHostnameProblems: a standalone server bound to a loopback IP cannot serve the SPA (Next turns the rewrite into an external proxy)", () => {
+  const bad = ["127.0.0.1", "127.1.2.3", "::1", "[::1]", " 127.0.0.1 "];
+  for (const HOSTNAME of bad) {
+    const problems = spaHostnameProblems({ SPA_GROUPS: "all", HOSTNAME });
+    assert.equal(problems.length, 1, HOSTNAME);
+    assert.match(problems[0], /^SPA_GROUPS: .*HOSTNAME/);
+    assert.ok(!problems[0].includes("127.1.2.3"), "the value is never printed");
+  }
+  // Fine: what the Docker image sets, a name, localhost, no value, a machine name, or no SPA at all.
+  for (const HOSTNAME of ["0.0.0.0", "localhost", "app.internal", "my-laptop", "a1b2c3d4e5f6", "", undefined]) {
+    assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "all", HOSTNAME }), [], String(HOSTNAME));
+  }
+  assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "", HOSTNAME: "127.0.0.1" }), [], "no SPA group, nothing to break");
+  assert.deepEqual(spaHostnameProblems({ HOSTNAME: "127.0.0.1" }), []);
+  assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "nonsense", HOSTNAME: "127.0.0.1" }), []);
+
+  // And it stops a production web start (the template being present does not help).
+  const saved = { ...process.env };
+  const realLog = console.log;
+  try {
+    console.log = () => {};
+    const fine = { readFile: () => '<html><!--spa-head--><script nonce="__CSP_NONCE__"></script></html>', cwd: "/work" };
+    Object.assign(process.env, good, { SPA_GROUPS: "all", HOSTNAME: "127.0.0.1" });
+    resetConfigForTests();
+    assert.throws(
+      () => initEnv("web", fine),
+      (e: unknown) => e instanceof EnvValidationError && e.issues.length === 1 && /HOSTNAME/.test(e.issues[0]),
+    );
+    process.env.HOSTNAME = "0.0.0.0";
+    resetConfigForTests();
+    initEnv("web", fine);
+  } finally {
     console.log = realLog;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
