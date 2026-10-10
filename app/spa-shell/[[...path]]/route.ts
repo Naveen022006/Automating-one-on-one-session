@@ -31,10 +31,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const nonce = req.headers.get("x-nonce");
   if (!nonce) return plain(404, "Not found");
 
-  // The proxy rewrites "/x" to "/spa-shell/x" (and "/" to "/spa-shell").
+  // A <Link> on a page that is still served by Next (SPA_GROUPS enables only some groups) may prefetch or navigate to a path
+  // that is now an SPA page, with the RSC header. Next strips its flight headers from the request the PROXY sees, so the
+  // proxy cannot tell; this handler can. Answer with an empty 204 (no profile lookup, no template): a non-RSC answer makes
+  // Next's client fall back to a normal full page load, which then requests this URL again WITHOUT the header and gets the
+  // real shell.
+  if (req.headers.get("rsc") !== null || req.headers.get("next-router-prefetch") !== null) {
+    return new NextResponse(null, { status: 204, headers: { "cache-control": "no-store" } });
+  }
+
+  // The proxy rewrites "/x" to "/spa-shell/x" (and "/" to "/spa-shell"). Depending on how Next reports a rewritten request,
+  // `nextUrl.pathname` is the original path ("/x") or the rewritten one ("/spa-shell/x"); accept both and recover "/x".
   const raw = req.nextUrl.pathname;
-  const pathname = raw === PREFIX ? "/" : raw.startsWith(`${PREFIX}/`) ? raw.slice(PREFIX.length) : null;
-  const match = pathname === null ? null : matchSpaRoute(pathname);
+  const pathname = raw === PREFIX ? "/" : raw.startsWith(`${PREFIX}/`) ? raw.slice(PREFIX.length) : raw;
+  const match = matchSpaRoute(pathname);
   if (!match) return plain(404, "Not found");
 
   let template: string;
@@ -73,7 +83,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const robots = robotsDirective(head.robots);
   if (robots) headers["x-robots-tag"] = robots;
   // Token URLs (/manage, /verify-email, /reset-password): the token must not leak through a Referer header to anything
-  // the page links or loads.
+  // the page links or loads. NOTE: the Referrer-Policy from next.config.ts' security headers replaces whatever a route
+  // handler sets, so the header that actually reaches the browser is set by proxy.ts; this one and the <meta name="referrer">
+  // in the head are the fallbacks (for example if the config headers are ever restructured).
   if (head.noReferrer) headers["referrer-policy"] = "no-referrer";
   if (head.retryAfterSec) headers["retry-after"] = String(head.retryAfterSec);
   return new NextResponse(html, { status: head.status, headers });

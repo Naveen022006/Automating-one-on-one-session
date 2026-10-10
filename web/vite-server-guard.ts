@@ -56,7 +56,7 @@ export function repoPathProblem(rel: string): string | null {
   if (clean.startsWith("worker/")) return "the background worker (server only)";
   if (clean.startsWith("prisma/") || clean.startsWith("scripts/") || clean.startsWith("tests/")) return "a server-side or tooling file";
   if (clean === "proxy.ts" || clean === "instrumentation.ts") return "server-side Next.js entry code";
-  if (/^app\/.*(^|\/)(page|layout|route|not-found|error|global-error)\.tsx?$/.test(clean)) return "a Next page/layout file (server code; import the shared view component instead)";
+  if (/^app\/(?:.*\/)?(page|layout|route|not-found|error|global-error)\.tsx?$/.test(clean)) return "a Next page/layout file (server code; import the shared view component instead)";
   if (clean.startsWith("lib/") && !LIB_ALLOWLIST.includes(clean)) {
     return `lib module not on the browser allowlist (${LIB_ALLOWLIST.join(", ")}); import only types from it ("import type"), or move the pure logic to an allowlisted module`;
   }

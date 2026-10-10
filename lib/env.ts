@@ -428,7 +428,10 @@ export function spaTemplateProblems(
   if (parseSpaGroups(env.SPA_GROUPS).size === 0) return [];
   let text: string;
   try {
-    text = readFile(path.join(cwd, SHELL_TEMPLATE_RELATIVE_PATH));
+    // turbopackIgnore: this path is read at run time on purpose; without the comment Turbopack warns that it cannot tell
+    // what is read and would trace (bundle) the whole project into the server output. The template is included
+    // explicitly by outputFileTracingIncludes in next.config.ts.
+    text = readFile(path.join(/* turbopackIgnore: true */ cwd, SHELL_TEMPLATE_RELATIVE_PATH));
   } catch {
     return [`SPA_GROUPS: is set, but ${SHELL_TEMPLATE_RELATIVE_PATH} is missing (it is written by \`npm run build\`; the image or deployment bundle must contain it)`];
   }

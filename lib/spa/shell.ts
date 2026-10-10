@@ -54,7 +54,9 @@ export function loadShellTemplate(
   cwd: string = process.cwd(),
 ): string {
   if (cached !== undefined) return cached;
-  const file = path.join(cwd, SHELL_TEMPLATE_RELATIVE_PATH);
+  // turbopackIgnore: read at run time on purpose; the file is added to the trace explicitly by outputFileTracingIncludes
+  // (next.config.ts). Without the comment Turbopack would warn and trace the whole project.
+  const file = path.join(/* turbopackIgnore: true */ cwd, SHELL_TEMPLATE_RELATIVE_PATH);
   let text: string;
   try {
     text = readFile(file);

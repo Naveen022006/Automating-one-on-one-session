@@ -164,17 +164,20 @@ function handlePage(req: NextRequest): NextResponse {
   requestHeaders.set("Content-Security-Policy", csp);
 
   // SPA: serve the Vite-built shell instead of the Next page, when this path's group is switched on (SPA_GROUPS).
+  // (A Next <Link> on a still-Next page may prefetch or navigate to a path that is now an SPA page, with the RSC header.
+  // The proxy cannot see that header, Next strips its flight headers from the request it passes here; the shell route
+  // answers such requests cheaply, see app/spa-shell/[[...path]]/route.ts.)
   const spa = matchEnabledSpaRoute(req.method, pathname, SPA_ENABLED);
-  // A Next <Link> on a page that is still served by Next may prefetch a path that is now an SPA page. Answer cheaply (no
-  // shell render, no profile lookup); a click then makes a normal navigation request, which Next's client turns into a
-  // full page load because the answer is HTML, not an RSC payload.
-  if (spa && req.headers.get("next-router-prefetch")) return new NextResponse(null, { status: 204 });
 
   let res: NextResponse;
   if (spa) {
     const url = req.nextUrl.clone();
     url.pathname = `/spa-shell${pathname === "/" ? "" : pathname}`;
     res = NextResponse.rewrite(url, { request: { headers: requestHeaders } });
+    // Token URLs (/manage, /verify-email, /reset-password): the token must not leak through a Referer header. Set here and
+    // not in the shell route, because the security headers in next.config.ts (Referrer-Policy: strict-origin-when-cross-origin)
+    // replace anything a route handler sets for the same header.
+    if ("noReferrer" in spa.route && spa.route.noReferrer) res.headers.set("Referrer-Policy", "no-referrer");
   } else {
     res = NextResponse.next({ request: { headers: requestHeaders } });
   }
