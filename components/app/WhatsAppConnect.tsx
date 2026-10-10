@@ -83,6 +83,9 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   const [waba, setWaba] = useState("");
   const [phoneId, setPhoneId] = useState("");
   const [token, setToken] = useState("");
+  // The number's own two-step verification PIN, only for a number that already has one. Optional everywhere.
+  const [pin, setPin] = useState("");
+  const [showPin, setShowPin] = useState(false);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [busy, setBusy] = useState<"manual" | "embedded" | "refresh" | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -139,7 +142,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     setErrors({});
     const r = await api<{ details?: { fieldErrors?: Record<string, string[]> } }>("/api/dashboard/whatsapp", {
       method: "POST",
-      body: { action: "connect-manual", wabaId: waba, phoneNumberId: phoneId, accessToken: token },
+      body: { action: "connect-manual", wabaId: waba, phoneNumberId: phoneId, accessToken: token, pin: pin.trim() || undefined },
     });
     setBusy(null);
     if (!r.ok) {
@@ -151,6 +154,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       return;
     }
     setToken("");
+    setPin("");
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
   }
@@ -168,9 +172,17 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       setBusy(null);
       return toast(failure ?? "WhatsApp did not finish creating your account. Please try again.", "error");
     }
-    const r = await api("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId } });
+    const r = await api("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId, pin: pin.trim() || undefined } });
     setBusy(null);
-    if (!r.ok) return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
+    if (!r.ok) {
+      // The number already has a two-step PIN we do not know: ask for it, then they connect again.
+      if (r.data.field === "pin") {
+        setShowPin(true);
+        setErrors({ pin: r.data.error });
+      }
+      return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
+    }
+    setPin("");
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
   }
@@ -324,6 +336,17 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
           {embedded ? "Enter details manually" : "Connect my WhatsApp number"}
         </Button>
       </div>
+      {embedded && !manual && (showPin ? (
+        <Field id="wa-pin-embedded" label="Two-step verification PIN" optional error={errors.pin} help="Only if the number you connect already has a two-step verification PIN. Otherwise we set one for you.">
+          <Input {...describedBy("wa-pin-embedded", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
+        </Field>
+      ) : (
+        <div>
+          <Button size="sm" variant="ghost" onClick={() => setShowPin(true)}>
+            My number already has a two-step verification PIN
+          </Button>
+        </div>
+      ))}
       {manual && (
         <form className="stack" onSubmit={saveManual} noValidate>
           <Alert tone="info" title="Where to find these">
@@ -341,6 +364,9 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
           </div>
           <Field id="wa-token" label="Permanent access token" error={errors.accessToken} help="Stored encrypted and never shown again.">
             <Input {...describedBy("wa-token", { error: errors.accessToken, help: true })} type="password" autoComplete="off" value={token} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToken(e.target.value)} />
+          </Field>
+          <Field id="wa-pin" label="Two-step verification PIN" optional error={errors.pin} help="Leave blank if the number is already working. Fill it in to register a number that is not registered yet, or if it already has a PIN.">
+            <Input {...describedBy("wa-pin", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
           </Field>
           <div className="form-actions">
             <Button type="submit" variant="primary" loading={busy === "manual"}>

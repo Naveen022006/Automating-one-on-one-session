@@ -21,6 +21,14 @@ export class WhatsAppGraphError extends Error {
   get invalidToken(): boolean {
     return this.status === 401 || this.code === 190;
   }
+  /** Registering the number failed because it already has a two-step verification PIN, and not the one we sent. */
+  get pinMismatch(): boolean {
+    return this.code === 133005;
+  }
+  /** Meta is refusing PIN attempts on this number for a while (too many wrong guesses, or guesses too quickly). */
+  get pinLocked(): boolean {
+    return this.code === 133008 || this.code === 133009;
+  }
 }
 
 type FetchFn = typeof fetch;
@@ -172,14 +180,15 @@ export async function subscribeApp(wabaId: string, token: string, fetchFn?: Fetc
 }
 
 /**
- * Registers the number for the Cloud API (needed for a newly added number). Idempotent: an already-registered number
- * answers with an error that is safe to ignore.
+ * Registers the number for the Cloud API (needed for a newly added number) and sets its two-step verification PIN to
+ * `pin`. Idempotent for the same PIN. A number that already has a different PIN fails with WhatsAppGraphError.pinMismatch.
  */
 export async function registerNumber(phoneNumberId: string, token: string, pin: string, fetchFn?: FetchFn): Promise<void> {
   try {
     await graph(`/${encodeURIComponent(phoneNumberId)}/register`, { method: "POST", token, body: JSON.stringify({ messaging_product: "whatsapp", pin }) }, fetchFn);
   } catch (e) {
-    if (e instanceof WhatsAppGraphError && /already|registered/i.test(e.message)) return;
+    // "Already registered" is fine; "not registered" (which also contains the word) is not.
+    if (e instanceof WhatsAppGraphError && /already (registered|exists)/i.test(e.message)) return;
     throw e;
   }
 }

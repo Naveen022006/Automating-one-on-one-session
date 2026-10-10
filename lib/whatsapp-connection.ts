@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { alertInfluencer } from "@/lib/alerts";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
@@ -62,6 +63,7 @@ const defaultDeps: ConnectDeps = {
 };
 
 const ID = /^\d{5,30}$/;
+const PIN = /^\d{6}$/;
 
 function friendly(e: unknown): WhatsAppConnectError {
   if (e instanceof WhatsAppConnectError) return e;
@@ -72,9 +74,53 @@ function friendly(e: unknown): WhatsAppConnectError {
   return new WhatsAppConnectError("Could not reach WhatsApp. Please try again.", 502);
 }
 
+/** A random 6-digit two-step verification PIN, one per connection. */
+export function generateRegistrationPin(): string {
+  return String(randomInt(0, 1_000_000)).padStart(6, "0");
+}
+
+/** The PIN the influencer typed, checked: undefined when left blank, a field error when it is not 6 digits. */
+function suppliedPin(raw: string | undefined): string | undefined {
+  const pin = raw?.trim();
+  if (!pin) return undefined;
+  if (!PIN.test(pin)) throw new WhatsAppConnectError("The two-step verification PIN is 6 digits.", 400, "pin");
+  return pin;
+}
+
+/** The PIN we registered this influencer's number with earlier (a reconnect must register with the same one), or null. */
+export async function getRegistrationPin(influencerId: string, phoneNumberId: string): Promise<string | null> {
+  const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { phoneNumberId: true, registrationPinEnc: true } });
+  if (!row || row.phoneNumberId !== phoneNumberId || !row.registrationPinEnc) return null;
+  try {
+    return decryptSecret(row.registrationPinEnc, pinAad(influencerId));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Registering a number that already has a two-step PIN of its own, different from ours, is refused by Meta. Say so in
+ * a way the influencer can act on: they know their own PIN, we do not.
+ */
+function registrationError(e: unknown, supplied: boolean): WhatsAppConnectError {
+  if (e instanceof WhatsAppGraphError && e.pinMismatch) {
+    return new WhatsAppConnectError(
+      supplied
+        ? "That two-step verification PIN does not match the one set on this number. Check it and try again."
+        : "This number already has a two-step verification PIN. Enter it in the PIN field and connect again.",
+      400,
+      "pin",
+    );
+  }
+  if (e instanceof WhatsAppGraphError && e.pinLocked) {
+    return new WhatsAppConnectError("WhatsApp has paused PIN attempts on this number after too many tries. Wait a while, then connect again.", 400, "pin");
+  }
+  return friendly(e);
+}
+
 async function persist(
   influencerId: string,
-  c: { wabaId: string; phoneNumberId: string; token: string; source: "manual" | "embedded" },
+  c: { wabaId: string; phoneNumberId: string; token: string; source: "manual" | "embedded"; pin?: string; pinSupplied?: boolean },
   deps: ConnectDeps,
 ): Promise<WhatsAppConnectionView> {
   let phone: PhoneNumberInfo;
@@ -89,6 +135,16 @@ async function persist(
 
   const taken = await prisma.whatsAppConnection.findUnique({ where: { phoneNumberId: c.phoneNumberId }, select: { influencerId: true } });
   if (taken && taken.influencerId !== influencerId) throw new WhatsAppConnectError("This WhatsApp number is already connected to another account.", 409, "phoneNumberId");
+
+  // Register last of the checks that can refuse the connection, so a number we then turn away is never left
+  // registered with a PIN we did not keep.
+  if (c.pin) {
+    try {
+      await deps.registerNumber(c.phoneNumberId, c.token, c.pin);
+    } catch (e) {
+      throw registrationError(e, c.pinSupplied === true);
+    }
+  }
 
   // Template trouble must not block connecting: the number works as soon as templates are approved, and the
   // influencer can retry from the dashboard.
@@ -105,6 +161,7 @@ async function persist(
     displayPhone: phone.displayPhone,
     verifiedName: phone.verifiedName,
     tokenEnc: encryptSecret(c.token, aad(influencerId)),
+    ...(c.pin ? { registrationPinEnc: encryptSecret(c.pin, pinAad(influencerId)) } : {}),
     source: c.source,
     status: "ACTIVE" as const,
     lastError: sync && sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null,
@@ -114,10 +171,14 @@ async function persist(
   return (await getConnectionView(influencerId))!;
 }
 
-/** Connect by entering the ids and a permanent system-user token. Verified with Meta before anything is saved. */
+/**
+ * Connect by entering the ids and a permanent system-user token. Verified with Meta before anything is saved. A number
+ * that is not registered for the Cloud API yet (or that has a two-step PIN) can be registered by giving its `pin`;
+ * without one we leave the number as it is, since the API Setup page has usually registered it already.
+ */
 export async function connectManual(
   influencerId: string,
-  input: { wabaId: string; phoneNumberId: string; accessToken: string },
+  input: { wabaId: string; phoneNumberId: string; accessToken: string; pin?: string },
   deps: ConnectDeps = defaultDeps,
 ) {
   const wabaId = input.wabaId.trim();
@@ -126,26 +187,43 @@ export async function connectManual(
   if (!ID.test(wabaId)) throw new WhatsAppConnectError("The WhatsApp Business Account id is a number, like 104857392010394.", 400, "wabaId");
   if (!ID.test(phoneNumberId)) throw new WhatsAppConnectError("The phone number id is a number, like 109283746501928.", 400, "phoneNumberId");
   if (token.length < 20 || /\s/.test(token)) throw new WhatsAppConnectError("Paste the full access token.", 400, "accessToken");
-  return persist(influencerId, { wabaId, phoneNumberId, token, source: "manual" }, deps);
+  const pin = suppliedPin(input.pin);
+  return persist(influencerId, { wabaId, phoneNumberId, token, source: "manual", pin, pinSupplied: pin !== undefined }, deps);
 }
 
-/** Finish Meta Embedded Signup: exchange the code, subscribe to webhooks, register the number, save. */
+/**
+ * The PIN to register an Embedded Signup number with: the one the influencer typed (their number already has one),
+ * else the one we registered this number with before, else a development default from WHATSAPP_REGISTRATION_PIN
+ * (never in production, where one shared PIN would become every influencer's two-step PIN), else a new random one.
+ */
+async function pinForEmbedded(influencerId: string, phoneNumberId: string, supplied: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
+  if (supplied) return supplied;
+  const stored = await getRegistrationPin(influencerId, phoneNumberId);
+  if (stored) return stored;
+  const dev = env.WHATSAPP_REGISTRATION_PIN?.trim();
+  if (env.NODE_ENV !== "production" && dev && PIN.test(dev)) return dev;
+  return generateRegistrationPin();
+}
+
+/** Finish Meta Embedded Signup: exchange the code, subscribe to webhooks, register the number with its own PIN, save. */
 export async function connectEmbedded(
   influencerId: string,
-  input: { code: string; wabaId: string; phoneNumberId: string },
+  input: { code: string; wabaId: string; phoneNumberId: string; pin?: string },
   deps: ConnectDeps = defaultDeps,
   env = process.env,
 ) {
   if (!ID.test(input.wabaId) || !ID.test(input.phoneNumberId)) throw new WhatsAppConnectError("WhatsApp did not return your account details. Please try again.", 400);
+  // Checked before the code is exchanged: the code works once, so a typo in the PIN must not use it up.
+  const supplied = suppliedPin(input.pin);
   let token: string;
   try {
     token = await deps.exchangeCode(input.code);
     await deps.subscribeApp(input.wabaId, token);
-    if (env.WHATSAPP_REGISTRATION_PIN) await deps.registerNumber(input.phoneNumberId, token, env.WHATSAPP_REGISTRATION_PIN);
   } catch (e) {
     throw friendly(e);
   }
-  return persist(influencerId, { wabaId: input.wabaId, phoneNumberId: input.phoneNumberId, token, source: "embedded" }, deps);
+  const pin = await pinForEmbedded(influencerId, input.phoneNumberId, supplied, env);
+  return persist(influencerId, { wabaId: input.wabaId, phoneNumberId: input.phoneNumberId, token, source: "embedded", pin, pinSupplied: supplied !== undefined }, deps);
 }
 
 export interface WhatsAppConnectionView {
