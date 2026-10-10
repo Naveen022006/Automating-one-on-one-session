@@ -44,9 +44,12 @@ declare global {
   }
 }
 
+let sdkLoading: Promise<FacebookSdk> | null = null;
+
 function loadFacebookSdk(appId: string): Promise<FacebookSdk> {
-  return new Promise((resolve, reject) => {
-    if (window.FB) return resolve(window.FB);
+  if (window.FB) return Promise.resolve(window.FB);
+  // One load at a time, so the component mounting twice (or remounting) never adds a second script.
+  sdkLoading ??= new Promise<FacebookSdk>((resolve, reject) => {
     window.fbAsyncInit = () => {
       window.FB!.init({ appId, autoLogAppEvents: true, xfbml: true, version: "v21.0" });
       resolve(window.FB!);
@@ -54,10 +57,19 @@ function loadFacebookSdk(appId: string): Promise<FacebookSdk> {
     const el = document.createElement("script");
     el.src = "https://connect.facebook.net/en_US/sdk.js";
     el.async = true;
-    el.onerror = () => reject(new Error("Could not load the WhatsApp sign-up window. Check your connection or ad blocker."));
+    el.onerror = () => {
+      el.remove();
+      reject(new Error("Could not load the WhatsApp sign-up window. Check your connection or ad blocker."));
+    };
     document.body.appendChild(el);
+  }).catch((e) => {
+    sdkLoading = null; // allow a retry
+    throw e;
   });
+  return sdkLoading;
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * "Connect your WhatsApp number". Meta Embedded Signup when the platform is a configured Meta Tech Provider,
@@ -74,16 +86,44 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [busy, setBusy] = useState<"manual" | "embedded" | "refresh" | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const session = useRef<{ wabaId?: string; phoneNumberId?: string }>({});
+  const session = useRef<{ wabaId?: string; phoneNumberId?: string; failure?: string }>({});
+  const sdk = useRef<FacebookSdk | null>(null);
+  const [sdkState, setSdkState] = useState<"loading" | "ready" | "failed">("loading");
+  const appId = embedded?.appId;
 
-  // Embedded Signup reports the new account's ids in a window message, separately from the login code.
+  // Load the Facebook SDK as soon as the page shows, not on click: FB.login opens a pop-up, and a browser only allows
+  // that straight from the click, so there must be nothing to wait for once the button is pressed.
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    loadFacebookSdk(appId).then(
+      (FB) => {
+        sdk.current = FB;
+        if (live) setSdkState("ready");
+      },
+      () => live && setSdkState("failed"),
+    );
+    return () => {
+      live = false;
+    };
+  }, [appId]);
+
+  // Embedded Signup reports what happened in the sign-up window as window messages, separately from the login code:
+  // FINISH carries the new account's ids; CANCEL and ERROR say why there will be no account.
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       if (typeof e.origin !== "string" || !/^https:\/\/([a-z0-9-]+\.)?facebook\.com$/.test(e.origin)) return;
       try {
         const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
-        if (data?.type === "WA_EMBEDDED_SIGNUP" && data.event === "FINISH") {
+        if (data?.type !== "WA_EMBEDDED_SIGNUP") return;
+        if (data.event === "FINISH") {
           session.current = { wabaId: String(data.data?.waba_id ?? ""), phoneNumberId: String(data.data?.phone_number_id ?? "") };
+        } else if (data.event === "CANCEL") {
+          const step = typeof data.data?.current_step === "string" ? data.data.current_step.toLowerCase().replace(/_/g, " ") : "";
+          session.current.failure = `WhatsApp sign-up was cancelled${step ? ` at the "${step}" step` : ""}.`;
+        } else if (data.event === "ERROR") {
+          const why = typeof data.data?.error_message === "string" ? data.data.error_message.slice(0, 200) : "";
+          session.current.failure = `WhatsApp sign-up failed${why ? `: ${why}` : ""}. Please try again.`;
         }
       } catch {
         /* not our message */
@@ -115,38 +155,56 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     router.refresh();
   }
 
-  async function startEmbedded() {
+  // After the sign-up window closes: wait for the account ids, then hand the code to the server.
+  async function finishEmbedded(code: string | undefined) {
+    if (!code) {
+      setBusy(null);
+      return toast(session.current.failure ?? "WhatsApp sign-up was cancelled.", "error");
+    }
+    // The ids arrive in a separate message a moment after the code. Stop waiting early if the window said it failed.
+    for (let i = 0; i < 30 && !session.current.failure && !(session.current.wabaId && session.current.phoneNumberId); i++) await sleep(500);
+    const { wabaId, phoneNumberId, failure } = session.current;
+    if (failure || !wabaId || !phoneNumberId) {
+      setBusy(null);
+      return toast(failure ?? "WhatsApp did not finish creating your account. Please try again.", "error");
+    }
+    const r = await api("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId } });
+    setBusy(null);
+    if (!r.ok) return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
+    toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
+    router.refresh();
+  }
+
+  // Not async, and nothing is awaited before FB.login: the browser only opens the sign-up pop-up for a call made
+  // directly from the click. The SDK also wants a plain callback function (it ignores an async one), so the async
+  // work is in finishEmbedded.
+  function startEmbedded() {
     if (!embedded) return;
+    const FB = sdk.current;
+    if (!FB) {
+      // The SDK did not load (a blocker or a flaky connection). Try again; the pop-up needs a fresh click afterwards.
+      setSdkState("loading");
+      loadFacebookSdk(embedded.appId).then(
+        (loaded) => {
+          sdk.current = loaded;
+          setSdkState("ready");
+          toast("The WhatsApp sign-up window is ready. Press Connect with WhatsApp again.");
+        },
+        (e: Error) => {
+          setSdkState("failed");
+          toast(e.message, "error");
+        },
+      );
+      return;
+    }
     setBusy("embedded");
     session.current = {};
-    try {
-      const FB = await loadFacebookSdk(embedded.appId);
-      FB.login(
-        async (resp) => {
-          const code = resp.authResponse?.code;
-          if (!code) {
-            setBusy(null);
-            return toast("WhatsApp sign-up was cancelled.", "error");
-          }
-          // The ids arrive in a separate message a moment after the code.
-          for (let i = 0; i < 30 && !(session.current.wabaId && session.current.phoneNumberId); i++) await new Promise((r) => setTimeout(r, 500));
-          const { wabaId, phoneNumberId } = session.current;
-          if (!wabaId || !phoneNumberId) {
-            setBusy(null);
-            return toast("WhatsApp did not finish creating your account. Please try again.", "error");
-          }
-          const r = await api("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId } });
-          setBusy(null);
-          if (!r.ok) return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
-          toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
-          router.refresh();
-        },
-        { config_id: embedded.configId, response_type: "code", override_default_response_type: true, extras: { setup: {}, featureType: "", sessionInfoVersion: "3" } },
-      );
-    } catch (e) {
-      setBusy(null);
-      toast((e as Error).message, "error");
-    }
+    FB.login(
+      function (resp) {
+        void finishEmbedded(resp.authResponse?.code);
+      },
+      { config_id: embedded.configId, response_type: "code", override_default_response_type: true, extras: { setup: {}, featureType: "", sessionInfoVersion: "3" } },
+    );
   }
 
   async function refresh() {
@@ -258,7 +316,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       </div>
       <div className="row">
         {embedded && (
-          <Button variant="primary" onClick={startEmbedded} loading={busy === "embedded"}>
+          <Button variant="primary" onClick={startEmbedded} loading={busy === "embedded" || sdkState === "loading"}>
             Connect with WhatsApp
           </Button>
         )}
