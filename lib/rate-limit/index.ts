@@ -82,6 +82,9 @@ export function getStore(): RateLimitStore {
   return store;
 }
 
+/** Per-process store for `local` rules (health probes): no network, so it works while Redis and Postgres are down. */
+const localStore = new MemoryStore();
+
 /** Test hook: replace the store (e.g. with a MemoryStore). */
 export function setStore(next: RateLimitStore | null): void {
   store = next;
@@ -99,7 +102,7 @@ function multiplier(): number {
 /** Records one hit for `identifier` against `rule`. Never throws (fails open). */
 export async function hit(rule: RateLimitRule, identifier: string): Promise<RateLimitResult | null> {
   if (!rateLimitingEnabled()) return null;
-  return consume(getStore(), scaled(rule, multiplier()), identifier, {
+  return consume(rule.local ? localStore : getStore(), scaled(rule, multiplier()), identifier, {
     onError: (e) => logThrottled(`store error for ${rule.name}`, e),
   });
 }
