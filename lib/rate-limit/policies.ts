@@ -50,6 +50,9 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "slots", pattern: /^\/api\/slots(\/days)?$/, limit: 120, windowMs: MIN, by: "ip" },
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
 
+  // --- Worker liveness for uptime monitors (also the watchdog that alerts when the worker stops). Cheap, public.
+  { name: "health", pattern: /^\/api\/health$/, methods: ["GET"], limit: 30, windowMs: MIN, by: "ip" },
+
   // --- Provider webhooks: high ceiling (providers burst and retry); signatures are still verified.
   { name: "webhooks", pattern: /^\/api\/webhooks\//, limit: 600, windowMs: MIN, by: "ip" },
 
