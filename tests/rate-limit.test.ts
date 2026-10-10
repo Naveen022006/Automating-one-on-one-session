@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clientIp, normaliseIp } from "../lib/rate-limit/client-ip";
 import { FailoverStore, MemoryStore, consume, evaluate, rateLimitHeaders, windowStartFor, type RateLimitStore } from "../lib/rate-limit/core";
-import { GLOBAL_API_RULE, matchRouteRule, scaled } from "../lib/rate-limit/policies";
+import { GLOBAL_API_RULE, ROUTE_RULES, matchRouteRule, scaled } from "../lib/rate-limit/policies";
 import { PostgresStore, RedisStore } from "../lib/rate-limit/stores";
 
 // Pure tests: no Redis, no Postgres. The real stores are exercised with fakes of their client interfaces.
@@ -127,6 +127,60 @@ test("every API family has a route rule, auth endpoints are strict", () => {
   assert.ok(matchRouteRule("POST", "/api/auth/login")!.limit <= 10);
   assert.ok(GLOBAL_API_RULE.limit > 0);
   assert.equal(scaled({ name: "x", limit: 10, windowMs: 1 }, 2).limit, 20);
+});
+
+test("SPA view endpoints: each new rule matches its path, the right method, and sits before the broader rule it must not fall into", () => {
+  // The four rules added for the React SPA (doc/10-react-migration-plan.md, section 5).
+  const cases: [string, string, string][] = [
+    ["GET", "/api/auth/session", "auth-session"],
+    ["GET", "/api/public/profiles/demo", "public-profile"],
+    ["GET", "/api/pay/sometoken", "pay-view"],
+    ["GET", "/api/manage/sometoken", "self-service-view"],
+  ];
+  for (const [method, path, name] of cases) assert.equal(matchRouteRule(method, path)?.name, name, `${method} ${path}`);
+
+  // auth-session must not swallow its neighbours, and must beat auth-other (60 per 15 minutes would be used up by browsing).
+  assert.equal(matchRouteRule("GET", "/api/auth/sessions")?.name, "auth-other", "the devices list is a different endpoint");
+  assert.equal(matchRouteRule("POST", "/api/auth/session")?.name, "auth-other", "only GET is the cheap session check");
+  assert.equal(matchRouteRule("GET", "/api/auth/session/x")?.name, "auth-other");
+  assert.equal(matchRouteRule("GET", "/api/auth/session")?.by, "session-or-ip");
+  const rate = (m: string, p: string) => matchRouteRule(m, p)!.limit / matchRouteRule(m, p)!.windowMs;
+  assert.ok(rate("GET", "/api/auth/session") > rate("GET", "/api/auth/sessions") * 10, "the session check has a much wider budget than auth-other");
+  const session = matchRouteRule("GET", "/api/auth/session")!;
+  assert.deepEqual([session.limit, session.windowMs], [120, 60_000]);
+
+  // Page-load budgets are separate from the action budgets: viewing the manage page must not eat the 20 per 10 minutes for actions.
+  const view = matchRouteRule("GET", "/api/manage/tok")!;
+  const action = matchRouteRule("POST", "/api/manage/tok")!;
+  assert.equal(action.name, "self-service");
+  assert.equal(matchRouteRule("PATCH", "/api/manage/tok")?.name, "self-service");
+  assert.equal(matchRouteRule("GET", "/api/manage/tok/slots")?.name, "self-service", "sub-paths keep the action rule");
+  assert.ok(view.limit > action.limit);
+  const names = ROUTE_RULES.map((r) => r.name);
+  assert.ok(names.indexOf("self-service-view") < names.indexOf("self-service"));
+  assert.ok(names.indexOf("auth-session") < names.indexOf("auth-other"));
+  assert.deepEqual([matchRouteRule("GET", "/api/public/profiles/demo")!.limit, matchRouteRule("GET", "/api/pay/t")!.limit], [120, 30]);
+  assert.equal(matchRouteRule("POST", "/api/public/profiles/demo"), null, "no write method is rule-matched here (the handler does not exist)");
+  assert.equal(matchRouteRule("GET", "/api/public/profiles/a/b"), null, "one segment only");
+});
+
+test("SPA dashboard and admin view endpoints fall under the generic dashboard / admin rules, not under a narrower money or security rule", () => {
+  const dashboardGets = [
+    "shell", "overview", "sessions", "messages", "customers", "earnings", "services", "availability", "payouts", "settings", "onboarding", "payout-account",
+  ];
+  for (const p of dashboardGets) assert.equal(matchRouteRule("GET", `/api/dashboard/${p}`)?.name, "dashboard", `GET /api/dashboard/${p}`);
+  assert.equal(matchRouteRule("GET", "/api/dashboard/earnings/export")?.name, "dashboard-export", "the CSV export keeps its tight rule");
+  assert.equal(matchRouteRule("PUT", "/api/dashboard/payout-account")?.name, "dashboard-payout-account", "the write keeps its rule, the new GET does not");
+
+  const adminGets = [
+    "session", "shell", "overview", "influencers", "influencers/abc", "security", "payments", "payouts", "bookings", "health", "audit",
+  ];
+  for (const p of adminGets) assert.equal(matchRouteRule("GET", `/api/admin/${p}`)?.name, "admin", `GET /api/admin/${p}`);
+  // The same paths with a write method keep the tight rules.
+  assert.equal(matchRouteRule("POST", "/api/admin/security/2fa")?.name, "admin-security");
+  assert.equal(matchRouteRule("POST", "/api/admin/payouts/abc")?.name, "admin-money");
+  assert.equal(matchRouteRule("POST", "/api/admin/payments/reconcile")?.name, "admin-reconcile");
+  assert.equal(matchRouteRule("POST", "/api/admin/auth/login")?.name, "admin-login");
 });
 
 test("client IPs are normalised; IPv6 is grouped by /64", () => {

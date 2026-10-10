@@ -36,6 +36,8 @@ const root = path.resolve(arg("--root") ?? path.join(path.dirname(fileURLToPath(
 const dist = path.join(root, "web", "dist");
 const problems = [];
 const fail = (message) => problems.push(message);
+/** Repository-relative path with forward slashes, for messages. */
+const rel = (file) => path.relative(root, file).split(path.sep).join("/");
 
 /** Every file under a directory (absolute paths). */
 function walk(dir) {
@@ -72,7 +74,7 @@ function checkIndexHtml(html) {
 function checkProcessEnv(files) {
   for (const file of files.filter((f) => /\.(m?js|cjs)$/.test(f))) {
     if (/\bprocess\.env\b/.test(readFileSync(file, "utf8"))) {
-      fail(`${path.relative(root, file)} still contains "process.env": server-only code reached the browser bundle, or a new environment variable needs a define in web/vite.config.ts`);
+      fail(`${rel(file)} still contains "process.env": server-only code reached the browser bundle, or a new environment variable needs a define in web/vite.config.ts`);
     }
   }
 }
@@ -126,7 +128,7 @@ function checkSecrets(files) {
 function main() {
   const indexFile = path.join(dist, "index.html");
   if (!existsSync(indexFile)) {
-    console.error(`[spa-postbuild] ${path.relative(root, indexFile)} is missing: run vite build first`);
+    console.error(`[spa-postbuild] ${rel(indexFile)} is missing: run vite build first`);
     process.exit(1);
   }
   const files = walk(dist);

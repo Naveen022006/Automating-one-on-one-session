@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { keyFingerprint } from "../lib/crypto";
-import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, validateEnv, type EnvRecord } from "../lib/env";
+import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, resetConfigForTests, spaTemplateProblems, validateEnv, type EnvRecord } from "../lib/env";
 
 // Pure tests: the validator takes an env record, so nothing here reads or changes the real environment
 // (except the few tests of the process wiring, which restore process.env).
@@ -324,6 +324,100 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
     console.log = realLog;
     console.error = realError;
     process.exit = realExit;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    resetConfigForTests();
+  }
+});
+
+/* ---------- React SPA (SPA_GROUPS), doc/10-react-migration-plan.md section 1.8 ---------- */
+
+test("SPA_GROUPS: valid values and an empty one are fine; unknown names are a warning that does not echo the value", () => {
+  for (const value of [undefined, "", "all", "public", "public,auth,booking,dashboard,admin", "Public, AUTH"]) {
+    const r = validateEnv({ ...good, ...(value === undefined ? {} : { SPA_GROUPS: value }) });
+    assert.deepEqual(r.errors, [], String(value));
+    assert.ok(!r.warnings.some((w) => w.startsWith("SPA_GROUPS:")), `no warning for ${JSON.stringify(value)}`);
+  }
+  const r = validateEnv({ ...good, SPA_GROUPS: "public,bogus-secret-looking-name" });
+  assert.deepEqual(r.errors, [], "a misspelt group never stops the app: that group simply stays on the old pages");
+  const warning = r.warnings.find((w) => w.startsWith("SPA_GROUPS:"));
+  assert.ok(warning && /public, auth, booking, dashboard, admin/.test(warning));
+  assert.ok(!warning.includes("bogus"), "values are never printed");
+  // In development too.
+  assert.ok(validateEnv({ NODE_ENV: "development", SPA_GROUPS: "nonsense" }).warnings.some((w) => w.startsWith("SPA_GROUPS:")));
+  assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("SPA_GROUPS") && (KNOWN_ENV_VARS as readonly string[]).includes("SPA_API_TARGET"));
+});
+
+test("spaTemplateProblems: nothing to check without SPA_GROUPS; otherwise the template must exist and carry the CSP placeholders", () => {
+  const html = '<html><head><!--spa-head--><script nonce="__CSP_NONCE__" src="/assets/a.js"></script></head></html>';
+  let reads = 0;
+  const reader = (content: string | Error) => (file: string) => {
+    reads++;
+    assert.ok(file.replace(/\\/g, "/").endsWith("/work/web/dist/index.html"), file);
+    if (content instanceof Error) throw content;
+    return content;
+  };
+  assert.deepEqual(spaTemplateProblems({}, reader(html), "/work"), []);
+  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "" }, reader(html), "/work"), []);
+  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "bogus" }, reader(html), "/work"), [], "no valid group, nothing is served by the SPA");
+  assert.equal(reads, 0, "the file is not even read when no group is enabled");
+
+  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "all" }, reader(html), "/work"), []);
+  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "admin" }, reader(html), "/work"), []);
+  const missing = spaTemplateProblems({ SPA_GROUPS: "all" }, reader(new Error("ENOENT")), "/work");
+  assert.equal(missing.length, 1);
+  assert.match(missing[0], /^SPA_GROUPS: .*web\/dist\/index\.html is missing/);
+  const noNonce = spaTemplateProblems({ SPA_GROUPS: "all" }, reader("<html><!--spa-head--></html>"), "/work");
+  assert.match(noNonce[0] ?? "", /^SPA_GROUPS: .*__CSP_NONCE__/);
+  const noHead = spaTemplateProblems({ SPA_GROUPS: "all" }, reader('<html nonce="__CSP_NONCE__"></html>'), "/work");
+  assert.match(noHead[0] ?? "", /spa-head/);
+});
+
+test("initEnv('web') refuses to start a production process whose SPA template is missing; other labels and development do not", () => {
+  const saved = { ...process.env };
+  const realWarn = console.warn;
+  const realLog = console.log;
+  const warned: string[] = [];
+  try {
+    console.warn = (...a: unknown[]) => void warned.push(a.join(" "));
+    console.log = () => {};
+    const html = '<html><!--spa-head--><script nonce="__CSP_NONCE__"></script></html>';
+    const broken = {
+      readFile: (): string => {
+        throw new Error("ENOENT");
+      },
+      cwd: "/work",
+    };
+    const fine = { readFile: () => html, cwd: "/work" };
+
+    // Production + SPA enabled + no template: one aggregated, secret-free error.
+    Object.assign(process.env, good, { SPA_GROUPS: "all" });
+    resetConfigForTests();
+    assert.throws(
+      () => initEnv("web", broken),
+      (e: unknown) => e instanceof EnvValidationError && e.issues.length === 1 && e.issues[0].startsWith("SPA_GROUPS:") && !e.message.includes(APP_SECRET),
+    );
+    // With the template, or with SPA_GROUPS empty, it starts.
+    resetConfigForTests();
+    initEnv("web", fine);
+    process.env.SPA_GROUPS = "";
+    resetConfigForTests();
+    initEnv("web", broken);
+    // The worker has no pages: it never looks for the template.
+    process.env.SPA_GROUPS = "all";
+    resetConfigForTests();
+    initEnv("worker", broken);
+
+    // Development: a missing template is only a warning (the dev server serves the SPA from Vite).
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved, { NODE_ENV: "development", SPA_GROUPS: "all" });
+    resetConfigForTests();
+    warned.length = 0;
+    initEnv("web", broken);
+    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("web/dist/index.html")), warned.join("\n"));
+  } finally {
+    console.warn = realWarn;
+    console.log = realLog;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
     resetConfigForTests();
