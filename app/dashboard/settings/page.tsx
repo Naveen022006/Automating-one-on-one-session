@@ -21,15 +21,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       where: { id: auth.influencerId },
       select: { name: true, bio: true, photoUrl: true, timezone: true, slug: true, notifyByEmail: true },
     }),
-    getGoogleStatus(auth.influencerId),
+    getGoogleStatus(auth.influencerId, { details: true }),
     getConnectionView(auth.influencerId),
   ]);
   const googleView: GoogleStatusView =
     google.state === "connected"
-      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend }
+      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend, liveEvents: google.liveEvents ?? 0, gmailFailing: google.gmailFailing ?? false }
       : google.state === "reconnect-needed"
-        ? { state: "reconnect-needed", email: google.email, reason: google.reason }
-        : { state: "not-connected" };
+        ? { state: "reconnect-needed", email: google.email, reason: google.reason, liveEvents: google.liveEvents ?? 0 }
+        : { state: "not-connected", requestsGmail: google.requestsGmail };
 
   return (
     <div className="stack stack--lg">

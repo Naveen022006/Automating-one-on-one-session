@@ -7,7 +7,7 @@ import { deleteGoogleToken, getGoogleStatus } from "@/lib/google-tokens";
 export async function GET() {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
-  return NextResponse.json(await getGoogleStatus(auth.influencerId));
+  return NextResponse.json(await getGoogleStatus(auth.influencerId, { details: true }));
 }
 
 export async function DELETE() {
