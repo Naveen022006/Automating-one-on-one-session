@@ -554,29 +554,32 @@ test("template status webhooks update the matching account", { skip }, async () 
 test("a template status update for another language of the same name is ignored", { skip }, async () => {
   const lang = process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
   const other = lang === "hi" ? "ta" : "hi";
-  const status = async () => (await getConnectionView(a))?.templates.find((t) => t.name === "cancellation");
-  await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: lang, status: "APPROVED" });
+  const waba = String(Number(WABA) + 1); // its own account, so the other tests' connections are not touched
+  await connectManual(b, { wabaId: waba, phoneNumberId: String(Number(PHONE) + 11), accessToken: "EAAG-language-token-for-tests-1234567890" }, fakeDeps());
+  const status = async () => (await getConnectionView(b))?.templates.find((t) => t.name === "cancellation");
+  await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: lang, status: "APPROVED" });
   assert.equal((await status())?.status, "APPROVED");
   // The influencer added their own cancellation template in another language and Meta rejected it: ours is unaffected.
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: other, status: "REJECTED", reason: "INVALID_FORMAT" }), false);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: other, status: "REJECTED", reason: "INVALID_FORMAT" }), false);
   assert.deepEqual([(await status())?.status, (await status())?.reason], ["APPROVED", null]);
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: lang, status: "PAUSED" }), true, "our language still updates");
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: lang, status: "PAUSED" }), true, "our language still updates");
   assert.equal((await status())?.status, "PAUSED");
-  const stored = (await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: a } })).templates as Record<string, { language?: string }>;
+  const stored = (await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).templates as Record<string, { language?: string }>;
   assert.equal(stored.cancellation.language, lang, "the language is kept with the status");
+  await disconnect(b);
 });
 
 test("the dashboard attention list includes a WhatsApp connection that stopped working", { skip }, async () => {
-  const attention = async () => (await getOverview(a, true)).attention.filter((x) => x.kind === "whatsapp");
-  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE", lastError: null } });
-  assert.deepEqual(await attention(), [], "a healthy connection needs no attention");
-  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ERROR", lastError: "token expired" } });
-  const [item] = await attention();
+  const attention = async (id: string) => (await getOverview(id, true)).attention.filter((x) => x.kind === "whatsapp");
+  await connectManual(b, { wabaId: WABA, phoneNumberId: String(Number(PHONE) + 12), accessToken: "EAAG-attention-token-for-tests-1234567890" }, fakeDeps());
+  assert.deepEqual(await attention(b), [], "a healthy connection needs no attention");
+  await prisma.whatsAppConnection.update({ where: { influencerId: b }, data: { status: "ERROR", lastError: "token expired" } });
+  const [item] = await attention(b);
   assert.equal(item.title, "Reconnect WhatsApp");
   assert.match(item.detail, /token expired/);
   assert.equal(item.href, "/dashboard/settings#whatsapp");
-  assert.deepEqual((await getOverview(b, true)).attention.filter((x) => x.kind === "whatsapp"), [], "another influencer's connection is not shown");
-  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE", lastError: null } });
+  assert.ok(!(await attention(a)).some((x) => /token expired/.test(x.detail)), "another influencer's connection is not shown");
+  await disconnect(b);
 });
 
 test("one Graph API version, overridable with WHATSAPP_GRAPH_VERSION, for every call", async () => {
