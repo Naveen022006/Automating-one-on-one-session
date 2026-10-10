@@ -39,10 +39,22 @@ beforeEach(() => {
   scope = [];
 });
 
+/** createHold runs in a 5 s transaction; on a slow or busy shared database it can time out before doing anything. Retry that. */
+async function holdWithRetry(input: Parameters<typeof createHold>[0]) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await createHold(input);
+    } catch (e) {
+      const transient = /expired transaction|Unable to start a transaction|Transaction API error/.test(e instanceof Error ? e.message : "");
+      if (!transient || attempt >= 3) throw e;
+    }
+  }
+}
+
 async function pendingBooking(opts: { bookingStatus?: "PENDING_PAYMENT" | "EXPIRED" | "HELD" | "PAID" | "CANCELLED"; ageMs?: number; amount?: number } = {}) {
   const idx = ++n;
   const start = new Date(base.getTime() + idx * 3_600_000);
-  const hold = await createHold({
+  const hold = await holdWithRetry({
     serviceId,
     startTime: start,
     endTime: new Date(start.getTime() + 30 * MIN),
