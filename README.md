@@ -205,9 +205,12 @@ dashboard overview lists it until they reconnect (Reconnect in the settings card
 - **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN. Meta keeps the PIN on the number, so
   it is saved (AES-GCM encrypted, bound to the phone number, listed in the key-rotation tool, in `whatsapp_registration_pins`)
   BEFORE the number is registered, and it is kept when the influencer disconnects or a connection fails to save; a reconnect
-  registers with the same PIN. If the number holds a different PIN that we generated and lost, we reset it with Meta's set-PIN
-  call and register again. A PIN the influencer typed is never overwritten: if it no longer matches they are asked for the
-  current one (optional field in the connect form) and told where to look in WhatsApp Manager.
+  registers with the same PIN. If Meta refuses a PIN we just made up, the number may carry a PIN an older version registered it
+  with (the shared `WHATSAPP_REGISTRATION_PIN`), which is tried once; if that fails too, the number holds a PIN that is not
+  ours to know, perhaps the owner's own, so it is NOT changed behind their back: they are asked for it (optional field in the
+  connect form), told where to look in WhatsApp Manager, and offered "I don't have it, reset it for me". Only when they tick
+  that, and only for a PIN we generated ourselves, do we set a new one with Meta's set-PIN call and register again. A PIN the
+  influencer typed is never overwritten, ticked or not.
   `WHATSAPP_REGISTRATION_PIN` is a development default only and is ignored in production. A manual connection registers the
   number only if given a PIN.
 - **The Meta app secret** is one value with two names: `WHATSAPP_APP_SECRET` (webhook signatures) and `META_APP_SECRET`

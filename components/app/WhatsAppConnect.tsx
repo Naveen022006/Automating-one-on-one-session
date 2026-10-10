@@ -4,8 +4,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Field, Input, describedBy } from "@/components/ui/primitives";
+import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateState } from "@/lib/message-templates";
+import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
 
@@ -89,6 +90,10 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   // The number's own two-step verification PIN, only for a number that already has one. Optional everywhere.
   const [pin, setPin] = useState("");
   const [showPin, setShowPin] = useState(false);
+  // Offered only after the server says the number has a PIN we do not know: the influencer can let us set a new one.
+  // Never ticked for them, and never sent unless they tick it.
+  const [canReset, setCanReset] = useState(false);
+  const [resetPin, setResetPin] = useState(false);
   // Things the server noticed while connecting that did not stop it (a token it could not check, one that expires later).
   const [notes, setNotes] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -186,17 +191,21 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       setBusy(null);
       return toast(failure ?? "WhatsApp did not finish creating your account. Please try again.", "error");
     }
-    const r = await api<{ connection?: { notes?: string[] } }>("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId, pin: pin.trim() || undefined } });
+    const r = await api<{ connection?: { notes?: string[] }; canReset?: boolean }>("/api/dashboard/whatsapp", { method: "POST", body: { action: "connect-embedded", code, wabaId, phoneNumberId, pin: pin.trim() || undefined, resetPin: resetPin && !pin.trim() ? true : undefined } });
     setBusy(null);
     if (!r.ok) {
-      // The number already has a two-step PIN we do not know: ask for it, then they connect again.
+      // The number already has a two-step PIN we do not know: ask for it, and offer the reset when it is ours to offer.
+      // Either way they connect again (the sign-up code works once).
       if (r.data.field === "pin") {
         setShowPin(true);
         setErrors({ pin: r.data.error });
+        setCanReset(r.data.canReset === true);
       }
       return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
     }
     setPin("");
+    setResetPin(false);
+    setCanReset(false);
     setReconnect(false);
     setNotes(r.data.connection?.notes ?? []);
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
@@ -258,9 +267,19 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
         </Button>
       </div>
       {embedded && !manual && (showPin ? (
-        <Field id="wa-pin-embedded" label="Two-step verification PIN" optional error={errors.pin} help="Only if the number you connect already has a two-step verification PIN. Otherwise we set one for you.">
-          <Input {...describedBy("wa-pin-embedded", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
-        </Field>
+        <div className="stack stack--sm">
+          <Field id="wa-pin-embedded" label="Two-step verification PIN" optional error={errors.pin} help="Only if the number you connect already has a two-step verification PIN. A number without one gets a new PIN from us, and we keep it for you.">
+            <Input {...describedBy("wa-pin-embedded", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
+          </Field>
+          {canReset && (
+            <Checkbox
+              label={RESET_PIN_LABEL}
+              checked={resetPin && !pin.trim()}
+              disabled={pin.trim() !== ""}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResetPin(e.target.checked)}
+            />
+          )}
+        </div>
       ) : (
         <div>
           <Button size="sm" variant="ghost" onClick={() => setShowPin(true)}>

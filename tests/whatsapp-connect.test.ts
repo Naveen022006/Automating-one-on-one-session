@@ -8,6 +8,7 @@ import { ENCRYPTED_COLUMNS } from "../lib/key-rotation-db";
 import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, metaTemplateName, normalizeTemplateStatus, templateConflict, templateKeyFromMetaName, templateParams, templateState } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
+import { RESET_PIN_LABEL } from "../lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION, graphBase, graphVersion } from "../lib/whatsapp-graph-version";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {
@@ -612,7 +613,7 @@ after(async () => {
   if (!skip) {
     await prisma.influencer.deleteMany({ where: { id: { in: [a, b].filter(Boolean) } } });
     // A saved PIN outlives the connection by design, so the test numbers' PINs are removed by hand.
-    await prisma.whatsAppRegistrationPin.deleteMany({ where: { phoneNumberId: { in: Array.from({ length: 40 }, (_, i) => String(Number(PHONE) + i)) } } });
+    await prisma.whatsAppRegistrationPin.deleteMany({ where: { phoneNumberId: { in: Array.from({ length: 80 }, (_, i) => String(Number(PHONE) + i)) } } });
   }
   await prisma.$disconnect();
 });
@@ -745,53 +746,121 @@ test("a PIN the influencer typed is used as typed, kept, never overwritten, and 
   await disconnect(b);
 });
 
-test("a PIN we generated that the number no longer accepts is reset with Meta's set-PIN call, then registered again", { skip }, async () => {
-  const connect = (phone: string, deps: ConnectDeps) => connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, NO_ENV);
+test("a number that already has a PIN of its own is not changed behind the owner's back: they are asked for it, and offered a reset", { skip }, async () => {
+  const connect = (phone: string, deps: ConnectDeps, extra: { pin?: string; resetPin?: boolean } = {}, env: NodeJS.ProcessEnv = NO_ENV) =>
+    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, ...extra }, deps, env);
+  const refusedWithOffer = (e: unknown) =>
+    e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === true && /do not know/.test(e.message) && e.message.includes(`"${RESET_PIN_LABEL}"`) && /WhatsApp Manager/.test(e.message);
 
-  // The number holds a PIN nobody here knows (a previous run lost track of it).
-  const phone = String(Number(PHONE) + 24);
+  // The number has a PIN set in WhatsApp Manager (or by another provider); the influencer did not tick anything.
+  const phone = String(Number(PHONE) + 40);
   const meta = strictMeta({ [phone]: "777777" });
-  assert.equal((await connect(phone, fakeDeps(meta.deps))).status, "ACTIVE");
-  const pin = (await storedPin(phone))!.pin;
-  assert.deepEqual(meta.calls, [`register:${pin}`, `setpin:${pin}`, `register:${pin}`]);
-  assert.equal(meta.onNumber.get(phone), pin);
-  await disconnect(b);
-
-  // Meta pausing PIN attempts (133008) is handled the same way.
-  const locked = String(Number(PHONE) + 25);
-  const lockedMeta = strictMeta({ [locked]: "777777" });
-  let first = true;
-  await connect(
-    locked,
-    fakeDeps({
-      ...lockedMeta.deps,
-      registerNumber: async (p, t, pin2) => {
-        if (first) {
-          first = false;
-          throw new WhatsAppGraphError("Too many two-step verification PIN guesses", 400, 133008);
-        }
-        return lockedMeta.deps.registerNumber(p, t, pin2);
-      },
-    }),
-  );
-  assert.deepEqual(lockedMeta.calls.map((c) => c.split(":")[0]), ["setpin", "register"]);
-  await disconnect(b);
-
-  // When Meta refuses the reset too, the influencer is asked for the PIN and told where to find or change it.
-  const stuck = String(Number(PHONE) + 26);
-  const stuckMeta = strictMeta({ [stuck]: "777777" });
-  await assert.rejects(
-    connect(stuck, fakeDeps({ ...stuckMeta.deps, setPin: async () => { throw new WhatsAppGraphError("(#100) The PIN cannot be changed", 400, 100); } })),
-    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /does not match the one we have/.test(e.message) && /WhatsApp Manager/.test(e.message),
-  );
+  await assert.rejects(connect(phone, fakeDeps(meta.deps)), refusedWithOffer);
+  const ours = (await storedPin(phone))!;
+  assert.deepEqual(meta.calls, [`register:${ours.pin}`], "we tried our new PIN once, and did NOT call set-PIN");
+  assert.equal(meta.onNumber.get(phone), "777777", "their PIN is untouched");
   assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
+  assert.equal(ours.generated, true);
 
-  // A PIN the influencer typed earlier that the number has since moved on from is theirs to correct: no reset.
-  const theirs = String(Number(PHONE) + 27);
-  const theirsMeta = strictMeta({ [theirs]: "555555" });
-  await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: theirs, pinEnc: encryptSecret("246810", whatsappPinAad(theirs)), generated: false } });
-  await assert.rejects(connect(theirs, fakeDeps(theirsMeta.deps)), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
-  assert.deepEqual(theirsMeta.calls, ["register:246810"], "no set-PIN call");
+  // Trying again without ticking changes nothing either (the saved PIN is ours, and still refused).
+  await assert.rejects(connect(phone, fakeDeps(meta.deps)), refusedWithOffer);
+  assert.ok(!meta.calls.some((c) => c.startsWith("setpin")));
+
+  // Now they tick "I don't have it, reset it for me": only then is the PIN set, to the one we generated.
+  assert.equal((await connect(phone, fakeDeps(meta.deps), { resetPin: true })).status, "ACTIVE");
+  assert.deepEqual(meta.calls.slice(-2), [`setpin:${ours.pin}`, `register:${ours.pin}`]);
+  assert.equal(meta.onNumber.get(phone), ours.pin);
+  await disconnect(b);
+
+  // The same in one go on a fresh number when they opt in at the first attempt.
+  const phone2 = String(Number(PHONE) + 41);
+  const meta2 = strictMeta({ [phone2]: "777777" });
+  assert.equal((await connect(phone2, fakeDeps(meta2.deps), { resetPin: true })).status, "ACTIVE");
+  assert.deepEqual(meta2.calls.map((c) => c.split(":")[0]), ["register", "setpin", "register"]);
+  await disconnect(b);
+
+  // Opting in when nothing needs resetting does nothing: a number without a PIN is just registered.
+  const phone3 = String(Number(PHONE) + 42);
+  const meta3 = strictMeta();
+  await connect(phone3, fakeDeps(meta3.deps), { resetPin: true });
+  assert.deepEqual(meta3.calls.map((c) => c.split(":")[0]), ["register"]);
+  await disconnect(b);
+
+  // If Meta refuses the reset, the original problem is explained and it is not offered a second time.
+  const phone4 = String(Number(PHONE) + 43);
+  const stuck = strictMeta({ [phone4]: "777777" });
+  await assert.rejects(
+    connect(phone4, fakeDeps({ ...stuck.deps, setPin: async () => { throw new WhatsAppGraphError("(#100) The PIN cannot be changed", 400, 100); } }), { resetPin: true }),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === false && /no longer matches/.test(e.message) && /WhatsApp Manager/.test(e.message),
+  );
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0);
+});
+
+test("a PIN the influencer typed is never overwritten, even when they ask for a reset", { skip }, async () => {
+  const phone = String(Number(PHONE) + 44);
+  const meta = strictMeta({ [phone]: "555555" });
+  const deps = fakeDeps(meta.deps);
+  const connect = (extra: { pin?: string; resetPin?: boolean }) => connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, ...extra }, deps, NO_ENV);
+
+  // A wrong PIN typed now, with the reset ticked as well: the typed PIN wins, so no reset.
+  await assert.rejects(connect({ pin: "000000", resetPin: true }), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /does not match/.test(e.message) && e.canReset === false);
+  assert.deepEqual(meta.calls, ["register:000000"]);
+
+  // A PIN typed earlier and saved (it worked then), which the number has since moved on from: asked for again, never reset.
+  await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: phone, pinEnc: encryptSecret("246810", whatsappPinAad(phone)), generated: false } });
+  await assert.rejects(connect({ resetPin: true }), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === false && /no longer matches/.test(e.message));
+  assert.deepEqual(meta.calls, ["register:000000", "register:246810"], "no set-PIN call");
+  assert.equal(meta.onNumber.get(phone), "555555");
+  assert.deepEqual(await storedPin(phone), { pin: "246810", generated: false }, "what they typed is still what is saved");
+});
+
+test("a number registered by an older version with the shared WHATSAPP_REGISTRATION_PIN is recognised, not reset", { skip }, async () => {
+  const phone = String(Number(PHONE) + 45);
+  const meta = strictMeta({ [phone]: "654321" });
+  // In production the shared PIN is not used for new numbers, but an older deployment registered numbers with it.
+  const prod = { NODE_ENV: "production", WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv;
+  const view = await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), prod);
+  assert.equal(view.status, "ACTIVE");
+  const tried = meta.calls.map((c) => c.split(":")[0]);
+  assert.deepEqual(tried, ["register", "register"], "the new PIN was refused, then the shared one worked; no set-PIN");
+  assert.equal(meta.calls[1], "register:654321");
+  assert.deepEqual(await storedPin(phone), { pin: "654321", generated: true }, "what the number holds is what is saved");
+  await disconnect(b);
+  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), prod);
+  assert.equal(meta.calls.at(-1), "register:654321", "a reconnect goes straight to it");
+  await disconnect(b);
+
+  // In development the shared PIN IS the new PIN, so a refusal is not retried with the same value.
+  const phone2 = String(Number(PHONE) + 46);
+  const meta2 = strictMeta({ [phone2]: "777777" });
+  await assert.rejects(
+    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone2 }, fakeDeps(meta2.deps), { WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === true,
+  );
+  assert.deepEqual(meta2.calls, ["register:654321"]);
+});
+
+test("when Meta is pausing PIN attempts, nothing more is guessed; a reset happens only if they opted in", { skip }, async () => {
+  const phone = String(Number(PHONE) + 47);
+  const meta = strictMeta({ [phone]: "777777" });
+  let locked = true;
+  const deps = fakeDeps({
+    ...meta.deps,
+    registerNumber: async (p, t, pin) => {
+      if (locked) {
+        meta.calls.push(`register:${pin}`);
+        throw new WhatsAppGraphError("Too many two-step verification PIN guesses", 400, 133008);
+      }
+      return meta.deps.registerNumber(p, t, pin);
+    },
+  });
+  const prod = { NODE_ENV: "production", WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv;
+  await assert.rejects(connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, prod), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /paused PIN attempts/.test(e.message));
+  assert.equal(meta.calls.length, 1, "one attempt: the shared PIN was not tried against a locked number");
+  locked = false;
+  assert.equal((await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, resetPin: true }, deps, prod)).status, "ACTIVE");
+  assert.deepEqual(meta.calls.map((c) => c.split(":")[0]), ["register", "register", "setpin", "register"], "the locked attempt, then the strict refusal, the reset they chose, and the register");
+  await disconnect(b);
 });
 
 test("the PIN survives the connection failing to save after the number was registered", { skip }, async () => {

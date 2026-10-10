@@ -32,6 +32,8 @@ const schema = z.discriminatedUnion("action", [
     wabaId: z.string().trim().min(5).max(40),
     phoneNumberId: z.string().trim().min(5).max(40),
     pin,
+    // The influencer's own choice, never assumed: the number has a PIN they do not have and we may replace it with ours.
+    resetPin: z.boolean().optional(),
   }),
   z.object({ action: z.literal("refresh") }),
 ]);
@@ -57,11 +59,11 @@ export async function POST(req: Request) {
     const connection =
       body.action === "connect-manual"
         ? await connectManual(auth.influencerId, { wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, accessToken: body.accessToken, pin: body.pin })
-        : await connectEmbedded(auth.influencerId, { code: body.code, wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, pin: body.pin });
+        : await connectEmbedded(auth.influencerId, { code: body.code, wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, pin: body.pin, resetPin: body.resetPin });
     // connection.notes: things worth telling the influencer that did not stop the connection (a token that could not be checked).
     return NextResponse.json({ connection });
   } catch (e) {
-    if (e instanceof WhatsAppConnectError) return jsonError(e.message, e.status, e.field ? { field: e.field } : {});
+    if (e instanceof WhatsAppConnectError) return jsonError(e.message, e.status, { ...(e.field ? { field: e.field } : {}), ...(e.canReset ? { canReset: true } : {}) });
     throw e;
   }
 }
