@@ -3,6 +3,9 @@
 > How to run this app in production, and what to watch once it is running. Read `README.md` first. Everything below was
 > written from the code in this repository; items that could not be verified here are marked **(not verified)** so you
 > can check them against your own provider before relying on them.
+>
+> **Upgrading an existing installation? Read section 16 first** (`APP_SECRET` must now be 32+ characters, and changing it
+> invalidates emailed links).
 
 ## 1. Architecture
 
@@ -62,7 +65,7 @@ or Postmark) with SPF and DKIM for `EMAIL_FROM`, and the third-party accounts in
 | File | Image | Purpose |
 |---|---|---|
 | `Dockerfile` (target `runner`, the default) | web | Next.js **standalone** server (`output: "standalone"`, switched on by `BUILD_STANDALONE=1` so `next start` and Vercel builds are unchanged). Runs as the unprivileged `node` user on port 3000. |
-| `Dockerfile` (target `tools`) | tools | Prisma CLI + scripts for one-off jobs: `prisma migrate deploy`, `npm run admin:create`, `npm run keys:rotate`. Not a service. |
+| `Dockerfile` (target `tools`) | tools | Prisma CLI + scripts for one-off jobs: `prisma migrate deploy`, `npm run admin:create`, `npm run keys:rotate`, `npm run keys:verify`. Not a service. |
 | `Dockerfile.worker` | worker | `worker/index.ts` under `tsx` with production dependencies and the generated Prisma client. Non-root. Next.js, React and TypeScript are removed from it (the build fails if the worker's imports ever need them). |
 | `docker-compose.yml` | all | Local production-like run: postgres, redis, a one-shot `migrate` job, web, worker. |
 
@@ -72,8 +75,9 @@ docker build -t sessions-tools --target tools .
 docker build -f Dockerfile.worker -t sessions-worker .
 ```
 
-* **No secret is baked into an image.** `.dockerignore` keeps `.env*` (except `.env.example`) out of the build context, and
-  none of the Dockerfiles has an `ENV` for a secret. Configuration is passed when the container starts. The only build
+* **No secret is baked into an image.** `.dockerignore` keeps `.env`, `.env*`, `*.env`, `*.pem` and `*.key` (at any depth,
+  except `.env.example`) out of the build context (`COPY . .` in the build stage would otherwise copy them), `.gitignore`
+  keeps the same patterns out of git, and none of the Dockerfiles has an `ENV` for a secret. Configuration is passed when the container starts. The only build
   arguments are the public `NEXT_PUBLIC_BRAND_NAME` and `NEXT_PUBLIC_SUPPORT_EMAIL`, which Next.js compiles into the
   JavaScript (changing them means rebuilding the web image).
 * **Health checks**: the web image's `HEALTHCHECK` calls `GET /api/health`. Point load balancers at `/api/ready`
@@ -85,8 +89,13 @@ docker build -f Dockerfile.worker -t sessions-worker .
   which relaxes only those checks and only while `APP_URL` is `http://localhost...` (section 5). Web is published on
   `127.0.0.1:3000` only; Postgres and Redis are not published. In production mode the session cookie is `Secure`; browsers
   accept that on `localhost` (Chrome, Firefox), Safari does not.
-* **Running a tool**: `docker run --rm --env-file prod.env sessions-tools npx prisma migrate deploy`, or
-  `... sessions-tools npm run admin:create -- --email you@company.com --name "You"`.
+* **Running a tool**: keep the environment file for one-off commands **outside the repository** (for example
+  `~/secrets/sessions-prod.env`, readable only by you; a file inside the checkout is one `git add -A` or `COPY .` away from
+  leaking, which is why `*.env` is ignored by both git and Docker). Then
+  `docker run --rm --env-file ~/secrets/sessions-prod.env sessions-tools npx prisma migrate deploy`, or
+  `... sessions-tools npm run admin:create -- --email you@company.com --name "You"`. On a platform, prefer its "run a one-off
+  command with this service's environment" feature over a file on a laptop. Env files are read verbatim: a trailing space or
+  a CRLF line ending becomes part of the value (section 5 rejects that in production).
 
 ### 3.1 Health endpoints
 
@@ -104,17 +113,17 @@ Redis and Postgres are down. Suggested Kubernetes probes: liveness `/api/health`
 ## 4. Environment variables
 
 **Req** = required when `NODE_ENV=production` (start-up validation fails without it, section 5). **Dev** = for local
-development only; the start-up validation refuses it in production. Everything else is optional. Build = needed when
+development only; the start-up validation refuses it in production (`EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN`,
+`WHATSAPP_DISABLED`, `READINESS_BYPASS`, `RATE_LIMIT_ENABLED=false`). Everything else is optional. Build = needed when
 the image is built, not at run time. Copy `.env.example` as the starting point.
 
 ### Core, database and Redis
 | Variable | Req | Default | Notes |
 |---|---|---|---|
 | `APP_URL` | yes | `http://localhost:3000` | Public origin, **https** in production. Builds every emailed link, the OAuth redirect check and the CSRF allow-list |
-| `APP_SECRET` | yes | none | 32+ characters in production (`openssl rand -base64 32`). Signs manage/pay links and OAuth state. No dual-key support: changing it invalidates links already emailed |
+| `APP_SECRET` | yes | none | **32+ characters in production** (the absolute minimum anywhere is 16). `openssl rand -base64 32`. Signs manage/pay links and OAuth state. No previous-secret fallback: changing it invalidates links already emailed (section 16) |
 | `TOKEN_ENCRYPTION_KEY` | yes | none | 32 bytes, base64. AES-256-GCM key for Google refresh tokens, payout account numbers/UPI ids, WhatsApp tokens. Back it up (section 9) |
-| `TOKEN_ENCRYPTION_KEY_PREVIOUS` | no | none | Rotation only: old key, tried after the current key when decrypting |
-| `TOKEN_ENCRYPTION_KEY_NEW` | no | none | Rotation only: read by `npm run keys:rotate`, never set on a running service |
+| `TOKEN_ENCRYPTION_KEY_PREVIOUS` | no | none | Rotation only: the old key, tried after the current key when decrypting. `keys:rotate` and `keys:verify` read this and `TOKEN_ENCRYPTION_KEY` (new key), i.e. the services' own variables. Remove it when the rotation is finished (a warning reminds you) |
 | `DATABASE_URL` | yes | none | `postgresql://...`. Used by the app, the worker, migrations and scripts |
 | `DATABASE_POOL_MAX` | no | `10` | **Per process.** web instances x this + worker replicas x this must stay under the database's connection limit. Hosted poolers allow few (the shared Supabase project here allows 15) |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | no | `15000` | Postgres cancels a statement after this long |
@@ -154,7 +163,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | no | none | The platform's own number; used only with `WHATSAPP_PLATFORM_FALLBACK=true` |
 | `WHATSAPP_PLATFORM_FALLBACK` | no | `false` | Testing only; warned about in production |
-| `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised |
+| `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised. Refused in production (it silently sends all WhatsApp traffic by SMS) |
 | `MESSAGING_DRY_RUN` | no | `false` | **Dev**: log instead of sending WhatsApp/SMS. Refused in production |
 | `SMS_PROVIDER` | no | `generic` | `msg91`, `twilio` or `generic`; missing credentials for the chosen one warn |
 | `SMS_API_KEY`, `MSG91_TEMPLATE_DEFAULT`, `MSG91_TEMPLATE_BOOKING_CONFIRMATION`, `_REMINDER_24H`, `_REMINDER_15M`, `_RESCHEDULE`, `_CANCELLATION` | for msg91 | none | DLT-approved flow ids |
@@ -197,21 +206,31 @@ from the top of `worker/index.ts`. The pure function `validateEnv(env)` is unit-
 * **`NODE_ENV=production`**: any problem stops the process with one message listing every problem by variable name
   (never a value), e.g. `APP_SECRET: must be at least 32 characters in production`, and exit code 1. (The web app exits
   explicitly from `register()`: merely throwing there would leave Next.js serving every request with a 500.) A container
-  that fails this crash-loops with the message in its log, so the rollout never goes healthy. Enforced: `DATABASE_URL` set and a `postgres(ql)://` URL; `APP_URL` set
-  and **https**; `APP_SECRET` 32+ chars; `TOKEN_ENCRYPTION_KEY` is 32 bytes of base64 (also `_PREVIOUS` and `_NEW` when
-  set); `REDIS_URL` set; the three `RAZORPAY_*` variables; a real `EMAIL_PROVIDER` with its key and `EMAIL_FROM`; and none
-  of the development-only settings `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN=true`, `READINESS_BYPASS=true`,
-  `RATE_LIMIT_ENABLED=false`. Flags such as `RATE_LIMIT_ENABLED` must be spelled exactly `true`/`false`, because the code
-  compares strings (`"False"` would leave limits on while looking like it turned them off).
+  that fails this crash-loops with the message in its log, so the rollout never goes healthy. Enforced:
+  * `DATABASE_URL` set and a `postgres(ql)://` URL; `APP_URL` set and **https**; `APP_SECRET` 32+ characters;
+    `TOKEN_ENCRYPTION_KEY` is 32 bytes of base64 (also `TOKEN_ENCRYPTION_KEY_PREVIOUS` when set); `REDIS_URL` set; the
+    three `RAZORPAY_*` variables; a real `EMAIL_PROVIDER` with its key and `EMAIL_FROM`.
+  * None of the development-only settings `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN=true`, `WHATSAPP_DISABLED=true`,
+    `READINESS_BYPASS=true`, `RATE_LIMIT_ENABLED=false`.
+  * **No leading or trailing whitespace** in any variable the app reads. Values are used exactly as given, so
+    `EMAIL_PROVIDER="resend\n"` (a pasted newline or a CRLF env file) would otherwise pass a lenient check and then make the
+    email layer silently fall back to logging, dropping every email; a padded `APP_URL` builds broken links. The message
+    names the variable and never shows the value.
+  * Flags such as `RATE_LIMIT_ENABLED` must be spelled exactly `true`/`false`, because the code compares strings
+    (`"False"` would leave limits on while looking like it turned them off).
 * **Anything else** (development, test): the same kind of problem is printed as a warning and the process carries on.
   Production-only strictness is not applied.
 * **Warnings in production** (the process still starts): `CLIENT_IP_HEADER` or `ERROR_WEBHOOK_URL` unset, Razorpay test key,
   `RATE_LIMIT_STORE=memory`, incomplete Google/SMS/WhatsApp-webhook configuration, `ENABLE_DESIGN_PAGE=true`, and
-  `TOKEN_ENCRYPTION_KEY_NEW` set on a running service.
-* **`ALLOW_INSECURE_LOCAL_RUN=true`** exists so `docker compose up` can run production mode on a laptop. It turns the
-  four development-setting errors and the http `APP_URL` error into warnings, **only** when `APP_URL`'s host is
-  `localhost`, `127.0.0.1` or `[::1]`. With a real hostname it is itself an error, so it cannot be left on by accident.
-  Essentials (database, secrets, Redis, Razorpay) stay mandatory.
+  `TOKEN_ENCRYPTION_KEY_PREVIOUS` still set (a rotation is unfinished).
+* **Key fingerprint in the log.** Every web and worker process logs `[env] web: encryption key fingerprint 77710ab8` (plus
+  `(previous key fingerprint ...)` during a rotation): the first 8 hex characters of a SHA-256 over the key, never the key.
+  Compare it across instances (they must all match) and with the output of `keys:rotate` / `keys:verify` (section 9).
+* **`ALLOW_INSECURE_LOCAL_RUN=true`** exists so the production containers can run on a laptop (`docker compose up`, the
+  restore drill). It turns the five development-setting errors and the http `APP_URL` error into warnings, **only** when
+  `APP_URL`'s host is `localhost`, `127.0.0.1` or `[::1]`. With a real hostname it is itself an error, so it cannot be left on
+  by accident. Essentials (database, secrets, Redis, Razorpay) stay mandatory. (`NODE_ENV=development` is not an option for
+  the Docker image: Next.js's standalone `server.js` runs in production mode.)
 * `next build` does not validate (a build machine should not need production secrets), and `getConfig()` in `lib/env.ts` is
   a validated, cached, typed accessor for new code; secrets on it are non-enumerable so they never reach logs.
 
@@ -262,19 +281,30 @@ tokens). Redis holds in-flight jobs (see the runbook for what is and is not reco
 - [ ] RPO and RTO targets are written down (suggested: RPO <= 15 minutes with PITR, RTO <= 2 hours)
 - [ ] Someone other than the person who set it up has done the drill below
 
-**Restore drill (quarterly, and before launch).** Never restore over production; restore next to it.
+**Restore drill (quarterly, and before launch).** Never restore over production; restore next to it. The checks that
+matter most need no running app at all: steps 3 and 4.
 1. Restore the latest backup, or PITR to a timestamp a few minutes ago, into a **new** database instance. Note the time taken.
-2. Point a staging copy of the app at it: same `TOKEN_ENCRYPTION_KEY` (and `_PREVIOUS` if a rotation is unfinished), its
-   own `APP_SECRET`, Razorpay **test** keys, and **no worker**: a worker on a restored copy would send real messages and
-   create real meetings for restored bookings. The web process can also send account and approval emails, so run the copy
-   on a private network with a throwaway email account, or with `NODE_ENV=development` (where `EMAIL_PROVIDER=log` is
-   allowed) so nothing is delivered.
-3. Run `prisma migrate status` (nothing pending), then `GET /api/ready` returns 200.
-4. Run `npm run keys:rotate` (dry run) with a throwaway `TOKEN_ENCRYPTION_KEY_NEW`: it reads and decrypts every encrypted
-   column and reports `failed 0` when the keys match the restored data. This is the quickest proof the backup is usable.
-5. Compare row counts of `bookings`, `payments`, `payouts` and the newest `created_at` with production.
-6. Log in as a test influencer and open the dashboard; in the admin console open Payments.
-7. Record: backup time, restore duration, anything that surprised you. Delete the restored instance.
+2. Write a drill environment file **outside the repository** (for example `~/secrets/drill.env`): a copy of production's
+   with these changes. `DATABASE_URL` points at the restored instance. `TOKEN_ENCRYPTION_KEY` is production's key, and
+   `TOKEN_ENCRYPTION_KEY_PREVIOUS` is the old key too if you are restoring a backup older than a key rotation (or if a
+   rotation is unfinished). `REDIS_URL` points at a throwaway Redis (`docker run -d -p 127.0.0.1:56379:6379 redis:7-alpine`),
+   never production's. Razorpay **test** keys. No provider API keys. Then add the local-run switches:
+   `ALLOW_INSECURE_LOCAL_RUN=true`, `APP_URL=http://localhost:3300`, `EMAIL_PROVIDER=log`. Section 5 explains why: the
+   Docker image always runs in production mode, which refuses `EMAIL_PROVIDER=log`, except under this documented switch,
+   which is honoured only for a `localhost` `APP_URL`. Run **no worker**: a worker on a restored copy would send real
+   messages and create real meetings for restored bookings. With `EMAIL_PROVIDER=log` the web process prints emails
+   instead of sending them, so nothing reaches a real customer.
+3. Schema: `docker run --rm --env-file ~/secrets/drill.env sessions-tools npx prisma migrate status` (nothing pending).
+4. Keys: `docker run --rm --env-file ~/secrets/drill.env sessions-tools npm run keys:verify -- --allow-previous`. It
+   decrypts every encrypted column (Google tokens, payout details, WhatsApp tokens) and exits 0 only if each value reads with
+   `TOKEN_ENCRYPTION_KEY` or `TOKEN_ENCRYPTION_KEY_PREVIOUS`; a non-zero exit means the key you hold is not the key those
+   values were written with, i.e. the backup is not usable in a real recovery. This replaces any need to guess.
+5. App smoke test (optional): `docker run -d --name drill-web -p 127.0.0.1:3300:3000 --env-file ~/secrets/drill.env sessions-web`,
+   then `curl http://127.0.0.1:3300/api/ready` is 200. (From Docker Desktop, reach a database on the host as
+   `host.docker.internal`.) Log in as a test influencer, open the dashboard; open Payments in the admin console.
+6. Compare row counts of `bookings`, `payments`, `payouts` and the newest `created_at` with production.
+7. Record backup time, restore duration, anything that surprised you. Then `docker rm -f drill-web`, delete the restored
+   instance, the throwaway Redis and `~/secrets/drill.env`.
 
 ## 9. Secrets and encryption-key rotation
 
@@ -288,8 +318,10 @@ secrets in the company password manager.
 reconnect Google, reconnect WhatsApp and re-enter payout details (the table stores only masked values beside the
 ciphertext), and bookings that were waiting on a Meet link wait until they do.
 
-**What is encrypted** (the rotation tool covers all of it; a test fails if the schema gains another `*_enc` column that the
-tool does not list):
+**What is encrypted.** The rotation and verification tools cover every column in this table, and a test
+(`tests/key-rotation.test.ts`) discovers every `*_enc` / `*Enc` column in `prisma/schema.prisma` and fails if one is
+missing from the list in `lib/key-rotation-db.ts`, so a new encrypted column cannot be forgotten. Each entry names the
+table, column, the column its AAD is derived from (`ownerColumn`) and the AAD function:
 
 | Column | AAD |
 |---|---|
@@ -301,37 +333,67 @@ tool does not list):
 **How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
 `TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.
 
+**Fingerprints.** A key fingerprint is the first 8 hex characters of a SHA-256 over the key. It is safe to print, log and
+paste into a ticket, and it tells two keys apart. Every web and worker process logs its current (and previous) key
+fingerprint at start-up, and both key tools print the fingerprints of the keys in *their* environment first. The tools exist
+to move data between two keys, but they cannot know which key your services consider right: a wrong key encrypts and
+decrypts consistently, so a self-check would pass. The fingerprints are how a human closes that gap.
+
+**The key tools** (run them with the **same environment as the running services**, never with hand-assembled keys). They read
+the app's own variables, `TOKEN_ENCRYPTION_KEY` = the key values must end up on (the new key) and
+`TOKEN_ENCRYPTION_KEY_PREVIOUS` = the key they are on today (the old key):
+
+* `npm run keys:verify [-- --allow-previous] [--only-owner <id>]`: decrypt-only. Reports, per column, how many values decrypt
+  with the **current** key, how many only with the previous key, and how many with neither. Exit 0 only if every value
+  decrypts with the current key (`--allow-previous` also accepts previous-key values; the restore drill uses it). Exit 1
+  otherwise, 2 for bad usage or configuration. It never writes and takes no row locks.
+* `npm run keys:rotate [-- --dry-run | --apply --confirm-new-fingerprint=<8 hex>] [--only-owner <id>]`: dry run is the
+  default. `--apply` is refused (exit 2, nothing read or written, no database connection opened) unless
+  `--confirm-new-fingerprint` equals the fingerprint of `TOKEN_ENCRYPTION_KEY` in the tool's environment. Take that value
+  from your **running services' start-up log**, not from the tool's own output, so a wrong environment cannot be applied by
+  accident. Passing the flag to a dry run checks the environment early (a mismatch stops it). Each row is locked,
+  re-encrypted, **decrypted again and compared with the plaintext before it is written** (this catches a bug or a damaged
+  value; it cannot, and does not claim to, tell whether the key is the one your services use), and committed in its own
+  transaction, so an interruption leaves every row on the old key or the new key, never half-written. `updated_at` is not
+  touched, a row already readable with the new key is skipped (re-running is safe), and a row that neither key can read is
+  left unchanged and counted. Output is counts and row ids, never values or keys. Exit 0 ok, 1 a row failed, 2 usage.
+  `--only-owner <id>` (repeatable) restricts a run to some owners, for a canary.
+
 **Rotation procedure** (do it when a key may have been exposed, when someone with access leaves, or on your schedule;
-takes minutes, no downtime):
+takes minutes, no downtime). `<env>` below means "the environment the services run with", for example
+`--env-file ~/secrets/sessions-prod.env` or your platform's one-off-job feature (section 3).
 
-1. Generate the new key: `openssl rand -base64 32`. Store it in the secret manager under a new name. Take a database backup.
-2. **Dry run** the tool with the old key as `TOKEN_ENCRYPTION_KEY` and the new key as `TOKEN_ENCRYPTION_KEY_NEW`:
-   ```
-   docker run --rm -e DATABASE_URL=... -e TOKEN_ENCRYPTION_KEY=<OLD> -e TOKEN_ENCRYPTION_KEY_NEW=<NEW> sessions-tools npm run keys:rotate
-   ```
-   (or `npm run keys:rotate` from a checkout). It prints per-column counts and `failed 0`, and writes nothing. Dry run is
-   the default; `--dry-run` is accepted for clarity.
-3. **Deploy the keys to the running services**: `TOKEN_ENCRYPTION_KEY=<NEW>` and `TOKEN_ENCRYPTION_KEY_PREVIOUS=<OLD>` on
-   both web and worker. From this moment new writes use the new key and every old row is still readable.
-   *Strict variant, if you cannot tolerate even a transient error during the rollout:* first deploy
-   `TOKEN_ENCRYPTION_KEY=<OLD>` + `TOKEN_ENCRYPTION_KEY_PREVIOUS=<NEW>` (every instance can then read both), and only then
-   flip them. These values change a handful of times a day at most (a Google connect, a payout edit), so the plain
-   procedure's window of exposure is tiny.
-4. **Rotate the data**: run the tool again with `--apply` (still `TOKEN_ENCRYPTION_KEY=<OLD>`, `TOKEN_ENCRYPTION_KEY_NEW=<NEW>`).
-   Each row is locked, re-encrypted, **verified to decrypt back to the same plaintext before it is written**, and committed
-   in its own transaction, so an interruption leaves every row either on the old key or the new key, never half-written.
-   `updated_at` is not touched. A row already readable with the new key is skipped, so re-running is safe. For a canary,
-   `--apply --only-influencer <id>` first. Output is counts and row ids, never values or keys. The exit code is non-zero
-   if any row failed; a failed row is left unchanged. Fix the cause (usually a row written with a third, older key) and
-   re-run.
-5. **Verify**: run the dry run once more; it should report `already on new key` for every row and `would rotate 0`. Open the
-   admin console's payout reveal for one influencer; trigger a Google token read (a new booking for a connected influencer).
-6. **Finish**: remove `TOKEN_ENCRYPTION_KEY_PREVIOUS` from web and worker and redeploy. Keep the old key archived until the
-   last database backup that predates the rotation has expired (restoring such a backup needs it, by setting it as
-   `TOKEN_ENCRYPTION_KEY_PREVIOUS`).
+1. **Prepare.** Generate the new key (`openssl rand -base64 32`) and store it in the secret manager under a new name. Take a
+   database backup. Note the old key's fingerprint from the current service logs (`encryption key fingerprint ...`).
+2. **Deploy the keys to the running services**: `TOKEN_ENCRYPTION_KEY=<NEW>` and `TOKEN_ENCRYPTION_KEY_PREVIOUS=<OLD>` on both
+   web and worker. From now on new writes use the new key and every old row is still readable. In each instance's
+   start-up log check `encryption key fingerprint X (previous key fingerprint Y)`: X must be the same everywhere and
+   match the fingerprint of the new key in your secret manager, Y the old key's. Write X down.
+   *Strict variant, if you cannot tolerate even a transient error during the rollout* (these values change a handful of
+   times a day at most, a Google connect or a payout edit): first deploy `TOKEN_ENCRYPTION_KEY=<OLD>` +
+   `TOKEN_ENCRYPTION_KEY_PREVIOUS=<NEW>` so every instance can read both, and only then flip the two. Do not run the tools
+   until after the flip.
+3. **Dry run** with the services' environment: `docker run --rm <env> sessions-tools npm run keys:rotate`. Check the two
+   fingerprints printed at the top are X and Y, that "would rotate" is the number of values you expect, and `failed 0`.
+4. *(Optional canary)* `... npm run keys:rotate -- --apply --confirm-new-fingerprint=X --only-owner <influencerId>`, then use
+   that influencer's account (reconnect-free: a booking that reads their Google token, the payout reveal).
+5. **Apply**: `... npm run keys:rotate -- --apply --confirm-new-fingerprint=X`. If the fingerprint does not match the
+   tool's environment it refuses and changes nothing.
+6. **Verify**: `docker run --rm <env> sessions-tools npm run keys:verify` must print `N of N encrypted value(s) decrypt with
+   the current key` and exit 0. A re-run of `keys:rotate` reports `already on new key` for every row. Spot-check in the app
+   (admin payout reveal; a new booking for a connected influencer).
+7. **Finish**: remove `TOKEN_ENCRYPTION_KEY_PREVIOUS` from web and worker, redeploy, confirm the start-up log no longer shows a
+   previous fingerprint, and run `keys:verify` once more with the new environment (exit 0, now without the old key). Keep the
+   old key archived until the last database backup that predates the rotation has expired: restoring such a backup needs it
+   as `TOKEN_ENCRYPTION_KEY_PREVIOUS` (`keys:verify --allow-previous` in the restore drill checks exactly that).
 
-*Rollback* at any point before step 6: swap the two values back (old as current, new as previous) and run the tool with the
-keys reversed. The tool never needs the app to be stopped.
+*Rollback* before step 7: put the keys back (`TOKEN_ENCRYPTION_KEY=<OLD>`, `TOKEN_ENCRYPTION_KEY_PREVIOUS=<NEW>`) on the
+services **and** in the tool's environment, check the start-up fingerprint is the old key's, then run the same `--apply
+--confirm-new-fingerprint=<old key's fingerprint>`. The tools never need the app to be stopped.
+
+*Mistakes the guard exists for.* The services run key A but the shell used for the tool holds key B: the tool prints B's
+fingerprint, and since you confirm with A's (from the service log) it refuses. The two variables swapped
+(current = old): same refusal. A leftover `TOKEN_ENCRYPTION_KEY_NEW` from an older version of this document is ignored.
 
 Other secrets: `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` rotate in the Razorpay dashboard and the environment at
 the same moment (payments fail between the two changes, so do it in a quiet period); `APP_SECRET` has no overlap window, so
@@ -390,6 +452,7 @@ Send logs somewhere searchable and alert on **absence and failure**. Suggested a
 | Rate limiting | Log line `[rate-limit] 429 ...`, `[rate-limit] Redis unavailable, using Postgres` | Sudden spike (attack or misconfigured `CLIENT_IP_HEADER`); Redis failover persisting |
 | Application errors | `ERROR_WEBHOOK_URL` messages (`where` field names the module), `worker:expire-holds`, `worker:sweep` | Any (route to a channel someone reads) |
 | Start-up validation | Container exits with `[env] ... will not start` | Any (a failed rollout) |
+| Encryption key identity | Start-up log line `encryption key fingerprint <8 hex>` of every web and worker instance | Instances disagree, the fingerprint differs from the one recorded for the key in the secret manager, or a `previous key fingerprint` is still logged after a rotation should have finished |
 | TLS / domain | Certificate and domain expiry monitor | 14 days before |
 | Google reconnects | Dashboard "Reconnect needed", or alert emails to influencers | Many at once (suggests a client-secret or consent-screen problem) |
 
@@ -477,8 +540,17 @@ finding is visible on every run without blocking unrelated work. `engines.node` 
 message when started without configuration; `docker compose up --build` brings up Postgres, Redis, the migration job (all
 migrations applied with the patched `mysql2`/`deepmerge-ts`), web and worker, all reporting healthy; `/api/health` stays
 200 and `/api/ready` turns 503 naming `db` or `redis` when Postgres or Redis is stopped, and recovers when they return;
-the worker logs all three queues and `scripts/worker-healthcheck.ts` passes against a real Redis; `npm run keys:rotate`
-runs inside the tools image. Image sizes on disk: web about 420 MB, worker about 830 MB, tools about 1.7 GB.
+the worker logs all three queues and `scripts/worker-healthcheck.ts` passes against a real Redis. Image sizes on disk:
+web about 420 MB, worker about 830 MB, tools about 1.7 GB.
+
+The key tools were run end to end (the real scripts, a real Postgres in a throwaway container, throwaway keys, never a
+shared database): `keys:verify` on a fresh database, mid-rotation (exit 1) and with `--allow-previous` (exit 0); `keys:rotate`
+as a dry run, refused without or with a wrong `--confirm-new-fingerprint` (exit 2, state unchanged), refused when the
+shell holds a different "new" key than the services (exit 2), applied with the right fingerprint, idempotent when repeated,
+and `keys:verify` clean afterwards with and without `TOKEN_ENCRYPTION_KEY_PREVIOUS`. The restore drill in section 8 was
+replayed as written (migrate status, `keys:verify --allow-previous`, the web image with `ALLOW_INSECURE_LOCAL_RUN` ready on
+200 and logging the same key fingerprints the tool printed); the same environment without the switch exits 1 on
+`EMAIL_PROVIDER=log`, and so does `NODE_ENV=development` passed to the image.
 **Not verified**: a deployment on a real host (Vercel, Fly.io, Kubernetes, ...), Upstash/Supabase specifics marked above,
 Razorpay's retry window, and the Google/Meta consent-screen requirements beyond what the code requests.
 
@@ -493,3 +565,25 @@ Razorpay's retry window, and the Google/Meta consent-screen requirements beyond 
 - Hosting-specific manifests (Vercel project settings, Kubernetes, Fly.io, ...) are not included; the Dockerfiles and
   this document are the contract.
 - The Docker build and the compose stack are exercised in CI only as image builds and a smoke test (`.github/workflows/ci.yml`).
+
+## 16. Upgrade notes
+
+Read this before deploying this version to an installation that is already running.
+
+1. **`APP_SECRET` must be at least 32 characters in production.** The code still works with 16, and development only
+   warns, but production start-up now refuses anything shorter, so an installation that was set up with a 16-31 character
+   secret **will not start** until it is replaced. `APP_SECRET` has **no previous-secret fallback** (unlike the encryption
+   key): once you change it, every link signed with the old one stops working. That covers customers' emailed
+   manage/cancel/reschedule and pay links (`lib/self-service.ts`), the status polling of a booking that is being paid right
+   now, and any Google connection flow in progress (`app/api/google/connect`). Logins are not affected (sessions are opaque
+   database tokens, not signed with it). Plan for it: replace it during a quiet period, set the new value on web and worker
+   together, tell support that older links must be re-sent, and generate it with `openssl rand -base64 32`.
+2. **New production requirements** (previously only recommended): https `APP_URL`, `REDIS_URL`, the three `RAZORPAY_*`
+   variables, a real `EMAIL_PROVIDER` with its key and `EMAIL_FROM`, none of `MESSAGING_DRY_RUN` / `WHATSAPP_DISABLED` /
+   `READINESS_BYPASS` / `RATE_LIMIT_ENABLED=false`, and no leading or trailing whitespace in any variable. The app prints
+   every problem at once and exits, so try the new image on staging first and read the list.
+3. **Key rotation variables.** `TOKEN_ENCRYPTION_KEY_PREVIOUS` is the only extra variable; the tools read the services' own
+   `TOKEN_ENCRYPTION_KEY` / `TOKEN_ENCRYPTION_KEY_PREVIOUS`. There is no `TOKEN_ENCRYPTION_KEY_NEW`.
+4. **Runtime**: Node 22+ (`engines`, `.nvmrc`), `tsx` is now a production dependency, and `package.json` carries `overrides`
+   for two Prisma tooling dependencies (section 14). No database migration is part of this change.
+5. **Health checks**: point the load balancer at `/api/ready` and the process supervisor at `/api/health` (section 3.1).
