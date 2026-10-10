@@ -10,6 +10,7 @@ import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from ".
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
+import { startMonitoring } from "./monitoring";
 
 const INTERVAL_MS = 30_000;
 /** Housekeeping (expired rate-limit buckets, sessions and single-use tokens) runs every SWEEP_EVERY ticks (~10 min). */
@@ -109,6 +110,10 @@ if (!process.env.REDIS_URL) {
     .then((n) => n > 0 && console.log(`[worker] re-queued ${n} paid booking(s) without a meeting`))
     .catch((e) => console.error("[worker] start-up re-queue failed", e));
 }
+
+// --- payment recovery + health monitoring (worker/monitoring.ts): heartbeat, missed-webhook recovery, health monitor ---
+startMonitoring();
+// --- end payment recovery + health monitoring ---
 
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);

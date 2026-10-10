@@ -10,6 +10,7 @@ import {
   IconLogOut,
   IconSettings,
   IconShield,
+  IconSparkline,
   IconUsers,
   IconWallet,
 } from "@/components/icons";
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/admin/payments", label: "Payments", icon: IconCard },
   { href: "/admin/payouts", label: "Payouts", icon: IconWallet },
   { href: "/admin/bookings", label: "Bookings", icon: IconCalendar },
+  { href: "/admin/health", label: "System health", icon: IconSparkline },
   { href: "/admin/audit", label: "Audit log", icon: IconShield },
   { href: "/admin/settings", label: "Settings", icon: IconSettings },
 ];
@@ -39,10 +41,13 @@ async function signOut() {
 export function AdminShell({
   admin,
   attentionCount,
+  healthCount = 0,
   children,
 }: {
   admin: { name: string; email: string };
   attentionCount: number;
+  /** Unhealthy conditions on the System health page. */
+  healthCount?: number;
   children: ReactNode;
 }) {
   const pathname = usePathname();
@@ -62,6 +67,11 @@ export function AdminShell({
                 {n.href === "/admin/payments" && attentionCount > 0 && (
                   <span className="nav-link__badge" aria-label={`${attentionCount} payments need attention`}>
                     {attentionCount}
+                  </span>
+                )}
+                {n.href === "/admin/health" && healthCount > 0 && (
+                  <span className="nav-link__badge" aria-label={`${healthCount} system health issues`}>
+                    {healthCount}
                   </span>
                 )}
               </Link>

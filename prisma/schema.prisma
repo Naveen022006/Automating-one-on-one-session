@@ -336,6 +336,11 @@ model Payment {
   reconciledByEmail String?       @map("reconciled_by_email")
   // The payout this payment was paid out in (set when the payout is created, cleared if it is cancelled).
   payoutId          String?       @map("payout_id")
+  // Missed-webhook recovery (lib/payment-recovery.ts): when the worker last asked Razorpay whether this order was
+  // paid (drives the re-check cadence and the oldest-checked-first ordering), and why the last attempt to apply a
+  // payment Razorpay reports as captured failed (cleared when it succeeds). Only set while status is CREATED.
+  recoveryCheckedAt DateTime?     @map("recovery_checked_at")
+  recoveryError     String?       @map("recovery_error")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
@@ -346,6 +351,7 @@ model Payment {
   @@index([bookingId])
   @@index([payoutId])
   @@index([status, reconciledAt])
+  @@index([status, recoveryCheckedAt])
   @@map("payments")
 }
 

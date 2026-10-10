@@ -5,6 +5,7 @@ import { Alert, Card, Stat } from "@/components/ui/primitives";
 import { getOverview, type MoneyByCurrency } from "@/lib/admin/data";
 import { listAudit } from "@/lib/admin/data";
 import { formatMoney } from "@/lib/format";
+import { getHealthReport } from "@/lib/health";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -14,10 +15,20 @@ function money(list: MoneyByCurrency[]) {
 }
 
 export default async function AdminOverviewPage() {
-  const [o, audit] = await Promise.all([getOverview(), listAudit(1)]);
+  const [o, audit, health] = await Promise.all([getOverview(), listAudit(1), getHealthReport().catch(() => null)]);
   const b = o.bookingsByStatus;
   const live = (b.SCHEDULED ?? 0) + (b.PAID ?? 0);
+  const unhealthy = health?.unhealthy ?? [];
   const alerts = [
+    unhealthy.length > 0 && (
+      <Alert
+        key="health"
+        tone={unhealthy.some((c) => c.status === "critical") ? "danger" : "warning"}
+        title={`${unhealthy.length} system health ${unhealthy.length === 1 ? "issue" : "issues"}`}
+      >
+        {unhealthy.map((c) => c.label).join(", ")}. <Link href="/admin/health">Open System health</Link>.
+      </Alert>
+    ),
     o.attention.mismatched > 0 && (
       <Alert key="mm" tone="danger" title={`${o.attention.mismatched} captured payment(s) with no paid booking`}>
         Money was received but the booking never became paid. <Link href="/admin/payments?view=mismatch">Review them</Link>.

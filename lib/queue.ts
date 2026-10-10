@@ -28,9 +28,65 @@ function getQueue(name: string): Queue {
   let q = queues.get(name);
   if (!q) {
     q = new Queue(name, { connection: redisConnection() });
+    // Without a listener an 'error' event (Redis dropped) is thrown as an uncaught exception.
+    q.on("error", (e) => console.error(`[queue:${name}]`, e instanceof Error ? e.message : e));
     queues.set(name, q);
   }
   return q;
+}
+
+/** The queues the system health page watches. */
+export const QUEUE_NAMES = [MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE] as const;
+
+export interface QueueCounts {
+  waiting: number;
+  active: number;
+  failed: number;
+  delayed: number;
+}
+
+/** The queue connection retries forever when Redis is down, so anything that only reads must bound its wait. */
+function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Job counts of one queue, over the process-wide cached queue (one Redis connection per queue per process, so
+ * calling this from a page or a monitor never opens another). Rejects if Redis does not answer within `timeoutMs`.
+ */
+export async function getQueueCounts(name: string, timeoutMs = 3_000): Promise<QueueCounts> {
+  const counts = await within(getQueue(name).getJobCounts("waiting", "active", "failed", "delayed"), timeoutMs, `queue ${name} counts`);
+  return { waiting: counts.waiting ?? 0, active: counts.active ?? 0, failed: counts.failed ?? 0, delayed: counts.delayed ?? 0 };
+}
+
+export interface FailedJobInfo {
+  queue: string;
+  id: string;
+  name: string;
+  bookingId: string | null;
+  failedReason: string;
+  attemptsMade: number;
+  failedAt: Date | null;
+}
+
+/** The most recent failed jobs of a queue (they are kept: `removeOnFail: false`), newest first. */
+export async function getFailedJobs(name: string, limit = 10, timeoutMs = 3_000): Promise<FailedJobInfo[]> {
+  const jobs = await within(getQueue(name).getFailed(0, Math.max(0, limit - 1)), timeoutMs, `queue ${name} failed jobs`);
+  return jobs
+    .map((j) => ({
+      queue: name,
+      id: String(j.id ?? ""),
+      name: j.name,
+      bookingId: typeof j.data?.bookingId === "string" ? (j.data.bookingId as string) : null,
+      failedReason: String(j.failedReason ?? "").slice(0, 300),
+      attemptsMade: j.attemptsMade,
+      failedAt: j.finishedOn ? new Date(j.finishedOn) : null,
+    }))
+    .sort((a, b) => (b.failedAt?.getTime() ?? 0) - (a.failedAt?.getTime() ?? 0));
 }
 
 export const createMeetingJobId = (bookingId: string) => `create-meeting-${bookingId}`;

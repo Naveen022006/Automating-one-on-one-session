@@ -131,6 +131,27 @@ export async function fetchPayment(providerPaymentId: string, fetchFn: typeof fe
   return (await res.json()) as RazorpayPayment;
 }
 
+/**
+ * Every payment attempt made against one order (failed attempts included), used by the missed-webhook recovery job
+ * to find out whether an order was paid even though no webhook told us. https://razorpay.com/docs/api/orders/fetch-payments/
+ * Throws {@link RazorpayHttpError} on a non-2xx answer; network failures and the 15 s timeout surface as the
+ * underlying fetch error.
+ */
+export async function fetchOrderPayments(orderId: string, fetchFn: typeof fetch = fetch): Promise<RazorpayPayment[]> {
+  if (!orderId) throw new Error("An order id is required");
+  const auth = Buffer.from(`${razorpayKeyId()}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
+  const res = await fetchFn(`${RAZORPAY_API}/orders/${encodeURIComponent(orderId)}/payments`, {
+    headers: { Authorization: `Basic ${auth}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new RazorpayHttpError(res.status, `Razorpay order payments lookup failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as { items?: RazorpayPayment[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
 /** Verifies the `x-razorpay-signature` header (HMAC-SHA256 hex of the exact raw body), in constant time. */
 export function verifyWebhookSignature(
   rawBody: string,

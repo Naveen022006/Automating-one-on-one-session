@@ -30,6 +30,28 @@ export function setErrorReporter(next: ErrorReporter): void {
   reporter = next;
 }
 
+/**
+ * A non-exception notification (system health alert, "recovered" note) through the same channel as errors: one
+ * structured JSON log line, plus the ERROR_WEBHOOK_URL POST (Slack/Discord-compatible `text`). Not routed through
+ * `setErrorReporter`, because it is not an error. Never throws.
+ */
+export function reportNotice(level: "warn" | "info", text: string, context: Record<string, unknown> = {}): void {
+  try {
+    const payload = { level, at: new Date().toISOString(), ...context, message: text };
+    (level === "warn" ? console.warn : console.info)(JSON.stringify(payload));
+    const url = process.env.ERROR_WEBHOOK_URL;
+    if (!url) return;
+    void fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, ...payload }),
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => {});
+  } catch {
+    /* reporting must never break the caller */
+  }
+}
+
 /** Never throws. */
 export function reportError(error: unknown, context: Record<string, unknown> = {}): void {
   try {
