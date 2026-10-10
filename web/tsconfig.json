@@ -1,0 +1,31 @@
+{
+  // The React SPA's TypeScript project (doc/10-react-migration-plan.md, F2). Same strictness as the root project.
+  // `npm run typecheck` runs both. The root project excludes web/ (it would otherwise type-check the shared
+  // components against Next's real `next/link`); this one maps them to the SPA shims, exactly as Vite does.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    // vite.config.ts imports its plugin with the .ts extension, which is what Node's native ESM loader requires.
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    // "node" is needed because type-only imports (`import type { X } from "@/lib/..."`) pull the server type graphs
+    // (Prisma, Node APIs) into this project; "vite/client" types `import.meta.env`, CSS imports and `?url` imports.
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@/*": ["../*"],
+      "@web/*": ["./src/*"],
+      "next/link": ["./src/shims/next-link.tsx"],
+      "next/navigation": ["./src/shims/next-navigation-types.d.ts"]
+    }
+  },
+  "include": ["src/**/*", "vite.config.ts", "vite-server-guard.ts"]
+}

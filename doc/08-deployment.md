@@ -78,8 +78,8 @@ docker build -f Dockerfile.worker -t sessions-worker .
 * **No secret is baked into an image.** `.dockerignore` keeps `.env`, `.env*`, `*.env`, `*.pem` and `*.key` (at any depth,
   except `.env.example`) out of the build context (`COPY . .` in the build stage would otherwise copy them), `.gitignore`
   keeps the same patterns out of git, and none of the Dockerfiles has an `ENV` for a secret. Configuration is passed when the container starts. The only build
-  arguments are the public `NEXT_PUBLIC_BRAND_NAME` and `NEXT_PUBLIC_SUPPORT_EMAIL`, which Next.js compiles into the
-  JavaScript (changing them means rebuilding the web image).
+  arguments are the public `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE`, which
+  Next.js and the React SPA bundle compile into the JavaScript (changing them means rebuilding the web image; section 3.2).
 * **Health checks**: the web image's `HEALTHCHECK` calls `GET /api/health`. Point load balancers at `/api/ready`
   (section 3.1). The worker has no HTTP port; its `HEALTHCHECK` runs `scripts/worker-healthcheck.ts` (Redis answers and
   each of the three queues has an attached worker).
@@ -110,6 +110,58 @@ most once a minute per check). Both bypass the global per-IP rate limit and have
 `lib/rate-limit/policies.ts` (`health` 6000/min, `ready` 1200/min, per client IP) so probes keep working while
 Redis and Postgres are down. Suggested Kubernetes probes: liveness `/api/health` (period 10 s, timeout 3 s), readiness
 `/api/ready` (period 10 s, **timeout 5 s**, failureThreshold 3).
+
+### 3.2 The React front end (SPA) — build outputs, serving, rollback
+
+The whole UI is moving from Next-rendered pages to a standalone React single-page app built with Vite (`web/`; plan and
+status in `doc/10-react-migration-plan.md` and `doc/10-react-migration-deviations.md`). Next keeps the JSON API, the webhooks,
+the metadata routes (`/sitemap.xml`, `/robots.txt`, `/opengraph-image`, `/icon.svg`) and the worker; the browser still sees
+**one origin**, so the `__Host-` cookies, `SameSite=Strict` admin cookie and the Origin/CSRF check are unchanged.
+
+* **Build**: `npm run build` is `vite build` then `next build`. Vite writes `web/dist/index.html` (the HTML shell template) and
+  `web/dist/assets/*` (content-hashed JavaScript, CSS and fonts). `scripts/spa-postbuild.mjs` then **fails the build** if the
+  template lacks the CSP nonce placeholder or a tag lacks its nonce, if any `process.env` is left in the bundle, or if the value of
+  any secret-looking environment variable (names matching `SECRET|PASSWORD|TOKEN|_KEY|PRIVATE|DATABASE_URL|REDIS_URL`, from the
+  process and from the root `.env` files) appears in `web/dist`; only the variable's name is printed. It then copies `assets/` to
+  `public/assets/`, which Next serves as static files with `Cache-Control: public, max-age=31536000, immutable` (see
+  `next.config.ts`). Both directories are build outputs (git- and docker-ignored). The Vite config reads exactly four values at
+  build time (`NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL`, `APP_LOCALE`, `ENABLE_DESIGN_PAGE`); nothing else from the
+  environment can reach the browser, and a build-time guard (`web/vite-server-guard.ts`) stops the build if browser code imports
+  server code (database, Node APIs, route handlers).
+* **Serving**: `SPA_GROUPS` (run-time, `.env.example`) lists the page groups the SPA serves: `public`, `auth`, `booking`,
+  `dashboard`, `admin`, or `all`. For a page in an enabled group `proxy.ts` rewrites the request to the internal route
+  `/spa-shell/<path>` (`app/spa-shell`), which renders `web/dist/index.html` with this request's CSP nonce, the route's `<head>`
+  (title, robots, canonical, Open Graph, JSON-LD; every inserted value HTML-escaped) and the right status (a real 404 for an
+  unknown profile, 503 + `Retry-After` if the lookup fails). Pages in a group that is not listed are served by the old Next pages,
+  exactly as before: **with `SPA_GROUPS` empty nothing changes**. `/spa-shell/...` answers 404 when requested directly.
+* **Bind address**: do not run the standalone server with `HOSTNAME=127.0.0.1` or `::1` while `SPA_GROUPS` is set. Next.js builds
+  the request URL the proxy sees from `HOSTNAME` but rewrites loopback IPs to `localhost`, so the proxy's rewrite to the internal
+  shell route is treated as a request to another origin, proxied without the nonce, and every SPA page answers 404. Use
+  `HOSTNAME=0.0.0.0` (the image's default) or `localhost` and limit access with the firewall or reverse proxy; the web process
+  refuses to start in production with that combination (section 5).
+* **Start-up check**: with a non-empty `SPA_GROUPS` the web process refuses to start (section 5) if `web/dist/index.html` is
+  missing or has no `__CSP_NONCE__` placeholder. This applies where all code shares one directory (the Docker image,
+  `next start`, a VM). On **serverless platforms** (Vercel, AWS Lambda, Netlify, detected from their environment variables) it is
+  a **warning** only: every function, and the proxy, is its own bundle with its own traced files and the start-up hook runs in
+  each of them, so one bundle without the file must not make all requests through it fail. The same applies to the bind-address
+  check below. The shell route itself answers 500 with one log line (`[spa-shell] ...`) if it cannot read the template.
+  `next.config.ts` lists the template for the shell route and for all routes (`outputFileTracingIncludes`), but whether the
+  proxy bundle receives it is a platform detail: **check a Vercel preview deployment before the cut-over** (open one page of
+  every enabled group, and read the function logs for `[spa-shell]` and `[env] warning` lines). The image copies the file explicitly; for a standalone/Vercel bundle
+  `next.config.ts` lists it in `outputFileTracingIncludes` (route `/spa-shell/[[...path]]`), because the file is read at run time and the
+  tracer cannot see it. Vercel needs no setting change: the build script runs Vite then Next, `public/assets` goes to the CDN,
+  and `proxy.ts` already runs on Node.
+* **Cut-over and rollback are configuration**: add a group to `SPA_GROUPS` and restart to switch it on; remove it and restart to
+  switch it back to the old pages. No code deploy is needed until the cleanup branch deletes the old pages (then rollback is
+  redeploying the previous image). Order: `public`, `auth`, `booking`, `dashboard`, `admin`; watch the error webhook, System health,
+  4xx/5xx and 429 rates and (for booking) the webhook log and payment-recovery count for 24 hours after each.
+* **Stale tabs**: a tab open across a deploy asks for chunk files that no longer exist; `/assets` never falls back to HTML (a
+  clean 404), and the SPA reloads once on Vite's `vite:preloadError`.
+* **Development**: `npm run dev` (Next, port 3000) and `npm run dev:web` (Vite, port 5173, proxies `/api` and the metadata
+  routes to Next, `SPA_API_TARGET`); open the Vite port and set `APP_URL=http://localhost:5173` so e-mailed links and redirects point
+  at it. CSP is not applied by the Vite dev server, so check CSP behaviour with `npm run build` and `SPA_GROUPS=all npm start`.
+* **Smoke test**: `node scripts/spa-smoke.mjs <base-url> [--no-db] [--old]` (CI runs it against the image started with
+  `SPA_GROUPS=all`); it needs no login and no data.
 
 ## 4. Environment variables
 
@@ -186,9 +238,11 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `READINESS_REQUIRED` | no | `google,payout` | Which connections an influencer needs before their page takes bookings |
 | `READINESS_BYPASS` | no | `false` | **Dev**: skips the go-live checks. Refused in production |
 | `ERROR_WEBHOOK_URL` | recommended | none | Every reported error is POSTed here (Slack/Discord compatible). Unset = a start-up warning |
-| `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time |
-| `APP_LOCALE` | no | `en-IN` | Formatting of money and times |
-| `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production |
+| `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time (also compiled into the SPA bundle) |
+| `APP_LOCALE` | no | `en-IN` | Formatting of money and times. Also a **build** input of the SPA bundle |
+| `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production. Also a **build** input: the SPA only includes the page when built with `true` |
+| `SPA_GROUPS` | no | empty | Page groups served by the React SPA: empty (none, the old Next pages), `all`, or a comma list of `public,auth,booking,dashboard,admin`. Run time; unknown names are a start-up warning; with a group enabled the web process needs `web/dist/index.html` (section 3.2) |
+| `SPA_API_TARGET` | no | `http://localhost:3000` | **Dev only**: where the Vite dev server (`npm run dev:web`) proxies `/api` |
 | `ADMIN_PASSWORD` | no | generated | Read by `npm run admin:create` only |
 | `SEED_DEMO_PASSWORD` | no | built-in | **Dev**: `npm run db:seed`. Never seed a production database |
 
@@ -252,7 +306,9 @@ from the top of `worker/index.ts`. The pure function `validateEnv(env)` is unit-
 4. **Verify**: `/api/ready` is 200, the admin console loads, place a test booking with Razorpay test keys on staging, and
    check the worker log shows `processing "meetings" queue`.
 5. **Rollback**: redeploy the previous web and worker images. A migration is not rolled back automatically; this is why
-   step 1 requires compatibility. To undo a bad schema change, ship a new forward migration.
+   step 1 requires compatibility. To undo a bad schema change, ship a new forward migration. If only the React front end
+   misbehaves, remove its page group from `SPA_GROUPS` and restart web: those pages are served by the old Next pages again,
+   no deploy needed (section 3.2).
 
 Back up first when the release contains a destructive migration (section 8).
 

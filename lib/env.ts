@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { keyFingerprint, parseKeyBytes } from "./crypto";
+import { SPA_GROUPS, parseSpaGroups, unknownSpaGroups } from "./spa/routes";
+import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell";
 
 /**
  * Start-up configuration validation.
@@ -165,7 +169,7 @@ export const KNOWN_ENV_VARS = [
   "NODE_ENV", "DATABASE_URL", "DATABASE_POOL_MAX", "DATABASE_STATEMENT_TIMEOUT_MS", "DATABASE_CONNECT_TIMEOUT_MS", "DATABASE_IDLE_TIMEOUT_MS",
   "APP_URL", "APP_SECRET", "APP_LOCALE", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "REDIS_URL",
   "RATE_LIMIT_STORE", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MULTIPLIER", "CLIENT_IP_HEADER",
-  "NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL",
+  "NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL", "SPA_GROUPS", "SPA_API_TARGET",
   "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "AUTO_REFUND_ON_CANCEL",
   "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_REQUEST_GMAIL_SEND",
   "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_WEBHOOK_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_TEMPLATE_LANGUAGE",
@@ -279,6 +283,12 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     env.TOKEN_ENCRYPTION_KEY_PREVIOUS === env.TOKEN_ENCRYPTION_KEY
   ) {
     warn("TOKEN_ENCRYPTION_KEY_PREVIOUS", "is identical to TOKEN_ENCRYPTION_KEY; remove it");
+  }
+
+  // 2b. SPA_GROUPS (doc/10-react-migration-plan.md): which page groups the React SPA serves. A misspelt group would silently
+  // leave that group on the old pages, so say so; the names are not echoed (a pasted value could be anything).
+  if (unknownSpaGroups(env.SPA_GROUPS).length) {
+    warn("SPA_GROUPS", `has names that are not page groups and are ignored; use "all" or a comma separated list of: ${SPA_GROUPS.join(", ")}`);
   }
 
   // 3. Production-only requirements.
@@ -405,10 +415,75 @@ export function resetConfigForTests(): void {
   logged = false;
 }
 
-/** Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook. */
-export function initEnv(label: string): AppConfig {
+/**
+ * The web process's start-up check for the React SPA (doc/10-react-migration-plan.md, section 1.8). When SPA_GROUPS
+ * enables any group, the shell template web/dist/index.html (written by `npm run build`) must exist and carry the CSP
+ * placeholders, otherwise every enabled page would be a blank screen or a 500. This is the one impure check in this
+ * module (it reads a file), so it is a separate function with an injectable reader and working directory for tests, and
+ * only the "web" start-up path calls it (the worker has no pages). Returns problems by variable name, never values.
+ */
+export function spaTemplateProblems(
+  env: EnvRecord,
+  readFile: (file: string) => string = (file) => readFileSync(file, "utf8"),
+  cwd: string = process.cwd(),
+): string[] {
+  if (parseSpaGroups(env.SPA_GROUPS).size === 0) return [];
+  let text: string;
+  try {
+    // turbopackIgnore: this path is read at run time on purpose; without the comment Turbopack warns that it cannot tell
+    // what is read and would trace (bundle) the whole project into the server output. The template is included
+    // explicitly by outputFileTracingIncludes in next.config.ts.
+    text = readFile(path.join(/* turbopackIgnore: true */ cwd, SHELL_TEMPLATE_RELATIVE_PATH));
+  } catch {
+    return [`SPA_GROUPS: is set, but ${SHELL_TEMPLATE_RELATIVE_PATH} is missing (it is written by \`npm run build\`; the image or deployment bundle must contain it)`];
+  }
+  const problem = shellTemplateProblem(text);
+  return problem ? [`SPA_GROUPS: is set, but ${problem}`] : [];
+}
+
+/**
+ * True on platforms that run each route (and the proxy) as its own serverless function with its own traced file set: Vercel, AWS
+ * Lambda, Netlify. There "the file is on disk" is not a property of the deployment but of each function's bundle, and the
+ * start-up hook runs inside every one of them (the proxy's too), so a missing template or a startup refusal in one bundle must
+ * not take every request through it down. The checks below are warnings there. Elsewhere (the Docker image, `next start`, a VM)
+ * all bundles share one directory, so the checks are decisive. Pure.
+ */
+export function isServerlessPlatform(env: EnvRecord): boolean {
+  return Boolean(env.VERCEL || env.AWS_LAMBDA_FUNCTION_NAME || env.LAMBDA_TASK_ROOT || env.NETLIFY);
+}
+
+/**
+ * A standalone Next.js server bound to a loopback IP (`HOSTNAME=127.0.0.1` or `::1`, a common way to keep it behind a reverse
+ * proxy) breaks the SPA: Next builds the request URL the proxy sees from the configured hostname but normalises 127.x.x.x and
+ * ::1 to "localhost" (NextURL), so the proxy's rewrite to the internal shell route looks like a rewrite to ANOTHER origin and
+ * is proxied as an external request instead; it arrives without the nonce and every SPA page answers 404. `HOSTNAME=0.0.0.0`
+ * (what the Docker image sets) and `localhost` work, as does the default of `next start`. Verified against Next 16.4. Pure.
+ */
+export function spaHostnameProblems(env: EnvRecord): string[] {
+  if (parseSpaGroups(env.SPA_GROUPS).size === 0) return [];
+  const host = env.HOSTNAME?.trim();
+  if (host && /^(127(\.\d{1,3}){3}|\[?::1\]?)$/.test(host)) {
+    return [
+      "SPA_GROUPS: is set while HOSTNAME is a loopback IP address (127.x.x.x or ::1). Next.js then treats the SPA's internal rewrite as an external request and every SPA page answers 404. Use HOSTNAME=0.0.0.0 (as the Docker image does) or HOSTNAME=localhost, and restrict who can connect with the firewall or the reverse proxy",
+    ];
+  }
+  return [];
+}
+
+/**
+ * Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook.
+ * For the "web" label it also checks the SPA shell template and the bind address (see spaTemplateProblems and
+ * spaHostnameProblems): fatal in production on a server that has one directory for all its code (Docker, `next start`, a VM),
+ * a warning everywhere else: in development (the dev server serves the SPA from Vite) and on serverless platforms (see
+ * isServerlessPlatform: each function has its own file set, and this hook runs in every one of them). The shell route itself
+ * answers 500 with one log line when it cannot read the template.
+ */
+export function initEnv(label: string, deps: { readFile?: (file: string) => string; cwd?: string } = {}): AppConfig {
   const config = getConfig();
+  const spaProblems = label === "web" ? [...spaTemplateProblems(process.env, deps.readFile, deps.cwd), ...spaHostnameProblems(process.env)] : [];
+  if (spaProblems.length && config.isProduction && !isServerlessPlatform(process.env)) throw new EnvValidationError(spaProblems);
   if (!logged) {
+    if (spaProblems.length) for (const p of spaProblems) console.warn(`[env] warning (${label}): ${p}`);
     logged = true;
     const warnings = cached?.warnings ?? [];
     for (const w of warnings) console.warn(`[env] warning (${label}): ${w}`);

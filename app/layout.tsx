@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Newsreader } from "next/font/google";
 import { headers } from "next/headers";
 import { BRAND_NAME, appUrl } from "@/lib/brand";
+import { DEFAULT_DESCRIPTION } from "@/lib/spa/routes";
 import "./globals.css";
 
 // Self-hosted at build time by next/font (no runtime request to Google). One pairing, used everywhere:
@@ -9,8 +10,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 const newsreader = Newsreader({ subsets: ["latin"], variable: "--font-newsreader", display: "swap" });
 
-const description =
-  "Sell 1:1 and small-group sessions. Customers pick a time and pay; the Google Meet link is created and sent on WhatsApp and email automatically, with reminders.";
+// One sentence for the Next pages and the SPA shell (lib/spa/head.ts), so they cannot drift apart.
+const description = DEFAULT_DESCRIPTION;
 
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl()),

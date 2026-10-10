@@ -1,6 +1,11 @@
 node_modules
 .next
 generated
+
+# React SPA build outputs (npm run build:web): web/dist is the Vite output, public/assets its hashed files served by Next.
+/web/dist/
+/public/assets/
+
 # Secrets and local configuration: .env, .env.local, prod.env, deploy.env, ... and key/certificate files. Only the
 # documented template is tracked.
 .env

@@ -1,13 +1,14 @@
 /**
  * Public booking-page slugs (`/<slug>` and `/<slug>/book`). They share the URL root with app routes, so app
- * route names and other confusing words are reserved.
+ * route names and other confusing words are reserved. `assets` (the SPA's hashed build files) and `spa-shell` (the
+ * internal route behind the SPA's HTML shell) are reserved because they are URL prefixes the server answers itself.
  */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
-  "admin", "api", "app", "auth", "billing", "blog", "book", "booking", "bookings", "contact", "dashboard",
+  "admin", "api", "app", "assets", "auth", "billing", "blog", "book", "booking", "bookings", "contact", "dashboard",
   "design", "docs", "error", "faq", "features", "forgot-password", "help", "home", "how-it-works", "index",
   "legal", "login", "logout", "manage", "me", "new", "null", "onboarding", "pricing", "privacy", "profile",
   "refund-policy", "refunds", "register", "reset-password", "robots", "root", "settings", "signin", "signup",
-  "sitemap", "static", "status", "support", "system", "terms", "undefined", "verify-email", "www", "_next",
+  "sitemap", "spa-shell", "static", "status", "support", "system", "terms", "undefined", "verify-email", "www", "_next",
 ]);
 
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;

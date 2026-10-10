@@ -601,3 +601,48 @@ test("the administrator list is hidden from sessions that have not passed what t
     currentCookie = "";
   }
 });
+
+test("requireAdminMfa(): the gate of every admin READ endpoint. ok passes; enroll and verify are denied; allowEnrollment admits enroll only", { skip }, async () => {
+  type Outcome = "ok" | { status: number; mfaAction?: string };
+  const call = async (opts?: { allowEnrollment?: boolean }): Promise<Outcome> => {
+    const r = await session.requireAdminMfa(opts);
+    if (!(r instanceof Response)) return "ok";
+    const body = await r.json();
+    return { status: r.status, mfaAction: body.mfaAction };
+  };
+  process.env.ADMIN_REQUIRE_2FA = "true";
+  try {
+    // Signed out: 401 whatever the option.
+    currentCookie = "";
+    assert.deepEqual(await call(), { status: 401, mfaAction: undefined });
+    assert.deepEqual(await call({ allowEnrollment: true }), { status: 401, mfaAction: undefined });
+
+    // "enroll": Y has no authenticator and 2FA is required. Only the two enrolling-admin endpoints pass allowEnrollment.
+    currentCookie = await session.createAdminSession(Y);
+    assert.deepEqual(await call(), { status: 403, mfaAction: "enroll" });
+    assert.deepEqual(await call({}), { status: 403, mfaAction: "enroll" });
+    assert.deepEqual(await call({ allowEnrollment: false }), { status: 403, mfaAction: "enroll" });
+    assert.equal(await call({ allowEnrollment: true }), "ok");
+
+    // "verify": X has 2FA, this session is password-only. Denied everywhere, enrolment option or not (it is not an enrolment case).
+    currentCookie = await passwordOnlySession(X);
+    assert.deepEqual(await call(), { status: 403, mfaAction: "verify" });
+    assert.deepEqual(await call({ allowEnrollment: true }), { status: 403, mfaAction: "verify" });
+
+    // "ok": a verified session of an enrolled admin passes both ways.
+    currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
+    assert.equal(await call(), "ok");
+    assert.equal(await call({ allowEnrollment: true }), "ok");
+  } finally {
+    delete process.env.ADMIN_REQUIRE_2FA;
+    currentCookie = "";
+  }
+  // Without the requirement an admin with no authenticator is simply "ok" (development default), and requireAdminApi still lets
+  // a password-only session of a 2FA admin through: that is exactly why the read endpoints use requireAdminMfa instead.
+  currentCookie = await session.createAdminSession(Y);
+  assert.equal(await call(), "ok");
+  currentCookie = await passwordOnlySession(X);
+  assert.ok(!((await session.requireAdminApi()) instanceof Response), "requireAdminApi does not stop a password-only session of a 2FA admin");
+  assert.equal((await session.requireAdminMfa()) instanceof Response, true, "requireAdminMfa does");
+  currentCookie = "";
+});

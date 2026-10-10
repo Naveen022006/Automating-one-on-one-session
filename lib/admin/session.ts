@@ -230,11 +230,17 @@ export async function requireAdminApi(opts: { allowEnrollment?: boolean } = {}):
  * Route-handler guard for sensitive actions (revealing bank details, reviewing payout details, reconciling, creating,
  * approving, paying or cancelling payouts, changing fees). As requireAdminApi, and additionally the session must have
  * passed a second factor whenever the admin has one enabled.
+ *
+ * It is also the guard of every admin READ endpoint the SPA uses (GET /api/admin/...): it denies exactly what the old
+ * server-rendered pages denied ("enroll" and "verify", see requireAdminPage), which `requireAdminApi()` alone does not
+ * (it lets a password-only session of a 2FA admin through). `allowEnrollment` is only for the two endpoints behind the
+ * only console screens an enrolling admin can open: GET /api/admin/security and GET /api/admin/shell. "verify" stays
+ * denied there too. Calling it without options keeps its previous behaviour.
  */
-export async function requireAdminMfa(): Promise<AdminContext | NextResponse> {
+export async function requireAdminMfa(opts: { allowEnrollment?: boolean } = {}): Promise<AdminContext | NextResponse> {
   const admin = await getAdminAuth();
   if (!admin) return NextResponse.json({ error: "Please sign in to the admin console." }, { status: 401 });
-  return adminApiGate(admin, { mfa: true }) ?? admin;
+  return adminApiGate(admin, { mfa: true, allowEnrollment: opts.allowEnrollment }) ?? admin;
 }
 
 export async function revokeAdminSession(sessionId: string): Promise<void> {
