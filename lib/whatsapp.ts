@@ -1,8 +1,7 @@
 import { metaTemplateName } from "@/lib/message-templates";
 import { toE164 } from "@/lib/phone";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
-
-const GRAPH_API = "https://graph.facebook.com/v21.0";
+import { graphBase } from "@/lib/whatsapp-graph-version";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -51,7 +50,7 @@ export async function sendWhatsApp(input: SendWhatsAppInput, fetchFn: FetchFn = 
   const token = input.credentials?.token ?? env("WHATSAPP_TOKEN");
   const phoneNumberId = input.credentials?.phoneNumberId ?? env("WHATSAPP_PHONE_NUMBER_ID");
 
-  const res = await fetchFn(`${GRAPH_API}/${phoneNumberId}/messages`, {
+  const res = await fetchFn(`${graphBase()}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(15_000),

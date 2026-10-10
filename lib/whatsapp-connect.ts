@@ -1,12 +1,11 @@
 import { TEMPLATE_SPECS, isMetaTemplateName, type TemplateSpec } from "@/lib/message-templates";
+import { graphBase, graphVersion } from "@/lib/whatsapp-graph-version";
 
 /**
  * Meta Graph API calls for connecting an influencer's own WhatsApp Business number: checking credentials, reading and
  * submitting message templates, and the Embedded Signup token exchange. Plain fetch with an injectable fetch, like
  * the other provider clients, so everything is unit-tested without a network.
  */
-
-export const GRAPH = "https://graph.facebook.com/v21.0";
 
 export class WhatsAppGraphError extends Error {
   constructor(
@@ -41,7 +40,7 @@ async function graph<T>(path: string, init: RequestInit & { token?: string } = {
   const { token, ...rest } = init;
   let res: Response;
   try {
-    res = await fetchFn(`${GRAPH}${path}`, {
+    res = await fetchFn(`${graphBase()}${path}`, {
       ...rest,
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(rest.body ? { "Content-Type": "application/json" } : {}), ...(rest.headers ?? {}) },
       signal: AbortSignal.timeout(20_000),
@@ -248,8 +247,10 @@ export function metaAppCredentials(env = process.env): { appId: string; appSecre
 
 /* ---------- Embedded Signup ---------- */
 
-export function embeddedSignupConfig(env = process.env): { appId: string; configId: string } | null {
-  return env.META_APP_ID && env.META_ES_CONFIG_ID && metaAppSecret(env) ? { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID } : null;
+export function embeddedSignupConfig(env = process.env): { appId: string; configId: string; graphVersion: string } | null {
+  return env.META_APP_ID && env.META_ES_CONFIG_ID && metaAppSecret(env)
+    ? { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID, graphVersion: graphVersion(env) }
+    : null;
 }
 
 /** Exchanges the code from the Embedded Signup dialog for the business token. */

@@ -4,8 +4,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
-import { templateState } from "@/lib/message-templates";
 import { Alert, Badge, Button, Field, Input, describedBy } from "@/components/ui/primitives";
+import { templateState } from "@/lib/message-templates";
+import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
 
 export interface WhatsAppView {
@@ -47,12 +48,12 @@ declare global {
 
 let sdkLoading: Promise<FacebookSdk> | null = null;
 
-function loadFacebookSdk(appId: string): Promise<FacebookSdk> {
+function loadFacebookSdk(appId: string, version: string): Promise<FacebookSdk> {
   if (window.FB) return Promise.resolve(window.FB);
   // One load at a time, so the component mounting twice (or remounting) never adds a second script.
   sdkLoading ??= new Promise<FacebookSdk>((resolve, reject) => {
     window.fbAsyncInit = () => {
-      window.FB!.init({ appId, autoLogAppEvents: true, xfbml: true, version: "v21.0" });
+      window.FB!.init({ appId, autoLogAppEvents: true, xfbml: true, version });
       resolve(window.FB!);
     };
     const el = document.createElement("script");
@@ -76,7 +77,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * "Connect your WhatsApp number". Meta Embedded Signup when the platform is a configured Meta Tech Provider,
  * otherwise (or additionally) by entering the account ids and a permanent token.
  */
-export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string } | null }) {
+export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string; graphVersion?: string } | null }) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
@@ -90,19 +91,22 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   // Things the server noticed while connecting that did not stop it (a token it could not check, one that expires later).
   const [notes, setNotes] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-  const [busy, setBusy] = useState<"manual" | "embedded" | "refresh" | null>(null);
+  const [busy, setBusy] = useState<"manual" | "embedded" | "refresh" | "disconnect" | null>(null);
   const [confirm, setConfirm] = useState(false);
+  // The connect form, opened from the error state to connect again without disconnecting first.
+  const [reconnect, setReconnect] = useState(false);
   const session = useRef<{ wabaId?: string; phoneNumberId?: string; failure?: string }>({});
   const sdk = useRef<FacebookSdk | null>(null);
   const [sdkState, setSdkState] = useState<"loading" | "ready" | "failed">("loading");
   const appId = embedded?.appId;
+  const version = embedded?.graphVersion ?? DEFAULT_GRAPH_VERSION;
 
   // Load the Facebook SDK as soon as the page shows, not on click: FB.login opens a pop-up, and a browser only allows
   // that straight from the click, so there must be nothing to wait for once the button is pressed.
   useEffect(() => {
     if (!appId) return;
     let live = true;
-    loadFacebookSdk(appId).then(
+    loadFacebookSdk(appId, version).then(
       (FB) => {
         sdk.current = FB;
         if (live) setSdkState("ready");
@@ -112,7 +116,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     return () => {
       live = false;
     };
-  }, [appId]);
+  }, [appId, version]);
 
   // Embedded Signup reports what happened in the sign-up window as window messages, separately from the login code:
   // FINISH carries the new account's ids; CANCEL and ERROR say why there will be no account.
@@ -158,6 +162,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     }
     setToken("");
     setPin("");
+    setReconnect(false);
     setNotes(r.data.connection?.notes ?? []);
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
@@ -187,6 +192,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
       return toast(r.data.error ?? "Could not connect WhatsApp.", "error");
     }
     setPin("");
+    setReconnect(false);
     setNotes(r.data.connection?.notes ?? []);
     toast("WhatsApp connected. We submitted your message templates to Meta for approval.");
     router.refresh();
@@ -201,7 +207,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     if (!FB) {
       // The SDK did not load (a blocker or a flaky connection). Try again; the pop-up needs a fresh click afterwards.
       setSdkState("loading");
-      loadFacebookSdk(embedded.appId).then(
+      loadFacebookSdk(embedded.appId, version).then(
         (loaded) => {
           sdk.current = loaded;
           setSdkState("ready");
@@ -233,6 +239,61 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     router.refresh();
   }
 
+  // The ways to connect: Embedded Signup and/or the form. Shown when nothing is connected, and again to reconnect.
+  const connectOptions = (
+    <>
+      <div className="row">
+        {embedded && (
+          <Button variant="primary" onClick={startEmbedded} loading={busy === "embedded" || sdkState === "loading"}>
+            Connect with WhatsApp
+          </Button>
+        )}
+        <Button onClick={() => setManual((v) => !v)} aria-expanded={manual}>
+          {embedded ? "Enter details manually" : "Connect my WhatsApp number"}
+        </Button>
+      </div>
+      {embedded && !manual && (showPin ? (
+        <Field id="wa-pin-embedded" label="Two-step verification PIN" optional error={errors.pin} help="Only if the number you connect already has a two-step verification PIN. Otherwise we set one for you.">
+          <Input {...describedBy("wa-pin-embedded", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
+        </Field>
+      ) : (
+        <div>
+          <Button size="sm" variant="ghost" onClick={() => setShowPin(true)}>
+            My number already has a two-step verification PIN
+          </Button>
+        </div>
+      ))}
+      {manual && (
+        <form className="stack" onSubmit={saveManual} noValidate>
+          <Alert tone="info" title="Where to find these">
+            In Meta Business Suite open WhatsApp Manager: the <strong>WhatsApp Business Account ID</strong> and <strong>Phone number ID</strong> are on the
+            API setup page. Create a permanent token under Business settings, System users, with the whatsapp_business_management and
+            whatsapp_business_messaging permissions.
+          </Alert>
+          <div className="form-grid form-grid--2">
+            <Field id="wa-waba" label="WhatsApp Business Account ID" error={errors.wabaId}>
+              <Input {...describedBy("wa-waba", { error: errors.wabaId })} inputMode="numeric" autoComplete="off" value={waba} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWaba(e.target.value)} />
+            </Field>
+            <Field id="wa-phone" label="Phone number ID" error={errors.phoneNumberId}>
+              <Input {...describedBy("wa-phone", { error: errors.phoneNumberId })} inputMode="numeric" autoComplete="off" value={phoneId} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhoneId(e.target.value)} />
+            </Field>
+          </div>
+          <Field id="wa-token" label="Permanent access token" error={errors.accessToken} help="Stored encrypted and never shown again.">
+            <Input {...describedBy("wa-token", { error: errors.accessToken, help: true })} type="password" autoComplete="off" value={token} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToken(e.target.value)} />
+          </Field>
+          <Field id="wa-pin" label="Two-step verification PIN" optional error={errors.pin} help="Leave blank if the number is already working. Fill it in to register a number that is not registered yet, or if it already has a PIN.">
+            <Input {...describedBy("wa-pin", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
+          </Field>
+          <div className="form-actions">
+            <Button type="submit" variant="primary" loading={busy === "manual"}>
+              Connect and submit templates
+            </Button>
+          </div>
+        </form>
+      )}
+    </>
+  );
+
   if (connection) {
     const templatesState = templateState(connection.templates.map((t) => t.status));
     return (
@@ -261,6 +322,11 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
             ) : (
               <Badge tone="warning">Waiting for template approval</Badge>
             )}
+            {connection.status === "ERROR" && (
+              <Button size="sm" variant="primary" onClick={() => setReconnect((v) => !v)} aria-expanded={reconnect}>
+                Reconnect
+              </Button>
+            )}
             <Button size="sm" variant="danger" onClick={() => setConfirm(true)}>
               Disconnect
             </Button>
@@ -268,9 +334,11 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
         </div>
         {connection.status === "ERROR" && (
           <Alert tone="danger" title="WhatsApp stopped accepting the connection">
-            {connection.lastError} Customer messages go out by SMS until you reconnect. Disconnect, then connect again.
+            {connection.lastError} Customer messages go out by SMS until you reconnect.
           </Alert>
         )}
+        {/* Connecting again replaces the saved credentials in place, so there is no need to disconnect first. */}
+        {connection.status === "ERROR" && reconnect && <div className="stack">{connectOptions}</div>}
         {connection.status === "ACTIVE" && connection.lastError && <Alert tone="warning">{connection.lastError}</Alert>}
         {connection.status === "ACTIVE" && notes.map((n) => (
           <Alert key={n} tone="info">
@@ -327,13 +395,18 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
           open={confirm}
           onClose={() => setConfirm(false)}
           danger
+          busy={busy === "disconnect"}
           title="Disconnect WhatsApp?"
           description="Customer messages will go out by SMS only. Your WhatsApp Business account and templates stay with Meta."
           confirmLabel="Disconnect"
           onConfirm={async () => {
+            setBusy("disconnect");
             const r = await api("/api/dashboard/whatsapp", { method: "DELETE" });
+            setBusy(null);
             setConfirm(false);
             if (!r.ok) return toast(r.data.error ?? "Could not disconnect.", "error");
+            setNotes([]);
+            setReconnect(false);
             toast("WhatsApp disconnected.");
             router.refresh();
           }}
@@ -358,55 +431,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
           </p>
         </div>
       </div>
-      <div className="row">
-        {embedded && (
-          <Button variant="primary" onClick={startEmbedded} loading={busy === "embedded" || sdkState === "loading"}>
-            Connect with WhatsApp
-          </Button>
-        )}
-        <Button onClick={() => setManual((v) => !v)} aria-expanded={manual}>
-          {embedded ? "Enter details manually" : "Connect my WhatsApp number"}
-        </Button>
-      </div>
-      {embedded && !manual && (showPin ? (
-        <Field id="wa-pin-embedded" label="Two-step verification PIN" optional error={errors.pin} help="Only if the number you connect already has a two-step verification PIN. Otherwise we set one for you.">
-          <Input {...describedBy("wa-pin-embedded", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
-        </Field>
-      ) : (
-        <div>
-          <Button size="sm" variant="ghost" onClick={() => setShowPin(true)}>
-            My number already has a two-step verification PIN
-          </Button>
-        </div>
-      ))}
-      {manual && (
-        <form className="stack" onSubmit={saveManual} noValidate>
-          <Alert tone="info" title="Where to find these">
-            In Meta Business Suite open WhatsApp Manager: the <strong>WhatsApp Business Account ID</strong> and <strong>Phone number ID</strong> are on the
-            API setup page. Create a permanent token under Business settings, System users, with the whatsapp_business_management and
-            whatsapp_business_messaging permissions.
-          </Alert>
-          <div className="form-grid form-grid--2">
-            <Field id="wa-waba" label="WhatsApp Business Account ID" error={errors.wabaId}>
-              <Input {...describedBy("wa-waba", { error: errors.wabaId })} inputMode="numeric" autoComplete="off" value={waba} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWaba(e.target.value)} />
-            </Field>
-            <Field id="wa-phone" label="Phone number ID" error={errors.phoneNumberId}>
-              <Input {...describedBy("wa-phone", { error: errors.phoneNumberId })} inputMode="numeric" autoComplete="off" value={phoneId} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhoneId(e.target.value)} />
-            </Field>
-          </div>
-          <Field id="wa-token" label="Permanent access token" error={errors.accessToken} help="Stored encrypted and never shown again.">
-            <Input {...describedBy("wa-token", { error: errors.accessToken, help: true })} type="password" autoComplete="off" value={token} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToken(e.target.value)} />
-          </Field>
-          <Field id="wa-pin" label="Two-step verification PIN" optional error={errors.pin} help="Leave blank if the number is already working. Fill it in to register a number that is not registered yet, or if it already has a PIN.">
-            <Input {...describedBy("wa-pin", { error: errors.pin, help: true })} inputMode="numeric" autoComplete="off" maxLength={6} value={pin} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPin(e.target.value.replace(/\D/g, ""))} />
-          </Field>
-          <div className="form-actions">
-            <Button type="submit" variant="primary" loading={busy === "manual"}>
-              Connect and submit templates
-            </Button>
-          </div>
-        </form>
-      )}
+      {connectOptions}
     </div>
   );
 }

@@ -2,11 +2,13 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
+import { getOverview } from "../lib/dashboard-data";
 import { prisma } from "../lib/db";
 import { ENCRYPTED_COLUMNS } from "../lib/key-rotation-db";
 import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, metaTemplateName, templateKeyFromMetaName, templateParams } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
+import { DEFAULT_GRAPH_VERSION, graphBase, graphVersion } from "../lib/whatsapp-graph-version";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {
   REQUIRED_SCOPES,
@@ -17,6 +19,7 @@ import {
   ensureTemplates,
   exchangeEmbeddedCode,
   getPhoneNumber,
+  listTemplates,
   metaAppCredentials,
   registerNumber,
   templatePayload,
@@ -159,7 +162,7 @@ test("Embedded Signup exchanges the code and needs the Meta app configured", asy
   assert.match(url, /client_id=app/);
   assert.match(url, /code=the-code/);
   await assert.rejects(exchangeEmbeddedCode("c", {} as NodeJS.ProcessEnv, fetchImpl), /not configured/);
-  assert.deepEqual(embeddedSignupConfig(env), { appId: "app", configId: "cfg" });
+  assert.deepEqual(embeddedSignupConfig(env), { appId: "app", configId: "cfg", graphVersion: DEFAULT_GRAPH_VERSION });
   assert.equal(embeddedSignupConfig({ META_APP_ID: "app" } as unknown as NodeJS.ProcessEnv), null);
 });
 
@@ -172,7 +175,7 @@ test("the Meta app secret is accepted under either name, for the webhook and for
   assert.deepEqual(metaAppCredentials(e({ META_APP_ID: "app", WHATSAPP_APP_SECRET: "a" })), { appId: "app", appSecret: "a" }, "Embedded Signup and the token check work with WHATSAPP_APP_SECRET");
   assert.deepEqual(metaAppCredentials(e({ META_APP_ID: "app", META_APP_SECRET: "m", WHATSAPP_APP_SECRET: "a" })), { appId: "app", appSecret: "m" });
   assert.equal(metaAppCredentials(e({ META_APP_SECRET: "m" })), null, "no app id");
-  assert.deepEqual(embeddedSignupConfig(e({ META_APP_ID: "app", META_ES_CONFIG_ID: "cfg", WHATSAPP_APP_SECRET: "a" })), { appId: "app", configId: "cfg" });
+  assert.deepEqual(embeddedSignupConfig(e({ META_APP_ID: "app", META_ES_CONFIG_ID: "cfg", WHATSAPP_APP_SECRET: "a" })), { appId: "app", configId: "cfg", graphVersion: DEFAULT_GRAPH_VERSION });
 });
 
 test("a permission error is a bad token, like an expired one; other errors are not", () => {
@@ -546,6 +549,66 @@ test("template status webhooks update the matching account", { skip }, async () 
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "not-ours", language: "en", status: "APPROVED" }), false);
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "booking-confirmation", language: "en", status: "APPROVED" }), false, "our key is not a name Meta uses");
   assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "reschedule", language: "en", status: "APPROVED" }), false);
+});
+
+test("a template status update for another language of the same name is ignored", { skip }, async () => {
+  const lang = process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
+  const other = lang === "hi" ? "ta" : "hi";
+  const status = async () => (await getConnectionView(a))?.templates.find((t) => t.name === "cancellation");
+  await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: lang, status: "APPROVED" });
+  assert.equal((await status())?.status, "APPROVED");
+  // The influencer added their own cancellation template in another language and Meta rejected it: ours is unaffected.
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: other, status: "REJECTED", reason: "INVALID_FORMAT" }), false);
+  assert.deepEqual([(await status())?.status, (await status())?.reason], ["APPROVED", null]);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "cancellation", language: lang, status: "PAUSED" }), true, "our language still updates");
+  assert.equal((await status())?.status, "PAUSED");
+  const stored = (await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: a } })).templates as Record<string, { language?: string }>;
+  assert.equal(stored.cancellation.language, lang, "the language is kept with the status");
+});
+
+test("the dashboard attention list includes a WhatsApp connection that stopped working", { skip }, async () => {
+  const attention = async () => (await getOverview(a, true)).attention.filter((x) => x.kind === "whatsapp");
+  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE", lastError: null } });
+  assert.deepEqual(await attention(), [], "a healthy connection needs no attention");
+  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ERROR", lastError: "token expired" } });
+  const [item] = await attention();
+  assert.equal(item.title, "Reconnect WhatsApp");
+  assert.match(item.detail, /token expired/);
+  assert.equal(item.href, "/dashboard/settings#whatsapp");
+  assert.deepEqual((await getOverview(b, true)).attention.filter((x) => x.kind === "whatsapp"), [], "another influencer's connection is not shown");
+  await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE", lastError: null } });
+});
+
+test("one Graph API version, overridable with WHATSAPP_GRAPH_VERSION, for every call", async () => {
+  assert.match(DEFAULT_GRAPH_VERSION, /^v\d+\.\d+$/);
+  assert.equal(graphVersion({}), DEFAULT_GRAPH_VERSION);
+  assert.equal(graphVersion({ WHATSAPP_GRAPH_VERSION: " v27.0 " }), "v27.0");
+  assert.equal(graphVersion({ WHATSAPP_GRAPH_VERSION: "latest" }), DEFAULT_GRAPH_VERSION, "a malformed value falls back (the env check reports it)");
+  assert.equal(graphBase({ WHATSAPP_GRAPH_VERSION: "v27.0" }), "https://graph.facebook.com/v27.0");
+  assert.equal(embeddedSignupConfig({ META_APP_ID: "a", META_ES_CONFIG_ID: "c", META_APP_SECRET: "s", WHATSAPP_GRAPH_VERSION: "v27.0" } as unknown as NodeJS.ProcessEnv)?.graphVersion, "v27.0", "the sign-up window gets it too");
+
+  // The management calls and the send both go to the configured version.
+  const prev = { v: process.env.WHATSAPP_GRAPH_VERSION, dry: process.env.MESSAGING_DRY_RUN, off: process.env.WHATSAPP_DISABLED };
+  process.env.WHATSAPP_GRAPH_VERSION = "v27.0";
+  delete process.env.MESSAGING_DRY_RUN;
+  delete process.env.WHATSAPP_DISABLED;
+  try {
+    const urls: string[] = [];
+    const fetchImpl = (async (u: string) => (urls.push(u), json(200, { id: "1", messages: [{ id: "wamid.1" }], data: [] }))) as unknown as typeof fetch;
+    await getPhoneNumber("111", "tok", fetchImpl);
+    await listTemplates("222", "tok", fetchImpl);
+    await sendWhatsApp({ to: "+919876543210", template: "reschedule", credentials: { token: "t", phoneNumberId: "333" } }, fetchImpl);
+    assert.equal(urls.length, 3);
+    for (const u of urls) assert.ok(u.startsWith("https://graph.facebook.com/v27.0/"), u);
+    delete process.env.WHATSAPP_GRAPH_VERSION;
+    await getPhoneNumber("111", "tok", fetchImpl);
+    assert.ok(urls[3].startsWith(`https://graph.facebook.com/${DEFAULT_GRAPH_VERSION}/`));
+  } finally {
+    for (const [name, v] of [["WHATSAPP_GRAPH_VERSION", prev.v], ["MESSAGING_DRY_RUN", prev.dry], ["WHATSAPP_DISABLED", prev.off]] as const) {
+      if (v === undefined) delete process.env[name];
+      else process.env[name] = v;
+    }
+  }
 });
 
 /** Sends `template` for a fresh booking of influencer `b` through the real wiring (credentials from the database), SMS faked. */

@@ -27,7 +27,7 @@
 | Component | Role | State | Scales by |
 |---|---|---|---|
 | **web** | Pages, REST API, Razorpay/WhatsApp webhooks. Enqueues jobs. | None (sessions are rows in Postgres) | More instances |
-| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
+| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min, WhatsApp template status check every 30 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
 | **Postgres** | System of record: bookings, payments, tokens (encrypted), audit log. Also the fallback store for rate limits | **Yes. Back it up.** | Vertical; keep connection counts in mind (section 4, `DATABASE_POOL_MAX`) |
 | **Redis** | BullMQ queues (delayed reminder jobs live here) and the primary rate-limit store | Job state. Treat as important, not as a cache | Single instance with persistence |
 
@@ -158,10 +158,12 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### WhatsApp and SMS
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `WHATSAPP_APP_SECRET` | recommended | none | Verifies `X-Hub-Signature-256` on `/api/webhooks/whatsapp`; without it every callback is rejected (warning) |
+| `WHATSAPP_APP_SECRET` | recommended | none | The Meta app secret. Verifies `X-Hub-Signature-256` on `/api/webhooks/whatsapp`; without it every callback is rejected (warning). Same value as `META_APP_SECRET`: set either one and both uses work |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | recommended | none | Meta's one-time webhook handshake (warning if unset) |
-| `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID`, `WHATSAPP_REGISTRATION_PIN` | no | none | Only for Embedded Signup (Meta Tech Provider approval). Manual connect needs none of them. `META_APP_ID` and `META_ES_CONFIG_ID` also widen the CSP at **start-up**, so they must be set on the web service |
-| `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code |
+| `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID` | no | none | Embedded Signup (Meta Tech Provider approval); manual connect does not need them. `META_APP_ID` plus the app secret (either name) also let us check a pasted token's permissions and expiry with Meta's `debug_token` when an influencer connects by hand; without them that check is skipped, with a note shown to the influencer. `META_APP_ID` and `META_ES_CONFIG_ID` also widen the CSP at **start-up**, so they must be set on the web service |
+| `WHATSAPP_REGISTRATION_PIN` | no | none | **Dev only** (ignored in production): a fixed 6-digit two-step PIN for Embedded Signup numbers. Otherwise each number is registered with its own random PIN, stored encrypted |
+| `WHATSAPP_GRAPH_VERSION` | no | in `lib/whatsapp-graph-version.ts` | Meta Graph API version for every WhatsApp call and the Facebook SDK, e.g. `v26.0`. Meta retires versions on a schedule ([versions and end dates](https://developers.facebook.com/docs/graph-api/changelog/versions)); set this to move without a deploy of new code |
+| `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code. Only status updates in this language are applied |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | no | none | The platform's own number; used only with `WHATSAPP_PLATFORM_FALLBACK=true` |
 | `WHATSAPP_PLATFORM_FALLBACK` | no | `false` | Testing only; warned about in production |
 | `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised. Refused in production (it silently sends all WhatsApp traffic by SMS) |
@@ -259,7 +261,7 @@ Back up first when the release contains a destructive migration (section 8).
 | Provider | URL | Settings |
 |---|---|---|
 | Razorpay | `<APP_URL>/api/webhooks/payment` | Active events: `payment.captured`, `payment.failed`, `order.paid`, `refund.processed`, `refund.failed`. Secret = `RAZORPAY_WEBHOOK_SECRET`. Signature is HMAC-SHA256 of the raw body (`X-Razorpay-Signature`); a failure inside the handler returns 500 so Razorpay retries (events are recorded in `webhook_events` for idempotency) |
-| Meta / WhatsApp | `<APP_URL>/api/webhooks/whatsapp` | Callback verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (GET handshake); deliveries signed with `WHATSAPP_APP_SECRET` (`X-Hub-Signature-256`). Subscribe the app to the `messages` field (delivery statuses) and `message_template_status_update` |
+| Meta / WhatsApp | `<APP_URL>/api/webhooks/whatsapp` | Callback verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (GET handshake); deliveries signed with `WHATSAPP_APP_SECRET` or `META_APP_SECRET` (`X-Hub-Signature-256`). Subscribe the app to the `messages` field (delivery statuses) and `message_template_status_update`. The app is then subscribed to each influencer's WhatsApp Business Account when they connect (the result is recorded and shown in Settings); the worker also re-checks unapproved templates every 30 minutes, so a missing callback delays an approval but does not lose it |
 | Google OAuth | `<APP_URL>/api/google/callback` | Authorised redirect URI, identical to `GOOGLE_REDIRECT_URI` |
 
 Both webhook routes are exempt from the CSRF origin check and are authenticated by signature only; they are rate limited at
@@ -330,6 +332,7 @@ table, column, the column its AAD is derived from (`ownerColumn`) and the AAD fu
 | `payout_accounts.account_number_enc` | `payout:<influencerId>:account` |
 | `payout_accounts.upi_id_enc` | `payout:<influencerId>:upi` |
 | `whatsapp_connections.token_enc` | `whatsapp:<influencerId>` |
+| `whatsapp_connections.registration_pin_enc` | `whatsapp-pin:<influencerId>` |
 
 **How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
 `TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.

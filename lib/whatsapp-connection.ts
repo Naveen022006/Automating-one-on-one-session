@@ -287,7 +287,7 @@ export interface WhatsAppConnectionView {
   webhook: { subscribed: boolean; error: string | null };
 }
 
-type StoredTemplates = Record<string, { status: string; reason?: string | null }>;
+type StoredTemplates = Record<string, { status: string; language?: string; reason?: string | null }>;
 
 export function viewTemplates(raw: unknown): WhatsAppConnectionView["templates"] {
   const stored = (raw && typeof raw === "object" ? raw : {}) as StoredTemplates;
@@ -402,16 +402,20 @@ export async function disconnect(influencerId: string): Promise<boolean> {
   return count > 0;
 }
 
-/** Applies a `message_template_status_update` webhook event. Unknown accounts and templates are ignored. */
+/**
+ * Applies a `message_template_status_update` webhook event. Unknown accounts, templates and languages are ignored: a
+ * template is one name in one language, and the same name in another language (an influencer can add their own) says
+ * nothing about the one we send.
+ */
 export async function applyTemplateStatusUpdate(update: { wabaId: string; name: string; language: string; status: string; reason?: string | null }): Promise<boolean> {
   // Meta reports its own name (booking_confirmation); we store by our key (booking-confirmation).
   const key = templateKeyFromMetaName(update.name);
-  if (!key) return false;
+  if (!key || update.language !== language()) return false;
   const rows = await prisma.whatsAppConnection.findMany({ where: { wabaId: update.wabaId } });
   let changed = false;
   for (const row of rows) {
     const stored = ((row.templates && typeof row.templates === "object" ? row.templates : {}) as StoredTemplates);
-    stored[key] = { status: update.status, ...(update.reason ? { reason: update.reason } : {}) };
+    stored[key] = { status: update.status, language: update.language, ...(update.reason ? { reason: update.reason } : {}) };
     await prisma.whatsAppConnection.update({ where: { id: row.id }, data: { templates: stored } });
     changed = true;
   }

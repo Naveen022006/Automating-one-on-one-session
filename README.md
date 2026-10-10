@@ -180,12 +180,36 @@ approved as a Tech Provider) or by entering their WhatsApp Business Account id, 
 token. Credentials are verified against Meta before saving (the number must belong to the account) and the token is stored
 AES-256-GCM encrypted and never shown again.
 
-On connect we submit our five message templates (booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation)
-to the influencer's account for approval and keep their status current from Meta's template webhook and a Refresh button;
-the dashboard shows which are approved. Until a template is approved, or if there is no healthy connection, the message goes
-by SMS. A token Meta rejects flags the connection once and alerts the influencer. Set `WHATSAPP_PLATFORM_FALLBACK=true` only
-for testing with the platform's own number. Embedded Signup could not be exercised without an approved Meta app: the manual
-connect path is verified against Meta's real Graph API.
+On connect we submit our five message templates to the influencer's account for approval. Meta only accepts lowercase
+letters, digits and underscores in a template name, so they go out as `booking_confirmation`, `reminder_24h`,
+`reminder_15m`, `reschedule` and `cancellation`; inside the app the keys stay `booking-confirmation`, `reminder-24h` and
+`reminder-15m` (`lib/message-templates.ts` translates at the Graph boundary). Statuses are kept current from Meta's template
+webhook, a "Check template status" button, and a worker job (`worker/whatsapp-sync.ts`) that asks Meta every 30 minutes
+about connections that still have an unapproved template. The dashboard shows which are approved. A message whose template is
+not approved yet, or for an influencer with no healthy connection, goes straight to SMS (no WhatsApp attempt is made or
+recorded). A token Meta rejects, including a permission error, flags the connection once and alerts the influencer, and the
+dashboard overview lists it until they reconnect (Reconnect in the settings card, no need to disconnect first). Set
+`WHATSAPP_PLATFORM_FALLBACK=true` only for testing with the platform's own number.
+
+- **Webhooks.** Both ways of connecting subscribe our Meta app to the account (`subscribed_apps`), best effort; the result is
+  saved and shown, and Check template status retries it.
+- **Pasted tokens are checked.** With `META_APP_ID` and the app secret configured we ask Meta's `debug_token` about the token and
+  refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within 7 days
+  (the 24-hour token on the API Setup page); a token that expires later, or one we could not check (no app id and secret
+  configured, or Meta did not answer), connects with a note. Use a System User token that never expires.
+- **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN (stored AES-GCM encrypted, bound to
+  its owner, and listed in the key-rotation tool). A number that already has a PIN of its own is refused with a message asking
+  for it; the connect form takes it in an optional field. `WHATSAPP_REGISTRATION_PIN` is a development default only and is
+  ignored in production. A manual connection registers the number only if given a PIN.
+- **The Meta app secret** is one value with two names: `WHATSAPP_APP_SECRET` (webhook signatures) and `META_APP_SECRET`
+  (Embedded Signup, token checks). Set either; both uses read it.
+- **Graph API version.** `WHATSAPP_GRAPH_VERSION` (default in `lib/whatsapp-graph-version.ts`) is used for every Meta call and for
+  the Facebook SDK in the sign-up window. Meta retires versions on a schedule, so check
+  <https://developers.facebook.com/docs/graph-api/changelog/versions> from time to time.
+
+Embedded Signup could not be exercised without an approved Meta app. The newer Graph calls (the Meta template names, token
+check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
+against a real Meta account.
 
 ## Go-live readiness
 A booking page only takes bookings (and money) once the influencer has what the product needs. The same rules drive the
