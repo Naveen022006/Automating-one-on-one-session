@@ -139,6 +139,8 @@ const envSchema = z.object({
   ENABLE_DESIGN_PAGE: bool("ENABLE_DESIGN_PAGE").optional(),
   ALLOW_INSECURE_LOCAL_RUN: bool("ALLOW_INSECURE_LOCAL_RUN").optional(),
 
+  WHATSAPP_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/, "must look like v26.0").optional(),
+
   DATABASE_POOL_MAX: nonNegInt.optional(),
   DATABASE_STATEMENT_TIMEOUT_MS: nonNegInt.optional(),
   DATABASE_CONNECT_TIMEOUT_MS: nonNegInt.optional(),
@@ -171,7 +173,7 @@ export const KNOWN_ENV_VARS = [
   "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "AUTO_REFUND_ON_CANCEL",
   "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_REQUEST_GMAIL_SEND",
   "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_WEBHOOK_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_TEMPLATE_LANGUAGE",
-  "WHATSAPP_DISABLED", "WHATSAPP_PLATFORM_FALLBACK", "WHATSAPP_REGISTRATION_PIN", "META_APP_ID", "META_APP_SECRET", "META_ES_CONFIG_ID",
+  "WHATSAPP_DISABLED", "WHATSAPP_PLATFORM_FALLBACK", "WHATSAPP_REGISTRATION_PIN", "WHATSAPP_GRAPH_VERSION", "META_APP_ID", "META_APP_SECRET", "META_ES_CONFIG_ID",
   "MESSAGING_DRY_RUN", "SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL",
   "MSG91_TEMPLATE_DEFAULT", "MSG91_TEMPLATE_BOOKING_CONFIRMATION", "MSG91_TEMPLATE_REMINDER_24H", "MSG91_TEMPLATE_REMINDER_15M",
   "MSG91_TEMPLATE_RESCHEDULE", "MSG91_TEMPLATE_CANCELLATION",
@@ -334,8 +336,9 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
           : [!env.SMS_API_KEY && "SMS_API_KEY", !env.SMS_API_URL && "SMS_API_URL"];
     const missing = smsMissing.filter(Boolean);
     if (missing.length) warn("SMS_PROVIDER", `${sms} needs ${missing.join(", ")}: the SMS fallback for WhatsApp will fail`);
-    if (!env.WHATSAPP_APP_SECRET || !env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
-      warn("WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_VERIFY_TOKEN", "are not both set: Meta's webhook handshake and delivery/template status callbacks will be rejected");
+    // The Meta app secret has two names (WHATSAPP_APP_SECRET, META_APP_SECRET); either one verifies the callbacks.
+    if (!(env.WHATSAPP_APP_SECRET || env.META_APP_SECRET) || !env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+      warn("WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_VERIFY_TOKEN", "are not both set (META_APP_SECRET also works for the secret): Meta's webhook handshake and delivery/template status callbacks will be rejected");
     }
   }
 

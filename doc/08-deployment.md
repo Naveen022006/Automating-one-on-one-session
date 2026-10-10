@@ -27,7 +27,7 @@
 | Component | Role | State | Scales by |
 |---|---|---|---|
 | **web** | Pages, REST API, Razorpay/WhatsApp webhooks. Enqueues jobs. | None (sessions are rows in Postgres) | More instances |
-| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
+| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min, WhatsApp template status check every 30 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
 | **Postgres** | System of record: bookings, payments, tokens (encrypted), audit log. Also the fallback store for rate limits | **Yes. Back it up.** | Vertical; keep connection counts in mind (section 4, `DATABASE_POOL_MAX`) |
 | **Redis** | BullMQ queues (delayed reminder jobs live here) and the primary rate-limit store | Job state. Treat as important, not as a cache | Single instance with persistence |
 
@@ -196,17 +196,19 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### Google (Calendar, Meet, Gmail)
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning). The Cloud project needs the **Google Calendar API** and the **Gmail API** enabled (section 11) |
 | `GOOGLE_REDIRECT_URI` | for Meet | none | Must exactly match an authorised redirect URI: `<APP_URL>/api/google/callback` |
 | `GOOGLE_REQUEST_GMAIL_SEND` | no | `true` | Set `false` until the restricted `gmail.send` scope is approved (section 11) |
 
 ### WhatsApp and SMS
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `WHATSAPP_APP_SECRET` | recommended | none | Verifies `X-Hub-Signature-256` on `/api/webhooks/whatsapp`; without it every callback is rejected (warning) |
+| `WHATSAPP_APP_SECRET` | recommended | none | The Meta app secret. Verifies `X-Hub-Signature-256` on `/api/webhooks/whatsapp`; without it every callback is rejected (warning). Same value as `META_APP_SECRET`: set either one and both uses work |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | recommended | none | Meta's one-time webhook handshake (warning if unset) |
-| `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID`, `WHATSAPP_REGISTRATION_PIN` | no | none | Only for Embedded Signup (Meta Tech Provider approval). Manual connect needs none of them. `META_APP_ID` and `META_ES_CONFIG_ID` also widen the CSP at **start-up**, so they must be set on the web service |
-| `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code |
+| `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID` | no | none | Embedded Signup (Meta Tech Provider approval); manual connect does not need them. `META_APP_ID` plus the app secret (either name) also let us check a pasted token's permissions and expiry with Meta's `debug_token` when an influencer connects by hand; without them that check is skipped, with a note shown to the influencer. `META_APP_ID` and `META_ES_CONFIG_ID` also widen the CSP at **start-up**, so they must be set on the web service |
+| `WHATSAPP_REGISTRATION_PIN` | no | none | **Dev only** (ignored in production): a fixed 6-digit two-step PIN for Embedded Signup numbers. Otherwise each number is registered with its own random PIN, stored encrypted |
+| `WHATSAPP_GRAPH_VERSION` | no | in `lib/whatsapp-graph-version.ts` | Meta Graph API version for every WhatsApp call and the Facebook SDK, e.g. `v26.0`. Meta retires versions on a schedule ([versions and end dates](https://developers.facebook.com/docs/graph-api/changelog/versions)); set this to move without a deploy of new code |
+| `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code. Only status updates in this language are applied |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | no | none | The platform's own number; used only with `WHATSAPP_PLATFORM_FALLBACK=true` |
 | `WHATSAPP_PLATFORM_FALLBACK` | no | `false` | Testing only; warned about in production |
 | `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised. Refused in production (it silently sends all WhatsApp traffic by SMS) |
@@ -308,7 +310,7 @@ Back up first when the release contains a destructive migration (section 8).
 | Provider | URL | Settings |
 |---|---|---|
 | Razorpay | `<APP_URL>/api/webhooks/payment` | Active events: `payment.captured`, `payment.failed`, `order.paid`, `refund.processed`, `refund.failed`. Secret = `RAZORPAY_WEBHOOK_SECRET`. Signature is HMAC-SHA256 of the raw body (`X-Razorpay-Signature`); a failure inside the handler returns 500 so Razorpay retries (events are recorded in `webhook_events` for idempotency) |
-| Meta / WhatsApp | `<APP_URL>/api/webhooks/whatsapp` | Callback verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (GET handshake); deliveries signed with `WHATSAPP_APP_SECRET` (`X-Hub-Signature-256`). Subscribe the app to the `messages` field (delivery statuses) and `message_template_status_update` |
+| Meta / WhatsApp | `<APP_URL>/api/webhooks/whatsapp` | Callback verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (GET handshake); deliveries signed with `WHATSAPP_APP_SECRET` or `META_APP_SECRET` (`X-Hub-Signature-256`). Subscribe the app to the `messages` field (delivery statuses) and `message_template_status_update`. The app is then subscribed to each influencer's WhatsApp Business Account when they connect (the result is recorded and shown in Settings); the worker also re-checks unapproved templates every 30 minutes, so a missing callback delays an approval but does not lose it |
 | Google OAuth | `<APP_URL>/api/google/callback` | Authorised redirect URI, identical to `GOOGLE_REDIRECT_URI` |
 
 Both webhook routes are exempt from the CSRF origin check and are authenticated by signature only; they are rate limited at
@@ -379,6 +381,8 @@ table, column, the column its AAD is derived from (`ownerColumn`) and the AAD fu
 | `payout_accounts.account_number_enc` | `payout:<influencerId>:account` |
 | `payout_accounts.upi_id_enc` | `payout:<influencerId>:upi` |
 | `whatsapp_connections.token_enc` | `whatsapp:<influencerId>` |
+| `whatsapp_registration_pins.pin_enc` | `whatsapp-pin-number:<phoneNumberId>` (the two-step PIN belongs to the number, so this row outlives a disconnect) |
+| `whatsapp_connections.registration_pin_enc` | `whatsapp-pin:<influencerId>` (superseded; still rotated, and read once if it holds a PIN) |
 
 **How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
 `TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.
@@ -473,6 +477,17 @@ Google Cloud Console; per-influencer WhatsApp tokens are replaced by the influen
 Meet links are created on each influencer's own Google Calendar through OAuth, with the scopes in `lib/google.ts`:
 `calendar.events` (sensitive), `gmail.send` (**restricted**, unless `GOOGLE_REQUEST_GMAIL_SEND=false`) and `openid email`.
 
+- **Enable the APIs, not just the scopes.** In the Cloud project open APIs & Services > Library and enable the
+  **Google Calendar API** and, unless `GOOGLE_REQUEST_GMAIL_SEND=false`, the **Gmail API**. They are separate switches. With
+  the Gmail API off, every send answers 403 `accessNotConfigured`, every customer email silently goes out from the platform
+  address instead (influencer as Reply-To), and only two signs remain: the Google panel in Settings shows "Gmail not
+  working", and the web/worker log has one `Gmail sending is not working for influencer ...` line per influencer per hour
+  with Google's reason. Check it after the first real customer email of a new deployment.
+- The worker checks every connected Google account once a day and two minutes after it starts (`worker/google-health.ts`,
+  log lines `[worker] google health:`). A grant Google reports as revoked or expired is flagged "Reconnect needed" (the
+  booking page goes offline, one alert email to the influencer); network errors, Google outages and a wrong
+  `GOOGLE_CLIENT_SECRET` are logged as `could not check N of N connection(s)` and never disconnect anyone. This is what
+  catches the 7-day expiry below before a paying customer does.
 - While the consent screen is in **Testing**, only listed test users can connect and **refresh tokens expire after 7 days**,
   so every influencer would have to reconnect weekly. Publish the app to **In production** before launch.
 - `calendar.events` needs Google's OAuth verification (a privacy policy URL, a verified domain, a demo video of the scope
@@ -504,7 +519,8 @@ Send logs somewhere searchable and alert on **absence and failure**. Suggested a
 | Start-up validation | Container exits with `[env] ... will not start` | Any (a failed rollout) |
 | Encryption key identity | Start-up log line `encryption key fingerprint <8 hex>` of every web and worker instance | Instances disagree, the fingerprint differs from the one recorded for the key in the secret manager, or a `previous key fingerprint` is still logged after a rotation should have finished |
 | TLS / domain | Certificate and domain expiry monitor | 14 days before |
-| Google reconnects | Dashboard "Reconnect needed", or alert emails to influencers | Many at once (suggests a client-secret or consent-screen problem) |
+| Google reconnects | Dashboard "Reconnect needed", alert emails to influencers, worker log `[worker] google health:` | Many at once (suggests a client-secret or consent-screen problem); `could not check N of N` (our credentials or Google, not the influencers) |
+| Gmail sending | Log line `Gmail sending is not working for influencer` (hourly per influencer), Google panel "Gmail not working" | Any, for more than one influencer (the Gmail API is probably not enabled on the project) |
 
 `GET /api/ready` logs are throttled (one line per minute per failing check), so a probe every few seconds will not flood
 the log.

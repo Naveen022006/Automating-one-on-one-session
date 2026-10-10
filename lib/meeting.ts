@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import {
+  GoogleEventGoneError,
   GoogleReconnectError,
   GoogleRequestError,
   GoogleTransientError,
   google as defaultGoogle,
   type CalendarEvent,
+  type EventAttendee,
   type GoogleClient,
 } from "@/lib/google";
 import { sendBookingEmail } from "@/lib/email";
@@ -72,9 +74,12 @@ export function calendarEventId(bookingId: string): string {
  * Event id for a GROUP session. Every booking in the session derives the SAME id, so they all converge on
  * one shared Calendar event: the first paid attendee creates it, the rest are added to it. Keyed on the
  * session (not the booking) and using the same sha256 hex scheme as {@link calendarEventId}.
+ *
+ * `generation` 0 is the original id. Google never lets an event id be used twice, so once a session's shared event
+ * has been deleted the next one gets generation 1, then 2... (see {@link ensureGroupEvent}).
  */
-export function sessionEventId(sessionId: string): string {
-  return createHash("sha256").update(`session:${sessionId}`).digest("hex");
+export function sessionEventId(sessionId: string, generation = 0): string {
+  return createHash("sha256").update(generation === 0 ? `session:${sessionId}` : `session:${sessionId}:${generation}`).digest("hex");
 }
 
 const LINK_POLLS = 3;
@@ -99,6 +104,188 @@ async function waitForMeetLink(
   }
   // The event exists now, so the retry takes the "already exists" path and just re-reads it.
   throw new GoogleTransientError(`Meet link not ready yet (conference status: ${current?.conferenceStatus ?? "unknown"})`);
+}
+
+/** The walk down the id sequence never needs more than a step or two; this only stops a runaway loop. */
+const MAX_EVENT_STEPS = 1000;
+
+/** The id sequence of a group session ran out (see {@link ensureGroupEvent}); someone has to look at the calendar. */
+class GroupEventExhaustedError extends Error {}
+
+/**
+ * Makes sure a LIVE shared Calendar event exists for a group session and returns it with its id and generation.
+ * `created` is false when the event was already there (someone else made it first), so the caller must still add its
+ * own attendee.
+ *
+ * Why not simply insert `sessionEventId(sessionId)`: when the last booking is cancelled, lib/manage.ts deletes the shared
+ * event, and Google never lets a deleted event's id be reused. The next payer's insert answers 409 and the read gives a
+ * "cancelled" tombstone (or 404/410 once it is purged), so their paid booking would fail for good. Two fixes were weighed:
+ *  - restore the event (events.patch status "confirmed"): only works while Google still keeps the deleted event, and the
+ *    Meet conference of a deleted event is not guaranteed to come back, so we could end up with a link that does not work;
+ *  - create a new event under the next id of the deterministic sequence (generation 1, 2...): always works and gets a
+ *    fresh Meet link. Chosen.
+ * The walk starts at `fromGeneration`, the session's stored generation (sessions.event_generation: the live event's, or
+ * the next one to try after a cancel deleted the last), so it is short however often the event was deleted. It skips
+ * ids whose event is dead and stops at the first live one, so every caller (the elected creator, a payer racing it, a job
+ * retried after a crash) converges on the same event and a repeat run creates nothing new. The caller records the
+ * returned id and generation on the session and the id on the booking.
+ */
+async function ensureGroupEvent(
+  deps: MeetingDeps,
+  accessToken: string,
+  sessionId: string,
+  fromGeneration: number,
+  event: { summary: string; description: string; start: Date; end: Date; attendee: EventAttendee },
+): Promise<{ eventId: string; generation: number; event: CalendarEvent; created: boolean }> {
+  for (let generation = fromGeneration; generation < fromGeneration + MAX_EVENT_STEPS; generation++) {
+    const id = sessionEventId(sessionId, generation);
+    // A new event also needs a new Meet request id: Google ignores a request id it has already seen.
+    const conferenceRequestId = generation === 0 ? sessionId : `${sessionId}:${generation}`;
+    const inserted = await deps.google.insertEvent(accessToken, { ...event, id, conferenceRequestId });
+    if (inserted !== "exists") return { eventId: id, generation, event: inserted, created: true };
+    const existing = await deps.google.getEvent(accessToken, id);
+    if (existing && existing.status !== "cancelled") return { eventId: id, generation, event: existing, created: false };
+    // Deleted (tombstone or purged): this id can never be used again, try the next one.
+  }
+  throw new GroupEventExhaustedError(
+    `Could not create a calendar event for this group session: ${MAX_EVENT_STEPS} event ids in a row were already used. Check the session's events in Google Calendar.`,
+  );
+}
+
+/** The session's event was retired (a cancel deleted it and moved the id sequence on) after this job read the session. */
+class SessionMovedOnError extends GoogleTransientError {}
+
+/** A live booking left on an event other than the session's current one. `eventId` is the (dead) event it still points at. */
+interface StrandedBooking {
+  id: string;
+  customerName: string;
+  customerEmail: string;
+  eventId: string;
+}
+
+const LIVE_STATUSES: ("PAID" | "SCHEDULED")[] = ["PAID", "SCHEDULED"];
+
+/**
+ * Group sessions only. A booking that is still live but points at a different event than the session's current one is
+ * on a dead link: its event was deleted (by the influencer, or by a cancel that did not know about it) and the session
+ * has a new one. This only READS who that is; the job invites them (Google), then moves them in the same transaction
+ * that records the new event ({@link commitGroupAttachment}), and tells them afterwards ({@link announceMovedBookings}).
+ */
+async function findStrandedBookings(sessionId: string, triggerBookingId: string, eventId: string): Promise<StrandedBooking[]> {
+  const rows = await prisma.booking.findMany({
+    where: {
+      sessionId,
+      id: { not: triggerBookingId },
+      status: { in: LIVE_STATUSES },
+      AND: [{ eventId: { not: null } }, { eventId: { not: eventId } }],
+    },
+    select: { id: true, customerName: true, customerEmail: true, eventId: true },
+  });
+  return rows.filter((r): r is StrandedBooking => r.eventId !== null);
+}
+
+/** Invites each stranded booking to the current event (idempotent). Returns the ids that could not be invited. */
+async function inviteStrandedBookings(deps: MeetingDeps, accessToken: string, eventId: string, stranded: StrandedBooking[]): Promise<Set<string>> {
+  const failed = new Set<string>();
+  for (const b of stranded) {
+    try {
+      await deps.google.addAttendee(accessToken, eventId, { email: b.customerEmail, displayName: b.customerName });
+    } catch (e) {
+      // They still get the new link by email afterwards; the influencer is told that the calendar invite is missing.
+      failed.add(b.id);
+      console.warn(`[create-meeting] could not invite booking ${b.id} to the replacement group event: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return failed;
+}
+
+/**
+ * The database half of a group booking getting its Meet link, in ONE short transaction holding the session row lock
+ * (SELECT ... FOR UPDATE, as lib/holds.ts and lib/manage.ts releaseSharedEvent do). Only fast statements run here: no
+ * Google, no email, no queue, because the database has few connections.
+ *
+ * Why it must be one transaction under the lock: the job talks to Google for seconds (insert plus link polling) between
+ * reading the session and writing to it. Meanwhile a cancel can retire the event (delete it and move the id sequence on),
+ * and a payer racing that cancel can already have created and scheduled onto the NEXT event. A plain write of what this
+ * job found would point the session back at the deleted event, move its generation backwards, and (via the stranded-bookings
+ * move) shift that payer onto a dead link. So under the lock it checks the session has not moved past the generation this
+ * job attached to, and if it has throws {@link SessionMovedOnError}: transient, the retry walks again from the new
+ * generation. When the booking itself was cancelled meanwhile it returns `scheduled: false` and leaves the session alone
+ * (`sessionMovedOn` says whether the event this job found is already behind the session's generation, in which case
+ * nobody can adopt it any more).
+ *
+ * Inside it: the booking becomes SCHEDULED, `writeSession` stores the event id, generation and link on the session (the
+ * creator path; a payer who joined an existing event only verifies), and each stranded booking is moved to the event
+ * (guarded by the event id it still had, so two jobs moving the same booking cannot both succeed). Returns who moved.
+ */
+async function commitGroupAttachment(args: {
+  sessionId: string;
+  bookingId: string;
+  eventId: string;
+  generation: number;
+  meetLink: string;
+  writeSession: boolean;
+  stranded: StrandedBooking[];
+}): Promise<{ scheduled: true; moved: StrandedBooking[] } | { scheduled: false; sessionMovedOn: boolean }> {
+  const { sessionId, bookingId, eventId, generation, meetLink, writeSession, stranded } = args;
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<{ event_generation: number }[]>`SELECT event_generation FROM sessions WHERE id = ${sessionId} FOR UPDATE`;
+    const current = rows[0]?.event_generation ?? 0;
+    const claimed = await tx.booking.updateMany({
+      where: { id: bookingId, status: "PAID", eventId: null },
+      data: { eventId, meetLink, status: "SCHEDULED", lastError: null },
+    });
+    // Cancelled / refunded meanwhile: the session is none of this job's business any more.
+    if (claimed.count === 0) return { scheduled: false as const, sessionMovedOn: current > generation };
+    if (current > generation) {
+      throw new SessionMovedOnError(`The group session's event was replaced while this booking was being scheduled (generation ${current} > ${generation}); trying again`);
+    }
+    if (writeSession) {
+      await tx.session.update({ where: { id: sessionId }, data: { eventId, eventGeneration: generation, meetLink } });
+    }
+    const moved: StrandedBooking[] = [];
+    for (const b of stranded) {
+      const r = await tx.booking.updateMany({ where: { id: b.id, status: { in: LIVE_STATUSES }, eventId: b.eventId }, data: { eventId, meetLink } });
+      if (r.count === 1) moved.push(b);
+    }
+    return { scheduled: true as const, moved };
+  });
+}
+
+/**
+ * Best-effort delete of an event this job created and then could not use because the session had already moved past its
+ * generation: nobody can adopt it (every job that found it would hit the same check), and it carries this job's attendee.
+ */
+async function discardAbandonedEvent(deps: MeetingDeps, accessToken: string, eventId: string): Promise<void> {
+  try {
+    await deps.google.deleteEvent(accessToken, eventId);
+  } catch {
+    /* a retry or the influencer can clean it up; never mask the real outcome */
+  }
+}
+
+/**
+ * Tells the influencer and the people {@link commitGroupAttachment} moved. After the commit, because it needs the email
+ * and alert channels: the alert goes FIRST, so a crash between the commit and the emails still leaves the influencer
+ * knowing who was moved (it names them and points at "Resend link"). Those emails are therefore best-effort, not
+ * guaranteed: a crash in that gap loses them. Simplest correct option; recording a pending notice would need a new
+ * column for a rare double failure.
+ */
+async function announceMovedBookings(
+  deps: MeetingDeps,
+  args: { influencerId: string; triggerBookingId: string; moved: StrandedBooking[]; notInvited: Set<string> },
+): Promise<void> {
+  const { influencerId, triggerBookingId, moved, notInvited } = args;
+  if (moved.length === 0) return;
+  const names = moved.slice(0, 5).map((b) => b.customerName).join(", ") + (moved.length > 5 ? `, and ${moved.length - 5} more` : "");
+  const noInvite = moved.filter((b) => notInvited.has(b.id)).length;
+  await deps.alert(influencerId, {
+    kind: "meeting-creation-failed",
+    title: "A group session got a new Meet link",
+    detail: `The shared calendar event of this group session had been deleted, so a new one was created. ${moved.length} booked attendee(s) were moved to it (${names}) and are being emailed the new link${noInvite > 0 ? `; ${noInvite} of them could not be added to the calendar event and have the link by email only` : ""}. If someone says they did not get it, use "Resend link" on their booking; WhatsApp and SMS confirmations are not re-sent automatically.`,
+    bookingId: triggerBookingId,
+  });
+  for (const b of moved) await deps.sendBookingEmail(b.id, CONFIRMATION_TEMPLATE, { force: true });
 }
 
 /**
@@ -146,7 +333,8 @@ export async function createMeetingForBooking(
   const { influencer } = service;
   const isGroup = service.type === "GROUP";
   // GROUP: one shared event per session (id derived from the session). 1:1: one event per booking (unchanged).
-  const eventId = isGroup ? sessionEventId(session.id) : calendarEventId(booking.id);
+  // `let`: a group session whose shared event was deleted moves on to the next id (see ensureGroupEvent).
+  let eventId = isGroup ? sessionEventId(session.id, session.eventGeneration ?? 0) : calendarEventId(booking.id);
 
   if (isGroup && service.durationMin > 60) {
     console.warn(
@@ -163,8 +351,9 @@ export async function createMeetingForBooking(
    *  - "not-connected":   no grant exists, so there is nothing to flag. Alert for each booking that is stuck.
    *  - "already-flagged": flagged and alerted earlier. Park quietly.
    */
-  const blocked = async (reason: string, mode: "revoked" | "not-connected" | "already-flagged"): Promise<never> => {
-    const notify = mode === "revoked" ? await markReconnectNeeded(influencer.id, reason) : mode === "not-connected";
+  const blocked = async (reason: string, mode: "revoked" | "not-connected" | "already-flagged", connectedAt?: Date): Promise<never> => {
+    // `connectedAt`: the grant that produced the error. If the influencer reconnected meanwhile the flag is not set.
+    const notify = mode === "revoked" ? await markReconnectNeeded(influencer.id, reason, connectedAt) : mode === "not-connected";
     await fail(`Waiting for ${influencer.name} to connect Google Calendar: ${reason}`);
     if (notify) await deps.alert(influencer.id, { kind: "google-reconnect-needed", detail: reason, bookingId: booking.id });
     throw new MeetingBlockedError(reason);
@@ -177,6 +366,9 @@ export async function createMeetingForBooking(
   }
 
   let meetLink: string;
+  // Group only: set once the transaction that schedules the booking has committed (see commitGroupAttachment).
+  let groupCommit: { moved: StrandedBooking[] } | null = null;
+  let notInvited = new Set<string>();
   try {
     const accessToken = await deps.google.refreshAccessToken(token.refreshToken);
     const start = session.startTime;
@@ -194,48 +386,82 @@ export async function createMeetingForBooking(
         data: { eventId },
       });
       const weAreCreator = claim.count > 0;
+      // The session as it is now: a cancel may have deleted the shared event (and moved its generation on) after this
+      // job loaded the booking.
+      const fresh = await prisma.session.findUnique({
+        where: { id: session.id },
+        select: { eventId: true, eventGeneration: true, meetLink: true },
+      });
 
-      if (weAreCreator) {
-        const created = await deps.google.insertEvent(accessToken, {
-          id: eventId,
+      // Another attendee already claimed the event. If its link is saved we reuse it and just add THIS customer to
+      // the shared event. If that event has since been deleted (the last booking was cancelled, or the influencer
+      // removed it) the add fails with "gone" and we fall through to make sure a live one exists.
+      let sharedLink: string | null = null;
+      // The generation of the event this job attaches to; the commit below checks the session has not moved past it.
+      let generation = fresh?.eventGeneration ?? session.eventGeneration ?? 0;
+      let writeSession = false;
+      let createdEventId: string | null = null;
+      if (!weAreCreator && fresh?.meetLink) {
+        // The session's recorded id is the truth: it may be a later generation than the one derived above.
+        const sharedId = fresh.eventId ?? eventId;
+        try {
+          await deps.google.addAttendee(accessToken, sharedId, attendee);
+          eventId = sharedId;
+          sharedLink = fresh.meetLink;
+        } catch (e) {
+          if (!(e instanceof GoogleEventGoneError)) throw e;
+        }
+      }
+      if (sharedLink === null) {
+        // We are the creator, or the creator has not finished (or crashed), or the shared event is gone: ensure a live
+        // event exists (idempotent, see ensureGroupEvent) and its link is ready; the commit below then persists the
+        // event id, generation and link so the stuck creator and other attendees converge on the same event.
+        const ensured = await ensureGroupEvent(deps, accessToken, session.id, generation, {
           summary: `${service.title} with ${influencer.name}`,
           description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
           start,
           end,
           attendee,
-          conferenceRequestId: session.id,
         });
-        const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
-        if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
-        meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
-        // Store the shared link on the session so later attendees copy it without another Google round-trip.
-        await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
-      } else {
-        // Another attendee already claimed the event. If its link is saved we reuse it; otherwise the creator is
-        // still mid-flight (or crashed), so insertEvent on the deterministic id gives us the event (409 -> read)
-        // and we poll for the link. Either way we add THIS customer to the shared event.
-        const fresh = await prisma.session.findUnique({ where: { id: session.id }, select: { meetLink: true } });
-        if (fresh?.meetLink) {
-          meetLink = fresh.meetLink;
-          await deps.google.addAttendee(accessToken, eventId, attendee);
-        } else {
-          // Creator has not finished. Ensure the event exists (insert is idempotent via the deterministic id)
-          // and the link is ready, then persist it so the stuck creator and other attendees converge.
-          const created = await deps.google.insertEvent(accessToken, {
-            id: eventId,
-            summary: `${service.title} with ${influencer.name}`,
-            description: `${service.title} with ${influencer.name} (group session).\nBooking reference: ${booking.id}`,
-            start,
-            end,
-            attendee,
-            conferenceRequestId: session.id,
-          });
-          const event = created === "exists" ? await deps.google.getEvent(accessToken, eventId) : created;
-          if (!event) throw new GoogleTransientError("Calendar reported the event exists but it could not be read");
-          meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
-          await prisma.session.update({ where: { id: session.id }, data: { meetLink } });
-        }
+        eventId = ensured.eventId;
+        generation = ensured.generation;
+        writeSession = true;
+        if (ensured.created) createdEventId = eventId;
+        // Lost the create race (or retrying after a crash): the event was made without this customer on it, so they
+        // would get no invite. addAttendee is a no-op when they are already listed.
+        if (!ensured.created) await deps.google.addAttendee(accessToken, eventId, attendee);
+        sharedLink = await waitForMeetLink(deps, accessToken, ensured.event, eventId);
       }
+      meetLink = sharedLink;
+      // Anyone already booked onto an earlier, now dead event of this session (only after it was deleted behind our
+      // back; a cancel never deletes it while another booking is live) is invited to this one here and moved in the
+      // commit.
+      // (If the session has already moved past this event, the commit below will refuse; do not invite anyone to it first.)
+      const latest = await prisma.session.findUnique({ where: { id: session.id }, select: { eventGeneration: true } });
+      const stranded = (latest?.eventGeneration ?? 0) > generation ? [] : await findStrandedBookings(session.id, booking.id, eventId);
+      notInvited = await inviteStrandedBookings(deps, accessToken, eventId, stranded);
+      let commit: Awaited<ReturnType<typeof commitGroupAttachment>>;
+      try {
+        commit = await commitGroupAttachment({
+          sessionId: session.id,
+          bookingId: booking.id,
+          eventId,
+          generation,
+          meetLink,
+          writeSession,
+          stranded,
+        });
+      } catch (e) {
+        // The event this job just created belongs to a generation the session has already left: nobody uses it.
+        if (e instanceof SessionMovedOnError && createdEventId) await discardAbandonedEvent(deps, accessToken, createdEventId);
+        throw e;
+      }
+      if (!commit.scheduled) {
+        if (commit.sessionMovedOn && createdEventId) await discardAbandonedEvent(deps, accessToken, createdEventId);
+        console.warn(`[create-meeting] booking ${booking.id} changed while its event was being created; event ${eventId} was not linked`);
+        return "skipped";
+      }
+      groupCommit = commit;
     } else {
       const created = await deps.google.insertEvent(accessToken, {
         id: eventId,
@@ -251,12 +477,34 @@ export async function createMeetingForBooking(
       meetLink = await waitForMeetLink(deps, accessToken, event, eventId);
     }
   } catch (e) {
-    if (e instanceof GoogleReconnectError) return blocked(e.message, "revoked");
+    if (e instanceof GoogleReconnectError) {
+      // The influencer may have reconnected while this call was running: the error belongs to the old grant, which must
+      // not park the booking or flag the new connection. Retry with whatever is stored now.
+      const now = await getRefreshToken(influencer.id);
+      if (now.state === "ok" && now.connectedAt && token.connectedAt && now.connectedAt.getTime() !== token.connectedAt.getTime()) {
+        await fail("The Google connection was renewed while this booking was being scheduled; trying again");
+        throw new GoogleTransientError("The Google connection was renewed during the call; trying again with the new one");
+      }
+      return blocked(e.message, "revoked", token.connectedAt);
+    }
+    if (e instanceof GroupEventExhaustedError) {
+      // Not Google's rejection of this booking and not fixable by retrying: the booking stays PAID (the customer paid),
+      // the reason is recorded and the influencer is told, instead of the booking failing without anyone knowing why.
+      await fail(e.message);
+      await deps.alert(influencer.id, { kind: "meeting-creation-failed", detail: e.message, bookingId: booking.id });
+      throw new MeetingBlockedError(e.message);
+    }
     if (e instanceof GoogleRequestError) {
-      await prisma.booking.update({
-        where: { id: booking.id },
+      // Only a booking that is still waiting for its link can fail: one cancelled (or refunded) while we talked to Google
+      // must not be overwritten with FAILED.
+      const { count } = await prisma.booking.updateMany({
+        where: { id: booking.id, status: "PAID" },
         data: { status: "FAILED", lastError: e.message.slice(0, 500) },
       });
+      if (count === 0) {
+        console.warn(`[create-meeting] booking ${booking.id} changed while Google rejected its event (${e.message}); not marking it failed`);
+        return "skipped";
+      }
       await deps.alert(influencer.id, { kind: "meeting-creation-failed", detail: e.message, bookingId: booking.id });
       throw new MeetingRejectedError(e.message);
     }
@@ -264,14 +512,19 @@ export async function createMeetingForBooking(
     throw e;
   }
 
-  const { count } = await prisma.booking.updateMany({
-    where: { id: booking.id, status: "PAID", eventId: null },
-    data: { eventId, meetLink, status: "SCHEDULED", lastError: null },
-  });
-  if (count === 0) {
-    // Cancelled / refunded while we were talking to Google. The event exists on the calendar under `eventId`.
-    console.warn(`[create-meeting] booking ${booking.id} changed while its event was being created; event ${eventId} was not linked`);
-    return "skipped";
+  if (groupCommit) {
+    // A group booking was scheduled by the transaction above; now the people it moved onto the new event are told.
+    await announceMovedBookings(deps, { influencerId: influencer.id, triggerBookingId: booking.id, moved: groupCommit.moved, notInvited });
+  } else {
+    const { count } = await prisma.booking.updateMany({
+      where: { id: booking.id, status: "PAID", eventId: null },
+      data: { eventId, meetLink, status: "SCHEDULED", lastError: null },
+    });
+    if (count === 0) {
+      // Cancelled / refunded while we were talking to Google. The event exists on the calendar under `eventId`.
+      console.warn(`[create-meeting] booking ${booking.id} changed while its event was being created; event ${eventId} was not linked`);
+      return "skipped";
+    }
   }
 
   // Only now that the booking is actually SCHEDULED do we send the confirmation (email + WhatsApp) and

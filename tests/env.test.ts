@@ -155,6 +155,23 @@ test("whitespace is only a warning in development", () => {
   assert.ok(r.warnings.some((w) => w.startsWith("EMAIL_PROVIDER:") && w.includes("whitespace")));
 });
 
+test("the Meta app secret under either name satisfies the WhatsApp webhook warning", () => {
+  const warned = (env: EnvRecord) => validateEnv(env).warnings.some((w) => w.startsWith("WHATSAPP_APP_SECRET/WHATSAPP_WEBHOOK_VERIFY_TOKEN:"));
+  assert.equal(warned(good), true, "neither set");
+  assert.equal(warned({ ...good, WHATSAPP_WEBHOOK_VERIFY_TOKEN: "v" }), true, "no secret");
+  assert.equal(warned({ ...good, WHATSAPP_WEBHOOK_VERIFY_TOKEN: "v", WHATSAPP_APP_SECRET: "s" }), false);
+  assert.equal(warned({ ...good, WHATSAPP_WEBHOOK_VERIFY_TOKEN: "v", META_APP_SECRET: "s" }), false, "META_APP_SECRET works as well");
+});
+
+test("WHATSAPP_GRAPH_VERSION must look like v26.0, and is a known variable", () => {
+  assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("WHATSAPP_GRAPH_VERSION"));
+  assert.deepEqual(validateEnv({ ...good, WHATSAPP_GRAPH_VERSION: "v26.0" }).errors, []);
+  assert.deepEqual(validateEnv({ ...good, WHATSAPP_GRAPH_VERSION: "" }).errors, [], "blank means the shipped default");
+  for (const bad of ["26.0", "v26", "latest", "v26.0.1"]) {
+    assert.ok(validateEnv({ ...good, WHATSAPP_GRAPH_VERSION: bad }).errors.some((e) => e.startsWith("WHATSAPP_GRAPH_VERSION:")), bad);
+  }
+});
+
 test("KNOWN_ENV_VARS covers every variable in .env.example, so none can escape the whitespace check", () => {
   const example = readFileSync(join(process.cwd(), ".env.example"), "utf8");
   const names = [...example.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]);

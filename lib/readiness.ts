@@ -1,7 +1,8 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { GMAIL_SEND_SCOPE } from "@/lib/google";
-import { viewTemplates } from "@/lib/whatsapp-connection";
+import { TEMPLATE_STATE_NOTICE } from "@/lib/message-templates";
+import { whatsappTemplateState } from "@/lib/whatsapp-connection";
 
 /**
  * Go-live readiness: what an influencer must have connected before their booking page takes bookings and money.
@@ -34,9 +35,23 @@ export interface ReadinessInput {
   availabilityRules: number;
   google: "none" | "active" | "reconnect";
   gmailSend: boolean;
-  whatsapp: "none" | "ready" | "pending" | "error";
+  /**
+   * ready: every template approved. pending: submitted, Meta is reviewing. rejected: Meta rejected or paused one.
+   * not-submitted: one never reached Meta. error: the connection itself stopped working.
+   */
+  whatsapp: "none" | "ready" | "pending" | "rejected" | "not-submitted" | "error";
   payout: "none" | "pending" | "verified" | "rejected";
 }
+
+/** The short badge the admin console shows for each WhatsApp state, the same states as the influencer's own checklist. */
+export const WHATSAPP_BADGE: Record<ReadinessInput["whatsapp"], { label: string; tone?: "success" | "warning" | "danger" }> = {
+  none: { label: "Not connected" },
+  ready: { label: "Ready", tone: "success" },
+  pending: { label: "Templates in review", tone: "warning" },
+  rejected: { label: "Templates need fixing", tone: "danger" },
+  "not-submitted": { label: "Templates not submitted", tone: "warning" },
+  error: { label: "Reconnect needed", tone: "danger" },
+};
 
 export interface ReadinessItem {
   key: ReadinessKey;
@@ -87,11 +102,11 @@ export function evaluateReadiness(input: ReadinessInput, required: ConnectionKey
     item(
       "whatsapp",
       "Connect your WhatsApp number",
-      input.whatsapp === "ready" || input.whatsapp === "pending" ? "done" : input.whatsapp === "error" ? "attention" : "todo",
+      input.whatsapp === "ready" || input.whatsapp === "pending" ? "done" : input.whatsapp === "none" ? "todo" : "attention",
       input.whatsapp === "ready"
         ? "Customers are messaged from your number."
-        : input.whatsapp === "pending"
-          ? "Connected. Meta is reviewing your message templates; until then customers get SMS."
+        : input.whatsapp === "pending" || input.whatsapp === "rejected" || input.whatsapp === "not-submitted"
+          ? `Connected. ${TEMPLATE_STATE_NOTICE[input.whatsapp].body}` // the same text as the settings card
           : input.whatsapp === "error"
             ? "WhatsApp stopped accepting the connection. Reconnect it."
             : "Message customers from your own WhatsApp number. Without it they get SMS.",
@@ -105,7 +120,10 @@ export function evaluateReadiness(input: ReadinessInput, required: ConnectionKey
       "/dashboard/payouts",
     ),
   ];
-  const blockers = items.filter((i) => i.required && i.state !== "done");
+  // A connection whose templates are rejected or unsent is flagged but never blocks, exactly like one still in review:
+  // buildPublicInfluencerWhere below only asks for an ACTIVE connection, and the two must agree.
+  const connectedWithTemplateTrouble = input.whatsapp === "rejected" || input.whatsapp === "not-submitted";
+  const blockers = items.filter((i) => i.required && i.state !== "done" && !(i.key === "whatsapp" && connectedWithTemplateTrouble));
   return { items, blockers, ready: blockers.length === 0 };
 }
 
@@ -156,7 +174,7 @@ export function readinessInput(
     availabilityRules: row._count.rules,
     google: !row.googleToken ? "none" : row.googleToken.status === "ACTIVE" ? "active" : "reconnect",
     gmailSend: row.googleToken?.scope.split(/\s+/).includes(GMAIL_SEND_SCOPE) ?? false,
-    whatsapp: !wa ? "none" : wa.status === "ERROR" ? "error" : viewTemplates(wa.templates).every((t) => t.status === "APPROVED") ? "ready" : "pending",
+    whatsapp: !wa ? "none" : wa.status === "ERROR" ? "error" : whatsappTemplateState(wa.templates),
     payout: !row.payoutAccount ? "none" : row.payoutAccount.status === "VERIFIED" ? "verified" : row.payoutAccount.status === "REJECTED" ? "rejected" : "pending",
   };
 }

@@ -1,14 +1,18 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { Prisma } from "../generated/prisma/client";
+import { listInfluencers } from "../lib/admin/data";
 import { prisma } from "../lib/db";
 import { GMAIL_SEND_SCOPE } from "../lib/google";
+import { BLOCKED_TEMPLATE_STATUSES, KNOWN_TEMPLATES, TEMPLATE_STATUS_LABELS, templateState } from "../lib/message-templates";
 import {
   buildPublicInfluencerWhere,
   evaluateReadiness,
   loadReadiness,
   readinessInput,
   requiredConnections,
+  WHATSAPP_BADGE,
   type ReadinessInput,
 } from "../lib/readiness";
 
@@ -56,7 +60,7 @@ test("every state of each connection", () => {
   assert.equal(ev({ google: "reconnect" }).ready, false, "a dead Google grant takes the page offline");
   assert.equal(ev({ google: "active", gmailSend: true }).items.find((i) => i.key === "gmail")?.state, "done");
   assert.equal(ev({ google: "reconnect", gmailSend: true }).items.find((i) => i.key === "gmail")?.state, "todo", "Gmail needs a working Google grant");
-  for (const [state, expected] of [["none", "todo"], ["pending", "done"], ["ready", "done"], ["error", "attention"]] as const) {
+  for (const [state, expected] of [["none", "todo"], ["pending", "done"], ["ready", "done"], ["rejected", "attention"], ["not-submitted", "attention"], ["error", "attention"]] as const) {
     assert.equal(ev({ whatsapp: state }).items.find((i) => i.key === "whatsapp")?.state, expected, `whatsapp ${state}`);
   }
   for (const [state, expected] of [["none", "todo"], ["pending", "done"], ["verified", "done"], ["rejected", "attention"]] as const) {
@@ -65,6 +69,80 @@ test("every state of each connection", () => {
   const all = ev({ google: "active", gmailSend: true, whatsapp: "ready", payout: "verified" });
   assert.equal(all.ready, true);
   assert.equal(all.blockers.length, 0);
+});
+
+test("the WhatsApp checklist item says what is actually wrong: in review, rejected, never submitted", () => {
+  const detail = (whatsapp: ReadinessInput["whatsapp"]) => evaluateReadiness({ ...none, whatsapp }, ["whatsapp"]).items.find((i) => i.key === "whatsapp")!.detail;
+  const pending = detail("pending");
+  const rejected = detail("rejected");
+  const notSubmitted = detail("not-submitted");
+  assert.match(pending, /Meta is reviewing/);
+  assert.match(rejected, /rejected, paused or disabled/);
+  assert.match(notSubmitted, /never sent to Meta/);
+  assert.match(notSubmitted, /Check template status/, "says how to fix it");
+  assert.doesNotMatch(rejected, /reviewing/, "rejected templates are not 'being reviewed'");
+  assert.doesNotMatch(notSubmitted, /reviewing/, "templates that were never submitted are not 'being reviewed'");
+  assert.equal(new Set([pending, rejected, notSubmitted, detail("error"), detail("ready"), detail("none")]).size, 6, "every state has its own wording");
+});
+
+test("rejected or unsent templates flag the item but never block going live, like the database filter", () => {
+  for (const whatsapp of ["rejected", "not-submitted"] as const) {
+    const r = evaluateReadiness({ ...none, google: "active", payout: "verified", whatsapp }, ["google", "payout", "whatsapp"]);
+    assert.equal(r.items.find((i) => i.key === "whatsapp")?.state, "attention");
+    assert.equal(r.ready, true, `${whatsapp}: the connection is ACTIVE, which is all buildPublicInfluencerWhere asks for`);
+    assert.deepEqual(r.blockers, []);
+  }
+  // A connection that stopped working, or none at all, still blocks when WhatsApp is required.
+  for (const whatsapp of ["error", "none"] as const) {
+    assert.deepEqual(evaluateReadiness({ ...none, google: "active", payout: "verified", whatsapp }, ["google", "payout", "whatsapp"]).blockers.map((b) => b.key), ["whatsapp"], whatsapp);
+  }
+});
+
+test("the stored template statuses map to the right WhatsApp state", () => {
+  const all = (status: string, over: Record<string, string> = {}) =>
+    Object.fromEntries(KNOWN_TEMPLATES.map((k) => [k, { status: over[k] ?? status, language: "en" }]));
+  const row = (templates: unknown, status = "ACTIVE") => ({
+    googleToken: null,
+    payoutAccount: null,
+    whatsappConnection: { status, templates },
+    _count: { rules: 1, services: 1 },
+  });
+  const state = (templates: unknown, status?: string) => readinessInput(row(templates, status), true).whatsapp;
+
+  assert.equal(state(all("APPROVED")), "ready");
+  assert.equal(state(all("PENDING")), "pending");
+  assert.equal(state(all("APPROVED", { reschedule: "PENDING" })), "pending", "one still in review");
+  assert.equal(state(all("IN_APPEAL")), "pending");
+  assert.equal(state(all("APPROVED", { reschedule: "REJECTED" })), "rejected");
+  assert.equal(state(all("APPROVED", { cancellation: "PAUSED" })), "rejected");
+  assert.equal(state(all("APPROVED", { cancellation: "DISABLED" })), "rejected");
+  assert.equal(state(null), "not-submitted", "nothing was ever submitted");
+  assert.equal(state({ reschedule: { status: "APPROVED" } }), "not-submitted", "some never reached Meta");
+  assert.equal(state({ ...all("PENDING"), cancellation: undefined }), "not-submitted", "submitted ones are pending, the missing one is not submitted");
+  assert.equal(state(all("PENDING", { reschedule: "REJECTED" })), "rejected", "rejected wins over pending");
+  assert.equal(state({ reschedule: { status: "REJECTED" } }), "rejected", "rejected wins over not submitted");
+  assert.equal(state(all("APPROVED"), "ERROR"), "error", "a dead connection is an error whatever the templates say");
+  assert.equal(readinessInput({ ...row(null), whatsappConnection: null }, true).whatsapp, "none");
+
+  // The same rule on bare statuses (the settings card in the browser uses it too).
+  assert.equal(templateState(["APPROVED", "APPROVED"]), "ready");
+  assert.equal(templateState(["APPROVED", "PENDING"]), "pending");
+  assert.equal(templateState(["PENDING", "NOT_SUBMITTED"]), "not-submitted");
+  assert.equal(templateState(["NOT_SUBMITTED", "REJECTED"]), "rejected");
+});
+
+test("every template status the state logic knows has its own label on the settings card (none is shown as 'Not submitted')", () => {
+  const known = ["APPROVED", "FLAGGED", "PENDING", "IN_APPEAL", "NOT_SUBMITTED", ...BLOCKED_TEMPLATE_STATUSES];
+  for (const status of known) assert.ok(TEMPLATE_STATUS_LABELS[status], `${status} has a label`);
+  for (const status of known) {
+    if (status !== "NOT_SUBMITTED") assert.notEqual(TEMPLATE_STATUS_LABELS[status].label, "Not submitted", `${status} must not read as never submitted`);
+  }
+  for (const status of ["DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED"]) assert.equal(TEMPLATE_STATUS_LABELS[status].tone, "danger", status);
+  assert.deepEqual(
+    new Set(["DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED"].map((s) => TEMPLATE_STATUS_LABELS[s].label)).size,
+    3,
+    "each has its own accurate label",
+  );
 });
 
 test("the basics are always required, with or without connections", () => {
@@ -156,8 +234,44 @@ test("readinessInput maps the stored rows", { skip }, async () => {
   const input = readinessInput(row, true);
   assert.equal(input.google, "active");
   assert.equal(input.gmailSend, true);
-  assert.equal(input.whatsapp, "pending", "connected but templates are not approved yet");
+  assert.equal(input.whatsapp, "not-submitted", "connected, but no template was ever submitted (the row has none stored)");
   assert.equal(input.payout, "verified");
   assert.equal(input.activeServices, 1);
   assert.equal(input.availabilityRules, 1);
+});
+
+test("the admin console shows the same WhatsApp state as the influencer's checklist, not 'in review' for everything", { skip }, async () => {
+  const all = (status: string, over: Record<string, string> = {}) => Object.fromEntries(KNOWN_TEMPLATES.map((k) => [k, { status: over[k] ?? status, language: "en" }]));
+  const adminSays = async () => (await listInfluencers(1, `rd-${run}`)).rows.find((r) => r.id === id)?.whatsapp;
+  const checklistSays = async () =>
+    readinessInput(
+      await prisma.influencer.findUniqueOrThrow({
+        where: { id },
+        select: {
+          googleToken: { select: { status: true, scope: true } },
+          payoutAccount: { select: { status: true } },
+          whatsappConnection: { select: { status: true, templates: true } },
+          _count: { select: { rules: true, services: { where: { active: true } } } },
+        },
+      }),
+      true,
+    ).whatsapp;
+
+  const cases: [string, unknown, "ACTIVE" | "ERROR", ReadinessInput["whatsapp"]][] = [
+    ["nothing was ever submitted", null, "ACTIVE", "not-submitted"],
+    ["in review", all("PENDING"), "ACTIVE", "pending"],
+    ["one rejected", all("APPROVED", { reschedule: "REJECTED" }), "ACTIVE", "rejected"],
+    ["one has a name clash", all("APPROVED", { cancellation: "CONFLICT" }), "ACTIVE", "rejected"],
+    ["all approved", all("APPROVED"), "ACTIVE", "ready"],
+    ["flagged is still sent", all("APPROVED", { "reminder-15m": "FLAGGED" }), "ACTIVE", "ready"],
+    ["the connection stopped working", all("APPROVED"), "ERROR", "error"],
+  ];
+  for (const [name, templates, status, expected] of cases) {
+    await prisma.whatsAppConnection.update({ where: { influencerId: id }, data: { templates: templates === null ? Prisma.DbNull : (templates as object), status } });
+    assert.equal(await adminSays(), expected, `admin: ${name}`);
+    assert.equal(await checklistSays(), expected, `checklist: ${name}`);
+  }
+  for (const state of ["none", "ready", "pending", "rejected", "not-submitted", "error"] as const) assert.ok(WHATSAPP_BADGE[state].label, `a badge for ${state}`);
+  assert.notEqual(WHATSAPP_BADGE.rejected.label, WHATSAPP_BADGE.pending.label);
+  assert.notEqual(WHATSAPP_BADGE["not-submitted"].label, WHATSAPP_BADGE.pending.label);
 });

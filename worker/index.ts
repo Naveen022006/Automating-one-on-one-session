@@ -7,10 +7,12 @@ import { sweepExpiredBuckets } from "../lib/rate-limit/sweep";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
 import { reportMessageFailure } from "../lib/messaging";
 import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from "../lib/queue";
+import { startGoogleHealth } from "./google-health";
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
+import { startWhatsAppSync } from "./whatsapp-sync";
 
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
 import { initEnvOrExit } from "../lib/env";
@@ -44,6 +46,7 @@ async function tick() {
 console.log("[worker] hold expiry running every", INTERVAL_MS / 1000, "s");
 void tick();
 const timer = setInterval(tick, INTERVAL_MS);
+startGoogleHealth(); // daily check that every ACTIVE Google connection still works (worker/google-health.ts)
 
 let meetings: Worker<CreateMeetingData> | undefined;
 let messages: Worker<SendMessageData> | undefined;
@@ -118,6 +121,7 @@ if (!process.env.REDIS_URL) {
 // --- payment recovery + health monitoring (worker/monitoring.ts): heartbeat, missed-webhook recovery, health monitor ---
 startMonitoring();
 // --- end payment recovery + health monitoring ---
+startWhatsAppSync(); // template status backup for Meta's webhook (worker/whatsapp-sync.ts)
 
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);

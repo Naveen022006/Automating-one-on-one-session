@@ -2,6 +2,7 @@
 // unit-tested without a server or DB.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { normalizeTemplateStatus } from "@/lib/message-templates";
 
 export type MessageStatus = "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED";
 
@@ -118,7 +119,7 @@ export interface TemplateStatusUpdate {
   wabaId: string;
   name: string;
   language: string;
-  /** "APPROVED" | "REJECTED" | "PENDING" | "PAUSED" | "DISABLED" ... as Meta reports it. */
+  /** "APPROVED" | "REJECTED" | "PENDING" | "PAUSED" | "DISABLED" | "FLAGGED" ... as Meta reports it (REINSTATED arrives as APPROVED). */
   status: string;
   reason: string | null;
 }
@@ -144,7 +145,7 @@ export function parseTemplateStatusUpdates(payload: unknown): TemplateStatusUpda
         wabaId: String(entry.id),
         name: v.message_template_name,
         language: v.message_template_language ?? "en",
-        status: v.event.toUpperCase(),
+        status: normalizeTemplateStatus(v.event), // REINSTATED -> APPROVED; FLAGGED stays FLAGGED
         reason: v.reason && v.reason !== "NONE" ? v.reason : null,
       });
     }

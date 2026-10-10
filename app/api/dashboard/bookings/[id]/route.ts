@@ -61,7 +61,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (recent instanceof NextResponse) return recent;
       }
       const result = await cancelBooking(booking.id, { actor: "influencer", reason: parsed.data.reason });
-      return NextResponse.json({ ok: true, refund: result.refund });
+      // `warning`: the booking is cancelled (refund path and customer notice ran) but the Calendar event was not updated.
+      return NextResponse.json({ ok: true, refund: result.refund, ...(result.warning ? { warning: result.warning } : {}) });
     } else {
       await rescheduleBooking(booking.id, new Date(parsed.data.startTime));
     }

@@ -40,6 +40,10 @@ model Influencer {
   onboardedAt   DateTime? @map("onboarded_at")
   // Notification preferences for influencer alerts (failed messages, Google reconnect, refunds needed).
   notifyByEmail Boolean   @default(true) @map("notify_by_email")
+  // The Google account that owned the Calendar events when the influencer disconnected Google (the token row is deleted
+  // then). Lets the connect callback still tell that a different account is a switch, which strands those events.
+  // Cleared by the next successful connect.
+  disconnectedGoogleEmail String? @map("disconnected_google_email")
   createdAt     DateTime  @default(now()) @map("created_at")
 
   services           Service[]
@@ -256,6 +260,10 @@ model Session {
   // event_id/meet_link for the dashboard and messaging. 1:1 sessions leave these null (the event lives per booking).
   eventId   String?  @map("event_id")
   meetLink  String?  @map("meet_link")
+  // Google never lets a deleted event's id be reused, so a group session's shared event gets the next id of a
+  // deterministic sequence (lib/meeting.ts sessionEventId) each time it is deleted. This is the position in that
+  // sequence of the live event, or of the next one to try after the last was deleted; the walk starts here.
+  eventGeneration Int    @default(0) @map("event_generation")
   createdAt DateTime @default(now()) @map("created_at")
 
   service  Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -617,27 +625,51 @@ enum WhatsAppConnectionStatus {
 // permanent system-user token. The token is stored AES-256-GCM encrypted (aad binds it to this influencer) and is
 // never returned to the browser or shown to administrators.
 model WhatsAppConnection {
-  id                String                   @id @default(cuid())
-  influencerId      String                   @unique @map("influencer_id")
-  wabaId            String                   @map("waba_id")
+  id                  String                   @id @default(cuid())
+  influencerId        String                   @unique @map("influencer_id")
+  wabaId              String                   @map("waba_id")
   // A phone number can belong to only one influencer.
-  phoneNumberId     String                   @unique @map("phone_number_id")
-  displayPhone      String?                  @map("display_phone")
-  verifiedName      String?                  @map("verified_name")
-  tokenEnc          String                   @map("token_enc")
+  phoneNumberId       String                   @unique @map("phone_number_id")
+  displayPhone        String?                  @map("display_phone")
+  verifiedName        String?                  @map("verified_name")
+  tokenEnc            String                   @map("token_enc")
   // "embedded" (Meta Embedded Signup) or "manual" (ids + token entered by hand).
-  source            String                   @default("manual")
-  status            WhatsAppConnectionStatus @default(ACTIVE)
-  lastError         String?                  @map("last_error")
+  source              String                   @default("manual")
+  status              WhatsAppConnectionStatus @default(ACTIVE)
+  lastError           String?                  @map("last_error")
   // Template name -> { status: "APPROVED" | "PENDING" | "REJECTED" | ..., language }. Kept current by the template
   // status webhook and the Refresh button.
-  templates         Json?
-  templatesSyncedAt DateTime?                @map("templates_synced_at")
-  connectedAt       DateTime                 @default(now()) @map("connected_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  templates           Json?
+  templatesSyncedAt   DateTime?                @map("templates_synced_at")
+  // Superseded by WhatsAppRegistrationPin (below), which outlives this row: a PIN kept only here was lost on
+  // disconnect, and when saving this row failed after the number was registered. No longer written; read once as a
+  // fallback and moved over (lib/whatsapp-connection.ts getRegistrationPin). Kept, not dropped, so migrations stay additive.
+  registrationPinEnc  String?                  @map("registration_pin_enc")
+  // When our Meta app was last subscribed to the account's webhooks (template and delivery updates), or why that failed.
+  // Null time and null error = never attempted (connections made before this was recorded).
+  webhookSubscribedAt DateTime?                @map("webhook_subscribed_at")
+  webhookError        String?                  @map("webhook_error")
+  connectedAt         DateTime                 @default(now()) @map("connected_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 
   @@index([wabaId])
   @@map("whatsapp_connections")
+}
+
+// The two-step verification PIN a WhatsApp number was registered with, one row per phone number. It is saved BEFORE the
+// number is registered with Meta and is deliberately not tied to a connection: Meta keeps the PIN on the number, so it
+// must outlive a disconnect, and a connection that fails to save after the number was registered. The PIN is AES-GCM
+// encrypted with the phone number id as its AAD (whatsappPinAad), and listed for key rotation.
+model WhatsAppRegistrationPin {
+  phoneNumberId String   @id @map("phone_number_id")
+  pinEnc        String   @map("pin_enc")
+  // true = we generated (or defaulted) it, so we may reset it with Meta when it no longer matches; false = the
+  // influencer typed their own, which we never overwrite.
+  generated     Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_registration_pins")
 }

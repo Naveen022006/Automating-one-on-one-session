@@ -6,6 +6,7 @@ import { IconUsers } from "@/components/icons";
 import { listInfluencers, parsePage } from "@/lib/admin/data";
 import { requireAdminPage } from "@/lib/admin/session";
 import { formatMoney } from "@/lib/format";
+import { WHATSAPP_BADGE } from "@/lib/readiness";
 
 export const metadata: Metadata = { title: "Influencers" };
 
@@ -62,7 +63,7 @@ export default async function AdminInfluencersPage({ searchParams }: { searchPar
                     {r.google === "connected" ? <Badge tone="success">Connected</Badge> : r.google === "reconnect" ? <Badge tone="danger">Reconnect</Badge> : <Badge>Not connected</Badge>}
                   </td>
                   <td data-label="WhatsApp">
-                    {r.whatsapp === "ready" ? <Badge tone="success">Ready</Badge> : r.whatsapp === "pending" ? <Badge tone="warning">Templates in review</Badge> : r.whatsapp === "error" ? <Badge tone="danger">Reconnect</Badge> : <Badge>Not connected</Badge>}
+                    <Badge tone={WHATSAPP_BADGE[r.whatsapp].tone}>{WHATSAPP_BADGE[r.whatsapp].label}</Badge>
                   </td>
                   <td data-label="Payout details">
                     {r.payout === "verified" ? <Badge tone="success">Verified</Badge> : r.payout === "pending" ? <Badge tone="warning">To review</Badge> : r.payout === "rejected" ? <Badge tone="danger">Needs correction</Badge> : <Badge>Not added</Badge>}

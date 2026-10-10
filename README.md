@@ -73,15 +73,48 @@ add per-email/per-booking limits. All limits live in `lib/rate-limit/policies.ts
 ### Google Meet setup
 Meet links are created on the **influencer's own** Google Calendar (a service account cannot create Meet links for
 personal Gmail).
-1. In Google Cloud Console: create a project, enable the **Google Calendar API**, configure the OAuth consent screen,
-   and create an **OAuth client ID** (type *Web application*). Add `GOOGLE_REDIRECT_URI`
-   (e.g. `http://localhost:3000/api/google/callback`) as an authorised redirect URI. While the consent screen is in
-   *Testing*, add the influencer's Gmail as a test user; refresh tokens of Testing apps expire after 7 days, so publish
-   the app (and complete verification for `calendar.events`) before going live.
+1. In Google Cloud Console: create a project, enable the **Google Calendar API** and (unless you set
+   `GOOGLE_REQUEST_GMAIL_SEND=false`) the **Gmail API** (APIs & Services > Library; they are two separate switches),
+   configure the OAuth consent screen, and create an **OAuth client ID** (type *Web application*). Add
+   `GOOGLE_REDIRECT_URI` (e.g. `http://localhost:3000/api/google/callback`) as an authorised redirect URI. While the
+   consent screen is in *Testing*, add the influencer's Gmail as a test user; refresh tokens of Testing apps expire after
+   7 days, so publish the app (and complete verification for `calendar.events`) before going live.
 2. Fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`.
 3. The influencer clicks **Connect Google Calendar** in onboarding or Settings. The dashboard then shows
    "Connected as <email>", or "Reconnect needed" with Google's reason if the grant is revoked; paid bookings wait as
-   `PAID` and are re-queued automatically after reconnecting.
+   `PAID` and are re-queued automatically after reconnecting. By default the booking page is offline while Google is not
+   connected (see "Go-live readiness").
+4. The worker refreshes every connected influencer's Google token once a day (and two minutes after it starts) and
+   flags a grant Google has revoked or expired as "Reconnect needed" with one alert, so a page does not keep taking
+   money until a paid booking happens to notice (`worker/google-health.ts`). Network errors and Google outages are only
+   logged; they never disconnect anyone.
+5. **Switch account** and **Disconnect** warn when upcoming bookings already have calendar events: those events and the
+   customers' invites stay on the old Google account, so later reschedules and cancels cannot update them. Both need an
+   explicit confirmation that the server enforces itself (`confirm=1` on `/api/google/connect`, `{ "confirm": true }` in the
+   body of `DELETE /api/dashboard/google`). Disconnecting remembers which Google account the events are on
+   (`influencers.disconnected_google_email`, cleared by the next connect), so connecting a different account afterwards is
+   still treated as a switch; a connect or reconnect that lands on a different account than the one on record, without the
+   confirmation, is refused and its grant revoked. A group session's people already booked are not moved to the new
+   calendar; a later booking of that session starts a second Meet there.
+6. **Group sessions share one Calendar event.** A cancel deletes it only when no other PAID/SCHEDULED booking of the
+   session is left in the database (decided under the session row lock, not from Google's attendee list), and attendee
+   edits are written with the event's etag (`If-Match`) and re-read on a conflict. Google never reuses a deleted event's id,
+   so the next payer's event gets the next id of a deterministic sequence; `sessions.event_generation` stores where the
+   sequence stands. If the shared event was deleted behind the app's back, bookings left on it are moved to the
+   replacement (invited, new link, confirmation emailed) and the influencer gets one alert. The booking job records its
+   event, link and generation, schedules the booking and moves those bookings in ONE short transaction under the session
+   row lock, and refuses (a retried job) if a cancel moved the session on while it was talking to Google, so a slow job
+   can never point the session back at a deleted event. A cancel keeps the attendee on the event when another live booking
+   of the session uses the same email address.
+
+Google's revoke ends the app's access for the **whole Google account**, so a refused or disconnected token is not revoked
+while another influencer profile is connected with the same account (our copy is still deleted).
+
+**Known limits.** `confirm=1` is not a secret: it only records that the influencer was warned (the dialog sends it), and
+they still have to pick an account on Google's own consent screen, so it cannot be used to attach an account they do not
+control. A cancel talks to Google before it cancels the reminders, issues the refund and notifies the customer, so a slow
+or hanging Google call (15 s timeout per request) delays those steps by that long; they still all run, because a Google
+error is captured and reported afterwards, never thrown in the middle.
 
 ## Design system
 Tokens: `app/styles/tokens.css`. Components: `components/ui/`. Every component and state is shown at `/design`
@@ -201,6 +234,12 @@ never lost. A dead Google grant flags the influencer to reconnect. Account email
 notices, alerts) always come from the platform. `gmail.send` is a restricted Google scope: it works for test users while
 the consent screen is in Testing, and needs Google verification before general use.
 
+The **Gmail API must also be enabled** on the Google Cloud project (APIs & Services > Library > Gmail API), separately from
+the Calendar API. Without it every send fails with 403 `accessNotConfigured` and every customer email falls back to the
+platform address. That is visible in two places: the Google panel in Settings shows "Gmail not working" (derived from how
+the latest customer email was sent, no extra data kept), and the web/worker log gets one `Gmail sending is not working
+for influencer ...` warning per influencer per hour with Google's reason.
+
 ## Influencer WhatsApp numbers
 Customers are messaged from the **influencer's own WhatsApp Business number**. In **Settings > WhatsApp** the influencer
 connects it either with Meta **Embedded Signup** (needs `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID` and a Meta app
@@ -208,12 +247,49 @@ approved as a Tech Provider) or by entering their WhatsApp Business Account id, 
 token. Credentials are verified against Meta before saving (the number must belong to the account) and the token is stored
 AES-256-GCM encrypted and never shown again.
 
-On connect we submit our five message templates (booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation)
-to the influencer's account for approval and keep their status current from Meta's template webhook and a Refresh button;
-the dashboard shows which are approved. Until a template is approved, or if there is no healthy connection, the message goes
-by SMS. A token Meta rejects flags the connection once and alerts the influencer. Set `WHATSAPP_PLATFORM_FALLBACK=true` only
-for testing with the platform's own number. Embedded Signup could not be exercised without an approved Meta app: the manual
-connect path is verified against Meta's real Graph API.
+On connect we submit our five message templates to the influencer's account for approval. Meta only accepts lowercase
+letters, digits and underscores in a template name, and a plain name could clash with a template the influencer already has,
+so they go out as `sa_booking_confirmation`, `sa_reminder_24h`, `sa_reminder_15m`, `sa_reschedule` and `sa_cancellation`;
+inside the app the keys stay `booking-confirmation`, `reminder-24h`, `reminder-15m`, `reschedule` and `cancellation`
+(`lib/message-templates.ts` translates at the Graph boundary). A template that already has one of those names is adopted only
+if it takes the same number of variables as ours (the wording is not compared, so rewording a message never disables approved
+templates); otherwise the card says so (status "Name already used") and it is not used. Statuses are kept current from Meta's template
+webhook, a "Check template status" button, and a worker job (`worker/whatsapp-sync.ts`) that asks Meta every 30 minutes
+about connections that still have an unapproved template. The dashboard shows which are approved. A message whose template is
+not approved yet, or for an influencer with no healthy connection, goes straight to SMS (no WhatsApp attempt is made or
+recorded). A token Meta rejects, including a permission error, flags the connection once and alerts the influencer, and the
+dashboard overview lists it until they reconnect (Reconnect in the settings card, no need to disconnect first). Set
+`WHATSAPP_PLATFORM_FALLBACK=true` only for testing with the platform's own number.
+
+- **Webhooks.** Both ways of connecting call `subscribed_apps` (best effort) and then read the list back: "subscribed" is
+  recorded only when our own Meta app (`META_APP_ID`) is in it. A hand-pasted token usually belongs to the influencer's OWN Meta
+  app, which subscribes theirs and sends us nothing; then the card says live updates are not available and the 30-minute sync
+  keeps template statuses fresh. The result is saved and shown, and Check template status tries again.
+- **Pasted tokens are checked.** We ask Meta's `debug_token` about the token, as our app when `META_APP_ID` and the app secret
+  are configured and, when our app cannot inspect it (a token of the influencer's own app), by having the token inspect
+  itself. We refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within
+  7 days (the 24-hour token on the API Setup page); a token that expires later, or one neither way could check, connects with
+  a note. Use a System User token that never expires.
+- **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN. Meta keeps the PIN on the number, so
+  it is saved (AES-GCM encrypted, bound to the phone number, listed in the key-rotation tool, in `whatsapp_registration_pins`)
+  BEFORE the number is registered, and it is kept when the influencer disconnects or a connection fails to save; a reconnect
+  registers with the same PIN. If Meta refuses a PIN we just made up, the number may carry a PIN an older version registered it
+  with (the shared `WHATSAPP_REGISTRATION_PIN`), which is tried once; if that fails too, the number holds a PIN that is not
+  ours to know, perhaps the owner's own, so it is NOT changed behind their back: they are asked for it (optional field in the
+  connect form), told where to look in WhatsApp Manager, and offered "I don't have it, reset it for me". Only when they tick
+  that, and only for a PIN we generated ourselves, do we set a new one with Meta's set-PIN call and register again. A PIN the
+  influencer typed is never overwritten, ticked or not.
+  `WHATSAPP_REGISTRATION_PIN` is a development default only and is ignored in production. A manual connection registers the
+  number only if given a PIN.
+- **The Meta app secret** is one value with two names: `WHATSAPP_APP_SECRET` (webhook signatures) and `META_APP_SECRET`
+  (Embedded Signup, token checks). Set either; both uses read it.
+- **Graph API version.** `WHATSAPP_GRAPH_VERSION` (default in `lib/whatsapp-graph-version.ts`) is used for every Meta call and for
+  the Facebook SDK in the sign-up window. Meta retires versions on a schedule, so check
+  <https://developers.facebook.com/docs/graph-api/changelog/versions> from time to time.
+
+Embedded Signup could not be exercised without an approved Meta app. The newer Graph calls (the Meta template names, token
+check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
+against a real Meta account.
 
 ## Go-live readiness
 A booking page only takes bookings (and money) once the influencer has what the product needs. The same rules drive the

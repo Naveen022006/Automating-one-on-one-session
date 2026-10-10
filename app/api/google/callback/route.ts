@@ -1,31 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
-import { CALENDAR_SCOPE, exchangeCode } from "@/lib/google";
+import { CALENDAR_SCOPE, exchangeCode, revokeToken } from "@/lib/google";
 import { hasGmailSendScope } from "@/lib/gmail";
-import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, saveGoogleToken } from "@/lib/google-tokens";
+import { isAccountSwitch, outcomeTarget, type GoogleOutcome } from "@/lib/google-connect";
+import {
+  NONCE_COOKIE,
+  OAUTH_STATE_PURPOSE,
+  countLiveCalendarEvents,
+  getGoogleAccountOfRecord,
+  googleAccountSharedWithOthers,
+  saveGoogleToken,
+} from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";
 
-type Outcome = "connected" | "connected-no-gmail" | "denied" | "missing-permission" | "failed" | "expired";
-
-function back(req: NextRequest, returnTo: string, outcome: Outcome): NextResponse {
+function back(req: NextRequest, returnTo: string, outcome: GoogleOutcome): NextResponse {
   const url = req.nextUrl.clone();
-  const [path, query = ""] = returnTo.split("?");
-  const params = new URLSearchParams(query);
-  params.set("google", outcome);
-  url.pathname = path;
-  url.search = `?${params}`;
+  const { pathname, search } = outcomeTarget(returnTo, outcome);
+  url.pathname = pathname;
+  url.search = search;
   const res = NextResponse.redirect(url);
   res.cookies.delete({ name: NONCE_COOKIE, path: "/api/google" });
   return res;
+}
+
+/**
+ * Revokes a grant we are not keeping. Google's revoke ends the app's access for the whole Google account, so when another
+ * influencer profile is connected with the same account the revoke is skipped: it would disconnect that profile too.
+ */
+async function revokeUnlessShared(influencerId: string, refreshToken: string, email: string | null): Promise<void> {
+  if (!(await googleAccountSharedWithOthers(influencerId, email))) await revokeToken(refreshToken);
 }
 
 // Step 2 of the connect flow: Google redirects here with ?code=...&state=... The outcome is shown on the page the
 // influencer started from (settings or onboarding) through ?google=<outcome>.
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
-  const state = verifyToken<{ i: string; n: string; r?: string; g?: number }>(OAUTH_STATE_PURPOSE, params.get("state"));
+  const state = verifyToken<{ i: string; n: string; r?: string; g?: number; c?: number }>(OAUTH_STATE_PURPOSE, params.get("state"));
   const returnTo = safeNextPath(state?.r, "/dashboard/settings");
   const cookieNonce = req.cookies.get(NONCE_COOKIE)?.value;
   if (!state || !cookieNonce || !safeEqual(state.n, cookieNonce)) return back(req, returnTo, "expired");
@@ -41,8 +53,25 @@ export async function GET(req: NextRequest) {
   let gmailMissing = false;
   try {
     const { refreshToken, scope, email } = await exchangeCode(code);
+    // The account the calendar events are on: the connected one, or after a disconnect the one remembered then.
+    const { connected, email: recorded } = await getGoogleAccountOfRecord(state.i);
+    const differentAccount = isAccountSwitch(recorded, email);
     // Google lets users untick individual permissions on the consent screen; without this one we cannot create events.
-    if (!scope.split(" ").includes(CALENDAR_SCOPE)) return back(req, returnTo, "missing-permission");
+    // The token Google already issued would stay authorised for whatever they did tick, so revoke it, except for the
+    // account that is already connected: Google's revoke ends the app's access for the whole account, which would
+    // also kill the connection that works.
+    if (!scope.split(" ").includes(CALENDAR_SCOPE)) {
+      if (!connected || differentAccount) await revokeUnlessShared(state.i, refreshToken, email);
+      return back(req, returnTo, "missing-permission");
+    }
+    // A different Google account than the one the calendar events are on, without having chosen "Switch account"
+    // (reconnect, the Gmail button, or connecting again after a disconnect, where the account chooser let them pick
+    // another one): the upcoming bookings' events would be stranded on the old account, so keep the old connection
+    // and revoke the new grant.
+    if (state.c !== 1 && differentAccount && (await countLiveCalendarEvents(state.i)) > 0) {
+      await revokeUnlessShared(state.i, refreshToken, email);
+      return back(req, returnTo, "switch-unconfirmed");
+    }
     await saveGoogleToken(state.i, refreshToken, scope, email);
     // Gmail is optional: people can untick it, and customer emails then go out from the platform address instead.
     gmailMissing = state.g === 1 && !hasGmailSendScope(scope);

@@ -1,7 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
-import { CONNECTION_KEYS, evaluateReadiness, readinessInput } from "@/lib/readiness";
-import { viewTemplates } from "@/lib/whatsapp-connection";
+import { CONNECTION_KEYS, evaluateReadiness, readinessInput, type ReadinessInput } from "@/lib/readiness";
 
 export const PAGE_SIZE = 25;
 
@@ -88,7 +87,7 @@ export interface InfluencerRow {
   emailVerified: boolean;
   google: "connected" | "reconnect" | "none";
   payout: "none" | "pending" | "verified" | "rejected";
-  whatsapp: "none" | "ready" | "pending" | "error";
+  whatsapp: ReadinessInput["whatsapp"];
   services: number;
   bookings: number;
   grossMinor: number;
@@ -146,7 +145,8 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
 
   return paged(
     rows.map((r) => {
-      const readiness = evaluateReadiness(readinessInput(r, r.user?.emailVerifiedAt != null || !r.user));
+      const input = readinessInput(r, r.user?.emailVerifiedAt != null || !r.user);
+      const readiness = evaluateReadiness(input);
       const connectionBlockers = readiness.blockers.filter((b) => b.key === "email" || (CONNECTION_KEYS as readonly string[]).includes(b.key));
       const live = r.onboardedAt !== null && connectionBlockers.length === 0;
       return {
@@ -160,7 +160,7 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
       emailVerified: r.user?.emailVerifiedAt != null,
       google: !r.googleToken ? "none" : r.googleToken.status === "ACTIVE" ? "connected" : "reconnect",
       payout: !r.payoutAccount ? "none" : r.payoutAccount.status === "VERIFIED" ? "verified" : r.payoutAccount.status === "REJECTED" ? "rejected" : "pending",
-      whatsapp: !r.whatsappConnection ? "none" : r.whatsappConnection.status === "ERROR" ? "error" : viewTemplates(r.whatsappConnection.templates).every((t) => t.status === "APPROVED") ? "ready" : "pending",
+      whatsapp: input.whatsapp, // the same state the influencer's own checklist shows
       services: r._count.services,
       bookings: Number(byId.get(r.id)?.bookings ?? 0),
       grossMinor: Number(byId.get(r.id)?.gross ?? 0),
