@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { AdminShell } from "@/components/admin/AdminShell";
-import { paymentViewCounts } from "@/lib/admin/data";
 import { requireAdminPage } from "@/lib/admin/session";
-import { getHealthReport } from "@/lib/health";
+import { loadAdminShell } from "@/lib/views/admin-shell";
 
 export const metadata: Metadata = {
   title: { default: "Admin", template: "%s · Admin" },
@@ -16,13 +15,10 @@ export default async function AdminConsoleLayout({ children }: { children: React
   // page also calls requireAdminPage with its own path; without the header the layout does not guess.
   const path = (await headers()).get("x-pathname");
   const admin = await requireAdminPage(path ?? "/admin", { mfaGate: path !== null });
-  const [counts, health] = await Promise.all([paymentViewCounts(), getHealthReport().catch(() => null)]);
+  // The same function answers GET /api/admin/shell for the SPA, so this frame and the SPA's cannot disagree.
+  const shell = await loadAdminShell(admin);
   return (
-    <AdminShell
-      admin={{ name: admin.name, email: admin.email }}
-      attentionCount={counts.needsRefund + counts.mismatch}
-      healthCount={health?.unhealthy.length ?? 0}
-    >
+    <AdminShell admin={shell.admin} attentionCount={shell.attentionCount} healthCount={shell.healthCount}>
       {children}
     </AdminShell>
   );

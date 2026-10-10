@@ -43,6 +43,9 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "auth-forgot", pattern: /^\/api\/auth\/forgot-password$/, methods: ["POST"], limit: 5, windowMs: HOUR, by: "ip" },
   { name: "auth-reset", pattern: /^\/api\/auth\/reset-password$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "ip" },
   { name: "auth-verify", pattern: /^\/api\/auth\/(verify-email|resend-verification)$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "ip" },
+  // The SPA asks "who am I?" on landing, login, register, verify-email and every guarded page load, so it gets its own,
+  // much wider budget. Listed before auth-other, whose 60 per 15 minutes would be used up by ordinary browsing.
+  { name: "auth-session", pattern: /^\/api\/auth\/session$/, methods: ["GET"], limit: 120, windowMs: MIN, by: "session-or-ip" },
   { name: "auth-other", pattern: /^\/api\/auth\//, limit: 60, windowMs: 15 * MIN, by: "session-or-ip" },
 
   // --- Administrator console: sign-in is a brute-force target, everything else is low volume.
@@ -66,6 +69,12 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "booking-status", pattern: /^\/api\/bookings\/[^/]+(\/ics)?$/, methods: ["GET"], limit: 120, windowMs: 5 * MIN, by: "ip" },
   { name: "booking-actions", pattern: /^\/api\/bookings\/[^/]+\/(cancel|reschedule)$/, limit: 30, windowMs: 10 * MIN, by: "session-or-ip" },
   { name: "slots", pattern: /^\/api\/slots(\/days)?$/, limit: 120, windowMs: MIN, by: "ip" },
+  // Page loads of the SPA's customer screens (these GET endpoints are what the server-rendered pages used to do inline).
+  // Keyed by IP, with headroom for a popular booking page behind a shared NAT; RATE_LIMIT_MULTIPLIER is the lever.
+  { name: "public-profile", pattern: /^\/api\/public\/profiles\/[^/]+$/, methods: ["GET"], limit: 120, windowMs: MIN, by: "ip" },
+  { name: "pay-view", pattern: /^\/api\/pay\/[^/]+$/, methods: ["GET"], limit: 30, windowMs: 10 * MIN, by: "ip" },
+  // Listed before self-service so that opening the manage page does not use up the 20 per 10 minutes meant for actions.
+  { name: "self-service-view", pattern: /^\/api\/manage\/[^/]+$/, methods: ["GET"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
 
   // --- Worker liveness for uptime monitors (also the watchdog that alerts when the worker stops). Cheap, public.
