@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { prisma } from "../lib/db";
 import { GMAIL_SEND_SCOPE } from "../lib/google";
-import { KNOWN_TEMPLATES, templateState } from "../lib/message-templates";
+import { BLOCKED_TEMPLATE_STATUSES, KNOWN_TEMPLATES, TEMPLATE_STATUS_LABELS, templateState } from "../lib/message-templates";
 import {
   buildPublicInfluencerWhere,
   evaluateReadiness,
@@ -126,6 +126,20 @@ test("the stored template statuses map to the right WhatsApp state", () => {
   assert.equal(templateState(["APPROVED", "PENDING"]), "pending");
   assert.equal(templateState(["PENDING", "NOT_SUBMITTED"]), "not-submitted");
   assert.equal(templateState(["NOT_SUBMITTED", "REJECTED"]), "rejected");
+});
+
+test("every template status the state logic knows has its own label on the settings card (none is shown as 'Not submitted')", () => {
+  const known = ["APPROVED", "FLAGGED", "PENDING", "IN_APPEAL", "NOT_SUBMITTED", ...BLOCKED_TEMPLATE_STATUSES];
+  for (const status of known) assert.ok(TEMPLATE_STATUS_LABELS[status], `${status} has a label`);
+  for (const status of known) {
+    if (status !== "NOT_SUBMITTED") assert.notEqual(TEMPLATE_STATUS_LABELS[status].label, "Not submitted", `${status} must not read as never submitted`);
+  }
+  for (const status of ["DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED"]) assert.equal(TEMPLATE_STATUS_LABELS[status].tone, "danger", status);
+  assert.deepEqual(
+    new Set(["DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED"].map((s) => TEMPLATE_STATUS_LABELS[s].label)).size,
+    3,
+    "each has its own accurate label",
+  );
 });
 
 test("the basics are always required, with or without connections", () => {

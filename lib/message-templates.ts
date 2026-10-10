@@ -111,7 +111,7 @@ export function isSendableStatus(status: string | undefined): boolean {
  * Statuses that mean "this template will not be sent unless someone acts", as opposed to waiting for a review. CONFLICT is
  * ours: a template with that name already exists on the account with different text, so we did not adopt it.
  */
-const BLOCKED_STATUSES = new Set(["REJECTED", "PAUSED", "DISABLED", "DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED", "CONFLICT"]);
+export const BLOCKED_TEMPLATE_STATUSES = new Set(["REJECTED", "PAUSED", "DISABLED", "DELETED", "PENDING_DELETION", "LIMIT_EXCEEDED", "CONFLICT"]);
 
 export type TemplateState = "ready" | "pending" | "rejected" | "not-submitted";
 
@@ -122,10 +122,26 @@ export type TemplateState = "ready" | "pending" | "rejected" | "not-submitted";
  * for a template with no status stored. Pure, and shared with the settings card in the browser.
  */
 export function templateState(statuses: string[]): TemplateState {
-  if (statuses.some((s) => BLOCKED_STATUSES.has(s))) return "rejected";
+  if (statuses.some((s) => BLOCKED_TEMPLATE_STATUSES.has(s))) return "rejected";
   if (statuses.includes("NOT_SUBMITTED")) return "not-submitted";
   return statuses.every((s) => isSendableStatus(s)) ? "ready" : "pending";
 }
+
+/** The label (and colour) the settings card shows for each template status, so none is shown as something it is not. */
+export const TEMPLATE_STATUS_LABELS: Record<string, { label: string; tone?: "success" | "warning" | "danger" }> = {
+  APPROVED: { label: "Approved", tone: "success" },
+  FLAGGED: { label: "Low quality, still sent", tone: "warning" },
+  PENDING: { label: "In review", tone: "warning" },
+  IN_APPEAL: { label: "In review", tone: "warning" },
+  REJECTED: { label: "Rejected", tone: "danger" },
+  PAUSED: { label: "Paused", tone: "danger" },
+  DISABLED: { label: "Disabled", tone: "danger" },
+  DELETED: { label: "Deleted", tone: "danger" },
+  PENDING_DELETION: { label: "Being deleted", tone: "danger" },
+  LIMIT_EXCEEDED: { label: "Over its limit", tone: "danger" },
+  CONFLICT: { label: "Name already used", tone: "danger" },
+  NOT_SUBMITTED: { label: "Not submitted" },
+};
 
 /**
  * What to tell the influencer about each state that is not ready. One text, used by the go-live checklist and by the

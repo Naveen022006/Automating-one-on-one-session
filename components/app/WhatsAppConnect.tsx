@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Field, Input, describedBy } from "@/components/ui/primitives";
-import { TEMPLATE_STATE_NOTICE, templateState } from "@/lib/message-templates";
+import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateState } from "@/lib/message-templates";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
 
@@ -28,11 +28,11 @@ const TEMPLATE_LABEL: Record<string, string> = {
 };
 
 function TemplateBadge({ status }: { status: string }) {
-  if (status === "APPROVED") return <Badge tone="success">Approved</Badge>;
-  if (status === "PENDING" || status === "IN_APPEAL") return <Badge tone="warning">In review</Badge>;
-  if (status === "REJECTED") return <Badge tone="danger">Rejected</Badge>;
-  if (status === "PAUSED" || status === "DISABLED") return <Badge tone="danger">{status === "PAUSED" ? "Paused" : "Disabled"}</Badge>;
-  return <Badge>Not submitted</Badge>;
+  const known = TEMPLATE_STATUS_LABELS[status];
+  if (known) return <Badge tone={known.tone}>{known.label}</Badge>;
+  // A status this card does not know: say what Meta said rather than guess.
+  const text = status.toLowerCase().replace(/_/g, " ");
+  return <Badge>{text.charAt(0).toUpperCase() + text.slice(1)}</Badge>;
 }
 
 interface FacebookSdk {
@@ -53,7 +53,8 @@ function loadFacebookSdk(appId: string, version: string): Promise<FacebookSdk> {
   // One load at a time, so the component mounting twice (or remounting) never adds a second script.
   sdkLoading ??= new Promise<FacebookSdk>((resolve, reject) => {
     window.fbAsyncInit = () => {
-      window.FB!.init({ appId, autoLogAppEvents: true, xfbml: true, version });
+      // No app-event logging: this page only needs the sign-up window, not to report visits to Facebook.
+      window.FB!.init({ appId, autoLogAppEvents: false, xfbml: true, version });
       resolve(window.FB!);
     };
     const el = document.createElement("script");
@@ -101,10 +102,14 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   const appId = embedded?.appId;
   const version = embedded?.graphVersion ?? DEFAULT_GRAPH_VERSION;
 
-  // Load the Facebook SDK as soon as the page shows, not on click: FB.login opens a pop-up, and a browser only allows
-  // that straight from the click, so there must be nothing to wait for once the button is pressed.
+  // The connect buttons are on screen: when nothing is connected, or after Reconnect was pressed on a broken connection.
+  // Facebook's script is not loaded for anyone who is connected and just looking at their settings.
+  const connectVisible = !connection || (connection.status === "ERROR" && reconnect);
+
+  // Load the Facebook SDK as soon as the connect buttons show, not on click: FB.login opens a pop-up, and a browser only
+  // allows that straight from the click, so there must be nothing to wait for once the button is pressed.
   useEffect(() => {
-    if (!appId) return;
+    if (!appId || !connectVisible) return;
     let live = true;
     loadFacebookSdk(appId, version).then(
       (FB) => {
@@ -116,7 +121,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     return () => {
       live = false;
     };
-  }, [appId, version]);
+  }, [appId, version, connectVisible]);
 
   // Embedded Signup reports what happened in the sign-up window as window messages, separately from the login code:
   // FINISH carries the new account's ids; CANCEL and ERROR say why there will be no account.
