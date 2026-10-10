@@ -137,9 +137,10 @@ async function findPin(influencerId: string, phoneNumberId: string): Promise<Pin
   const old = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { phoneNumberId: true, registrationPinEnc: true } });
   if (!old || old.phoneNumberId !== phoneNumberId || !old.registrationPinEnc) return { kind: "none" };
   try {
+    // The old column also held PINs the influencer typed, and nothing says which was which, so none of them is ours to reset.
     const pin = decryptSecret(old.registrationPinEnc, legacyPinAad(influencerId));
-    await savePin(phoneNumberId, pin, true, false);
-    return { kind: "found", pin, generated: true };
+    await savePin(phoneNumberId, pin, false, false);
+    return { kind: "found", pin, generated: false };
   } catch {
     return { kind: "none" };
   }

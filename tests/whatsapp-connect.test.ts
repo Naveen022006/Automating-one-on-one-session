@@ -940,8 +940,15 @@ test("a PIN kept only on the connection by the earlier version is moved to the n
   assert.equal(await pinRow(phone), null);
   await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), NO_ENV);
   assert.deepEqual(meta.calls, ["register:314159"], "registered with the old PIN, no reset");
-  assert.deepEqual(await storedPin(phone), { pin: "314159", generated: true });
+  // The old column also held PINs the influencer typed, so a moved PIN is never one we may reset.
+  assert.deepEqual(await storedPin(phone), { pin: "314159", generated: false });
   await disconnect(b);
+  meta.onNumber.set(phone, "999999"); // the owner changed it since
+  await assert.rejects(
+    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, resetPin: true }, fakeDeps(meta.deps), NO_ENV),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === false,
+  );
+  assert.ok(!meta.calls.some((c) => c.startsWith("setpin")), "not reset, even though they asked");
 });
 
 test("a manual connection registers the number only when given a PIN", { skip }, async () => {
