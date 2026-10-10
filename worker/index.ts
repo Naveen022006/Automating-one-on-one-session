@@ -10,6 +10,9 @@ import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from ".
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
+// deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
+import { initEnvOrExit } from "../lib/env";
+initEnvOrExit("worker");
 
 const INTERVAL_MS = 30_000;
 /** Housekeeping (expired rate-limit buckets, sessions and single-use tokens) runs every SWEEP_EVERY ticks (~10 min). */
