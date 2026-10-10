@@ -7,6 +7,7 @@ import { sweepExpiredBuckets } from "../lib/rate-limit/sweep";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
 import { reportMessageFailure } from "../lib/messaging";
 import { MEETING_QUEUE, MESSAGE_QUEUE, REMINDER_QUEUE, redisConnection } from "../lib/queue";
+import { startGoogleHealth } from "./google-health";
 import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeeting";
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
@@ -44,6 +45,7 @@ async function tick() {
 console.log("[worker] hold expiry running every", INTERVAL_MS / 1000, "s");
 void tick();
 const timer = setInterval(tick, INTERVAL_MS);
+startGoogleHealth(); // daily check that every ACTIVE Google connection still works (worker/google-health.ts)
 
 let meetings: Worker<CreateMeetingData> | undefined;
 let messages: Worker<SendMessageData> | undefined;
