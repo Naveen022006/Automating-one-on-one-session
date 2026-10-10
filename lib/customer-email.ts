@@ -32,6 +32,21 @@ export interface CustomerEmailDeps {
 
 export type CustomerEmailResult = EmailSendResult & { via: "gmail" | "platform"; fallbackReason?: string };
 
+const FALLBACK_LOG_EVERY_MS = 60 * 60_000;
+const lastFallbackLog = new Map<string, number>();
+
+/**
+ * True at most once per influencer per hour (per process). A failing Gmail send falls back to the platform address, so
+ * nothing breaks for the customer, but every email would otherwise repeat the same line. The influencer sees the
+ * problem in the Google panel (lib/google-tokens.ts gmailSendingFailing); this is the operator's side of it.
+ */
+export function shouldLogGmailFallback(influencerId: string, now = Date.now()): boolean {
+  const last = lastFallbackLog.get(influencerId);
+  if (last !== undefined && now - last < FALLBACK_LOG_EVERY_MS) return false;
+  lastFallbackLog.set(influencerId, now);
+  return true;
+}
+
 async function loadContext(influencerId: string): Promise<InfluencerMailContext | null> {
   const row = await prisma.influencer.findUnique({
     where: { id: influencerId },
@@ -82,10 +97,14 @@ export async function sendCustomerEmail(
       });
       return { providerMessageId: id ? `gmail:${id}` : null, via: "gmail" };
     } catch (e) {
-      fallbackReason = e instanceof Error ? e.message.slice(0, 200) : "Gmail failed";
+      fallbackReason = e instanceof Error ? e.message.slice(0, 300) : "Gmail failed";
       // A rejected grant affects Calendar too, so flag it once and tell the influencer; the email still goes out.
       if (e instanceof GoogleReconnectError) await deps.onReconnectNeeded(influencerId, fallbackReason).catch(() => {});
-      console.warn(`[email:customer] Gmail send failed for influencer ${influencerId}, using the platform provider: ${fallbackReason}`);
+      if (shouldLogGmailFallback(influencerId)) {
+        console.warn(
+          `[email:customer] Gmail sending is not working for influencer ${influencerId}; customer emails go out from the platform address instead (logged once an hour per influencer): ${fallbackReason}`,
+        );
+      }
     }
   }
   const result = await deps.platformSend({ ...email, ...(replyTo ? { replyTo } : {}) });

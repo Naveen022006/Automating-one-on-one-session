@@ -51,15 +51,25 @@ add per-email/per-booking limits. All limits live in `lib/rate-limit/policies.ts
 ### Google Meet setup
 Meet links are created on the **influencer's own** Google Calendar (a service account cannot create Meet links for
 personal Gmail).
-1. In Google Cloud Console: create a project, enable the **Google Calendar API**, configure the OAuth consent screen,
-   and create an **OAuth client ID** (type *Web application*). Add `GOOGLE_REDIRECT_URI`
-   (e.g. `http://localhost:3000/api/google/callback`) as an authorised redirect URI. While the consent screen is in
-   *Testing*, add the influencer's Gmail as a test user; refresh tokens of Testing apps expire after 7 days, so publish
-   the app (and complete verification for `calendar.events`) before going live.
+1. In Google Cloud Console: create a project, enable the **Google Calendar API** and (unless you set
+   `GOOGLE_REQUEST_GMAIL_SEND=false`) the **Gmail API** (APIs & Services > Library; they are two separate switches),
+   configure the OAuth consent screen, and create an **OAuth client ID** (type *Web application*). Add
+   `GOOGLE_REDIRECT_URI` (e.g. `http://localhost:3000/api/google/callback`) as an authorised redirect URI. While the
+   consent screen is in *Testing*, add the influencer's Gmail as a test user; refresh tokens of Testing apps expire after
+   7 days, so publish the app (and complete verification for `calendar.events`) before going live.
 2. Fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`.
 3. The influencer clicks **Connect Google Calendar** in onboarding or Settings. The dashboard then shows
    "Connected as <email>", or "Reconnect needed" with Google's reason if the grant is revoked; paid bookings wait as
-   `PAID` and are re-queued automatically after reconnecting.
+   `PAID` and are re-queued automatically after reconnecting. By default the booking page is offline while Google is not
+   connected (see "Go-live readiness").
+4. The worker refreshes every connected influencer's Google token once a day (and two minutes after it starts) and
+   flags a grant Google has revoked or expired as "Reconnect needed" with one alert, so a page does not keep taking
+   money until a paid booking happens to notice (`worker/google-health.ts`). Network errors and Google outages are only
+   logged; they never disconnect anyone.
+5. **Switch account** and **Disconnect** warn when upcoming bookings already have calendar events: those events and the
+   customers' invites stay on the old Google account, so later reschedules and cancels cannot update them. Switching
+   with such bookings needs an explicit confirmation, which `/api/google/connect` enforces itself (`confirm=1`); a
+   reconnect that lands on a different Google account than the stored one is refused and its grant revoked.
 
 ## Design system
 Tokens: `app/styles/tokens.css`. Components: `components/ui/`. Every component and state is shown at `/design`
@@ -172,6 +182,12 @@ fails or is rate limited, the platform's email provider sends instead with the i
 never lost. A dead Google grant flags the influencer to reconnect. Account emails (verification, password reset, payout
 notices, alerts) always come from the platform. `gmail.send` is a restricted Google scope: it works for test users while
 the consent screen is in Testing, and needs Google verification before general use.
+
+The **Gmail API must also be enabled** on the Google Cloud project (APIs & Services > Library > Gmail API), separately from
+the Calendar API. Without it every send fails with 403 `accessNotConfigured` and every customer email falls back to the
+platform address. That is visible in two places: the Google panel in Settings shows "Gmail not working" (derived from how
+the latest customer email was sent, no extra data kept), and the web/worker log gets one `Gmail sending is not working
+for influencer ...` warning per influencer per hour with Google's reason.
 
 ## Influencer WhatsApp numbers
 Customers are messaged from the **influencer's own WhatsApp Business number**. In **Settings > WhatsApp** the influencer

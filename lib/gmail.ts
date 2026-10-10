@@ -105,6 +105,13 @@ export async function sendGmail(accessToken: string, msg: GmailMessage, fetchImp
   if (res.status === 401) throw new GoogleReconnectError(detail);
   if (res.status === 429 || res.status >= 500) throw new GoogleTransientError(detail);
   if (res.status === 403 && /rate|quota|limit|backend/i.test(reason)) throw new GoogleTransientError(detail);
+  // The Gmail API is a separate switch from the Calendar API: without it every send fails like this, and the email
+  // silently goes out from the platform address. Say what to do (Google's own text cuts off the link we want to read).
+  if (res.status === 403 && reason === "accessNotConfigured") {
+    throw new GoogleRequestError(
+      `Gmail 403 accessNotConfigured: the Gmail API is not enabled on the Google Cloud project. Enable "Gmail API" under APIs & Services > Library, then retry. (${message.slice(0, 120)})`,
+    );
+  }
   // 403 insufficientPermissions (scope not granted), 400 invalid message, etc.
   throw new GoogleRequestError(detail);
 }

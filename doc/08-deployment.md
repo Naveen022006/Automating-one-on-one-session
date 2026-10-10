@@ -151,7 +151,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### Google (Calendar, Meet, Gmail)
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning). The Cloud project needs the **Google Calendar API** and the **Gmail API** enabled (section 11) |
 | `GOOGLE_REDIRECT_URI` | for Meet | none | Must exactly match an authorised redirect URI: `<APP_URL>/api/google/callback` |
 | `GOOGLE_REQUEST_GMAIL_SEND` | no | `true` | Set `false` until the restricted `gmail.send` scope is approved (section 11) |
 
@@ -424,6 +424,17 @@ Google Cloud Console; per-influencer WhatsApp tokens are replaced by the influen
 Meet links are created on each influencer's own Google Calendar through OAuth, with the scopes in `lib/google.ts`:
 `calendar.events` (sensitive), `gmail.send` (**restricted**, unless `GOOGLE_REQUEST_GMAIL_SEND=false`) and `openid email`.
 
+- **Enable the APIs, not just the scopes.** In the Cloud project open APIs & Services > Library and enable the
+  **Google Calendar API** and, unless `GOOGLE_REQUEST_GMAIL_SEND=false`, the **Gmail API**. They are separate switches. With
+  the Gmail API off, every send answers 403 `accessNotConfigured`, every customer email silently goes out from the platform
+  address instead (influencer as Reply-To), and only two signs remain: the Google panel in Settings shows "Gmail not
+  working", and the web/worker log has one `Gmail sending is not working for influencer ...` line per influencer per hour
+  with Google's reason. Check it after the first real customer email of a new deployment.
+- The worker checks every connected Google account once a day and two minutes after it starts (`worker/google-health.ts`,
+  log lines `[worker] google health:`). A grant Google reports as revoked or expired is flagged "Reconnect needed" (the
+  booking page goes offline, one alert email to the influencer); network errors, Google outages and a wrong
+  `GOOGLE_CLIENT_SECRET` are logged as `could not check N of N connection(s)` and never disconnect anyone. This is what
+  catches the 7-day expiry below before a paying customer does.
 - While the consent screen is in **Testing**, only listed test users can connect and **refresh tokens expire after 7 days**,
   so every influencer would have to reconnect weekly. Publish the app to **In production** before launch.
 - `calendar.events` needs Google's OAuth verification (a privacy policy URL, a verified domain, a demo video of the scope
@@ -455,7 +466,8 @@ Send logs somewhere searchable and alert on **absence and failure**. Suggested a
 | Start-up validation | Container exits with `[env] ... will not start` | Any (a failed rollout) |
 | Encryption key identity | Start-up log line `encryption key fingerprint <8 hex>` of every web and worker instance | Instances disagree, the fingerprint differs from the one recorded for the key in the secret manager, or a `previous key fingerprint` is still logged after a rotation should have finished |
 | TLS / domain | Certificate and domain expiry monitor | 14 days before |
-| Google reconnects | Dashboard "Reconnect needed", or alert emails to influencers | Many at once (suggests a client-secret or consent-screen problem) |
+| Google reconnects | Dashboard "Reconnect needed", alert emails to influencers, worker log `[worker] google health:` | Many at once (suggests a client-secret or consent-screen problem); `could not check N of N` (our credentials or Google, not the influencers) |
+| Gmail sending | Log line `Gmail sending is not working for influencer` (hourly per influencer), Google panel "Gmail not working" | Any, for more than one influencer (the Gmail API is probably not enabled on the project) |
 
 `GET /api/ready` logs are throttled (one line per minute per failing check), so a probe every few seconds will not flood
 the log.
