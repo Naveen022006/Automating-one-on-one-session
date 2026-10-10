@@ -102,18 +102,23 @@ function makeDb(sessions: FakeSession[], bookings: FakeBooking[]) {
     $queryRaw: async (_strings: TemplateStringsArray, sessionId: string) => {
       log.locked.push(sessionId);
       const s = sessionById.get(sessionId);
-      return s ? [{ event_id: s.eventId, event_generation: s.eventGeneration }] : [];
+      return s ? [{ event_id: s.eventId }] : [];
     },
     booking: {
-      count: async ({ where }: { where: { sessionId: string; id: { not: string }; status: { in: string[] } } }) =>
-        bookings.filter((b) => b.sessionId === where.sessionId && b.id !== where.id.not && where.status.in.includes(b.status)).length,
+      findMany: async ({ where }: { where: { sessionId: string; id: { not: string }; status: { in: string[] } } }) =>
+        bookings
+          .filter((b) => b.sessionId === where.sessionId && b.id !== where.id.not && where.status.in.includes(b.status))
+          .map((b) => ({ customerEmail: b.customerEmail })),
     },
     session: {
-      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        const s = sessionById.get(where.id)!;
-        const { eventGeneration, ...rest } = data as { eventGeneration?: number };
-        Object.assign(s, rest, eventGeneration === undefined ? {} : { eventGeneration });
-        return s;
+      // The retire: only if the session still has the event that was read, and the generation moves on atomically.
+      updateMany: async ({ where, data }: { where: { id: string; eventId: string }; data: { eventId: null; meetLink: null; eventGeneration: { increment: number } } }) => {
+        const s = sessionById.get(where.id);
+        if (!s || s.eventId !== where.eventId) return { count: 0 };
+        s.eventId = data.eventId;
+        s.meetLink = data.meetLink;
+        s.eventGeneration += data.eventGeneration.increment;
+        return { count: 1 };
       },
     },
   };
@@ -139,7 +144,7 @@ function makeDb(sessions: FakeSession[], bookings: FakeBooking[]) {
 
 const EVENT_ID = "evt-shared";
 
-function groupFixture(opts: { otherLive?: "SCHEDULED" | "PAID" | "HELD" | "CANCELLED" | null; googleRemaining: number }) {
+function groupFixture(opts: { otherLive?: "SCHEDULED" | "PAID" | "HELD" | "CANCELLED" | null; googleRemaining: number; otherEmail?: string }) {
   const influencer = { id: "inf1", name: "Dev" };
   const service = { id: "svc1", type: "GROUP" as const, durationMin: 30, influencer };
   const b1: FakeBooking = {
@@ -152,7 +157,7 @@ function groupFixture(opts: { otherLive?: "SCHEDULED" | "PAID" | "HELD" | "CANCE
   };
   const bookings = [b1];
   if (opts.otherLive) {
-    bookings.push({ id: "b2", sessionId: "sess1", status: opts.otherLive, customerName: "B", customerEmail: "b@example.com", eventId: opts.otherLive === "PAID" ? null : EVENT_ID });
+    bookings.push({ id: "b2", sessionId: "sess1", status: opts.otherLive, customerName: "B", customerEmail: opts.otherEmail ?? "b@example.com", eventId: opts.otherLive === "PAID" ? null : EVENT_ID });
   }
   const session: FakeSession = {
     id: "sess1",
@@ -253,6 +258,40 @@ test("unpaid, held or cancelled bookings do not keep the event alive", async () 
     const { mod } = await loadManageWithMocks(session, bookings);
     await mod.cancelBooking("b1", { actor: "influencer" }, { google });
     assert.deepEqual(deleted, [EVENT_ID], `a ${other} booking is not a reason to keep the event`);
+    mock.reset();
+  }
+});
+
+// --- S4: Google's attendee list is by email ---
+
+test("S4: another live booking on the same session under the same email (any case) keeps the attendee on the event", async () => {
+  const { session, bookings, google, removed, deleted } = groupFixture({ otherLive: "SCHEDULED", googleRemaining: 1, otherEmail: "A@Example.com" });
+  const { mod } = await loadManageWithMocks(session, bookings);
+
+  await mod.cancelBooking("b1", { actor: "influencer" }, { google });
+
+  assert.deepEqual(removed, [], "removing a@example.com would take the other booking's invite away too");
+  assert.deepEqual(deleted, [], "and the event stays");
+  assert.equal(session.eventId, EVENT_ID);
+  mock.reset();
+});
+
+test("S4: a different email is removed as before", async () => {
+  const { session, bookings, google, removed } = groupFixture({ otherLive: "SCHEDULED", googleRemaining: 1, otherEmail: "other@example.com" });
+  const { mod } = await loadManageWithMocks(session, bookings);
+
+  await mod.cancelBooking("b1", { actor: "influencer" }, { google });
+
+  assert.deepEqual(removed, [{ eventId: EVENT_ID, email: "a@example.com" }]);
+  mock.reset();
+});
+
+test("S4: the same email on a booking that is not live (cancelled or unpaid) does not block the removal or the delete", async () => {
+  for (const other of ["CANCELLED", "HELD"] as const) {
+    const { session, bookings, google, deleted } = groupFixture({ otherLive: other, googleRemaining: 1, otherEmail: "a@example.com" });
+    const { mod } = await loadManageWithMocks(session, bookings);
+    await mod.cancelBooking("b1", { actor: "influencer" }, { google });
+    assert.deepEqual(deleted, [EVENT_ID], `a ${other} booking with the same email is not live`);
     mock.reset();
   }
 });

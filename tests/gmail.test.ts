@@ -189,3 +189,19 @@ test("the Google panel says Gmail is not working when the latest customer email 
   assert.equal(gmailSendingFailing({ providerMessageId: "re_123abc" }), true, "sent by the platform provider = Gmail failed");
   assert.equal(gmailSendingFailing({ providerMessageId: null }), true);
 });
+
+test("S3: a dead-grant verdict from a Gmail send carries the version of the grant that was used", async () => {
+  const connectedAt = new Date("2030-01-01T00:00:00Z");
+  const seen: (Date | undefined)[] = [];
+  const ctx: InfluencerMailContext = { ...withGmail, gmail: { ...withGmail.gmail!, connectedAt } };
+  const { d, calls } = deps(ctx, {
+    refreshAccessToken: async () => { throw new GoogleReconnectError("Refresh token rejected"); },
+    onReconnectNeeded: async (_id, _reason, at) => void seen.push(at),
+  });
+
+  const r = await sendCustomerEmail("inf", email, d);
+
+  assert.equal(r.via, "platform", "the email still goes out");
+  assert.deepEqual(seen, [connectedAt], "so a reconnect meanwhile is not marked dead by this stale error");
+  assert.equal(calls.platform.length, 1);
+});

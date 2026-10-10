@@ -34,8 +34,12 @@ export async function saveGoogleToken(
   await prisma.influencer.updateMany({ where: { id: influencerId, disconnectedGoogleEmail: { not: null } }, data: { disconnectedGoogleEmail: null } });
 }
 
+/**
+ * `connectedAt` is the version of the grant that was read: a caller that later finds the grant dead passes it to
+ * markReconnectNeeded, so an error from a slow call made with the OLD grant cannot flag one that was renewed meanwhile.
+ */
 export type TokenLookup =
-  | { state: "ok"; refreshToken: string }
+  | { state: "ok"; refreshToken: string; connectedAt: Date }
   | { state: "not-connected" }
   | { state: "reconnect-needed"; reason: string | null };
 
@@ -43,7 +47,7 @@ export async function getRefreshToken(influencerId: string): Promise<TokenLookup
   const row = await prisma.googleToken.findUnique({ where: { influencerId } });
   if (!row) return { state: "not-connected" };
   if (row.status === "RECONNECT_NEEDED") return { state: "reconnect-needed", reason: row.reconnectReason };
-  return { state: "ok", refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)) };
+  return { state: "ok", refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)), connectedAt: row.connectedAt };
 }
 
 /**
@@ -99,6 +103,17 @@ export async function getGoogleAccountOfRecord(influencerId: string): Promise<{ 
   if (row) return { connected: true, email: row.googleEmail };
   const influencer = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { disconnectedGoogleEmail: true } });
   return { connected: false, email: influencer?.disconnectedGoogleEmail ?? null };
+}
+
+/**
+ * Whether ANOTHER influencer profile is connected with the same Google account. Google's revoke ends the app's access
+ * for the whole account, not for one token, so revoking a refused or disconnected token of this profile would also kill
+ * the other profile's working connection: callers skip the revoke when this is true. Unknown accounts never match.
+ */
+export async function googleAccountSharedWithOthers(influencerId: string, email: string | null | undefined): Promise<boolean> {
+  if (!email) return false;
+  const others = await prisma.googleToken.count({ where: { influencerId: { not: influencerId }, googleEmail: { equals: email, mode: "insensitive" } } });
+  return others > 0;
 }
 
 /** Only customer emails sent in this long window say anything about whether Gmail sending works right now. */

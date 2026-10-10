@@ -121,14 +121,17 @@ export async function resendBookingLink(bookingId: string, overrides: Partial<Ma
 /**
  * Resolves an access token for the booking's influencer. Throws ManageBlockedError if Google is not connected or is
  * already flagged for reconnect. A grant Google rejects right now surfaces as GoogleReconnectError (not wrapped), so
- * recordCalendarProblem can flag the connection.
+ * recordCalendarProblem can flag the connection. `grant.connectedAt` is set to the version of the grant that was read,
+ * before it is used, so that flag only lands if that is still the connected grant (a reconnect during a slow Calendar
+ * call must not be marked dead by an error of the old one).
  */
-async function accessTokenFor(deps: ManageDeps, booking: BookingWithContext): Promise<string> {
+async function accessTokenFor(deps: ManageDeps, booking: BookingWithContext, grant: { connectedAt?: Date }): Promise<string> {
   const influencerId = booking.session.service.influencer.id;
   const token = await getRefreshToken(influencerId);
   if (token.state !== "ok") {
     throw new ManageBlockedError("The influencer's Google Calendar is not connected; the change was saved but the calendar was not updated");
   }
+  grant.connectedAt = token.connectedAt;
   return deps.google.refreshAccessToken(token.refreshToken);
 }
 
@@ -201,14 +204,16 @@ export async function cancelBooking(
 
   // 2) Calendar (best-effort): remove the attendee / delete the event.
   let calendarError: unknown = null;
+  const grant: { connectedAt?: Date } = {};
   if (booking.eventId || session.eventId) {
     try {
-      const accessToken = await accessTokenFor(deps, booking);
+      const accessToken = await accessTokenFor(deps, booking, grant);
       if (isGroup) {
-        const shared = await releaseSharedEvent(session.id, booking.id);
+        const shared = await releaseSharedEvent(session.id, booking.id, booking.customerEmail);
         const eventId = shared.eventId ?? booking.eventId ?? sessionEventId(session.id);
         if (shared.last) await deps.google.deleteEvent(accessToken, eventId);
-        else await deps.google.removeAttendee(accessToken, eventId, booking.customerEmail);
+        // The attendee list is by email: another live booking on this session under the same address needs it to stay.
+        else if (!shared.emailInUse) await deps.google.removeAttendee(accessToken, eventId, booking.customerEmail);
       } else if (booking.eventId) {
         await deps.google.deleteEvent(accessToken, booking.eventId);
       }
@@ -265,7 +270,7 @@ export async function cancelBooking(
   await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));
 
   // 6) Only now report the calendar problem (record it on the booking, flag a dead grant, alert the influencer).
-  const problem = calendarError ? await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "cancel") : null;
+  const problem = calendarError ? await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "cancel", grant.connectedAt) : null;
 
   return {
     refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued },
@@ -281,22 +286,32 @@ export async function cancelBooking(
  * say-so would leave them holding a Meet link to a deleted event. When nobody else is PAID or SCHEDULED the event is
  * retired in the same transaction (the session forgets it and its generation moves on, so the next payer starts a fresh
  * event, see lib/meeting.ts ensureGroupEvent) and the caller deletes it at Google. Otherwise the caller only removes
- * this attendee. `eventId` is the event as the session recorded it, null if it had none.
+ * this attendee, unless `emailInUse`: Google's attendee list is by email, and another live booking of the session books
+ * under the same address (compared case-insensitively), whose invite must stay. `eventId` is the event as the session
+ * recorded it, null if it had none.
  */
-async function releaseSharedEvent(sessionId: string, bookingId: string): Promise<{ eventId: string | null; last: boolean }> {
+async function releaseSharedEvent(
+  sessionId: string,
+  bookingId: string,
+  customerEmail: string,
+): Promise<{ eventId: string | null; last: boolean; emailInUse: boolean }> {
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<{ event_id: string | null; event_generation: number }[]>`
-      SELECT event_id, event_generation FROM sessions WHERE id = ${sessionId} FOR UPDATE`;
+    const rows = await tx.$queryRaw<{ event_id: string | null }[]>`SELECT event_id FROM sessions WHERE id = ${sessionId} FOR UPDATE`;
     const eventId = rows[0]?.event_id ?? null;
-    const others = await tx.booking.count({ where: { sessionId, id: { not: bookingId }, status: { in: ["PAID", "SCHEDULED"] } } });
-    if (others > 0) return { eventId, last: false };
-    if (eventId) {
-      await tx.session.update({
-        where: { id: sessionId },
-        data: { eventId: null, meetLink: null, eventGeneration: (rows[0]?.event_generation ?? 0) + 1 },
-      });
-    }
-    return { eventId, last: true };
+    const others = await tx.booking.findMany({
+      where: { sessionId, id: { not: bookingId }, status: { in: ["PAID", "SCHEDULED"] } },
+      select: { customerEmail: true },
+    });
+    const emailInUse = others.some((o) => o.customerEmail.toLowerCase() === customerEmail.toLowerCase());
+    if (others.length > 0) return { eventId, last: false, emailInUse };
+    if (!eventId) return { eventId, last: true, emailInUse };
+    // The generation moves on atomically and only if the event is still the one just read (it always is under the lock;
+    // the guard is what makes this write correct on its own, with nothing but a number to get wrong).
+    const retired = await tx.session.updateMany({
+      where: { id: sessionId, eventId },
+      data: { eventId: null, meetLink: null, eventGeneration: { increment: 1 } },
+    });
+    return { eventId, last: retired.count > 0, emailInUse };
   });
 }
 
@@ -386,9 +401,10 @@ export async function rescheduleBooking(
   const eventId =
     service.type === "GROUP" ? session.eventId ?? sessionEventId(session.id) : booking.eventId ?? calendarEventId(booking.id);
   let calendarError: unknown = null;
+  const grant: { connectedAt?: Date } = {};
   if (booking.eventId || session.eventId) {
     try {
-      const accessToken = await accessTokenFor(deps, booking);
+      const accessToken = await accessTokenFor(deps, booking, grant);
       await deps.google.updateEvent(accessToken, eventId, { start: newStart, end: newEnd });
     } catch (e) {
       calendarError = e;
@@ -411,7 +427,7 @@ export async function rescheduleBooking(
   }
 
   if (calendarError) {
-    const problem = await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "reschedule");
+    const problem = await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "reschedule", grant.connectedAt);
     if (problem.kind === "blocked") throw new ManageBlockedError(problem.detail);
     if (problem.kind === "rejected") throw new ManageRejectedError(problem.detail);
     // Transient: the DB change already landed; the influencer was alerted and can retry from the dashboard.
@@ -439,11 +455,13 @@ async function recordCalendarProblem(
   bookingId: string,
   e: unknown,
   action: "cancel" | "reschedule",
+  connectedAt?: Date,
 ): Promise<CalendarProblem> {
   const message = e instanceof Error ? e.message : String(e);
   const detail = `Could not ${action} the calendar event: ${message}`;
   await prisma.booking.update({ where: { id: bookingId }, data: { lastError: detail.slice(0, 500) } }).catch(() => {});
-  const flagged = e instanceof GoogleReconnectError ? await markReconnectNeeded(influencerId, message).catch(() => false) : false;
+  // `connectedAt`: the grant that produced the error; if the influencer reconnected meanwhile nothing is flagged.
+  const flagged = e instanceof GoogleReconnectError ? await markReconnectNeeded(influencerId, message, connectedAt).catch(() => false) : false;
   if (flagged) {
     await deps.alert(influencerId, {
       kind: "google-reconnect-needed",

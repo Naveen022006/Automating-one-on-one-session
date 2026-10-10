@@ -79,7 +79,14 @@ personal Gmail).
    edits are written with the event's etag (`If-Match`) and re-read on a conflict. Google never reuses a deleted event's id,
    so the next payer's event gets the next id of a deterministic sequence; `sessions.event_generation` stores where the
    sequence stands. If the shared event was deleted behind the app's back, bookings left on it are moved to the
-   replacement (invited, new link, confirmation emailed) and the influencer gets one alert.
+   replacement (invited, new link, confirmation emailed) and the influencer gets one alert. The booking job records its
+   event, link and generation, schedules the booking and moves those bookings in ONE short transaction under the session
+   row lock, and refuses (a retried job) if a cancel moved the session on while it was talking to Google, so a slow job
+   can never point the session back at a deleted event. A cancel keeps the attendee on the event when another live booking
+   of the session uses the same email address.
+
+Google's revoke ends the app's access for the **whole Google account**, so a refused or disconnected token is not revoked
+while another influencer profile is connected with the same account (our copy is still deleted).
 
 **Known limits.** `confirm=1` is not a secret: it only records that the influencer was warned (the dialog sends it), and
 they still have to pick an account on Google's own consent screen, so it cannot be used to attach an account they do not

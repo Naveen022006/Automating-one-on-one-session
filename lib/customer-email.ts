@@ -19,7 +19,8 @@ export interface InfluencerMailContext {
   name: string;
   /** Where customer replies should go when the platform sends. */
   replyTo: string;
-  gmail: { refreshToken: string; fromEmail: string } | null;
+  /** `connectedAt`: the version of the grant read, so a dead-grant verdict cannot flag one that was renewed meanwhile. */
+  gmail: { refreshToken: string; fromEmail: string; connectedAt?: Date } | null;
 }
 
 export interface CustomerEmailDeps {
@@ -27,7 +28,7 @@ export interface CustomerEmailDeps {
   refreshAccessToken(refreshToken: string): Promise<string>;
   sendGmail(accessToken: string, msg: GmailMessage): Promise<{ id: string }>;
   platformSend(email: OutgoingEmail): Promise<EmailSendResult>;
-  onReconnectNeeded(influencerId: string, reason: string): Promise<void>;
+  onReconnectNeeded(influencerId: string, reason: string, connectedAt?: Date): Promise<void>;
 }
 
 export type CustomerEmailResult = EmailSendResult & { via: "gmail" | "platform"; fallbackReason?: string };
@@ -57,7 +58,7 @@ async function loadContext(influencerId: string): Promise<InfluencerMailContext 
   let gmail: InfluencerMailContext["gmail"] = null;
   if (token && token.status === "ACTIVE" && hasGmailSendScope(token.scope) && token.googleEmail) {
     const lookup = await getRefreshToken(influencerId);
-    if (lookup.state === "ok") gmail = { refreshToken: lookup.refreshToken, fromEmail: token.googleEmail };
+    if (lookup.state === "ok") gmail = { refreshToken: lookup.refreshToken, fromEmail: token.googleEmail, connectedAt: lookup.connectedAt };
   }
   return { name: row.name, replyTo: token?.googleEmail ?? row.email, gmail };
 }
@@ -68,8 +69,8 @@ const defaultDeps: CustomerEmailDeps = {
   sendGmail: (token, msg) => sendGmail(token, msg),
   // Imported lazily: lib/email.ts itself sends booking emails through this module.
   platformSend: async (email) => (await import("@/lib/email")).sendEmail(email),
-  onReconnectNeeded: async (influencerId, reason) => {
-    if (await markReconnectNeeded(influencerId, reason)) {
+  onReconnectNeeded: async (influencerId, reason, connectedAt) => {
+    if (await markReconnectNeeded(influencerId, reason, connectedAt)) {
       await alertInfluencer(influencerId, { kind: "google-reconnect-needed", detail: `Google stopped accepting the connection (${reason}). Reconnect to keep creating Meet links.` });
     }
   },
@@ -99,7 +100,7 @@ export async function sendCustomerEmail(
     } catch (e) {
       fallbackReason = e instanceof Error ? e.message.slice(0, 300) : "Gmail failed";
       // A rejected grant affects Calendar too, so flag it once and tell the influencer; the email still goes out.
-      if (e instanceof GoogleReconnectError) await deps.onReconnectNeeded(influencerId, fallbackReason).catch(() => {});
+      if (e instanceof GoogleReconnectError) await deps.onReconnectNeeded(influencerId, fallbackReason, ctx.gmail.connectedAt).catch(() => {});
       if (shouldLogGmailFallback(influencerId)) {
         console.warn(
           `[email:customer] Gmail sending is not working for influencer ${influencerId}; customer emails go out from the platform address instead (logged once an hour per influencer): ${fallbackReason}`,

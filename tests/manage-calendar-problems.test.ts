@@ -60,8 +60,11 @@ function fixture() {
 type Fixture = ReturnType<typeof fixture>;
 
 /** The token store the code under test sees, plus a log of how it was used. */
-function tokenState(lookup: unknown = { state: "ok", refreshToken: "refresh" }, markResult = true) {
-  return { lookup, markResult, marked: [] as { influencerId: string; reason: string }[] };
+/** The version of the grant the code reads; a flag it sets must carry it (see markReconnectNeeded's onlyIfConnectedAt). */
+const GRANT_VERSION = new Date("2030-01-01T00:00:00Z");
+
+function tokenState(lookup: unknown = { state: "ok", refreshToken: "refresh", connectedAt: GRANT_VERSION }, markResult = true) {
+  return { lookup, markResult, marked: [] as { influencerId: string; reason: string; connectedAt?: Date }[] };
 }
 
 async function load(f: Fixture, tokens: ReturnType<typeof tokenState>) {
@@ -95,8 +98,8 @@ async function load(f: Fixture, tokens: ReturnType<typeof tokenState>) {
   mock.module("@/lib/google-tokens", {
     namedExports: {
       getRefreshToken: async () => tokens.lookup,
-      markReconnectNeeded: async (influencerId: string, reason: string) => {
-        tokens.marked.push({ influencerId, reason });
+      markReconnectNeeded: async (influencerId: string, reason: string, connectedAt?: Date) => {
+        tokens.marked.push({ influencerId, reason, connectedAt });
         return tokens.markResult;
       },
     },
@@ -176,6 +179,7 @@ test("cancel with a grant Google rejects now carries on, flags the connection an
   assert.equal(tokens.marked.length, 1, "the connection is flagged so the dashboard stops saying Connected");
   assert.equal(tokens.marked[0].influencerId, "inf1");
   assert.match(tokens.marked[0].reason, /revoked/);
+  assert.equal(tokens.marked[0].connectedAt, GRANT_VERSION, "S3: only the grant that was actually used can be flagged");
   assert.deepEqual(log.alerts.map((a) => a.kind).sort(), ["google-reconnect-needed", "refund-needed"], "one reconnect alert, no per-booking calendar alert");
   mock.reset();
 });
@@ -199,7 +203,7 @@ test("a 401 from Calendar itself (not the token refresh) flags the connection to
 
 test("when the connection was already flagged by another job there is no second reconnect alert", async () => {
   const f = fixture();
-  const tokens = tokenState({ state: "ok", refreshToken: "refresh" }, false); // markReconnectNeeded -> false: not the flipper
+  const tokens = tokenState({ state: "ok", refreshToken: "refresh", connectedAt: GRANT_VERSION }, false); // markReconnectNeeded -> false: not the flipper
   const mod = await load(f, tokens);
   const { deps, log } = effects({
     ...happyGoogle,
@@ -265,6 +269,7 @@ test("a reschedule that finds a revoked grant flags the connection, still replac
   await assert.rejects(mod.rescheduleBooking("b1", newStart, deps), mod.ManageBlockedError);
 
   assert.equal(tokens.marked.length, 1, "the revoked grant is flagged");
+  assert.equal(tokens.marked[0].connectedAt, GRANT_VERSION, "S3: with the version it was read at, on reschedule too");
   assert.deepEqual(log.alerts.map((a) => a.kind), ["google-reconnect-needed"]);
   assert.deepEqual(log.remindersCancelled, ["b1"]);
   assert.deepEqual(log.remindersEnqueued, ["b1"]);

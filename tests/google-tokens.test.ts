@@ -11,6 +11,7 @@ import {
   getActiveGrant,
   getGoogleAccountOfRecord,
   getGoogleStatus,
+  googleAccountSharedWithOthers,
   markReconnectNeeded,
   saveGoogleToken,
 } from "../lib/google-tokens";
@@ -119,4 +120,32 @@ test("without a version, markReconnectNeeded keeps its old meaning (used by the 
   await saveGoogleToken(c, "rt-x", SCOPE, "c@gmail.com");
   assert.equal(await markReconnectNeeded(c, "revoked"), true);
   assert.equal(await markReconnectNeeded(c, "revoked"), false);
+});
+
+test("S6: another influencer profile on the same Google account is seen (case-insensitively); itself and unknown accounts are not", { skip }, async () => {
+  await saveGoogleToken(a, "rt-s1", SCOPE, "Shared@Gmail.com");
+  assert.equal(await googleAccountSharedWithOthers(a, "shared@gmail.com"), false, "only this profile uses the account");
+
+  await saveGoogleToken(c, "rt-s2", SCOPE, "shared@gmail.com");
+  assert.equal(await googleAccountSharedWithOthers(a, "SHARED@gmail.com"), true);
+  assert.equal(await googleAccountSharedWithOthers(c, "shared@gmail.com"), true);
+  assert.equal(await googleAccountSharedWithOthers(a, "other@gmail.com"), false);
+  assert.equal(await googleAccountSharedWithOthers(a, null), false, "an unknown account never matches");
+
+  await deleteGoogleToken(c);
+  assert.equal(await googleAccountSharedWithOthers(a, "shared@gmail.com"), false, "a disconnected profile no longer counts");
+});
+
+test("S3: getRefreshToken returns the connectedAt it read, and a renewed grant has a newer one", { skip }, async () => {
+  const { getRefreshToken } = await import("../lib/google-tokens");
+  await saveGoogleToken(a, "rt-v1", SCOPE, "v@gmail.com");
+  const first = await getRefreshToken(a);
+  assert.ok(first.state === "ok" && first.connectedAt instanceof Date);
+  await later(15);
+  await saveGoogleToken(a, "rt-v2", SCOPE, "v@gmail.com");
+  const second = await getRefreshToken(a);
+  assert.ok(second.state === "ok" && first.state === "ok" && second.connectedAt.getTime() > first.connectedAt.getTime());
+  // A verdict about the first grant can no longer flag the second one.
+  assert.equal(first.state === "ok" && (await markReconnectNeeded(a, "stale", first.connectedAt)), false);
+  assert.equal((await prisma.googleToken.findUniqueOrThrow({ where: { influencerId: a } })).status, "ACTIVE");
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mock, test } from "node:test";
-import { GoogleEventGoneError } from "../lib/google";
+import { GoogleEventGoneError, GoogleReconnectError, GoogleRequestError, GoogleTransientError } from "../lib/google";
 
 /**
  * Group-session shared-event behaviour for lib/meeting.ts.
@@ -51,7 +51,48 @@ interface FakeSession {
 function makeDb(sessions: FakeSession[], bookings: FakeBooking[]) {
   const sessionById = new Map(sessions.map((s) => [s.id, s]));
   const bookingById = new Map(bookings.map((b) => [b.id, b]));
+  /** Every value ever written to a session's generation, in order: it must never go backwards. */
+  const generationWrites: number[] = [];
+  const bookingUpdateMany = async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+    const b = bookingById.get(where.id as string);
+    if (!b) return { count: 0 };
+    const status = where.status as string | { in: string[] } | undefined;
+    if (typeof status === "string" && b.status !== status) return { count: 0 };
+    if (typeof status === "object" && !status.in.includes(b.status)) return { count: 0 };
+    if ("eventId" in where) {
+      // null = "not yet linked"; a string = "still on exactly this event" (the guard that stops a double move).
+      if (where.eventId === null && b.eventId !== null) return { count: 0 };
+      if (typeof where.eventId === "string" && b.eventId !== where.eventId) return { count: 0 };
+    }
+    Object.assign(b, data);
+    return { count: 1 };
+  };
+  const sessionUpdate = async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+    const s = sessionById.get(where.id)!;
+    if (typeof data.eventGeneration === "number") generationWrites.push(data.eventGeneration);
+    Object.assign(s, data);
+    return s;
+  };
+  // A transaction with rollback: whatever a failed callback wrote is undone, like Postgres would.
+  const tx = {
+    $queryRaw: async (_strings: TemplateStringsArray, sessionId: string) => {
+      const s = sessionById.get(sessionId);
+      return s ? [{ event_generation: s.eventGeneration }] : [];
+    },
+    booking: { updateMany: bookingUpdateMany },
+    session: { update: sessionUpdate },
+  };
   return {
+    generationWrites,
+    $transaction: async (fn: (t: typeof tx) => Promise<unknown>) => {
+      const snapshot = [...bookingById.values(), ...sessionById.values()].map((o) => [o, { ...o }] as const);
+      try {
+        return await fn(tx);
+      } catch (e) {
+        for (const [original, copy] of snapshot) Object.assign(original, copy);
+        throw e;
+      }
+    },
     booking: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const b = bookingById.get(where.id);
@@ -64,31 +105,19 @@ function makeDb(sessions: FakeSession[], bookings: FakeBooking[]) {
         Object.assign(b, data);
         return b;
       },
-      updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        const b = bookingById.get(where.id as string);
-        if (!b) return { count: 0 };
-        const status = where.status as string | { in: string[] } | undefined;
-        if (typeof status === "string" && b.status !== status) return { count: 0 };
-        if (typeof status === "object" && !status.in.includes(b.status)) return { count: 0 };
-        if ("eventId" in where && where.eventId === null && b.eventId !== null) return { count: 0 };
-        Object.assign(b, data);
-        return { count: 1 };
-      },
+      updateMany: bookingUpdateMany,
       // Only the stranded-bookings query: live bookings of the session (not the trigger) on some other event id.
       findMany: async ({ where }: { where: { sessionId: string; id: { not: string }; status: { in: string[] }; AND: { eventId: { not: string | null } }[] } }) => {
         const current = where.AND[1].eventId.not;
-        return [...bookingById.values()].filter(
-          (b) => b.sessionId === where.sessionId && b.id !== where.id.not && where.status.in.includes(b.status) && b.eventId !== null && b.eventId !== current,
-        );
+        // Copies, like rows from a real database: a later write to the booking must not change what this job already read.
+        return [...bookingById.values()]
+          .filter((b) => b.sessionId === where.sessionId && b.id !== where.id.not && where.status.in.includes(b.status) && b.eventId !== null && b.eventId !== current)
+          .map((b) => ({ ...b }));
       },
     },
     session: {
       findUnique: async ({ where }: { where: { id: string } }) => sessionById.get(where.id) ?? null,
-      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        const s = sessionById.get(where.id)!;
-        Object.assign(s, data);
-        return s;
-      },
+      update: sessionUpdate,
       updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const s = sessionById.get(where.id as string);
         if (!s) return { count: 0 };
@@ -127,10 +156,18 @@ function makeGoogle(rec: Recorder) {
   };
 }
 
-async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
+/** The token store the job sees: what getRefreshToken answers, and every markReconnectNeeded call with its version. */
+interface TokenFake {
+  current: () => unknown;
+  marked: { reason: string; connectedAt?: Date }[];
+}
+const okToken = (): TokenFake => ({ current: () => ({ state: "ok", refreshToken: "refresh" }), marked: [] });
+
+async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[], tokens: TokenFake = okToken()) {
   const enqueued: string[] = [];
   const emailed: { bookingId: string; kind: string }[] = [];
-  mock.module("@/lib/db", { namedExports: { prisma: makeDb(sessions, bookings) } });
+  const db = makeDb(sessions, bookings);
+  mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/queue", {
     namedExports: {
       enqueueSendMessage: async (id: string) => void enqueued.push(id),
@@ -144,12 +181,12 @@ async function loadMeeting(sessions: FakeSession[], bookings: FakeBooking[]) {
   mock.module("@/lib/email", { namedExports: { sendBookingEmail: async () => {} } });
   mock.module("@/lib/google-tokens", {
     namedExports: {
-      getRefreshToken: async () => ({ state: "ok", refreshToken: "refresh" }),
-      markReconnectNeeded: async () => true,
+      getRefreshToken: async () => tokens.current(),
+      markReconnectNeeded: async (_id: string, reason: string, connectedAt?: Date) => (tokens.marked.push({ reason, connectedAt }), true),
     },
   });
   const mod = await import(`../lib/meeting.ts?group-test=${Math.random()}`);
-  return { mod, enqueued, emailed };
+  return { mod, enqueued, emailed, db };
 }
 
 /** Deps overrides shared by every test: injected google + instant sleep + a recording email stub. */
@@ -341,7 +378,9 @@ const GEN_EVENT_ID = (id: string, generation: number) =>
  * was deleted (insert answers "exists"), a deleted event reads back as a "cancelled" tombstone or, once purged, as null,
  * and attendees cannot be added to a deleted event.
  */
-function makeEventStore(opts: { tombstones?: string[]; purged?: string[]; live?: string[] } = {}) {
+function makeEventStore(
+  opts: { tombstones?: string[]; purged?: string[]; live?: string[]; beforeInsert?: (id: string) => Promise<void> } = {},
+) {
   const state = new Map<string, "live" | "cancelled" | "purged">();
   for (const id of opts.live ?? []) state.set(id, "live");
   for (const id of opts.tombstones ?? []) state.set(id, "cancelled");
@@ -350,10 +389,16 @@ function makeEventStore(opts: { tombstones?: string[]; purged?: string[]; live?:
   const rec = {
     inserts: [] as { id: string; conferenceRequestId: string }[],
     adds: [] as { eventId: string; email: string }[],
+    deleted: [] as string[],
   };
   const google = {
     refreshAccessToken: async () => "access-token",
+    deleteEvent: async (_t: string, eventId: string) => {
+      rec.deleted.push(eventId);
+      state.set(eventId, "cancelled");
+    },
     insertEvent: async (_t: string, event: { id: string; conferenceRequestId: string }) => {
+      await opts.beforeInsert?.(event.id);
       rec.inserts.push({ id: event.id, conferenceRequestId: event.conferenceRequestId });
       if (state.has(event.id)) return "exists" as const;
       state.set(event.id, "live");
@@ -643,5 +688,231 @@ test("cancelled bookings and bookings already on the current event are left alon
   assert.equal(gone.meetLink, "https://meet.google.com/dead");
   assert.equal(ok.eventId, v0);
   assert.deepEqual(alerts, []);
+  mock.reset();
+});
+
+// --- S1: the job's write is checked under the session lock; S2: a booking is moved once; S3: versions of the grant ---
+
+/** A promise whose resolve is handed out, to pause a job inside Google while the test does something else. */
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+/** What lib/manage.ts releaseSharedEvent does to the session when the last live booking cancels. */
+function retireSharedEvent(session: FakeSession) {
+  session.eventId = null;
+  session.meetLink = null;
+  session.eventGeneration += 1;
+}
+
+test("S1: a cancel retires the event between a job's claim and its write -> the job does not write, the next payer stays on a live event, the generation never goes backwards", async () => {
+  const paused = deferred();
+  const gate = deferred();
+  let first = true;
+  const store = makeEventStore({
+    beforeInsert: async () => {
+      if (!first) return;
+      first = false;
+      paused.resolve();
+      await gate.promise; // PA's job is inside Google (insert + link polling) while the cancel and PB's payment happen
+    },
+  });
+  const session = groupSession();
+  const pa = paidBooking("pa", "a@example.com");
+  const pb = paidBooking("pb", "b@example.com");
+  pb.status = "HELD"; // pays only after the cancel's lock section
+  const alerts: Alert[] = [];
+  const { mod, emailed, db } = await loadMeeting([session], [pa, pb]);
+  const deps = groupDeps(store.google, emailed, alerts);
+
+  const paJob = mod.createMeetingForBooking("pa", deps); // claims the session, then waits inside insertEvent
+  await paused.promise;
+  assert.equal(session.eventId, GEN_EVENT_ID("sess1", 0), "PA's job holds the claim");
+
+  // The influencer cancels PA, the only live booking: lib/manage.ts marks it CANCELLED and retires the event.
+  pa.status = "CANCELLED";
+  retireSharedEvent(session);
+  assert.equal(session.eventGeneration, 1);
+
+  // PB pays and its job runs to the end on the next event of the sequence.
+  pb.status = "PAID";
+  assert.equal(await mod.createMeetingForBooking("pb", deps), "scheduled");
+  const z = GEN_EVENT_ID("sess1", 1);
+  assert.equal(session.eventId, z);
+  assert.equal(pb.eventId, z);
+  const linkZ = store.link(z);
+  assert.equal(pb.meetLink, linkZ);
+
+  // PA's job wakes up with the dead generation-0 event: its write must be refused.
+  gate.resolve();
+  assert.equal(await paJob, "skipped");
+
+  assert.equal(session.eventId, z, "the session still points at PB's live event");
+  assert.equal(session.meetLink, linkZ);
+  assert.equal(session.eventGeneration, 1);
+  assert.equal(pb.eventId, z, "PB was not moved back onto the dead event");
+  assert.equal(pb.meetLink, linkZ);
+  assert.equal(pa.status, "CANCELLED");
+  assert.deepEqual(emailed.filter((e) => e.bookingId === "pb"), [{ bookingId: "pb", kind: "booking-confirmation" }], "PB got one confirmation, with the live link");
+  assert.deepEqual(alerts, []);
+  assert.ok(db.generationWrites.every((g, i, all) => i === 0 || g >= all[i - 1]), `generation writes only go up: ${db.generationWrites}`);
+  assert.deepEqual(store.rec.deleted, [GEN_EVENT_ID("sess1", 0)], "the event PA's job created after the cancel is not left behind");
+  mock.reset();
+});
+
+test("S1: a job whose booking is still live retries after the session moved on, and ends on a live event", async () => {
+  let first = true;
+  let session!: FakeSession;
+  const store = makeEventStore({
+    beforeInsert: async () => {
+      if (!first) return;
+      first = false;
+      retireSharedEvent(session); // a cancel retired the previous event while this job was talking to Google
+    },
+  });
+  session = groupSession();
+  session.eventGeneration = 0;
+  const b = paidBooking("b1", "a@example.com");
+  const { mod, emailed, db } = await loadMeeting([session], [b]);
+  const deps = groupDeps(store.google, emailed, []);
+
+  // First run: the commit finds the session one generation ahead of the event it created.
+  await assert.rejects(mod.createMeetingForBooking("b1", deps), GoogleTransientError);
+  assert.equal(b.status, "PAID", "rolled back: nothing half-written");
+  assert.equal(b.eventId, null);
+  assert.equal(session.eventId, null, "the session is untouched (still the retired state)");
+  assert.equal(session.eventGeneration, 1);
+  assert.deepEqual(store.rec.deleted, [GEN_EVENT_ID("sess1", 0)], "the event the job created for the dead generation is removed");
+  assert.deepEqual(emailed, [], "no confirmation went out");
+
+  // Retry (BullMQ): walks again from the new generation.
+  assert.equal(await mod.createMeetingForBooking("b1", deps), "scheduled");
+  const z = GEN_EVENT_ID("sess1", 1);
+  assert.equal(session.eventId, z);
+  assert.equal(session.eventGeneration, 1);
+  assert.equal(b.eventId, z);
+  assert.equal(b.meetLink, store.link(z));
+  assert.equal(b.status, "SCHEDULED");
+  assert.ok(db.generationWrites.every((g, i, all) => i === 0 || g >= all[i - 1]), `generation writes only go up: ${db.generationWrites}`);
+  mock.reset();
+});
+
+test("S1: a payer who joined the stored event just before a cancel retired it is sent round again, not scheduled on the dead event", async () => {
+  const x = GEN_EVENT_ID("sess1", 0);
+  let session!: FakeSession;
+  const store = makeEventStore({ live: [x] });
+  const realAdd = store.google.addAttendee;
+  let retired = false;
+  store.google.addAttendee = async (t: string, eventId: string, attendee: { email: string }) => {
+    const r = await realAdd(t, eventId, attendee);
+    if (!retired) {
+      retired = true;
+      retireSharedEvent(session); // the cancel's lock section ran after this job read the session, before it commits
+    }
+    return r;
+  };
+  session = groupSession();
+  session.eventId = x;
+  session.meetLink = store.link(x);
+  const b = paidBooking("pb", "b@example.com");
+  const { mod, emailed } = await loadMeeting([session], [b]);
+  const deps = groupDeps(store.google, emailed, []);
+
+  await assert.rejects(mod.createMeetingForBooking("pb", deps), GoogleTransientError);
+  assert.equal(b.status, "PAID");
+  assert.equal(b.eventId, null);
+
+  assert.equal(await mod.createMeetingForBooking("pb", deps), "scheduled");
+  assert.equal(b.eventId, GEN_EVENT_ID("sess1", 1), "the retry created and joined the next event");
+  mock.reset();
+});
+
+test("S1: a booking cancelled while Google rejects its event is not overwritten with FAILED", async () => {
+  const b = paidBooking("b1", "a@example.com");
+  const session = groupSession();
+  session.service.type = "ONE_TO_ONE";
+  const alerts: Alert[] = [];
+  const google = {
+    refreshAccessToken: async () => "access-token",
+    insertEvent: async () => {
+      b.status = "CANCELLED"; // cancelled while the request was in flight
+      throw new GoogleRequestError("Google Calendar 400 invalid: bad attendee");
+    },
+  };
+  const { mod, emailed } = await loadMeeting([session], [b]);
+
+  assert.equal(await mod.createMeetingForBooking("b1", { google, sleep: async () => {}, sendBookingEmail: async (id: string, kind: string) => void emailed.push({ bookingId: id, kind }), alert: async (_i: string, a: Alert) => void alerts.push(a) }), "skipped");
+
+  assert.equal(b.status, "CANCELLED", "still cancelled, not FAILED");
+  assert.deepEqual(alerts, [], "nothing for the influencer to act on");
+  mock.reset();
+});
+
+test("S2: two jobs that read the same stranded booking move and email it once", async () => {
+  const v0 = GEN_EVENT_ID("sess1", 0);
+  const v1 = GEN_EVENT_ID("sess1", 1);
+  // Both jobs are inside the invite of the stranded booking (a@) before either commits.
+  let arrived = 0;
+  const bothThere = deferred();
+  const store = makeEventStore({ tombstones: [v0] });
+  const realAdd = store.google.addAttendee;
+  store.google.addAttendee = async (t: string, eventId: string, attendee: { email: string }) => {
+    const r = await realAdd(t, eventId, attendee);
+    if (attendee.email === "a@example.com" && eventId === v1) {
+      arrived++;
+      if (arrived === 2) bothThere.resolve();
+      await bothThere.promise;
+    }
+    return r;
+  };
+  const session = groupSession();
+  session.eventId = v0;
+  session.meetLink = "https://meet.google.com/old";
+  const dangling: FakeBooking = { ...paidBooking("b1", "a@example.com"), status: "SCHEDULED", eventId: v0, meetLink: "https://meet.google.com/old" };
+  const b2 = paidBooking("b2", "b@example.com");
+  const b3 = paidBooking("b3", "c@example.com");
+  const alerts: Alert[] = [];
+  const { mod, emailed } = await loadMeeting([session], [dangling, b2, b3]);
+  const deps = groupDeps(store.google, emailed, alerts);
+
+  const [r2, r3] = await Promise.all([mod.createMeetingForBooking("b2", deps), mod.createMeetingForBooking("b3", deps)]);
+
+  assert.deepEqual([r2, r3], ["scheduled", "scheduled"]);
+  assert.equal(dangling.eventId, v1);
+  assert.equal(emailed.filter((e) => e.bookingId === "b1").length, 1, "the stranded booking is emailed once, not once per job");
+  assert.equal(alerts.length, 1, "and the influencer is told once");
+  mock.reset();
+});
+
+test("S3: a revoked grant is flagged with the version it was read at; a grant renewed during the call is not marked dead", async () => {
+  const t1 = new Date("2030-01-01T00:00:00Z");
+  const t2 = new Date("2030-01-01T00:05:00Z");
+  const revoked = {
+    refreshAccessToken: async () => {
+      throw new GoogleReconnectError("Refresh token rejected: invalid_grant");
+    },
+  };
+
+  // Still the same grant afterwards: flagged, with its version.
+  const tokens = okToken();
+  tokens.current = () => ({ state: "ok", refreshToken: "refresh", connectedAt: t1 });
+  const a = paidBooking("b1", "a@example.com");
+  const first = await loadMeeting([groupSession()], [a], tokens);
+  await assert.rejects(first.mod.createMeetingForBooking("b1", { google: revoked, sleep: async () => {}, sendBookingEmail: async () => {}, alert: async () => {} }), first.mod.MeetingBlockedError);
+  assert.deepEqual(tokens.marked.map((m) => m.connectedAt), [t1]);
+  mock.reset();
+
+  // The influencer reconnected while the call was running: the second read shows a newer grant.
+  let reads = 0;
+  const renewed = okToken();
+  renewed.current = () => ({ state: "ok", refreshToken: "refresh", connectedAt: reads++ === 0 ? t1 : t2 });
+  const b = paidBooking("b1", "a@example.com");
+  const second = await loadMeeting([groupSession()], [b], renewed);
+  await assert.rejects(second.mod.createMeetingForBooking("b1", { google: revoked, sleep: async () => {}, sendBookingEmail: async () => {}, alert: async () => {} }), GoogleTransientError);
+  assert.deepEqual(renewed.marked, [], "nothing was flagged");
+  assert.equal(b.status, "PAID");
+  assert.match(String(b.lastError), /renewed/);
   mock.reset();
 });
