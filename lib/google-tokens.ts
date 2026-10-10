@@ -5,6 +5,9 @@ export const OAUTH_STATE_PURPOSE = "google-oauth-state";
 /** Cookie that binds an OAuth round trip to the browser that started it. */
 export const NONCE_COOKIE = "g_oauth_nonce";
 
+/** The AAD the refresh token is encrypted with (also used by the key-rotation tool, lib/key-rotation-db.ts). */
+export const googleTokenAad = (influencerId: string) => influencerId;
+
 /** Stores (or replaces) the influencer's grant and clears any "reconnect needed" flag. */
 export async function saveGoogleToken(
   influencerId: string,
@@ -12,7 +15,7 @@ export async function saveGoogleToken(
   scope: string,
   googleEmail: string | null = null,
 ): Promise<void> {
-  const refreshTokenEnc = encryptSecret(refreshToken, influencerId);
+  const refreshTokenEnc = encryptSecret(refreshToken, googleTokenAad(influencerId));
   await prisma.googleToken.upsert({
     where: { influencerId },
     create: { influencerId, refreshTokenEnc, scope, googleEmail },
@@ -37,7 +40,7 @@ export async function getRefreshToken(influencerId: string): Promise<TokenLookup
   const row = await prisma.googleToken.findUnique({ where: { influencerId } });
   if (!row) return { state: "not-connected" };
   if (row.status === "RECONNECT_NEEDED") return { state: "reconnect-needed", reason: row.reconnectReason };
-  return { state: "ok", refreshToken: decryptSecret(row.refreshTokenEnc, influencerId) };
+  return { state: "ok", refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)) };
 }
 
 /**
@@ -79,7 +82,7 @@ export async function deleteGoogleToken(influencerId: string): Promise<string | 
   if (!row) return null;
   await prisma.googleToken.delete({ where: { influencerId } });
   try {
-    return decryptSecret(row.refreshTokenEnc, influencerId);
+    return decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId));
   } catch {
     return null;
   }

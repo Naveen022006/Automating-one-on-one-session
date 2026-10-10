@@ -26,6 +26,11 @@ export interface RateLimitRule {
   /** Maximum requests allowed per window. */
   limit: number;
   windowMs: number;
+  /**
+   * Count in this process's memory instead of the shared store (Redis/Postgres). For health probes only: they must
+   * keep answering while those very stores are down, so they cannot depend on them. Not shared between instances.
+   */
+  local?: boolean;
 }
 
 export interface RateLimitResult {

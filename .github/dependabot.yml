@@ -1,0 +1,37 @@
+# Dependabot: weekly npm updates and monthly GitHub Actions updates, each grouped into one pull request so a week of
+# upgrades is one review, not twenty. Security updates are raised separately and immediately by GitHub regardless of
+# this schedule (enable "Dependabot security updates" in the repository settings).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor bumps arrive together; a major upgrade gets its own pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Prisma and its client must stay on the same version (see CLAUDE.md), so they are upgraded together by hand.
+      - dependency-name: prisma
+        update-types: [version-update:semver-major]
+      - dependency-name: "@prisma/*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      docker-base-images:
+        patterns: ["*"]

@@ -24,7 +24,7 @@ export * from "@/lib/health-eval";
 /**
  * System health, the I/O half: the worker heartbeat, the shared key-value store (Redis, with an in-memory fallback), and
  * gathering the measurements that lib/health-eval.ts judges. The worker writes the heartbeat and runs the monitor
- * (lib/health-alerts.ts); the admin page and /api/health read the same keys.
+ * (lib/health-alerts.ts); the admin page and /api/health/watchdog read the same keys.
  */
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -138,7 +138,7 @@ export class HealthKv {
 
   /**
    * Deletes the key and says whether THIS call removed it. Two callers deleting the same key concurrently (a monitor run
-   * and /api/health, say) cannot both get `true`, which is what lets exactly one of them send a "recovered" note.
+   * and /api/health/watchdog, say) cannot both get `true`, which is what lets exactly one of them send a "recovered" note.
    */
   async delIfExists(key: string): Promise<boolean> {
     let removed = this.memory.del(key);

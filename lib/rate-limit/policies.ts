@@ -22,6 +22,19 @@ export interface RouteRule extends RateLimitRule {
 /** Applies to every /api request on top of the route rule. Generous; it only stops floods and scrapers. */
 export const GLOBAL_API_RULE: RateLimitRule = { name: "api", limit: 300, windowMs: MIN };
 
+/**
+ * Orchestrator and load-balancer probes (liveness /api/health, readiness /api/ready). Matched before everything else
+ * and exempt from the global per-IP ceiling, because a probe must never be refused for an unrelated reason (a shared
+ * IP behind a load balancer would otherwise compete with real traffic for the 300/min budget). They are counted in
+ * process memory (`local`), so probing keeps working while Redis and Postgres are down. The limits are far above
+ * any real probe schedule (one every 1-10 s per prober) and only stop a flood from a single address. Readiness
+ * touches the database, hence the tighter limit.
+ */
+export const PROBE_RULES: RouteRule[] = [
+  { name: "health", pattern: /^\/api\/health$/, methods: ["GET", "HEAD"], limit: 6000, windowMs: MIN, by: "ip", local: true },
+  { name: "ready", pattern: /^\/api\/ready$/, methods: ["GET", "HEAD"], limit: 1200, windowMs: MIN, by: "ip", local: true },
+];
+
 /** First match wins, so list the most specific patterns first. */
 export const ROUTE_RULES: RouteRule[] = [
   // --- Accounts (Phase 7 B2): login, register, reset are brute-force targets.
@@ -51,7 +64,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
 
   // --- Worker liveness for uptime monitors (also the watchdog that alerts when the worker stops). Cheap, public.
-  { name: "health", pattern: /^\/api\/health$/, methods: ["GET"], limit: 30, windowMs: MIN, by: "ip" },
+  { name: "health-watchdog", pattern: /^\/api\/health\/watchdog$/, methods: ["GET"], limit: 30, windowMs: MIN, by: "ip" },
 
   // --- Provider webhooks: high ceiling (providers burst and retry); signatures are still verified.
   { name: "webhooks", pattern: /^\/api\/webhooks\//, limit: 600, windowMs: MIN, by: "ip" },
@@ -90,7 +103,7 @@ export function scaled(rule: RateLimitRule, multiplier: number): RateLimitRule {
 }
 
 export function matchRouteRule(method: string, pathname: string): RouteRule | null {
-  for (const r of ROUTE_RULES) {
+  for (const r of [...PROBE_RULES, ...ROUTE_RULES]) {
     if (r.methods && !r.methods.includes(method)) continue;
     if (r.pattern.test(pathname)) return r;
   }

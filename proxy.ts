@@ -63,8 +63,10 @@ async function handleApi(req: NextRequest): Promise<NextResponse> {
   // cannot escape the IP's limits (the global per-IP rule applies regardless).
   const routeId =
     rule?.by === "session-or-ip" && cookie && /^[A-Za-z0-9_-]{43}$/.test(cookie) ? `ip:${ip}:${sessionKey(cookie)}` : `ip:${ip}`;
+  // Health probes (rule.local) have their own memory-only limit and skip the shared global ceiling, so they never
+  // depend on Redis/Postgres and are never starved by other traffic from the same address.
   const [global, route] = await Promise.all([
-    hit(GLOBAL_API_RULE, `ip:${ip}`),
+    rule?.local ? Promise.resolve(null) : hit(GLOBAL_API_RULE, `ip:${ip}`),
     rule ? hit(rule, routeId) : Promise.resolve(null),
   ]);
   const result = strictest([global, route]);

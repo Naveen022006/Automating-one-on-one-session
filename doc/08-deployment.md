@@ -1,0 +1,496 @@
+# Phase 8 — Deployment, Operations and Security Hygiene
+
+> How to run this app in production, and what to watch once it is running. Read `README.md` first. Everything below was
+> written from the code in this repository; items that could not be verified here are marked **(not verified)** so you
+> can check them against your own provider before relying on them.
+
+## 1. Architecture
+
+```
+                   browser / Razorpay / Meta / Google
+                                  │  HTTPS
+                          ┌───────▼────────┐
+                          │   web          │  Next.js (pages + /api/*), proxy.ts = rate limit + CSRF + CSP
+                          │   (stateless)  │  GET /api/health (liveness), GET /api/ready (readiness)
+                          └───┬────────┬───┘
+              SQL (Prisma/pg) │        │ jobs (BullMQ) + rate-limit counters
+                      ┌───────▼──┐  ┌──▼───────┐       ┌────────────────────────────┐
+                      │ Postgres │  │  Redis   │◄──────│ worker (one long-lived     │
+                      │ (record) │  │ (queues) │       │ process, worker/index.ts)  │
+                      └───────▲──┘  └──────────┘       └──────────────┬─────────────┘
+                              └───────────────────────────────────────┘
+```
+
+| Component | Role | State | Scales by |
+|---|---|---|---|
+| **web** | Pages, REST API, Razorpay/WhatsApp webhooks. Enqueues jobs. | None (sessions are rows in Postgres) | More instances |
+| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
+| **Postgres** | System of record: bookings, payments, tokens (encrypted), audit log. Also the fallback store for rate limits | **Yes. Back it up.** | Vertical; keep connection counts in mind (section 4, `DATABASE_POOL_MAX`) |
+| **Redis** | BullMQ queues (delayed reminder jobs live here) and the primary rate-limit store | Job state. Treat as important, not as a cache | Single instance with persistence |
+
+Availability does not depend on the worker for correctness: slot availability and holds are computed from row locks and
+timestamps, so an expiry worker that is not running only leaves stale statuses (`lib/holds.ts`). Payments are marked paid
+only by the Razorpay webhook. What the worker does gate is everything *after* payment: the Meet link, the confirmation and the
+reminders.
+
+## 2. Hosting
+
+**web** runs anywhere that runs Node 22+ or a container: Vercel, or any container host (Fly.io, Railway, Render, ECS,
+Cloud Run, Kubernetes, a VM with Docker). It is stateless; run two or more instances.
+
+**worker** MUST be a long-running process. It holds open BullMQ connections to Redis, runs timers, and processes jobs
+whenever they arrive. **Vercel functions cannot host it** (they are request-scoped and are frozen or killed between
+requests), and Vercel cron is not a substitute for BullMQ workers. If the web app is on Vercel, run the worker as a container
+or VM elsewhere (the `Dockerfile.worker` image is made for this). Pick a plan that keeps one instance always on (no
+scale-to-zero, and for Cloud Run "CPU always allocated").
+
+**Postgres**: any managed Postgres 14+. The owner's current setup is a Supabase session-pooler URL. Prisma's migration
+command takes advisory locks and expects a direct or session-mode connection; it will not work through a
+transaction-mode pooler (PgBouncer `pool_mode=transaction`) **(general Prisma guidance, not tested here)**. This repo has
+a single `DATABASE_URL` (`prisma.config.ts` and the app share it), so run the migration job with a direct/session URL in
+its own environment.
+
+**Redis**: any Redis the `ioredis` client can reach over TCP (`redis://` or TLS `rediss://`). Upstash works through its
+TCP endpoint. Use persistence (AOF or snapshotting) and the **`noeviction`** memory policy: BullMQ stores jobs as keys and
+an eviction policy would silently delete them (BullMQ's documentation requires `noeviction` **(not verified here)**).
+
+**Other infrastructure**: a domain with HTTPS in front of web (the app sets HSTS in production), an email provider (Resend
+or Postmark) with SPF and DKIM for `EMAIL_FROM`, and the third-party accounts in sections 7, 10 and 11.
+
+## 3. Containers
+
+| File | Image | Purpose |
+|---|---|---|
+| `Dockerfile` (target `runner`, the default) | web | Next.js **standalone** server (`output: "standalone"`, switched on by `BUILD_STANDALONE=1` so `next start` and Vercel builds are unchanged). Runs as the unprivileged `node` user on port 3000. |
+| `Dockerfile` (target `tools`) | tools | Prisma CLI + scripts for one-off jobs: `prisma migrate deploy`, `npm run admin:create`, `npm run keys:rotate`. Not a service. |
+| `Dockerfile.worker` | worker | `worker/index.ts` under `tsx` with production dependencies and the generated Prisma client. Non-root. Next.js, React and TypeScript are removed from it (the build fails if the worker's imports ever need them). |
+| `docker-compose.yml` | all | Local production-like run: postgres, redis, a one-shot `migrate` job, web, worker. |
+
+```
+docker build -t sessions-web .
+docker build -t sessions-tools --target tools .
+docker build -f Dockerfile.worker -t sessions-worker .
+```
+
+* **No secret is baked into an image.** `.dockerignore` keeps `.env*` (except `.env.example`) out of the build context, and
+  none of the Dockerfiles has an `ENV` for a secret. Configuration is passed when the container starts. The only build
+  arguments are the public `NEXT_PUBLIC_BRAND_NAME` and `NEXT_PUBLIC_SUPPORT_EMAIL`, which Next.js compiles into the
+  JavaScript (changing them means rebuilding the web image).
+* **Health checks**: the web image's `HEALTHCHECK` calls `GET /api/health`. Point load balancers at `/api/ready`
+  (section 3.1). The worker has no HTTP port; its `HEALTHCHECK` runs `scripts/worker-healthcheck.ts` (Redis answers and
+  each of the three queues has an attached worker).
+* **Local run**: `cp .env.example .env`, fill in `APP_SECRET`, `TOKEN_ENCRYPTION_KEY` and Razorpay **test** keys, then
+  `docker compose up --build`. Compose sets `NODE_ENV=production` and wires `DATABASE_URL`/`REDIS_URL` to its own
+  containers. Because production mode refuses development settings, compose also sets `ALLOW_INSECURE_LOCAL_RUN=true`,
+  which relaxes only those checks and only while `APP_URL` is `http://localhost...` (section 5). Web is published on
+  `127.0.0.1:3000` only; Postgres and Redis are not published. In production mode the session cookie is `Secure`; browsers
+  accept that on `localhost` (Chrome, Firefox), Safari does not.
+* **Running a tool**: `docker run --rm --env-file prod.env sessions-tools npx prisma migrate deploy`, or
+  `... sessions-tools npm run admin:create -- --email you@company.com --name "You"`.
+
+### 3.1 Health endpoints
+
+| Endpoint | Meaning | Dependencies | Use for |
+|---|---|---|---|
+| `GET /api/health` | The process is up. `200 {"ok":true}` | None | Liveness / container `HEALTHCHECK`. A database outage must not restart a healthy web process |
+| `GET /api/health/watchdog` | Is the background worker alive and is Redis answering? `200`, or `503` when the worker heartbeat is stale or Redis is configured but unreachable (also raises the same alert as the health monitor, at most once an hour) | Redis (heartbeat key) | An EXTERNAL uptime monitor every 1 to 5 minutes. Never a container or load-balancer probe: it fails when the worker is down and must not restart a healthy web process |
+| `GET /api/ready` | Can serve traffic. `200 {"ok":true,"checks":{"db":"ok","redis":"ok"}}`, or `503` with the failing check set to `"fail"` | `SELECT 1` on Postgres; `PING` on Redis when `REDIS_URL` is set (`"skipped"` otherwise). 3 s budget each | Load balancer target health, Kubernetes readiness |
+
+Responses are never cached, and contain no error text or connection strings (the log line carries only the error code, at
+most once a minute per check). Both bypass the global per-IP rate limit and have their own in-memory limits in
+`lib/rate-limit/policies.ts` (`health` 6000/min, `ready` 1200/min, per client IP) so probes keep working while
+Redis and Postgres are down. Suggested Kubernetes probes: liveness `/api/health` (period 10 s, timeout 3 s), readiness
+`/api/ready` (period 10 s, **timeout 5 s**, failureThreshold 3).
+
+## 4. Environment variables
+
+**Req** = required when `NODE_ENV=production` (start-up validation fails without it, section 5). **Dev** = for local
+development only; the start-up validation refuses it in production. Everything else is optional. Build = needed when
+the image is built, not at run time. Copy `.env.example` as the starting point.
+
+### Core, database and Redis
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `APP_URL` | yes | `http://localhost:3000` | Public origin, **https** in production. Builds every emailed link, the OAuth redirect check and the CSRF allow-list |
+| `APP_SECRET` | yes | none | 32+ characters in production (`openssl rand -base64 32`). Signs manage/pay links and OAuth state. No dual-key support: changing it invalidates links already emailed |
+| `TOKEN_ENCRYPTION_KEY` | yes | none | 32 bytes, base64. AES-256-GCM key for Google refresh tokens, payout account numbers/UPI ids, WhatsApp tokens. Back it up (section 9) |
+| `TOKEN_ENCRYPTION_KEY_PREVIOUS` | no | none | Rotation only: old key, tried after the current key when decrypting |
+| `TOKEN_ENCRYPTION_KEY_NEW` | no | none | Rotation only: read by `npm run keys:rotate`, never set on a running service |
+| `DATABASE_URL` | yes | none | `postgresql://...`. Used by the app, the worker, migrations and scripts |
+| `DATABASE_POOL_MAX` | no | `10` | **Per process.** web instances x this + worker replicas x this must stay under the database's connection limit. Hosted poolers allow few (the shared Supabase project here allows 15) |
+| `DATABASE_STATEMENT_TIMEOUT_MS` | no | `15000` | Postgres cancels a statement after this long |
+| `DATABASE_CONNECT_TIMEOUT_MS` | no | `10000` | How long a request waits for a free pooled connection before failing |
+| `DATABASE_IDLE_TIMEOUT_MS` | no | `30000` | Idle connections are closed after this |
+| `REDIS_URL` | yes | none | `redis://` or `rediss://`. Required in production (queues, shared rate limits) |
+
+### Rate limiting and proxy
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `CLIENT_IP_HEADER` | recommended | `x-forwarded-for` (right-most) | The one header your platform sets with the real client IP: `x-real-ip` on Vercel, `cf-connecting-ip` behind Cloudflare. Never a client-settable header. Unset = a warning at start-up |
+| `RATE_LIMIT_STORE` | no | `auto` | `auto` (Redis, failing over to Postgres), `redis`, `postgres`, `memory` (single instance only) |
+| `RATE_LIMIT_ENABLED` | no | `true` | **Dev** when `false` (load tests); refused in production |
+| `RATE_LIMIT_MULTIPLIER` | no | `1` | Scales every limit |
+
+### Payments (Razorpay)
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | yes | none | `rzp_live_...` for launch; `rzp_test_...` is allowed (with a warning) for staging |
+| `RAZORPAY_WEBHOOK_SECRET` | yes | none | Must equal the secret typed in the dashboard's webhook settings |
+| `AUTO_REFUND_ON_CANCEL` | no | `false` | `true` refunds eligible cancellations immediately |
+| `PAYOUT_HOLD_DAYS`, `PLATFORM_FEE_BPS` | no | `2`, `0` | Payout rules (`lib/payouts.ts`) |
+
+### Google (Calendar, Meet, Gmail)
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning) |
+| `GOOGLE_REDIRECT_URI` | for Meet | none | Must exactly match an authorised redirect URI: `<APP_URL>/api/google/callback` |
+| `GOOGLE_REQUEST_GMAIL_SEND` | no | `true` | Set `false` until the restricted `gmail.send` scope is approved (section 11) |
+
+### WhatsApp and SMS
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `WHATSAPP_APP_SECRET` | recommended | none | Verifies `X-Hub-Signature-256` on `/api/webhooks/whatsapp`; without it every callback is rejected (warning) |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | recommended | none | Meta's one-time webhook handshake (warning if unset) |
+| `META_APP_ID`, `META_APP_SECRET`, `META_ES_CONFIG_ID`, `WHATSAPP_REGISTRATION_PIN` | no | none | Only for Embedded Signup (Meta Tech Provider approval). Manual connect needs none of them. `META_APP_ID` and `META_ES_CONFIG_ID` also widen the CSP at **start-up**, so they must be set on the web service |
+| `WHATSAPP_TEMPLATE_LANGUAGE` | no | `en` | Template language code |
+| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | no | none | The platform's own number; used only with `WHATSAPP_PLATFORM_FALLBACK=true` |
+| `WHATSAPP_PLATFORM_FALLBACK` | no | `false` | Testing only; warned about in production |
+| `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised |
+| `MESSAGING_DRY_RUN` | no | `false` | **Dev**: log instead of sending WhatsApp/SMS. Refused in production |
+| `SMS_PROVIDER` | no | `generic` | `msg91`, `twilio` or `generic`; missing credentials for the chosen one warn |
+| `SMS_API_KEY`, `MSG91_TEMPLATE_DEFAULT`, `MSG91_TEMPLATE_BOOKING_CONFIRMATION`, `_REMINDER_24H`, `_REMINDER_15M`, `_RESCHEDULE`, `_CANCELLATION` | for msg91 | none | DLT-approved flow ids |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM` | for twilio | none | |
+| `SMS_API_URL` | for generic | none | |
+
+### Email
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `EMAIL_PROVIDER` | yes | `log` | `resend` or `postmark`. **`log` is Dev** (prints emails instead of sending); refused in production |
+| `EMAIL_FROM` | yes | none | e.g. `Bookings <bookings@yourdomain.com>`; SPF and DKIM must be set up for the domain |
+| `RESEND_API_KEY` / `POSTMARK_SERVER_TOKEN` | per provider | none | `POSTMARK_MESSAGE_STREAM` defaults to `outbound` |
+
+### Product settings, monitoring and misc
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `READINESS_REQUIRED` | no | `google,payout` | Which connections an influencer needs before their page takes bookings |
+| `READINESS_BYPASS` | no | `false` | **Dev**: skips the go-live checks. Refused in production |
+| `ERROR_WEBHOOK_URL` | recommended | none | Every reported error is POSTed here (Slack/Discord compatible). Unset = a start-up warning |
+| `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time |
+| `APP_LOCALE` | no | `en-IN` | Formatting of money and times |
+| `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production |
+| `ADMIN_PASSWORD` | no | generated | Read by `npm run admin:create` only |
+| `SEED_DEMO_PASSWORD` | no | built-in | **Dev**: `npm run db:seed`. Never seed a production database |
+
+### Deployment-only
+| Variable | Where | Notes |
+|---|---|---|
+| `ALLOW_INSECURE_LOCAL_RUN` | docker-compose | **Dev**. See section 5 |
+| `BUILD_STANDALONE` | Dockerfile build | `1` makes `next build` emit the standalone server |
+| `PORT`, `HOSTNAME` | web container | `3000`, `0.0.0.0` (set in the Dockerfile) |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | docker-compose | Local database credentials, defaults are local-only |
+
+## 5. Start-up validation (`lib/env.ts`)
+
+Configuration is validated once when each process starts: the web app from `instrumentation.ts` (`register()`), the worker
+from the top of `worker/index.ts`. The pure function `validateEnv(env)` is unit-tested with injected environments
+(`tests/env.test.ts`).
+
+* **`NODE_ENV=production`**: any problem stops the process with one message listing every problem by variable name
+  (never a value), e.g. `APP_SECRET: must be at least 32 characters in production`, and exit code 1. (The web app exits
+  explicitly from `register()`: merely throwing there would leave Next.js serving every request with a 500.) A container
+  that fails this crash-loops with the message in its log, so the rollout never goes healthy. Enforced: `DATABASE_URL` set and a `postgres(ql)://` URL; `APP_URL` set
+  and **https**; `APP_SECRET` 32+ chars; `TOKEN_ENCRYPTION_KEY` is 32 bytes of base64 (also `_PREVIOUS` and `_NEW` when
+  set); `REDIS_URL` set; the three `RAZORPAY_*` variables; a real `EMAIL_PROVIDER` with its key and `EMAIL_FROM`; and none
+  of the development-only settings `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN=true`, `READINESS_BYPASS=true`,
+  `RATE_LIMIT_ENABLED=false`. Flags such as `RATE_LIMIT_ENABLED` must be spelled exactly `true`/`false`, because the code
+  compares strings (`"False"` would leave limits on while looking like it turned them off).
+* **Anything else** (development, test): the same kind of problem is printed as a warning and the process carries on.
+  Production-only strictness is not applied.
+* **Warnings in production** (the process still starts): `CLIENT_IP_HEADER` or `ERROR_WEBHOOK_URL` unset, Razorpay test key,
+  `RATE_LIMIT_STORE=memory`, incomplete Google/SMS/WhatsApp-webhook configuration, `ENABLE_DESIGN_PAGE=true`, and
+  `TOKEN_ENCRYPTION_KEY_NEW` set on a running service.
+* **`ALLOW_INSECURE_LOCAL_RUN=true`** exists so `docker compose up` can run production mode on a laptop. It turns the
+  four development-setting errors and the http `APP_URL` error into warnings, **only** when `APP_URL`'s host is
+  `localhost`, `127.0.0.1` or `[::1]`. With a real hostname it is itself an error, so it cannot be left on by accident.
+  Essentials (database, secrets, Redis, Razorpay) stay mandatory.
+* `next build` does not validate (a build machine should not need production secrets), and `getConfig()` in `lib/env.ts` is
+  a validated, cached, typed accessor for new code; secrets on it are non-enumerable so they never reach logs.
+
+## 6. Release procedure
+
+1. **Migrate first.** Run `prisma migrate deploy` (the tools image, or `npm run db:deploy`) against the production
+   database and wait for it to finish. Migrations must be **backwards compatible with the version still running**
+   (add columns/tables first; remove or rename in a later release), because old web and worker instances serve traffic
+   while the rollout happens.
+2. **Deploy web.** Roll instances one by one; the new instance must report `/api/ready` 200 before the old one is removed.
+   A bad configuration fails fast at start-up (section 5) and the rollout stops with the old version still serving.
+3. **Deploy worker.** Replace the worker(s) after web. `docker stop`/SIGTERM closes the queue workers cleanly; an in-flight
+   job that is cut off is retried (jobs are idempotent and read current state). Job payloads must therefore stay
+   backwards compatible for one release (add fields, do not rename them), because during the gap the old worker consumes
+   what the new web enqueues.
+4. **Verify**: `/api/ready` is 200, the admin console loads, place a test booking with Razorpay test keys on staging, and
+   check the worker log shows `processing "meetings" queue`.
+5. **Rollback**: redeploy the previous web and worker images. A migration is not rolled back automatically; this is why
+   step 1 requires compatibility. To undo a bad schema change, ship a new forward migration.
+
+Back up first when the release contains a destructive migration (section 8).
+
+## 7. Webhooks and callbacks to configure
+
+| Provider | URL | Settings |
+|---|---|---|
+| Razorpay | `<APP_URL>/api/webhooks/payment` | Active events: `payment.captured`, `payment.failed`, `order.paid`, `refund.processed`, `refund.failed`. Secret = `RAZORPAY_WEBHOOK_SECRET`. Signature is HMAC-SHA256 of the raw body (`X-Razorpay-Signature`); a failure inside the handler returns 500 so Razorpay retries (events are recorded in `webhook_events` for idempotency) |
+| Meta / WhatsApp | `<APP_URL>/api/webhooks/whatsapp` | Callback verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (GET handshake); deliveries signed with `WHATSAPP_APP_SECRET` (`X-Hub-Signature-256`). Subscribe the app to the `messages` field (delivery statuses) and `message_template_status_update` |
+| Google OAuth | `<APP_URL>/api/google/callback` | Authorised redirect URI, identical to `GOOGLE_REDIRECT_URI` |
+
+Both webhook routes are exempt from the CSRF origin check and are authenticated by signature only; they are rate limited at
+600/min per IP. Use the real public hostname: a tunnel URL that changes will silently stop payments being confirmed.
+
+## 8. Backups, point-in-time recovery and the restore drill
+
+Postgres holds everything that cannot be recreated (customers, bookings, payments, payout ledger, audit log, encrypted
+tokens). Redis holds in-flight jobs (see the runbook for what is and is not recoverable if it is lost).
+
+**Checklist**
+- [ ] Automated daily backups are on, with retention of at least 14 days (30 recommended)
+- [ ] **Point-in-time recovery** (continuous WAL archiving) is on, so the recovery point is minutes, not a day.
+      Managed Postgres usually sells this as a paid add-on (for Supabase it is a paid add-on **(not verified)**)
+- [ ] Backups live in a different failure domain than the database (other region/account), and access is restricted and logged
+- [ ] The **encryption keys are backed up separately from the database** (section 9). A database backup restored without
+      `TOKEN_ENCRYPTION_KEY` cannot decrypt Google tokens, payout details or WhatsApp tokens
+- [ ] Old encryption keys are retained for as long as any backup that was encrypted with them is retained
+- [ ] Redis persistence is on (AOF), `noeviction` is set
+- [ ] RPO and RTO targets are written down (suggested: RPO <= 15 minutes with PITR, RTO <= 2 hours)
+- [ ] Someone other than the person who set it up has done the drill below
+
+**Restore drill (quarterly, and before launch).** Never restore over production; restore next to it.
+1. Restore the latest backup, or PITR to a timestamp a few minutes ago, into a **new** database instance. Note the time taken.
+2. Point a staging copy of the app at it: same `TOKEN_ENCRYPTION_KEY` (and `_PREVIOUS` if a rotation is unfinished), its
+   own `APP_SECRET`, Razorpay **test** keys, and **no worker**: a worker on a restored copy would send real messages and
+   create real meetings for restored bookings. The web process can also send account and approval emails, so run the copy
+   on a private network with a throwaway email account, or with `NODE_ENV=development` (where `EMAIL_PROVIDER=log` is
+   allowed) so nothing is delivered.
+3. Run `prisma migrate status` (nothing pending), then `GET /api/ready` returns 200.
+4. Run `npm run keys:rotate` (dry run) with a throwaway `TOKEN_ENCRYPTION_KEY_NEW`: it reads and decrypts every encrypted
+   column and reports `failed 0` when the keys match the restored data. This is the quickest proof the backup is usable.
+5. Compare row counts of `bookings`, `payments`, `payouts` and the newest `created_at` with production.
+6. Log in as a test influencer and open the dashboard; in the admin console open Payments.
+7. Record: backup time, restore duration, anything that surprised you. Delete the restored instance.
+
+## 9. Secrets and encryption-key rotation
+
+**Where secrets live**: the platform's secret store (Vercel environment variables, your container host's secrets, a cloud
+secret manager), injected as environment variables at run time. `.env` is for local development, is git-ignored and is
+never copied into an image. Give the web and worker only what they use; the tools image (migrate, keys:rotate) gets its own
+environment when run. Keep an offline, access-controlled copy of `TOKEN_ENCRYPTION_KEY`, `APP_SECRET` and the Razorpay
+secrets in the company password manager.
+
+**If `TOKEN_ENCRYPTION_KEY` is lost** the encrypted values cannot be read. It is recoverable but disruptive: influencers
+reconnect Google, reconnect WhatsApp and re-enter payout details (the table stores only masked values beside the
+ciphertext), and bookings that were waiting on a Meet link wait until they do.
+
+**What is encrypted** (the rotation tool covers all of it; a test fails if the schema gains another `*_enc` column that the
+tool does not list):
+
+| Column | AAD |
+|---|---|
+| `google_tokens.refresh_token_enc` | influencer id |
+| `payout_accounts.account_number_enc` | `payout:<influencerId>:account` |
+| `payout_accounts.upi_id_enc` | `payout:<influencerId>:upi` |
+| `whatsapp_connections.token_enc` | `whatsapp:<influencerId>` |
+
+**How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
+`TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.
+
+**Rotation procedure** (do it when a key may have been exposed, when someone with access leaves, or on your schedule;
+takes minutes, no downtime):
+
+1. Generate the new key: `openssl rand -base64 32`. Store it in the secret manager under a new name. Take a database backup.
+2. **Dry run** the tool with the old key as `TOKEN_ENCRYPTION_KEY` and the new key as `TOKEN_ENCRYPTION_KEY_NEW`:
+   ```
+   docker run --rm -e DATABASE_URL=... -e TOKEN_ENCRYPTION_KEY=<OLD> -e TOKEN_ENCRYPTION_KEY_NEW=<NEW> sessions-tools npm run keys:rotate
+   ```
+   (or `npm run keys:rotate` from a checkout). It prints per-column counts and `failed 0`, and writes nothing. Dry run is
+   the default; `--dry-run` is accepted for clarity.
+3. **Deploy the keys to the running services**: `TOKEN_ENCRYPTION_KEY=<NEW>` and `TOKEN_ENCRYPTION_KEY_PREVIOUS=<OLD>` on
+   both web and worker. From this moment new writes use the new key and every old row is still readable.
+   *Strict variant, if you cannot tolerate even a transient error during the rollout:* first deploy
+   `TOKEN_ENCRYPTION_KEY=<OLD>` + `TOKEN_ENCRYPTION_KEY_PREVIOUS=<NEW>` (every instance can then read both), and only then
+   flip them. These values change a handful of times a day at most (a Google connect, a payout edit), so the plain
+   procedure's window of exposure is tiny.
+4. **Rotate the data**: run the tool again with `--apply` (still `TOKEN_ENCRYPTION_KEY=<OLD>`, `TOKEN_ENCRYPTION_KEY_NEW=<NEW>`).
+   Each row is locked, re-encrypted, **verified to decrypt back to the same plaintext before it is written**, and committed
+   in its own transaction, so an interruption leaves every row either on the old key or the new key, never half-written.
+   `updated_at` is not touched. A row already readable with the new key is skipped, so re-running is safe. For a canary,
+   `--apply --only-influencer <id>` first. Output is counts and row ids, never values or keys. The exit code is non-zero
+   if any row failed; a failed row is left unchanged. Fix the cause (usually a row written with a third, older key) and
+   re-run.
+5. **Verify**: run the dry run once more; it should report `already on new key` for every row and `would rotate 0`. Open the
+   admin console's payout reveal for one influencer; trigger a Google token read (a new booking for a connected influencer).
+6. **Finish**: remove `TOKEN_ENCRYPTION_KEY_PREVIOUS` from web and worker and redeploy. Keep the old key archived until the
+   last database backup that predates the rotation has expired (restoring such a backup needs it, by setting it as
+   `TOKEN_ENCRYPTION_KEY_PREVIOUS`).
+
+*Rollback* at any point before step 6: swap the two values back (old as current, new as previous) and run the tool with the
+keys reversed. The tool never needs the app to be stopped.
+
+Other secrets: `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` rotate in the Razorpay dashboard and the environment at
+the same moment (payments fail between the two changes, so do it in a quiet period); `APP_SECRET` has no overlap window, so
+changing it invalidates every emailed manage/pay link and any in-flight Google connect; OAuth client secrets rotate in
+Google Cloud Console; per-influencer WhatsApp tokens are replaced by the influencer in Settings.
+
+## 10. Razorpay live-mode go-live checklist
+
+- [ ] Razorpay account activation (KYC, bank account, business details) is complete and live mode is enabled
+- [ ] Live **Key Id/Secret** generated and set as `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` on web and worker; no `rzp_test_` key remains
+      (the start-up check warns about test keys)
+- [ ] A **live-mode** webhook (live and test have separate webhook configurations) pointing at `<APP_URL>/api/webhooks/payment`
+      with the five events from section 7 and a new, random `RAZORPAY_WEBHOOK_SECRET`
+- [ ] Payment methods you want (UPI, cards, netbanking) are enabled in the dashboard; the website URL and policies pages
+      (`/terms`, `/privacy`, `/refund-policy`, `/contact`) are published, which Razorpay checks during activation
+- [ ] `AUTO_REFUND_ON_CANCEL` decided on purpose; `PAYOUT_HOLD_DAYS` and `PLATFORM_FEE_BPS` set
+- [ ] One real low-value payment end to end on production: booking, webhook received (check `webhook_events`), booking
+      `SCHEDULED`, Meet link, confirmation. Then refund it from the dashboard and confirm `refund.processed` arrives
+- [ ] Admin: run **Reconcile with Razorpay** and confirm the live payment reconciles
+- [ ] Alerting on webhook failures is on (the Razorpay dashboard shows failed deliveries; section 12)
+- [ ] Settlement account and settlement schedule are what you expect; the person who pays influencers knows the manual process
+      (README, "Reconciliation and influencer payouts")
+- [ ] Tax invoicing / GST handling for the platform fee is decided with your accountant **(outside this codebase, not verified)**
+
+## 11. Google OAuth verification
+
+Meet links are created on each influencer's own Google Calendar through OAuth, with the scopes in `lib/google.ts`:
+`calendar.events` (sensitive), `gmail.send` (**restricted**, unless `GOOGLE_REQUEST_GMAIL_SEND=false`) and `openid email`.
+
+- While the consent screen is in **Testing**, only listed test users can connect and **refresh tokens expire after 7 days**,
+  so every influencer would have to reconnect weekly. Publish the app to **In production** before launch.
+- `calendar.events` needs Google's OAuth verification (a privacy policy URL, a verified domain, a demo video of the scope
+  being used). Start early: it takes days to weeks.
+- `gmail.send` is restricted and is normally subject to an additional third-party security assessment. Until that is
+  done, set `GOOGLE_REQUEST_GMAIL_SEND=false` so only Calendar is requested; customers then get email from the platform
+  address with the influencer as Reply-To (the code already falls back this way).
+- Unverified apps show Google's "unverified app" warning and are capped at 100 users.
+- `GOOGLE_REDIRECT_URI` must be the production URL and be listed on the OAuth client.
+
+## 12. Monitoring and alerts
+
+Send logs somewhere searchable and alert on **absence and failure**. Suggested alerts, with severity:
+
+| Signal | Source | Alert when |
+|---|---|---|
+| Web readiness | Uptime monitor on `/api/ready` (and `/api/health`) from outside | Failing for 2+ minutes (page) |
+| 5xx rate on web | Platform metrics / log search | Above 2% for 5 minutes |
+| **Payment webhook** failing | Razorpay dashboard failed-delivery alerts; log line `[webhook] failed` | Any sustained failure (page): customers pay but are not confirmed |
+| **Worker down** | Container health (`scripts/worker-healthcheck.ts`), platform restart count, or BullMQ `queue.getWorkers()` | Unhealthy for 5 minutes (page); no `[worker]` log output at all |
+| Queue backlog / failures | BullMQ queue counts (`meetings`, `messages`, `reminders`): `waiting` age, `failed` count | Jobs waiting > 5 minutes, or any job in `failed` |
+| Paid bookings stuck | Admin console, Payments "captured but booking not paid"; log `[worker] create-meeting gave up` | Any item older than 15 minutes |
+| Refunds needed | Admin console, Payments "needs refund" (`Payment.needsRefund`) | Any item; a human has to act |
+| Database connections | Provider metrics; app errors `timeout exceeded when trying to connect` | Connections > 80% of the limit, or any pool timeout |
+| Database health | Provider: CPU, storage, replication lag, backup job status | Storage > 80%, last backup failed or older than 26 hours |
+| Redis | Memory use vs limit, `evicted_keys`, persistence status, connection count | Memory > 80%, any eviction (must stay 0), persistence errors |
+| Rate limiting | Log line `[rate-limit] 429 ...`, `[rate-limit] Redis unavailable, using Postgres` | Sudden spike (attack or misconfigured `CLIENT_IP_HEADER`); Redis failover persisting |
+| Application errors | `ERROR_WEBHOOK_URL` messages (`where` field names the module), `worker:expire-holds`, `worker:sweep` | Any (route to a channel someone reads) |
+| Start-up validation | Container exits with `[env] ... will not start` | Any (a failed rollout) |
+| TLS / domain | Certificate and domain expiry monitor | 14 days before |
+| Google reconnects | Dashboard "Reconnect needed", or alert emails to influencers | Many at once (suggests a client-secret or consent-screen problem) |
+
+`GET /api/ready` logs are throttled (one line per minute per failing check), so a probe every few seconds will not flood
+the log.
+
+## 13. Incident runbook
+
+First: `curl -s https://<host>/api/ready` tells you which dependency is failing. Customer-facing impact and recovery per
+failure:
+
+**Payment webhook failing (customers pay, booking stays `PENDING_PAYMENT`)**
+1. Razorpay dashboard > Webhooks: look at recent deliveries and the response code. 401 = secret mismatch
+   (`RAZORPAY_WEBHOOK_SECRET` differs from the dashboard); 5xx/timeouts = app or database problem (see below); no deliveries = wrong URL or webhook disabled.
+2. Fix the cause. Razorpay retries failed deliveries for a period (documented as up to 24 hours **(not verified here)**);
+   the handler is idempotent (`webhook_events`), so retries and manual re-sends are safe.
+3. Afterwards, admin console > Payments > "captured but booking not paid": anything left there paid but is not confirmed.
+   Late payments whose slot was retaken are flagged `needsRefund`; refund them. Use **Reconcile with Razorpay** to compare.
+
+**Worker down (no Meet links, messages or reminders; bookings sit in `PAID`)**
+1. Restart it; check logs for `[env] worker will not start` (configuration), Redis or database connection errors.
+2. On start the worker re-queues every `PAID` booking without a meeting (`requeuePendingMeetings`), expires stale holds and
+   resumes the queues, so a short outage self-heals. Jobs that were waiting in Redis are processed in order.
+3. Delayed jobs that came due while the worker was down run as soon as it is back, **however late**: the reminder handler
+   only checks that the booking is still `SCHEDULED` and its time is unchanged, so a "15 minutes before" reminder can
+   arrive after the session has started. Check the dashboard's needs-attention list for failed messages, and contact
+   customers whose session was affected.
+4. Availability and payments are unaffected meanwhile (section 1).
+
+**Redis down (queues unavailable)**
+1. Web keeps serving: rate limits fail over to Postgres. But **checkout confirmation enqueues** a job inside the webhook
+   transaction, so the payment webhook returns 500 while Redis is down and Razorpay will retry. Restore Redis and let the
+   retries land; nothing is lost or double-processed.
+2. If Redis was **lost or flushed** (not just unreachable), jobs in it are gone. The worker's start-up re-queue recovers
+   paid bookings without a meeting, but **nothing rebuilds scheduled reminders or unsent confirmation messages**
+   (reminders are delayed BullMQ jobs created when the meeting is). After a data loss: restart the worker (recovers meetings),
+   then review upcoming `SCHEDULED` sessions and use the dashboard's resend to re-send confirmations; reminders for those
+   sessions will not fire unless the booking is rescheduled. This is why Redis needs persistence (section 2).
+
+**Database pool exhausted (`timeout exceeded when trying to connect`, `/api/ready` 503 with `db: fail`, 500s)**
+1. Check provider connection count against `DATABASE_POOL_MAX x (web instances + worker replicas)`. Over the limit is the
+   usual cause after scaling out; reduce `DATABASE_POOL_MAX` or the instance count, or raise the plan.
+2. Look for a slow query holding connections (provider dashboard: long-running statements); statements are cancelled after
+   `DATABASE_STATEMENT_TIMEOUT_MS` (15 s default).
+3. Requests wait up to `DATABASE_CONNECT_TIMEOUT_MS` (10 s) for a connection and then fail, which sheds load instead of
+   queueing forever. Restarting the web instances frees leaked connections. Health (`/api/health`) stays green throughout,
+   by design, so instances are not killed; readiness takes them out of rotation.
+
+**Bad deploy (everything 500s or instances will not start)**: roll back to the previous images (section 6). A configuration
+error shows up as `[env] web will not start` followed by the list of variable names.
+
+## 14. Dependency audit (`npm audit --omit=dev`)
+
+`npm audit` reported 4 high findings, all arriving through the Prisma **CLI** package (`prisma`, a dev dependency):
+
+| Advisory | Package | Path |
+|---|---|---|
+| GHSA-3f6p-5ww8-9rcr, GHSA-rgwj-5xj2-c3m3 | `mysql2` <= 3.23.0 (pinned `3.15.3` by `prisma@7.10.0`) | `prisma` > `mysql2` |
+| GHSA-ggr8-5vv4-36mx | `deepmerge-ts` < 8 (`7.1.5`) | `prisma` > `@prisma/config` > `deepmerge-ts` |
+
+**Reachability: not reachable by the application at run time.** The app uses Postgres through `@prisma/adapter-pg` and `pg`.
+The only code in the dependency tree that loads `mysql2` is `prisma/build/cli.js` (the Prisma CLI, for MySQL introspection
+and Studio); nothing under `@prisma/client`, `@prisma/adapter-pg`, `generated/prisma`, `lib/`, `app/` or the built `.next`
+output references it, and `deepmerge-ts` is imported only by `@prisma/config`, which merges the contents of
+`prisma.config.ts` when the CLI runs. Neither processes network or user input. They appear in `--omit=dev` reports only
+because `@prisma/client` declares `prisma` as an *optional peer* dependency, which makes npm keep it (and its tree) in
+production installs; they are therefore also on disk in the worker and tools images, where an image scanner would report them.
+
+**Fix applied**: `package.json` `overrides` pin `mysql2` to `^3.24.5` (same major, a minor-version bump) and `deepmerge-ts` to
+`^8.0.2` (a major bump of a library used only through its `deepmerge` function by the Prisma config loader). `npm audit` now
+reports 0 vulnerabilities. Verified: `npx prisma generate`, `prisma validate`, `prisma migrate diff`, `prisma migrate deploy`
+(in the tools image), `tsc --noEmit` and `npm run build`. The suggested `npm audit fix --force` would downgrade to
+`prisma@6.19.3`, a breaking change that is unnecessary here. **Remove the overrides when Prisma ships releases that depend on
+patched versions** (check on each Prisma upgrade); until then they are the supported-by-npm way to carry a patched
+transitive dependency, at the cost of running Prisma's tooling against dependency versions it was not released with.
+
+`tsx` moved from `devDependencies` to `dependencies`, because the worker (`npm run worker`) and the operational scripts run
+under it in production. `.github/dependabot.yml` raises weekly grouped npm updates and monthly GitHub Actions and Docker
+base-image updates, and CI runs `npm audit --omit=dev --audit-level=high` as an advisory step (`continue-on-error`) so a new
+finding is visible on every run without blocking unrelated work. `engines.node` is `>=22` and `.nvmrc` pins 22.
+
+## 15. Verified when this was written, and known gaps
+
+**Verified** (Docker 29, Windows host, 10 Oct 2026): all three images build; the web image exits 1 with the aggregated
+message when started without configuration; `docker compose up --build` brings up Postgres, Redis, the migration job (all
+migrations applied with the patched `mysql2`/`deepmerge-ts`), web and worker, all reporting healthy; `/api/health` stays
+200 and `/api/ready` turns 503 naming `db` or `redis` when Postgres or Redis is stopped, and recovers when they return;
+the worker logs all three queues and `scripts/worker-healthcheck.ts` passes against a real Redis; `npm run keys:rotate`
+runs inside the tools image. Image sizes on disk: web about 420 MB, worker about 830 MB, tools about 1.7 GB.
+**Not verified**: a deployment on a real host (Vercel, Fly.io, Kubernetes, ...), Upstash/Supabase specifics marked above,
+Razorpay's retry window, and the Google/Meta consent-screen requirements beyond what the code requests.
+
+**Known gaps**
+
+- Scheduled reminders live only in Redis; nothing reconstructs them from the database after a Redis data loss (section 13).
+  A worker start-up reconciliation of `SCHEDULED` bookings would close this.
+- `scripts/worker-healthcheck.ts` cannot say *which* replica is missing and needs a Redis that allows `CLIENT LIST`
+  **(not verified on Upstash)**; use the platform's own restart signal if it does not.
+- Migrations use the single `DATABASE_URL`; a separate `DIRECT_URL` for migrations behind a transaction pooler is not supported yet.
+- `APP_SECRET` has no previous-key fallback (unlike the encryption key).
+- Hosting-specific manifests (Vercel project settings, Kubernetes, Fly.io, ...) are not included; the Dockerfiles and
+  this document are the contract.
+- The Docker build and the compose stack are exercised in CI only as image builds and a smoke test (`.github/workflows/ci.yml`).

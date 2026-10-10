@@ -5,7 +5,7 @@ import { runPaymentRecovery } from "../lib/payment-recovery";
 
 /**
  * Worker schedule for the safety nets that sit beside the queues: a heartbeat every 30 s (so the admin console and
- * /api/health can tell the worker is alive), missed-webhook payment recovery every 2 minutes, and the system health
+ * /api/health/watchdog can tell the worker is alive), missed-webhook payment recovery every 2 minutes, and the system health
  * monitor every 5 minutes. Each job runs on its own timer and never overlaps itself: if the previous run is still going
  * when the timer fires, that tick is skipped. Nothing here can throw out of a timer.
  */

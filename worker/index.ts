@@ -12,6 +12,10 @@ import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
 
+// deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
+import { initEnvOrExit } from "../lib/env";
+initEnvOrExit("worker");
+
 const INTERVAL_MS = 30_000;
 /** Housekeeping (expired rate-limit buckets, sessions and single-use tokens) runs every SWEEP_EVERY ticks (~10 min). */
 const SWEEP_EVERY = 20;

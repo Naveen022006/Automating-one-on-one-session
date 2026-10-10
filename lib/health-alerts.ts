@@ -124,7 +124,7 @@ export async function processAlerts(report: Pick<HealthReport, "conditions">, ov
 
     if (plan.recovered.length > 0) {
       // Only the caller whose delete actually removed the marker announces the recovery, so two overlapping runs
-      // (monitor + /api/health, or parallel /api/health calls) cannot each send one.
+      // (monitor + /api/health/watchdog, or parallel /api/health/watchdog calls) cannot each send one.
       const announce: HealthCondition[] = [];
       for (const c of plan.recovered) {
         if (await kv.delIfExists(ACTIVE_PREFIX + c.id)) announce.push(c);
@@ -215,7 +215,7 @@ export interface WatchdogResult {
 /**
  * The worker cannot report its own death (and the monitor lives in the worker), so something outside it has to look.
  * This checks the heartbeat and Redis and raises (or clears) the same alert keys as the monitor. It is called by
- * /api/health, which an uptime service can poll. A failed Redis read is retried once before it counts as an outage.
+ * /api/health/watchdog, which an uptime service can poll. A failed Redis read is retried once before it counts as an outage.
  */
 export async function runWatchdog(overrides: Partial<AlertDeps> & { retryDelayMs?: number } = {}): Promise<WatchdogResult> {
   const { retryDelayMs = 750, ...alertOverrides } = overrides;

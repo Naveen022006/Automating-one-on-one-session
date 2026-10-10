@@ -1,0 +1,7 @@
+# Files that Linux containers and CI read must keep LF line endings even when checked out on Windows
+# (a CRLF inside a RUN line continuation or a version file breaks the build or the tool).
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf
+.nvmrc text eol=lf

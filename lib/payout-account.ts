@@ -79,6 +79,8 @@ export interface PayoutAccountView {
 }
 
 const aad = (influencerId: string, field: "account" | "upi") => `payout:${influencerId}:${field}`;
+/** Shared with the key-rotation tool (lib/key-rotation-db.ts), so the two can never disagree on the AAD. */
+export { aad as payoutAad };
 
 function toView(row: {
   method: "BANK" | "UPI";

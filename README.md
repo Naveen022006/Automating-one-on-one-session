@@ -20,8 +20,8 @@ UI, rate limiting). See `doc/07-product-ui-auth-and-integrations.md` section 11 
 7. `npm run typecheck` and `npm test` (database tests need a migrated Postgres at `DATABASE_URL`; the rest are pure).
    For local messaging without provider accounts set `MESSAGING_DRY_RUN=true`.
 
-CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests and `next build`
-against Postgres and Redis service containers.
+CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests, `next build` and an
+advisory `npm audit` against Postgres and Redis service containers, and builds the Docker images with a start-up smoke test.
 
 ## Accounts
 Influencers have accounts (email + password, verified email, password reset). Customers stay guests and manage their
@@ -199,9 +199,28 @@ The same alert key is sent at most once per hour (an atomic Redis `SET NX EX`, i
 when it clears (only the run that actually clears the marker sends it, so overlapping runs send one). If every email for an alert fails,
 its dedupe key is released so the next run retries. A condition that cannot be measured never raises or clears an alert, except that Redis
 being configured but unreachable is itself a critical alert. The worker cannot report its own death, so
-`GET /api/health` is also a watchdog: point an uptime monitor at it (every 1 to 5 minutes). It answers `503` when the heartbeat is stale or
+`GET /api/health/watchdog` is the watchdog (`GET /api/health` stays a plain liveness probe for containers): point an uptime monitor at it (every 1 to 5 minutes). It answers `503` when the heartbeat is stale or
 Redis is configured but not answering (after one retry) and raises the same alerts; without such a poller a dead worker only shows on the admin page.
 
 **Admin > System health** (`/admin/health`, with a count badge in the sidebar and on the overview): worker status and last heartbeat ("Worker is
 not running" in red when stale), every monitored condition with its count, queue counts, the recently recovered payments (from the audit
 log) and the failed jobs with their reasons. Failed jobs are kept (`removeOnFail: false`) until someone removes them.
+
+## Deployment
+Full guide: **`doc/08-deployment.md`** (architecture, hosting, every environment variable, release steps, webhook URLs,
+backups and restore drill, key rotation, Razorpay and Google go-live checklists, alerts, incident runbook).
+
+- **Containers:** `Dockerfile` (web, plus a `tools` target for migrations and one-off scripts), `Dockerfile.worker`, and
+  `docker-compose.yml` for a local production-like run (`docker compose up --build`: web, worker, Postgres, Redis and a
+  one-shot `prisma migrate deploy`). The worker is a long-running process and cannot run on Vercel functions. No secret is
+  baked into an image.
+- **Health:** `GET /api/health` (liveness, no dependencies) and `GET /api/ready` (readiness: Postgres, and Redis when
+  `REDIS_URL` is set; 503 names the failing check). Both bypass the per-IP rate limit.
+- **Start-up validation:** `lib/env.ts` checks the environment when the web app and the worker start. With
+  `NODE_ENV=production` it refuses to start on a bad configuration (http `APP_URL`, short `APP_SECRET`, missing Redis or
+  Razorpay keys, `EMAIL_PROVIDER=log`, `MESSAGING_DRY_RUN`, `READINESS_BYPASS`, `RATE_LIMIT_ENABLED=false`) and lists every
+  problem at once without printing a value. In development it only warns.
+- **Encryption key rotation:** `npm run keys:rotate` re-encrypts Google tokens, payout details and WhatsApp tokens under a
+  new `TOKEN_ENCRYPTION_KEY` (dry run by default, `-- --apply` to write). The app reads with the current key, then
+  `TOKEN_ENCRYPTION_KEY_PREVIOUS`, so a rolling deploy works. Back up the key: without it those values are unreadable.
+- **Dependencies:** Node 22+ (`.nvmrc`); Dependabot and an advisory `npm audit` step in CI; see the audit notes in the guide.
