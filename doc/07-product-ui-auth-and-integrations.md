@@ -89,7 +89,7 @@ Manual steps (cannot be coded; owner or implementer does them in Meta's UI):
    by the code and follow Meta's rule (lowercase letters, digits and underscores only, so no hyphens) with a `sa_` prefix so
    they cannot clash with templates the account already has. If you do submit them by hand, use these exact Meta names and
    the same number of variables in the same order. A template already on an account under one of these names is used only if
-   its text and number of variables equal ours; otherwise it is reported ("Name already used") and not used.
+   it takes the same number of variables as ours (the wording is not compared); otherwise it is reported ("Name already used") and not used.
 
 | Key (code) | Meta name | Purpose | Body variables (order matters) | Body submitted |
 |---|---|---|---|---|

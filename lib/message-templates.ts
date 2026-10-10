@@ -18,8 +18,8 @@
  *   reschedule             sa_reschedule            1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
  *   cancellation           sa_cancellation          1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
  *
- * A template that already has one of these names on the account is adopted only if its text and number of variables are
- * the same as ours (templateConflict); otherwise it is reported and not used.
+ * A template that already has one of these names on the account is used only if it has the same number of variables as
+ * ours (templateConflict); otherwise it is reported and not used. Its wording is not compared: see templateConflict.
  *
  * Meta rejects a template body that starts or ends with a variable, so each body begins and ends with fixed text.
  */
@@ -237,19 +237,22 @@ export const TEMPLATE_SPECS: Record<string, TemplateSpec> = Object.fromEntries(
 );
 
 const variableCount = (text: string) => new Set([...text.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => m[1])).size;
-const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /**
- * Why a template found on the account under one of our names is NOT ours, or null when it says what ours says. Sending
- * our parameters to a template with another number of variables fails, so it must not be adopted: compare the number of
- * variables and the body text (whitespace aside) with `spec`. A template whose text Meta did not show cannot be vouched
- * for, so it counts as different.
+ * Why a template found on the account under one of our names is NOT ours to send with, or null. Only the number of
+ * variables is compared, because that is the one thing a send depends on: our parameters are sent to the template, and a
+ * template with another number of them fails every time.
+ *
+ * The wording is deliberately not compared. Under the `sa_` prefix a template with one of our names is one an earlier
+ * sync created, possibly from an older wording of BODIES; comparing text would flip every influencer's approved
+ * templates to CONFLICT, and WhatsApp would stop for all of them, the first time anyone rewords a message. (Comparing the
+ * text only mattered when our names were plain ones like "reschedule", which an influencer could already have used for
+ * something else; with the prefix that case is no longer reachable in practice.) A template whose text Meta did not show
+ * cannot be compared, and is given the benefit of the doubt for the same reason.
  */
 export function templateConflict(existingBody: string | null | undefined, spec: TemplateSpec): string | null {
-  if (existingBody == null) return "Meta did not show its text, so we cannot tell whether it is the same";
+  if (existingBody == null) return null;
   const have = variableCount(existingBody);
   const want = variableCount(spec.body);
-  if (have !== want) return `it has ${have} variable${have === 1 ? "" : "s"} and our message needs ${want}`;
-  if (squash(existingBody) !== squash(spec.body)) return "its text is different from ours";
-  return null;
+  return have === want ? null : `it has ${have} variable${have === 1 ? "" : "s"} and our message needs ${want}`;
 }

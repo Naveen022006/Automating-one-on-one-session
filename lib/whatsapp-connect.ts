@@ -205,8 +205,9 @@ export async function ensureTemplates(wabaId: string, token: string, language: s
   for (const [key, spec] of Object.entries(TEMPLATE_SPECS)) {
     const t = have.get(spec.name);
     if (!t) continue;
-    // A template that was already there under our name is adopted only if it is ours. One with other text or another
-    // number of variables would be sent our parameters and fail, so it is reported and not used.
+    // A template that was already there under our name is used only if it takes as many variables as we send. One with
+    // another number would be sent our parameters and fail, so it is reported and not used. Its wording is not compared
+    // (see templateConflict), so rewording a message never flips approved templates.
     const clash = justCreated.has(spec.name) ? null : templateConflict(t.bodyText, spec);
     if (clash) {
       templates[key] = {

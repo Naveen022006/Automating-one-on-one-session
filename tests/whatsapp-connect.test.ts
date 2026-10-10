@@ -246,41 +246,37 @@ test("our Meta names carry the sa_ prefix, so they cannot be mistaken for the in
   for (const plain of ["booking_confirmation", "reminder_24h", "reminder_15m", "reschedule", "cancellation"]) assert.equal(templateKeyFromMetaName(plain), null, plain);
 });
 
-test("a template already on the account under our name is adopted only if it says what ours says", () => {
+test("a template under our name is used only if it takes as many variables as we send; its wording is not compared", () => {
   const s = spec("reschedule");
   assert.equal(templateConflict(s.body, s), null, "identical");
+  assert.equal(templateConflict(s.body.replace("rescheduled", "moved").replace("See you then.", "Bye."), s), null, "reworded, same variables: fine");
   assert.equal(templateConflict(`  ${s.body.replace(/ /g, "  ")}\n`, s), null, "whitespace does not matter");
   assert.match(templateConflict("Your session moved to {{1}}.", s) ?? "", /has 1 variable and our message needs 4/);
   assert.match(templateConflict(s.body + " {{5}}", s) ?? "", /has 5 variables and our message needs 4/);
-  assert.match(templateConflict(s.body.replace("rescheduled", "moved"), s) ?? "", /text is different/);
   assert.match(templateConflict("Hello", s) ?? "", /has 0 variables/);
-  assert.match(templateConflict(null, s) ?? "", /did not show its text/, "unreadable counts as different");
-  assert.match(templateConflict(undefined, s) ?? "", /did not show its text/);
+  assert.equal(templateConflict(null, s), null, "text Meta did not show cannot be compared, and is given the benefit of the doubt");
+  assert.equal(templateConflict(undefined, s), null);
 });
 
-test("ensureTemplates does not adopt a same-named template with other text, reports it, and still adopts a real match", async () => {
+test("ensureTemplates does not use a same-named template with another number of variables, reports it, and uses the rest", async () => {
   const waba = fakeWaba([
-    { name: spec("reschedule").name, status: "APPROVED", body: "Your session moved to {{1}}." }, // theirs: 1 variable
-    { name: spec("cancellation").name, status: "APPROVED", body: spec("cancellation").body.replace("cancelled", "called off") }, // theirs: same count, other text
+    { name: spec("reschedule").name, status: "APPROVED", body: "Your session moved to {{1}}." }, // 1 variable, we send 4
     { name: spec("booking-confirmation").name, status: "PAUSED", body: spec("booking-confirmation").body }, // ours
     { name: "reschedule", status: "APPROVED", body: "A plain-named template of theirs {{1}}" }, // not even our name now
   ]);
   const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
 
-  for (const key of ["reschedule", "cancellation"]) {
-    assert.equal(r.templates[key].status, "CONFLICT", `${key} is not adopted`);
-    assert.match(r.templates[key].reason ?? "", new RegExp(`"${spec(key).name}" already exists on your WhatsApp account and is not ours`));
-    assert.match(r.templates[key].reason ?? "", /WhatsApp Manager/);
-  }
+  assert.equal(r.templates.reschedule.status, "CONFLICT", "not used");
+  assert.match(r.templates.reschedule.reason ?? "", new RegExp(`"${spec("reschedule").name}" already exists on your WhatsApp account and is not ours`));
   assert.match(r.templates.reschedule.reason ?? "", /has 1 variable and our message needs 4/);
-  assert.match(r.templates.cancellation.reason ?? "", /text is different/);
-  assert.equal(r.templates["booking-confirmation"].status, "PAUSED", "a template that is ours is adopted with its real status");
-  assert.ok(!waba.posted.includes(spec("reschedule").name) && !waba.posted.includes(spec("cancellation").name), "we do not try to create over it");
-  assert.deepEqual(r.submitted.sort(), ["reminder-15m", "reminder-24h"]);
+  assert.match(r.templates.reschedule.reason ?? "", /WhatsApp Manager/);
+  assert.equal(r.templates["booking-confirmation"].status, "PAUSED", "a template that is ours is used with its real status");
+  assert.ok(!waba.posted.includes(spec("reschedule").name), "we do not try to create over it");
+  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-15m", "reminder-24h"]);
   assert.equal(templateState(Object.values(r.templates).map((t) => t.status)), "rejected", "so the card and checklist ask for attention");
 
   // The same check applies to one found by name after 'already exists'.
-  const hidden = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: "Something else {{1}} {{2}} {{3}}" }], { hidden: [spec("cancellation").name] });
+  const hidden = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: "Something else {{1}} {{2}}" }], { hidden: [spec("cancellation").name] });
   assert.equal((await ensureTemplates("waba1", "tok", "en", hidden.fetchImpl)).templates.cancellation.status, "CONFLICT");
 
   // Their own template under the old plain name is simply not ours: ours is created beside it.
@@ -289,11 +285,29 @@ test("ensureTemplates does not adopt a same-named template with other text, repo
   assert.ok(plain.posted.includes(spec("reschedule").name));
   assert.equal(p.templates.reschedule.status, "PENDING");
 
-  // Once the clash is cleared the next sync adopts or creates ours.
+  // Once the clash is cleared the next sync creates ours.
   waba.rows.splice(waba.rows.findIndex((t) => t.name === spec("reschedule").name), 1);
   const again = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
   assert.equal(again.templates.reschedule.status, "PENDING");
   assert.ok(again.submitted.includes("reschedule"));
+});
+
+test("rewording a message does not flip the templates already approved on every account to CONFLICT", async () => {
+  // Every template is on the account, approved, with an OLDER wording than the one in BODIES (same variables). This is
+  // what each influencer's account looks like after someone edits a body here and deploys.
+  const older = (key: string) => spec(key).body.replace(/^\S+/, "Earlier wording:").replace(/\.$/, " (v1).");
+  const approved = KNOWN_TEMPLATES.map((key) => ({ name: spec(key).name, status: "APPROVED", body: older(key) }));
+  assert.ok(approved.every((t, i) => t.body !== spec(KNOWN_TEMPLATES[i]).body), "the account really has other text");
+  const waba = fakeWaba(approved);
+  const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+  for (const key of KNOWN_TEMPLATES) assert.equal(r.templates[key].status, "APPROVED", `${key} stays approved`);
+  assert.deepEqual(waba.posted, [], "and nothing is submitted again");
+  assert.equal(templateState(Object.values(r.templates).map((t) => t.status)), "ready");
+
+  // Run again, and with the text missing from Meta's answer altogether: still approved.
+  const noText = fakeWaba(KNOWN_TEMPLATES.map((key) => ({ name: spec(key).name, status: "APPROVED" })));
+  const n = await ensureTemplates("waba1", "tok", "en", noText.fetchImpl);
+  for (const key of KNOWN_TEMPLATES) assert.equal(n.templates[key].status, "APPROVED", `${key} (no text shown)`);
 });
 
 test("a template that Meta flagged is still sent; a reinstated one is approved; the rule is one function", () => {
