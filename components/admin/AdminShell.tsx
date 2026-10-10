@@ -7,6 +7,7 @@ import {
   IconCalendar,
   IconCard,
   IconLayout,
+  IconLock,
   IconLogOut,
   IconSettings,
   IconShield,
@@ -24,6 +25,7 @@ const NAV = [
   { href: "/admin/payouts", label: "Payouts", icon: IconWallet },
   { href: "/admin/bookings", label: "Bookings", icon: IconCalendar },
   { href: "/admin/audit", label: "Audit log", icon: IconShield },
+  { href: "/admin/security", label: "Security", icon: IconLock },
   { href: "/admin/settings", label: "Settings", icon: IconSettings },
 ];
 
@@ -82,6 +84,7 @@ export function AdminShell({
                   </span>
                 }
                 items={[
+                  { label: "Security", href: "/admin/security", icon: <IconLock size={16} /> },
                   { label: "Settings", href: "/admin/settings", icon: <IconSettings size={16} /> },
                   "separator",
                   { label: "Sign out", onSelect: signOut, icon: <IconLogOut size={16} /> },

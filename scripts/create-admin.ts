@@ -6,7 +6,8 @@ import { hashPassword, passwordProblem } from "../lib/auth/password";
 
 // Usage: npm run admin:create -- --email you@company.com --name "Your Name" [--reset]
 // The password comes from ADMIN_PASSWORD, or a strong one is generated and printed once. --reset changes the
-// password of an existing admin and re-enables a disabled one.
+// password of an existing admin and re-enables a disabled one. --reset-2fa (instead of creating anything) turns
+// two-factor off for an admin who lost their authenticator and recovery codes; it is audit-logged.
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
@@ -20,7 +21,22 @@ async function main() {
   const name = arg("name")?.trim() || "Administrator";
   const reset = process.argv.includes("--reset");
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
-    throw new Error('Usage: npm run admin:create -- --email you@company.com --name "Your Name" [--reset]');
+    throw new Error('Usage: npm run admin:create -- --email you@company.com --name "Your Name" [--reset | --reset-2fa]');
+  }
+
+  if (process.argv.includes("--reset-2fa")) {
+    // Lost both the authenticator and the recovery codes: turn two-factor off so the admin can sign in with the
+    // password and enrol again (with ADMIN_REQUIRE_2FA on, the console sends them straight to /admin/security).
+    const admin = await prisma.adminUser.findUnique({ where: { email } });
+    if (!admin) throw new Error(`${email} is not an admin.`);
+    await prisma.$transaction([
+      prisma.adminUser.update({ where: { id: admin.id }, data: { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null } }),
+      prisma.adminRecoveryCode.deleteMany({ where: { adminId: admin.id } }),
+      prisma.adminSession.deleteMany({ where: { adminId: admin.id } }),
+      prisma.adminAuditLog.create({ data: { adminId: admin.id, adminEmail: "cli", action: "admin.2fa_reset_cli", targetType: "admin", targetId: admin.id } }),
+    ]);
+    console.log(`Two-factor authentication turned off for ${email}; all their sessions were ended.`);
+    return;
   }
 
   const generated = !process.env.ADMIN_PASSWORD;

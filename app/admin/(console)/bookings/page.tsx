@@ -4,6 +4,7 @@ import { PageHead } from "@/components/app/AppShell";
 import { IconCalendar } from "@/components/icons";
 import { EmptyState, LinkTabs, Pagination, StatusPill } from "@/components/ui/primitives";
 import { listBookings, parsePage } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Bookings" };
@@ -22,6 +23,7 @@ const LABEL: Record<string, string> = {
 };
 
 export default async function AdminBookingsPage({ searchParams }: { searchParams: Promise<{ page?: string; status?: string }> }) {
+  await requireAdminPage("/admin/bookings");
   const sp = await searchParams;
   const status = (STATUSES as readonly string[]).includes(sp.status ?? "") ? (sp.status as string) : "all";
   const page = parsePage(sp.page);

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { recordAudit } from "@/lib/admin/audit";
-import { requireAdminApi } from "@/lib/admin/session";
+import { requireAdminMfa } from "@/lib/admin/session";
 import { prisma } from "@/lib/db";
 import { sendAccountEmail } from "@/lib/email";
 import { payoutDetailsReviewedMessage } from "@/lib/email/templates";
@@ -18,7 +18,7 @@ const schema = z.discriminatedUnion("action", [
 // Administrator actions on an influencer's payout details. Revealing the full account number is audited BEFORE the
 // value is decrypted, so there is no way to see it without leaving a record.
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdminApi();
+  const admin = await requireAdminMfa();
   if (admin instanceof NextResponse) return admin;
   const { id } = await ctx.params;
 

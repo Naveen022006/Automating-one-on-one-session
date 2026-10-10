@@ -4,6 +4,7 @@ import { PageHead } from "@/components/app/AppShell";
 import { Alert, Card, Stat } from "@/components/ui/primitives";
 import { getOverview, type MoneyByCurrency } from "@/lib/admin/data";
 import { listAudit } from "@/lib/admin/data";
+import { requireAdminPage } from "@/lib/admin/session";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Overview" };
@@ -14,6 +15,7 @@ function money(list: MoneyByCurrency[]) {
 }
 
 export default async function AdminOverviewPage() {
+  await requireAdminPage("/admin");
   const [o, audit] = await Promise.all([getOverview(), listAudit(1)]);
   const b = o.bookingsByStatus;
   const live = (b.SCHEDULED ?? 0) + (b.PAID ?? 0);

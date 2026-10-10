@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Alert, Button, Field, Input, describedBy } from "@/components/ui/primitives";
 
-type Result = { ok: boolean; data: { error?: string; field?: string; redirect?: string } };
+type Result = { ok: boolean; data: { error?: string; field?: string; redirect?: string; mfaRequired?: boolean; pendingToken?: string; restart?: boolean } };
 
 async function post(url: string, body: unknown): Promise<Result> {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -15,6 +15,10 @@ export function AdminLoginForm({ next }: { next?: string }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Step 2 (only for administrators with two-factor on): the token proving the password was right, and the code.
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -26,7 +30,84 @@ export function AdminLoginForm({ next }: { next?: string }) {
       setError(r.data.error ?? "Could not sign in. Please try again.");
       return;
     }
+    if (r.data.mfaRequired && r.data.pendingToken) {
+      setPassword("");
+      setPendingToken(r.data.pendingToken);
+      setBusy(false);
+      return;
+    }
     window.location.assign(r.data.redirect ?? "/admin");
+  }
+
+  async function submitCode(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const r = await post("/api/admin/auth/mfa", { pendingToken, code, next });
+    if (!r.ok) {
+      setBusy(false);
+      setCode("");
+      setError(r.data.error ?? "Could not verify the code. Please try again.");
+      // The five-minute window ended (or the token is no longer valid): start again from the password.
+      if (r.data.restart) setPendingToken(null);
+      return;
+    }
+    window.location.assign(r.data.redirect ?? "/admin");
+  }
+
+  if (pendingToken) {
+    return (
+      <form className="stack" onSubmit={submitCode} noValidate>
+        {error && <Alert tone="danger">{error}</Alert>}
+        <Field
+          id="admin-code"
+          label={useRecovery ? "Recovery code" : "Authentication code"}
+          help={useRecovery ? "One of the single-use codes you saved when you set up two-factor. Each works once." : "The 6-digit code from your authenticator app."}
+        >
+          <Input
+            id="admin-code"
+            key={useRecovery ? "recovery" : "totp"}
+            type="text"
+            inputMode={useRecovery ? "text" : "numeric"}
+            autoComplete="one-time-code"
+            autoCapitalize="none"
+            spellCheck={false}
+            required
+            autoFocus
+            maxLength={useRecovery ? 20 : 8}
+            value={code}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value)}
+          />
+        </Field>
+        <Button type="submit" variant="primary" size="lg" block loading={busy}>
+          Verify and sign in
+        </Button>
+        <div className="row row--between">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setUseRecovery(!useRecovery);
+              setCode("");
+              setError(null);
+            }}
+          >
+            {useRecovery ? "Use my authenticator app" : "Use a recovery code"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setPendingToken(null);
+              setCode("");
+              setError(null);
+            }}
+          >
+            Back
+          </Button>
+        </div>
+      </form>
+    );
   }
 
   return (
