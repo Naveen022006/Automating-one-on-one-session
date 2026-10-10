@@ -107,12 +107,29 @@ Revealing bank details and moving money used to need only an admin password. Now
   steps: email + password gives a 5-minute signed token and no session; the session is created only after a valid
   6-digit code or a recovery code. A code works once (the last accepted 30-second step is stored, so a code that was
   seen cannot be replayed), +-1 step of clock drift is tolerated, and the second step is rate limited per admin and IP.
-  The secret is stored AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`). Regenerating recovery codes and turning 2FA off
-  both need a fresh code, and enabling 2FA signs out the admin's other sessions.
+  The secret is stored AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`).
+- **A session cookie alone can never change two-factor.** Setting it up, confirming it, regenerating recovery codes and
+  turning it off all need the administrator's **current password** (and, except for the first step of setup, a valid
+  code). Enabling signs out the admin's other sessions, and so does turning it off, so a leftover session cannot race to
+  enrol its own authenticator. The admin is **emailed** and the action audited whenever 2FA is enabled or disabled or
+  recovery codes are regenerated. The administrator list on the Security page is only shown to a session that has
+  passed what it must (enrolled and verified when 2FA is required).
+- **Code guessing is bounded without relying on the rate limiter.** Every code attempt (login second step and Security
+  page together) is counted in the database before it is checked; 10 in a row lock authenticator codes for 15 minutes
+  (4x longer each time it repeats, at most 24 h), whatever IP addresses the guesses come from and even if Redis and the
+  rate-limit table are down. A success resets it. The admin is emailed, the lock is audited
+  (`admin.mfa_locked`) and reported to the operator channel (`ERROR_WEBHOOK_URL`). A locked account still accepts its
+  password plus a **recovery code** (long random strings cannot be guessed), so someone who only knows the password cannot
+  shut the real admin out. The admin MFA and password re-entry rate limits also **fail closed**: if no rate-limit store is
+  reachable they answer 503 instead of allowing unlimited attempts (other routes still fail open), and the Security
+  page is additionally capped at 30 attempts per hour per admin across all IPs.
 - **`ADMIN_REQUIRE_2FA`** (default `true` in production, `false` elsewhere). When on, an administrator who has not enrolled
   is redirected to `/admin/security` from every other admin page, and every admin API except the enrolment one answers
-  `403 { error, mfaRequired: true }`. If an admin loses both the authenticator and the recovery codes, the owner runs
-  `npm run admin:create -- --email them@company.com --reset-2fa` (ends their sessions, writes an audit entry).
+  `403 { error, mfaRequired: true }`. A password-only session of an admin who already has 2FA (one that predates the
+  enrolment) is sent back to sign in with a code, and a password-only session is never created for such an admin.
+  **Break-glass:** if an admin loses both the authenticator and the recovery codes (or you need to override a lock), the
+  owner runs `npm run admin:create -- --email them@company.com --reset-2fa` on the server: it turns 2FA off, clears the
+  lock, ends all their sessions and writes an audit entry (`admin.2fa_reset_cli`).
 - **Sensitive actions need an MFA-verified session** whenever 2FA is required or enabled: reveal / verify / reject payout
   details, reconcile and undo, create, approve, pay and cancel payouts, change a fee. A password-only session (for
   example one that predates enrolment) gets `403 mfaRequired` and has to sign in again.
@@ -120,7 +137,10 @@ Revealing bank details and moving money used to need only an admin password. Now
   second administrator has **approved** it, and the approver must not be the administrator who created it (enforced in
   `lib/payouts.ts`, not just hidden in the UI). The payout list shows "Awaiting approval" and an Approve button for
   the other administrator; Mark as paid stays disabled until then. `PAYOUT_FOUR_EYES_MIN_MINOR` (default `0` = always)
-  limits approval to payouts whose net amount, in minor units, is at or above it. With four-eyes on and only one active
+  limits approval to smaller payouts: it is in the **minor units of each payout's own currency** (paise for INR, cents
+  for USD; there is no conversion, so one number applies to every currency) and it is compared with the payout's net
+  amount **plus the same influencer's other unapproved payouts in that currency from the last 24 hours**, so splitting one
+  transfer into several below the threshold does not avoid approval. With four-eyes on and only one active
   administrator the console says so: create a second one (`npm run admin:create`) or set `PAYOUT_FOUR_EYES=false`.
   Approvals are audit-logged as `payout.approved`.
 - **Security page** also lists every administrator (2FA on or off, last sign-in, disabled).
