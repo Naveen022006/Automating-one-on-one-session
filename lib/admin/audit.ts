@@ -19,8 +19,13 @@ export interface AuditEntry {
  * action never happens without a record: if this throws, the caller should not proceed (or should roll back).
  * Never put secrets (bank numbers, passwords) in `detail`; record what was done and to which record.
  */
-export async function recordAudit(actor: AuditActor, entry: AuditEntry): Promise<void> {
-  await prisma.adminAuditLog.create({
+export async function recordAudit(
+  actor: AuditActor,
+  entry: AuditEntry,
+  /** Pass a transaction client to write the entry inside the caller's transaction. */
+  db: { adminAuditLog: Pick<typeof prisma.adminAuditLog, "create"> } = prisma,
+): Promise<void> {
+  await db.adminAuditLog.create({
     data: {
       adminId: actor.adminId,
       adminEmail: actor.email,

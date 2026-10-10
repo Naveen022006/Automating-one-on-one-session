@@ -1,6 +1,5 @@
-import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
-import { activeSeatWhere } from "@/lib/holds";
+import { applyCapturedPayment } from "@/lib/payment-capture";
 import { enqueueCreateMeeting } from "@/lib/queue";
 import { applyRefundWebhook } from "@/lib/refunds";
 
@@ -50,7 +49,8 @@ export async function handleRazorpayEvent(
       if (!entity?.order_id) return "ignored";
 
       if (event.event === "payment.captured" || event.event === "order.paid") {
-        await onCaptured(tx, entity, enqueue);
+        // The capture rules live in lib/payment-capture.ts, shared with the missed-webhook recovery job.
+        await applyCapturedPayment(tx, entity, enqueue);
         return "processed";
       }
       if (event.event === "payment.failed") {
@@ -66,51 +66,4 @@ export async function handleRazorpayEvent(
     },
     { timeout: 15_000 },
   );
-}
-
-async function onCaptured(
-  tx: Prisma.TransactionClient,
-  entity: RazorpayPaymentEntity,
-  enqueue: (bookingId: string) => Promise<void>,
-) {
-  const payment = await tx.payment.findUnique({ where: { providerOrderId: entity.order_id! } });
-  if (!payment) return; // not an order we created
-  if (payment.status === "CAPTURED") return; // payment.captured and order.paid both arrive; first one wins
-
-  await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${payment.bookingId} FOR UPDATE`;
-  const booking = await tx.booking.findUniqueOrThrow({
-    where: { id: payment.bookingId },
-    include: { session: { include: { service: true } } },
-  });
-
-  const captured = { status: "CAPTURED" as const, providerPaymentId: entity.id };
-  const needsRefund = (reason: string) =>
-    tx.payment.update({ where: { id: payment.id }, data: { ...captured, needsRefund: true, failureReason: reason } });
-
-  if (entity.amount !== payment.amountMinor || entity.currency !== payment.currency) {
-    await needsRefund("captured amount does not match the order");
-    await tx.booking.update({ where: { id: booking.id }, data: { status: "FAILED" } });
-    return;
-  }
-
-  if (booking.status === "EXPIRED") {
-    // Paid after the hold timed out: honour it only if the seat is still free.
-    await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${booking.sessionId} FOR UPDATE`;
-    const taken = await tx.booking.count({
-      where: { sessionId: booking.sessionId, id: { not: booking.id }, ...activeSeatWhere(new Date()) },
-    });
-    if (taken >= booking.session.service.capacity) {
-      await needsRefund("paid after the hold expired and the slot was taken");
-      await tx.booking.update({ where: { id: booking.id }, data: { status: "FAILED" } });
-      return;
-    }
-  } else if (booking.status !== "HELD" && booking.status !== "PENDING_PAYMENT") {
-    // Already paid, or cancelled/failed: this is a second or late payment.
-    await needsRefund(`payment captured while booking was ${booking.status}`);
-    return;
-  }
-
-  await tx.payment.update({ where: { id: payment.id }, data: captured });
-  await tx.booking.update({ where: { id: booking.id }, data: { status: "PAID", holdExpiresAt: null } });
-  await enqueue(booking.id);
 }
