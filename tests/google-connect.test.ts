@@ -49,6 +49,8 @@ const tokens = {
   /** Whether a grant row exists, and the Google account on record (the grant's, or the one remembered at disconnect). */
   connected: true,
   connectedEmail: "old@gmail.com" as string | null,
+  /** Whether another influencer profile is connected with the same Google account (Google's revoke would hit it too). */
+  shared: false,
   saved: [] as { influencerId: string; email: string | null; scope: string }[],
   counted: 0,
 };
@@ -60,6 +62,7 @@ async function loadRoute(which: "connect" | "callback") {
     namedExports: {
       NONCE_COOKIE: "g_oauth_nonce",
       OAUTH_STATE_PURPOSE: "google-oauth-state",
+      googleAccountSharedWithOthers: async () => tokens.shared,
       countLiveCalendarEvents: async () => (tokens.counted++, tokens.liveEvents),
       getGoogleAccountOfRecord: async () => ({ connected: tokens.connected, email: tokens.connectedEmail }),
       saveGoogleToken: async (influencerId: string, _rt: string, scope: string, email: string | null) => void tokens.saved.push({ influencerId, email, scope }),
@@ -70,7 +73,7 @@ async function loadRoute(which: "connect" | "callback") {
 }
 
 function reset(over: Partial<typeof tokens> = {}) {
-  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", saved: [], counted: 0 }, over);
+  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", shared: false, saved: [], counted: 0 }, over);
   auth = { influencerId: "inf1", email: "login@example.com" };
 }
 
@@ -255,6 +258,8 @@ async function loadDisconnect() {
   mock.module("@/lib/google-tokens", {
     namedExports: {
       countLiveCalendarEvents: async () => tokens.liveEvents,
+      getGoogleAccountOfRecord: async () => ({ connected: true, email: tokens.connectedEmail }),
+      googleAccountSharedWithOthers: async () => tokens.shared,
       deleteGoogleToken: async () => (calls.deleted++, "rt-old"),
       getGoogleStatus: async () => ({ state: "not-connected", requestsGmail: true }),
     },
@@ -339,4 +344,39 @@ test("callback: a different account with no upcoming events at stake, or no know
   reset({ liveEvents: 4, connectedEmail: null });
   assert.equal((await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR}` })).outcome, "connected-no-gmail");
   assert.equal(tokens.counted, 0, "an unknown old account is not even counted");
+});
+
+// ---- S6: Google's revoke ends the app's access for the whole Google account ----
+
+test("S6: a refused grant is not revoked while another influencer profile is connected with the same Google account", async () => {
+  // Calendar unticked on a first connection: normally revoked (see above); not when the account is in use elsewhere.
+  reset({ connected: false, connectedEmail: null, shared: true });
+  const unticked = await runCallback({ email: "shared@gmail.com", scope: `openid email ${GMAIL}` });
+  assert.equal(unticked.outcome, "missing-permission");
+  assert.deepEqual(unticked.revoked, [], "revoking would disconnect the other profile too");
+
+  // A refused switch: same.
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 3, shared: true });
+  const refused = await runCallback({ email: "shared@gmail.com", scope: `openid email ${CALENDAR}` });
+  assert.equal(refused.outcome, "switch-unconfirmed");
+  assert.deepEqual(refused.revoked, []);
+  assert.deepEqual(tokens.saved, [], "and it is still refused");
+
+  // Nobody else uses the account: revoked as before.
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 3, shared: false });
+  assert.deepEqual((await runCallback({ email: "alone@gmail.com", scope: `openid email ${CALENDAR}` })).revoked, ["rt-new"]);
+});
+
+test("S6: disconnecting deletes our copy but does not revoke at Google while another profile uses the same account", async () => {
+  reset({ liveEvents: 0, shared: true });
+  const fake = fakeGoogle({ email: "x", scope: "" });
+  try {
+    const { DELETE, calls } = await loadDisconnect();
+    assert.equal((await DELETE(deleteReq())).status, 200);
+    assert.equal(calls.deleted, 1, "this profile is disconnected");
+    assert.deepEqual(fake.revoked, [], "but the shared Google account is left authorised for the other profile");
+  } finally {
+    fake.restore();
+    mock.reset();
+  }
 });
