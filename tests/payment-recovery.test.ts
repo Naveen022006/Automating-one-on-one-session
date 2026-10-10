@@ -1,7 +1,9 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
+import { Client } from "pg";
 import { prisma } from "../lib/db";
+import { nextRecoveryState } from "../lib/health-eval";
 import { createHold } from "../lib/holds";
 import { handleRazorpayEvent, type RazorpayWebhook } from "../lib/payment-webhook";
 import {
@@ -324,6 +326,69 @@ test("recovery and the webhook at the same moment book the payment once", { skip
   }
 });
 
+/** True once some other database session is blocked waiting on a `SELECT ... FROM bookings WHERE id ... FOR UPDATE`. */
+async function bookingLockHasAWaiter(timeoutMs = 30_000): Promise<boolean> {
+  // A separate connection: with the pool at 2 both pooled connections are busy (the lock holder and the waiter).
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  try {
+    await client.connect();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await client.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM bookings WHERE id%FOR UPDATE%'`,
+      );
+      if (res.rows[0].n > 0) return true;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+test("recovery that has to wait for the booking lock re-reads the payment under it and does not flag a refund", { skip }, async () => {
+  const { bookingId, orderId, paymentId } = await pendingBooking();
+  const rec = recorder();
+  let proceed!: () => void;
+  const gate = new Promise<void>((r) => (proceed = r));
+  let locked!: () => void;
+  const lockedP = new Promise<void>((r) => (locked = r));
+
+  // Stands in for a webhook transaction that is part-way through applying this very payment: it holds the booking lock,
+  // and will mark the payment captured and the booking paid before it lets go.
+  const holder = prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${bookingId} FOR UPDATE`;
+      locked();
+      await gate;
+      await tx.payment.update({ where: { id: paymentId }, data: { status: "CAPTURED", providerPaymentId: `pay_${orderId}` } });
+      await tx.booking.update({ where: { id: bookingId }, data: { status: "PAID", holdExpiresAt: null } });
+      rec.queued.push(bookingId); // the webhook's enqueue
+    },
+    { timeout: 120_000 },
+  );
+  await Promise.race([lockedP, holder]);
+
+  // Recovery reads the payment as unpaid (the holder has not committed), then blocks on the booking row.
+  const recovery = recover({ fetchOrderPayments: lookup({ [orderId]: razorpay(orderId, "captured") }).fn, enqueue: rec.enqueue });
+  const waited = await bookingLockHasAWaiter();
+  proceed();
+  await holder;
+  const summary = await recovery;
+
+  assert.ok(waited, "recovery really was blocked on the booking row lock (so the re-read under the lock was exercised)");
+  assert.equal(summary.recovered, 0, "it saw the payment already applied once it got the lock");
+  assert.equal(summary.flagged, 0);
+  assert.equal(summary.applyFailures, 0);
+  assert.deepEqual(rec.queued, [bookingId], "one job in total, the holder's");
+  const p = await payment(orderId);
+  assert.equal(p.status, "CAPTURED");
+  assert.equal(p.needsRefund, false, "the late transaction must not mistake the now-PAID booking for a second payment");
+  assert.equal((await booking(bookingId)).status, "PAID");
+});
+
 test("an already-recorded recovery id is a no-op", { skip }, async () => {
   const { bookingId, orderId } = await pendingBooking();
   await prisma.$executeRaw`INSERT INTO webhook_events (id, provider, event_id, type, received_at) VALUES (${"we_" + crypto.randomUUID()}, 'razorpay', ${"recovery:pay_" + orderId}, 'recovery.payment.captured', now())`;
@@ -404,17 +469,141 @@ test("Razorpay unreachable: no throw, nothing changed, and the pass stops after 
   }
 });
 
-test("Razorpay not knowing the order is remembered as checked; a 5xx is not", { skip }, async () => {
+test("Razorpay not knowing the order is an answered lookup and is remembered as checked; a 5xx is a failed one and is not", { skip }, async () => {
   const unknown = await pendingBooking();
-  const flaky = await pendingBooking();
+  const flaky = await pendingBooking({ ageMs: 11 * MIN });
   const l = lookup({
     [unknown.orderId]: new RazorpayHttpError(400, "The id provided does not exist"),
     [flaky.orderId]: new RazorpayHttpError(503, "unavailable"),
   });
   const summary = await recover({ fetchOrderPayments: l.fn, enqueue: recorder().enqueue });
-  assert.equal(summary.lookupErrors, 2);
+  assert.equal(summary.lookupsOk, 1, "the 400 counts as answered");
+  assert.equal(summary.unknownOrders, 1);
+  assert.equal(summary.lookupErrors, 1, "only the 503 failed");
   assert.ok((await payment(unknown.orderId)).recoveryCheckedAt, "a definite 'no such order' backs off");
   assert.equal((await payment(flaky.orderId)).recoveryCheckedAt, null, "a 503 is retried next run");
+});
+
+test("a whole batch of unknown orders (test-mode orders under live keys) is answered, never aborts the run, and is not a failing streak", { skip }, async () => {
+  const orders = [];
+  for (let i = 0; i < 5; i++) orders.push(await pendingBooking({ ageMs: (10 + i) * MIN }));
+  const l = lookup(Object.fromEntries(orders.map((o) => [o.orderId, new RazorpayHttpError(400, "The id provided does not exist")])));
+  const summary = await recover({ fetchOrderPayments: l.fn, enqueue: recorder().enqueue });
+  assert.equal(l.calls.length, 5, "all five were looked at: the 400s did not trip the stop-after-3-failures rule");
+  assert.equal(summary.aborted, false);
+  assert.equal(summary.lookupErrors, 0);
+  assert.equal(summary.lookupsOk, 5);
+  assert.equal(summary.unknownOrders, 5);
+  for (const o of orders) assert.ok((await payment(o.orderId)).recoveryCheckedAt, "each backs off");
+  const state = nextRecoveryState(
+    { consecutiveFailedRuns: 2, lastRunAt: 0, lastError: "x", lastCandidates: 0, lastRecovered: 0 },
+    { at: Date.now(), candidates: summary.candidates, lookupsOk: summary.lookupsOk, lookupErrors: summary.lookupErrors, recovered: 0, aborted: summary.aborted },
+  );
+  assert.equal(state.consecutiveFailedRuns, 0, "so no false 'Razorpay lookups are failing' alert either");
+});
+
+test("a payment Razorpay captured under 3 minutes ago is left for the webhook, then applied on a later run", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking();
+  const rec = recorder();
+  const attempt = (createdSecondsAgo: number): RazorpayPayment[] => [
+    { ...razorpay(orderId, "captured")[0], created_at: Math.floor(Date.now() / 1000) - createdSecondsAgo },
+  ];
+  const first = await recover({ fetchOrderPayments: lookup({ [orderId]: attempt(30) }).fn, enqueue: rec.enqueue });
+  assert.equal(first.tooFresh, 1);
+  assert.equal(first.recovered, 0);
+  assert.equal(rec.queued.length, 0);
+  assert.equal((await booking(bookingId)).status, "PENDING_PAYMENT", "untouched: the webhook is probably seconds away");
+  assert.equal((await payment(orderId)).recoveryCheckedAt, null, "not stamped, so the next run looks again straight away");
+
+  const later = await recover({ fetchOrderPayments: lookup({ [orderId]: attempt(5 * 60) }).fn, enqueue: rec.enqueue });
+  assert.equal(later.tooFresh, 0);
+  assert.equal(later.recovered, 1);
+  assert.deepEqual(rec.queued, [bookingId]);
+});
+
+// --- Redis hanging, session already started ---------------------------------------------------------------------
+
+const neverResolves = () => new Promise<void>(() => {});
+
+test("recovery: a hanging enqueue times out, rolls everything back, is recorded, and the next run applies it", { skip }, async () => {
+  const { bookingId, orderId, paymentId } = await pendingBooking();
+  const l = lookup({ [orderId]: razorpay(orderId, "captured") });
+
+  const started = Date.now();
+  const hung = await recover({ fetchOrderPayments: l.fn, enqueue: neverResolves, enqueueTimeoutMs: 300 });
+  assert.ok(Date.now() - started < 20_000, "the run did not hang on the queue");
+  assert.equal(hung.applyFailures, 1);
+  assert.equal(hung.recovered, 0);
+  assert.equal((await booking(bookingId)).status, "PENDING_PAYMENT", "the booking was NOT marked paid without a job");
+  const p = await payment(orderId);
+  assert.equal(p.status, "CREATED");
+  assert.match(p.recoveryError ?? "", /timed out/);
+  const events = await prisma.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM webhook_events WHERE event_id = ${"recovery:pay_" + orderId}`;
+  assert.equal(Number(events[0].n), 0, "the idempotency record rolled back with it");
+  assert.equal(await prisma.adminAuditLog.count({ where: { targetId: paymentId, adminEmail: RECOVERY_ACTOR.email } }), 0);
+
+  const rec = recorder();
+  const ok = await recover({ fetchOrderPayments: l.fn, enqueue: rec.enqueue });
+  assert.equal(ok.recovered, 1);
+  assert.deepEqual(rec.queued, [bookingId]);
+  assert.equal((await booking(bookingId)).status, "PAID");
+  assert.equal((await payment(orderId)).recoveryError, null);
+});
+
+test("webhook: a hanging enqueue times out and rolls back, so Razorpay's retry of the same event is processed", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking();
+  const eventId = `evt_rec_${run}_hang`;
+  await assert.rejects(handleRazorpayEvent(eventId, capturedEvent(orderId), neverResolves, { enqueueTimeoutMs: 300 }), /timed out/);
+  assert.equal((await booking(bookingId)).status, "PENDING_PAYMENT");
+  assert.equal((await payment(orderId)).status, "CREATED");
+  const rec = recorder();
+  assert.equal(await handleRazorpayEvent(eventId, capturedEvent(orderId), rec.enqueue), "processed", "the event was not recorded as seen");
+  assert.deepEqual(rec.queued, [bookingId]);
+});
+
+/** Moves the booking's session to one hour ago, as if the customer paid (or recovery found it) after the session began. */
+async function startSessionInThePast(bookingId: string) {
+  const b = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { sessionId: true } });
+  const start = new Date(Date.now() - 3_600_000);
+  await prisma.session.update({ where: { id: b.sessionId }, data: { startTime: start, endTime: new Date(start.getTime() + 30 * MIN) } });
+}
+
+test("a payment captured after the session has started is flagged for refund, not booked (recovery)", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking();
+  await startSessionInThePast(bookingId);
+  const rec = recorder();
+  const summary = await recover({ fetchOrderPayments: lookup({ [orderId]: razorpay(orderId, "captured") }).fn, enqueue: rec.enqueue });
+  assert.equal(summary.recovered, 0);
+  assert.equal(summary.flagged, 1);
+  assert.equal(rec.queued.length, 0);
+  const p = await payment(orderId);
+  assert.equal(p.status, "CAPTURED");
+  assert.equal(p.needsRefund, true);
+  assert.match(p.failureReason ?? "", /session had already started/);
+  assert.equal((await booking(bookingId)).status, "FAILED");
+});
+
+test("a payment captured after the session has started is flagged for refund, not booked (webhook)", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking({ bookingStatus: "EXPIRED" });
+  await startSessionInThePast(bookingId);
+  const rec = recorder();
+  assert.equal(await handleRazorpayEvent(`evt_rec_${run}_past`, capturedEvent(orderId), rec.enqueue), "processed");
+  assert.equal(rec.queued.length, 0);
+  const p = await payment(orderId);
+  assert.equal(p.needsRefund, true);
+  assert.match(p.failureReason ?? "", /session had already started/);
+  assert.equal((await booking(bookingId)).status, "FAILED");
+});
+
+test("a second payment on a booking that is already paid is flagged but the paid booking is left alone, even after the session started", { skip }, async () => {
+  const { bookingId, orderId } = await pendingBooking({ bookingStatus: "PAID" });
+  await startSessionInThePast(bookingId);
+  const rec = recorder();
+  await handleRazorpayEvent(`evt_rec_${run}_second`, capturedEvent(orderId), rec.enqueue);
+  assert.equal(rec.queued.length, 0);
+  assert.equal((await payment(orderId)).needsRefund, true);
+  assert.match((await payment(orderId)).failureReason ?? "", /while booking was PAID/);
+  assert.equal((await booking(bookingId)).status, "PAID", "a paid booking is never turned into FAILED by a duplicate payment");
 });
 
 test("if queueing the meeting job fails the payment is rolled back, remembered as unapplied, and retried", { skip }, async () => {

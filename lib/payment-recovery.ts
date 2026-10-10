@@ -3,7 +3,7 @@ import { recordAudit, type AuditActor } from "@/lib/admin/audit";
 import { prisma } from "@/lib/db";
 import { applyCapturedPayment, type CaptureResult } from "@/lib/payment-capture";
 import { fetchOrderPayments, RazorpayHttpError, type RazorpayPayment } from "@/lib/payments";
-import { enqueueCreateMeeting } from "@/lib/queue";
+import { requeueCreateMeeting } from "@/lib/queue";
 
 /**
  * Missed-webhook recovery. Only Razorpay's webhook marks a booking paid, so a lost webhook (tunnel down, outage, wrong
@@ -69,10 +69,14 @@ export interface RecoverySummary {
   startedAt: Date;
   /** Payments selected for this run. */
   candidates: number;
-  /** Razorpay lookups that answered. */
+  /** Razorpay lookups that answered (including "no such order"). */
   lookupsOk: number;
-  /** Razorpay lookups that failed (network, timeout, 4xx/5xx). */
+  /** Razorpay lookups that failed (network, timeout, 5xx, auth...). */
   lookupErrors: number;
+  /** Orders Razorpay answered 400/404 for (for example test-mode orders after switching to live keys). Counted in lookupsOk. */
+  unknownOrders: number;
+  /** Captured payments left for the next run because Razorpay captured them under 3 minutes ago (the webhook is probably seconds away). */
+  tooFresh: number;
   /** Payments found captured at Razorpay and turned into paid bookings. */
   recovered: number;
   /** Payments found captured but flagged for refund (slot taken, amount mismatch...). */
@@ -88,8 +92,10 @@ export interface RecoverySummary {
 export interface RecoveryDeps {
   /** Razorpay's payments for one order. Defaults to the real API call. */
   fetchOrderPayments: (orderId: string) => Promise<RazorpayPayment[]>;
-  /** Called inside the same transaction that marks the booking paid. */
+  /** Called inside the same transaction that marks the booking paid; bounded by `enqueueTimeoutMs`. */
   enqueue: (bookingId: string) => Promise<void>;
+  /** How long to wait for `enqueue` before rolling the payment back to be retried. Default 5 s. */
+  enqueueTimeoutMs?: number;
   now: () => Date;
   batchSize: number;
   maxRunMs: number;
@@ -100,7 +106,8 @@ export interface RecoveryDeps {
 
 const defaultDeps: RecoveryDeps = {
   fetchOrderPayments: (orderId) => fetchOrderPayments(orderId),
-  enqueue: enqueueCreateMeeting,
+  // requeueCreateMeeting first clears a finished job with this booking's id (a plain add would be a silent no-op).
+  enqueue: requeueCreateMeeting,
   now: () => new Date(),
   batchSize: RECOVERY_BATCH_SIZE,
   maxRunMs: RECOVERY_MAX_RUN_MS,
@@ -125,6 +132,8 @@ export async function runPaymentRecovery(overrides: Partial<RecoveryDeps> = {}):
     candidates: 0,
     lookupsOk: 0,
     lookupErrors: 0,
+    unknownOrders: 0,
+    tooFresh: 0,
     recovered: 0,
     flagged: 0,
     applyFailures: 0,
@@ -155,10 +164,18 @@ export async function runPaymentRecovery(overrides: Partial<RecoveryDeps> = {}):
         attempts = await deps.fetchOrderPayments(payment.providerOrderId);
         summary.lookupsOk++;
       } catch (e) {
+        if (isPerOrderRejection(e)) {
+          // Razorpay answered: it does not know this order (e.g. a test-mode order after switching to live keys). That is
+          // an answer, not an outage: it neither counts towards stopping the run nor towards "lookups are failing".
+          summary.lookupsOk++;
+          summary.unknownOrders++;
+          consecutiveErrors = 0;
+          await markChecked(payment.id, deps.now());
+          continue;
+        }
         summary.lookupErrors++;
         summary.lastError = errText(e);
         consecutiveErrors++;
-        if (isPerOrderRejection(e)) await markChecked(payment.id, deps.now());
         continue;
       }
 
@@ -166,6 +183,14 @@ export async function runPaymentRecovery(overrides: Partial<RecoveryDeps> = {}):
       if (!captured) {
         consecutiveErrors = 0;
         await markChecked(payment.id, deps.now());
+        continue;
+      }
+
+      // Captured moments ago: the webhook is very probably seconds away. Leave it for the next run so a normal, slightly
+      // late webhook does not show up as "a webhook never arrived".
+      if (captured.created_at && deps.now().getTime() - captured.created_at * 1000 < RECOVERY_MIN_AGE_MS) {
+        summary.tooFresh++;
+        consecutiveErrors = 0;
         continue;
       }
 
@@ -240,14 +265,12 @@ async function applyRecovered(
       const result = await applyCapturedPayment(
         tx,
         { id: captured.id, order_id: payment.providerOrderId, amount: captured.amount, currency: captured.currency },
-        async (bookingId) => {
+        deps.enqueue,
+        {
           // Audited before the job is queued, so a failed audit write rolls back before anything leaves the database.
-          await recordAudit(
-            RECOVERY_ACTOR,
-            { action: RECOVERY_AUDIT_ACTIONS.recovered, targetType: "payment", targetId: payment.id, detail },
-            tx,
-          );
-          await deps.enqueue(bookingId);
+          beforeEnqueue: () =>
+            recordAudit(RECOVERY_ACTOR, { action: RECOVERY_AUDIT_ACTIONS.recovered, targetType: "payment", targetId: payment.id, detail }, tx),
+          enqueueTimeoutMs: deps.enqueueTimeoutMs,
         },
       );
       if (result.outcome === "flagged") {

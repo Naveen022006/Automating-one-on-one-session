@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { within } from "@/lib/timeout";
 
 export const MEETING_QUEUE = "meetings";
 export const MESSAGE_QUEUE = "messages";
@@ -18,6 +19,11 @@ export type ReminderKind = "24h" | "15m";
 
 const queues = new Map<string, Queue>();
 
+/**
+ * BullMQ needs `maxRetriesPerRequest: null`, so a command issued while Redis is down waits until it comes back. Anything
+ * that must not hang (a page, the monitor, a database transaction waiting to queue a job) bounds its wait with `within`
+ * from lib/timeout.ts (see getQueueCounts and `applyCapturedPayment`).
+ */
 export function redisConnection(): IORedis {
   const url = process.env.REDIS_URL;
   if (!url) throw new Error("REDIS_URL is not set");
@@ -43,15 +49,6 @@ export interface QueueCounts {
   active: number;
   failed: number;
   delayed: number;
-}
-
-/** The queue connection retries forever when Redis is down, so anything that only reads must bound its wait. */
-function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: NodeJS.Timeout;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
-  });
-  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
