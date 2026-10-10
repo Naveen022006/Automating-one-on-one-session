@@ -29,7 +29,8 @@ export const LIB_ALLOWLIST: readonly string[] = [
   "lib/safe-next-path.ts",
 ];
 
-const NODE_BUILTINS = new Set(builtinModules.flatMap((m) => [m, m.replace(/^node:/, "")]));
+// Bare built-in names ("fs", "path/posix", ...). Prefix-only ones ("node:test", "node:sqlite") are caught by the `node:` check.
+const NODE_BUILTINS = new Set(builtinModules.filter((m) => !m.startsWith("node:")));
 /** Packages that are server-only by nature. */
 const FORBIDDEN_PACKAGES = [/^@prisma\//, /^prisma$/, /^pg($|\/)/, /^ioredis($|\/)/, /^bullmq($|\/)/, /^dotenv($|\/)/];
 /** `next/link` and `next/navigation` are aliased to the SPA shims before this plugin sees them; anything else from Next is server code. */
