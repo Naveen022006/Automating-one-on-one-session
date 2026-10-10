@@ -181,7 +181,7 @@ export async function confirmTotpEnrollment(adminId: string, input: string, sess
     }
     await tx.adminSession.deleteMany({ where: { adminId, ...(sessionId ? { id: { not: sessionId } } : {}) } });
     return { ok: true as const, recoveryCodes };
-  });
+  }, { timeout: 20_000 }); // several round trips; a hosted pooler can be slow
 }
 
 export type ChangeResult<T extends object = object> = ({ ok: true } & T) | { ok: false; reason: CodeFailure | "not-enabled" };
@@ -190,7 +190,7 @@ export type ChangeResult<T extends object = object> = ({ ok: true } & T) | { ok:
 export async function regenerateRecoveryCodes(adminId: string, input: string, opts: { now?: number } = {}): Promise<ChangeResult<{ recoveryCodes: string[] }>> {
   const check = await verifySecondFactor(adminId, input, opts);
   if (!check.ok) return check;
-  const recoveryCodes = await prisma.$transaction((tx) => replaceRecoveryCodes(tx, adminId));
+  const recoveryCodes = await prisma.$transaction((tx) => replaceRecoveryCodes(tx, adminId), { timeout: 20_000 });
   return { ok: true, recoveryCodes };
 }
 
