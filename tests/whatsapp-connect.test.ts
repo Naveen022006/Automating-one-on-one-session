@@ -39,6 +39,7 @@ import {
   markTokenInvalid,
   refreshTemplates,
   resolveSendCredentials,
+  whatsappLegacyPinAad,
   whatsappPinAad,
   whatsappTokenAad,
   type ConnectDeps,
@@ -251,19 +252,23 @@ test("generated PINs are six digits and not all the same", () => {
   assert.ok(new Set(pins).size > 50, "random, not a constant");
 });
 
-test("the PIN column is encrypted with an owner-bound AAD and listed for key rotation", { skip: process.env.TOKEN_ENCRYPTION_KEY ? false : "TOKEN_ENCRYPTION_KEY not set" }, () => {
-  const enc = encryptSecret("482913", whatsappPinAad("inf-1"));
+test("the PIN is encrypted bound to its phone number, and listed for key rotation", { skip: process.env.TOKEN_ENCRYPTION_KEY ? false : "TOKEN_ENCRYPTION_KEY not set" }, () => {
+  const enc = encryptSecret("482913", whatsappPinAad("109283746501928"));
   assert.ok(!enc.includes("482913"));
-  assert.equal(decryptSecret(enc, whatsappPinAad("inf-1")), "482913", "round trip");
-  assert.throws(() => decryptSecret(enc, whatsappPinAad("inf-2")), "another owner's AAD does not decrypt it");
-  assert.throws(() => decryptSecret(enc, whatsappTokenAad("inf-1")), "nor does the token's AAD");
-  assert.notEqual(whatsappPinAad("inf-1"), whatsappTokenAad("inf-1"));
-  assert.ok(whatsappPinAad("inf-1").includes("inf-1"), "the AAD names the connection owner");
+  assert.equal(decryptSecret(enc, whatsappPinAad("109283746501928")), "482913", "round trip");
+  assert.throws(() => decryptSecret(enc, whatsappPinAad("109283746501929")), "another number's AAD does not decrypt it");
+  assert.throws(() => decryptSecret(enc, whatsappTokenAad("109283746501928")), "nor does the token's AAD");
+  assert.ok(whatsappPinAad("109283746501928").includes("109283746501928"), "the AAD names the phone number");
 
-  const col = ENCRYPTED_COLUMNS.find((c) => c.name === "whatsapp_connections.registration_pin_enc");
+  const col = ENCRYPTED_COLUMNS.find((c) => c.name === "whatsapp_registration_pins.pin_enc");
   assert.ok(col, "listed for key rotation");
-  assert.deepEqual([col.table, col.column, col.ownerColumn], ["whatsapp_connections", "registration_pin_enc", "influencer_id"]);
-  assert.equal(col.aad("inf-1"), whatsappPinAad("inf-1"), "rotation uses the AAD the app writes with");
+  assert.deepEqual([col.table, col.column, col.ownerColumn, col.idColumn], ["whatsapp_registration_pins", "pin_enc", "phone_number_id", "phone_number_id"]);
+  assert.equal(col.aad("109283746501928"), whatsappPinAad("109283746501928"), "rotation uses the AAD the app writes with");
+
+  // The superseded column on the connection (bound to the influencer) is still rotated until it is gone.
+  const old = ENCRYPTED_COLUMNS.find((c) => c.name === "whatsapp_connections.registration_pin_enc");
+  assert.ok(old);
+  assert.equal(old.aad("inf-1"), whatsappLegacyPinAad("inf-1"));
 });
 
 test("template status webhooks are parsed per account", () => {
@@ -301,9 +306,42 @@ function fakeDeps(over: Partial<ConnectDeps> = {}): ConnectDeps {
     exchangeCode: async () => "business-token-from-meta-0123456789",
     subscribeApp: async () => {},
     registerNumber: async () => {},
+    setPin: async () => {},
     inspectToken: async () => ({ valid: true, expiresAt: null, scopes: [...REQUIRED_SCOPES, "business_management"] }),
     ...over,
   };
+}
+
+const NO_ENV = {} as unknown as NodeJS.ProcessEnv;
+
+/**
+ * A fake Meta as strict about two-step PINs as the real one. A number that has a PIN refuses to register with any other
+ * (133005, as Meta answers), registering sets the PIN of a number that has none, and set-PIN changes it whatever it was.
+ * `initial` is the PIN each number already holds. A fake that accepts any PIN would hide a lost PIN.
+ */
+function strictMeta(initial: Record<string, string> = {}) {
+  const onNumber = new Map(Object.entries(initial));
+  const calls: string[] = [];
+  const deps = {
+    registerNumber: async (phone: string, _token: string, pin: string) => {
+      calls.push(`register:${pin}`);
+      const have = onNumber.get(phone);
+      if (have !== undefined && have !== pin) throw new WhatsAppGraphError("Two step verification PIN Mismatch", 400, 133005);
+      onNumber.set(phone, pin);
+    },
+    setPin: async (phone: string, _token: string, pin: string) => {
+      calls.push(`setpin:${pin}`);
+      onNumber.set(phone, pin);
+    },
+  };
+  return { deps, onNumber, calls };
+}
+
+const pinRow = (phone: string) => prisma.whatsAppRegistrationPin.findUnique({ where: { phoneNumberId: phone } });
+/** What is saved for a number, decrypted the way the app does. */
+async function storedPin(phone: string) {
+  const r = await pinRow(phone);
+  return r ? { pin: decryptSecret(r.pinEnc, whatsappPinAad(phone)), generated: r.generated } : null;
 }
 
 before(async () => {
@@ -313,7 +351,11 @@ before(async () => {
 });
 
 after(async () => {
-  if (!skip) await prisma.influencer.deleteMany({ where: { id: { in: [a, b].filter(Boolean) } } });
+  if (!skip) {
+    await prisma.influencer.deleteMany({ where: { id: { in: [a, b].filter(Boolean) } } });
+    // A saved PIN outlives the connection by design, so the test numbers' PINs are removed by hand.
+    await prisma.whatsAppRegistrationPin.deleteMany({ where: { phoneNumberId: { in: Array.from({ length: 40 }, (_, i) => String(Number(PHONE) + i)) } } });
+  }
   await prisma.$disconnect();
 });
 
@@ -365,82 +407,189 @@ test("Embedded Signup exchanges the code, subscribes the account and saves", { s
   await disconnect(b);
 });
 
-test("every Embedded Signup number gets its own random PIN, kept encrypted, unless the influencer supplies theirs", { skip }, async () => {
-  const phone = String(Number(PHONE) + 4);
-  const registered: string[] = [];
-  const deps = fakeDeps({ registerNumber: async (_p, _t, pin) => void registered.push(pin) });
+test("every Embedded Signup number gets its own random PIN, saved before it is registered and kept across a disconnect", { skip }, async () => {
+  const phone = String(Number(PHONE) + 20);
+  const meta = strictMeta();
+  const savedWhenRegistering: boolean[] = [];
+  const deps = fakeDeps({
+    ...meta.deps,
+    registerNumber: async (p, t, pin) => {
+      savedWhenRegistering.push((await pinRow(p)) !== null);
+      return meta.deps.registerNumber(p, t, pin);
+    },
+  });
+  const connect = () => connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, NO_ENV);
+
   // No WHATSAPP_REGISTRATION_PIN at all: the number is still registered (it used to be skipped, so sends failed).
-  const view = await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, {} as unknown as NodeJS.ProcessEnv);
+  const view = await connect();
   assert.equal(view.status, "ACTIVE");
-  assert.equal(registered.length, 1, "registered without any global PIN configured");
-  assert.match(registered[0], /^\d{6}$/);
+  const pin = meta.onNumber.get(phone)!;
+  assert.match(pin, /^\d{6}$/);
+  assert.deepEqual(savedWhenRegistering, [true], "the PIN was saved before Meta was asked to register with it");
+  const row = await pinRow(phone);
+  assert.ok(row && !row.pinEnc.includes(pin), "stored encrypted, not in plaintext");
+  assert.deepEqual(await storedPin(phone), { pin, generated: true });
+  assert.throws(() => decryptSecret(row.pinEnc, whatsappPinAad(String(Number(phone) + 1))), "bound to its phone number");
+  assert.equal(JSON.stringify(await getConnectionView(b)).includes(pin), false, "the PIN never leaves the server");
+  assert.equal((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc, null, "no longer kept on the connection");
 
-  const row = await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } });
-  assert.ok(row.registrationPinEnc && !row.registrationPinEnc.includes(registered[0]), "stored encrypted, not in plaintext");
-  assert.equal(decryptSecret(row.registrationPinEnc, whatsappPinAad(b)), registered[0], "the stored PIN is the one the number was registered with");
-  assert.throws(() => decryptSecret(row.registrationPinEnc!, whatsappPinAad(a)), "bound to its owner");
-  assert.equal(JSON.stringify(await getConnectionView(b)).includes(registered[0]), false, "the PIN never leaves the server");
-
-  // A reconnect registers with the same PIN (a different one would be refused), not a fresh random one.
-  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, {} as unknown as NodeJS.ProcessEnv);
-  assert.equal(registered[1], registered[0]);
-
-  // The shared dev PIN is ignored in production, so it cannot become every influencer's PIN.
+  // Disconnect deletes the connection, not the PIN: Meta still holds it on the number, and only we know what it is.
   await disconnect(b);
-  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, { NODE_ENV: "production", WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv);
-  assert.match(registered[2], /^\d{6}$/);
-  assert.notEqual(registered[2], "654321");
-  await disconnect(b);
-
-  // An influencer who knows their number's PIN supplies it, and it is used and kept.
-  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, pin: "246810" }, deps, {} as unknown as NodeJS.ProcessEnv);
-  assert.equal(registered[3], "246810");
-  assert.equal(decryptSecret((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc!, whatsappPinAad(b)), "246810");
+  assert.deepEqual(await storedPin(phone), { pin, generated: true });
+  await connect();
+  assert.deepEqual(meta.calls, [`register:${pin}`, `register:${pin}`], "reconnected with the same PIN (the strict fake refuses any other), with no reset needed");
   await disconnect(b);
 });
 
-test("a number with a PIN of its own is refused with an error that asks for it; the PIN is checked before the code is used", { skip }, async () => {
-  const phone = String(Number(PHONE) + 5);
-  const mismatch = () => new WhatsAppGraphError("Two step verification PIN Mismatch", 400, 133005);
+test("the shared development PIN is used outside production only", { skip }, async () => {
+  const meta = strictMeta();
+  const deps = fakeDeps(meta.deps);
+  const dev = String(Number(PHONE) + 21);
+  const prod = String(Number(PHONE) + 22);
+  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: dev }, deps, { WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv);
+  assert.equal(meta.onNumber.get(dev), "654321");
+  await disconnect(b);
+  // In production one shared PIN would become every influencer's two-step PIN, so it is ignored.
+  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: prod }, deps, { NODE_ENV: "production", WHATSAPP_REGISTRATION_PIN: "654321" } as unknown as NodeJS.ProcessEnv);
+  assert.match(meta.onNumber.get(prod)!, /^\d{6}$/);
+  assert.notEqual(meta.onNumber.get(prod), "654321");
+  await disconnect(b);
+});
+
+test("a PIN the influencer typed is used as typed, kept, never overwritten, and a wrong one is explained", { skip }, async () => {
+  const phone = String(Number(PHONE) + 23);
+  const meta = strictMeta({ [phone]: "135790" });
   let exchanged = 0;
-  const deps = fakeDeps({
-    exchangeCode: async () => (exchanged++, "business-token-from-meta-0123456789"),
-    registerNumber: async (_p, _t, pin) => {
-      if (pin !== "135790") throw mismatch();
-    },
-  });
-  const env = {} as unknown as NodeJS.ProcessEnv;
+  const deps = fakeDeps({ ...meta.deps, exchangeCode: async () => (exchanged++, "business-token-from-meta-0123456789") });
+  const connect = (pin?: string) => connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, pin }, deps, NO_ENV);
+
+  // Wrong PIN: refused with where to find or reset it. It is not "fixed" behind their back, and nothing is saved.
   await assert.rejects(
-    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, env),
-    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /already has a two-step verification PIN/.test(e.message),
+    connect("000000"),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /does not match/.test(e.message) && /WhatsApp Manager/.test(e.message) && /Two-step verification/.test(e.message),
+  );
+  assert.ok(!meta.calls.some((c) => c.startsWith("setpin")), "a PIN the influencer typed is never overwritten");
+  assert.equal(meta.onNumber.get(phone), "135790");
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
+  assert.equal(await pinRow(phone), null, "a wrong PIN is not remembered");
+
+  // A malformed PIN is refused before the single-use sign-up code is spent.
+  const used = exchanged;
+  await assert.rejects(connect("12ab"), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
+  assert.equal(exchanged, used);
+
+  assert.equal((await connect("135790")).status, "ACTIVE");
+  assert.deepEqual(await storedPin(phone), { pin: "135790", generated: false });
+  await disconnect(b);
+  await connect(); // reconnecting does not ask for it again
+  assert.equal(meta.calls.filter((c) => c === "register:135790").length, 2);
+  assert.ok(!meta.calls.some((c) => c.startsWith("setpin")));
+  await disconnect(b);
+});
+
+test("a PIN we generated that the number no longer accepts is reset with Meta's set-PIN call, then registered again", { skip }, async () => {
+  const connect = (phone: string, deps: ConnectDeps) => connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, NO_ENV);
+
+  // The number holds a PIN nobody here knows (a previous run lost track of it).
+  const phone = String(Number(PHONE) + 24);
+  const meta = strictMeta({ [phone]: "777777" });
+  assert.equal((await connect(phone, fakeDeps(meta.deps))).status, "ACTIVE");
+  const pin = (await storedPin(phone))!.pin;
+  assert.deepEqual(meta.calls, [`register:${pin}`, `setpin:${pin}`, `register:${pin}`]);
+  assert.equal(meta.onNumber.get(phone), pin);
+  await disconnect(b);
+
+  // Meta pausing PIN attempts (133008) is handled the same way.
+  const locked = String(Number(PHONE) + 25);
+  const lockedMeta = strictMeta({ [locked]: "777777" });
+  let first = true;
+  await connect(
+    locked,
+    fakeDeps({
+      ...lockedMeta.deps,
+      registerNumber: async (p, t, pin2) => {
+        if (first) {
+          first = false;
+          throw new WhatsAppGraphError("Too many two-step verification PIN guesses", 400, 133008);
+        }
+        return lockedMeta.deps.registerNumber(p, t, pin2);
+      },
+    }),
+  );
+  assert.deepEqual(lockedMeta.calls.map((c) => c.split(":")[0]), ["setpin", "register"]);
+  await disconnect(b);
+
+  // When Meta refuses the reset too, the influencer is asked for the PIN and told where to find or change it.
+  const stuck = String(Number(PHONE) + 26);
+  const stuckMeta = strictMeta({ [stuck]: "777777" });
+  await assert.rejects(
+    connect(stuck, fakeDeps({ ...stuckMeta.deps, setPin: async () => { throw new WhatsAppGraphError("(#100) The PIN cannot be changed", 400, 100); } })),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /does not match the one we have/.test(e.message) && /WhatsApp Manager/.test(e.message),
   );
   assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
-  await assert.rejects(
-    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, pin: "000000" }, deps, env),
-    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && /does not match/.test(e.message),
-  );
-  const used = exchanged;
-  await assert.rejects(connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, pin: "12ab" }, deps, env), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
-  assert.equal(exchanged, used, "a malformed PIN is refused before the single-use code is exchanged");
 
-  const view = await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, pin: "135790" }, deps, env);
-  assert.equal(view.status, "ACTIVE");
+  // A PIN the influencer typed earlier that the number has since moved on from is theirs to correct: no reset.
+  const theirs = String(Number(PHONE) + 27);
+  const theirsMeta = strictMeta({ [theirs]: "555555" });
+  await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: theirs, pinEnc: encryptSecret("246810", whatsappPinAad(theirs)), generated: false } });
+  await assert.rejects(connect(theirs, fakeDeps(theirsMeta.deps)), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
+  assert.deepEqual(theirsMeta.calls, ["register:246810"], "no set-PIN call");
+});
+
+test("the PIN survives the connection failing to save after the number was registered", { skip }, async () => {
+  const phone = String(Number(PHONE) + 28);
+  const c = (await prisma.influencer.create({ data: { slug: `wa-c-${run}`, name: "Gamma", email: `wa-c-${run}@example.com` } })).id;
+  try {
+    const meta = strictMeta();
+    // Another account claims the number while we talk to Meta, so the unique key on the number refuses our save.
+    const racing = fakeDeps({
+      ...meta.deps,
+      registerNumber: async (p, t, pin) => {
+        await meta.deps.registerNumber(p, t, pin);
+        await prisma.whatsAppConnection.create({ data: { influencerId: c, wabaId: WABA, phoneNumberId: p, tokenEnc: "x" } });
+      },
+    });
+    await assert.rejects(connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, racing, NO_ENV));
+    const pin = meta.onNumber.get(phone)!;
+    assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
+    assert.deepEqual(await storedPin(phone), { pin, generated: true }, "but the PIN the number now holds is saved");
+
+    // The clash goes away. Connecting again registers with the same PIN, not a new one that Meta would refuse.
+    await prisma.whatsAppConnection.deleteMany({ where: { influencerId: c } });
+    assert.equal((await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), NO_ENV)).status, "ACTIVE");
+    assert.deepEqual(meta.calls, [`register:${pin}`, `register:${pin}`], "same PIN, no reset");
+    await disconnect(b);
+  } finally {
+    await prisma.influencer.delete({ where: { id: c } });
+  }
+});
+
+test("a PIN kept only on the connection by the earlier version is moved to the number's own record when needed", { skip }, async () => {
+  const phone = String(Number(PHONE) + 29);
+  const meta = strictMeta({ [phone]: "314159" });
+  await connectManual(b, { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-legacy-pin-token-for-tests-1234567890" }, fakeDeps());
+  await prisma.whatsAppConnection.update({ where: { influencerId: b }, data: { registrationPinEnc: encryptSecret("314159", whatsappLegacyPinAad(b)) } });
+  assert.equal(await pinRow(phone), null);
+  await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, fakeDeps(meta.deps), NO_ENV);
+  assert.deepEqual(meta.calls, ["register:314159"], "registered with the old PIN, no reset");
+  assert.deepEqual(await storedPin(phone), { pin: "314159", generated: true });
   await disconnect(b);
 });
 
 test("a manual connection registers the number only when given a PIN", { skip }, async () => {
-  const phone = String(Number(PHONE) + 6);
-  const registered: string[] = [];
-  const deps = fakeDeps({ registerNumber: async (_p, _t, pin) => void registered.push(pin) });
+  const phone = String(Number(PHONE) + 30);
+  const meta = strictMeta();
+  const deps = fakeDeps(meta.deps);
   const input = { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-manual-pin-token-for-tests-1234567890" };
   await connectManual(b, input, deps);
-  assert.deepEqual(registered, [], "no PIN: the number is left as it is");
-  assert.equal((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc, null);
+  assert.deepEqual(meta.calls, [], "no PIN: the number is left as it is");
+  assert.equal(await pinRow(phone), null);
   await connectManual(b, { ...input, pin: "112233" }, deps);
-  assert.deepEqual(registered, ["112233"]);
-  assert.equal(decryptSecret((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc!, whatsappPinAad(b)), "112233");
+  assert.deepEqual(meta.calls, ["register:112233"]);
+  assert.deepEqual(await storedPin(phone), { pin: "112233", generated: false });
   await connectManual(b, input, deps);
-  assert.ok((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc, "reconnecting without a PIN keeps the stored one");
+  assert.deepEqual(meta.calls, ["register:112233"], "reconnecting without a PIN leaves the number alone");
+  assert.deepEqual(await storedPin(phone), { pin: "112233", generated: false });
   await assert.rejects(connectManual(b, { ...input, pin: "12" }, deps), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
   await disconnect(b);
 });

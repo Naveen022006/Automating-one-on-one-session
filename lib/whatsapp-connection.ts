@@ -14,6 +14,7 @@ import {
   listTemplates,
   metaAppCredentials,
   registerNumber,
+  setTwoStepPin,
   subscribeApp,
   wabaOwnsNumber,
   type PhoneNumberInfo,
@@ -43,9 +44,15 @@ export class WhatsAppNotConnectedError extends Error {}
 const aad = (influencerId: string) => `whatsapp:${influencerId}`;
 /** Shared with the key-rotation tool (lib/key-rotation-db.ts), so the two can never disagree on the AAD. */
 export { aad as whatsappTokenAad };
-/** The two-step PIN is bound to its owner the same way (and also listed for key rotation). */
-const pinAad = (influencerId: string) => `whatsapp-pin:${influencerId}`;
+/**
+ * The two-step PIN belongs to the PHONE NUMBER (Meta keeps it on the number), not to a connection or an influencer, so
+ * its AAD is the phone number id (also listed for key rotation).
+ */
+const pinAad = (phoneNumberId: string) => `whatsapp-pin-number:${phoneNumberId}`;
 export { pinAad as whatsappPinAad };
+/** The AAD of the superseded whatsapp_connections.registration_pin_enc, which was bound to the influencer. */
+const legacyPinAad = (influencerId: string) => `whatsapp-pin:${influencerId}`;
+export { legacyPinAad as whatsappLegacyPinAad };
 const language = () => process.env.WHATSAPP_TEMPLATE_LANGUAGE || "en";
 
 export interface ConnectDeps {
@@ -55,6 +62,8 @@ export interface ConnectDeps {
   exchangeCode: (code: string) => Promise<string>;
   subscribeApp: (wabaId: string, token: string) => Promise<void>;
   registerNumber: (phoneNumberId: string, token: string, pin: string) => Promise<void>;
+  /** Sets the two-step PIN of a registered number to `pin`, whatever it was (Meta's set-PIN call). */
+  setPin: (phoneNumberId: string, token: string, pin: string) => Promise<void>;
   /** Meta's view of the token (permissions, expiry), or null when this server has no Meta app id and secret to ask with. */
   inspectToken: (token: string) => Promise<TokenInfo | null>;
 }
@@ -66,6 +75,7 @@ const defaultDeps: ConnectDeps = {
   exchangeCode: (c) => exchangeEmbeddedCode(c),
   subscribeApp: (w, t) => subscribeApp(w, t),
   registerNumber: (p, t, pin) => registerNumber(p, t, pin),
+  setPin: (p, t, pin) => setTwoStepPin(p, t, pin),
   inspectToken: async (t) => {
     const app = metaAppCredentials();
     return app ? debugToken(t, app.appId, app.appSecret) : null;
@@ -97,27 +107,88 @@ function suppliedPin(raw: string | undefined): string | undefined {
   return pin;
 }
 
-/** The PIN we registered this influencer's number with earlier (a reconnect must register with the same one), or null. */
-export async function getRegistrationPin(influencerId: string, phoneNumberId: string): Promise<string | null> {
-  const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { phoneNumberId: true, registrationPinEnc: true } });
-  if (!row || row.phoneNumberId !== phoneNumberId || !row.registrationPinEnc) return null;
+interface StoredPin {
+  pin: string;
+  /** We generated it (so we may reset it with Meta); false = the influencer typed it (we never overwrite that). */
+  generated: boolean;
+}
+
+async function readStoredPin(phoneNumberId: string): Promise<StoredPin | null> {
+  const row = await prisma.whatsAppRegistrationPin.findUnique({ where: { phoneNumberId } });
+  if (!row) return null;
   try {
-    return decryptSecret(row.registrationPinEnc, pinAad(influencerId));
+    return { pin: decryptSecret(row.pinEnc, pinAad(phoneNumberId)), generated: row.generated };
+  } catch {
+    return null; // not readable with the current keys: treated as lost, the caller resets or asks
+  }
+}
+
+/**
+ * The PIN this number was last registered with, or null. A reconnect must register with the same one, so it is read from
+ * a table that does not depend on a connection existing. A PIN saved only on a connection row by the earlier version of
+ * this code (whatsapp_connections.registration_pin_enc) is moved across the first time it is needed.
+ */
+export async function getRegistrationPin(influencerId: string, phoneNumberId: string): Promise<StoredPin | null> {
+  const stored = await readStoredPin(phoneNumberId);
+  if (stored) return stored;
+  const old = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { phoneNumberId: true, registrationPinEnc: true } });
+  if (!old || old.phoneNumberId !== phoneNumberId || !old.registrationPinEnc) return null;
+  try {
+    const pin = decryptSecret(old.registrationPinEnc, legacyPinAad(influencerId));
+    await savePin(phoneNumberId, pin, true, false);
+    return { pin, generated: true };
   } catch {
     return null;
   }
 }
 
+/** Saves the PIN for a number. `replace` overwrites one already there; otherwise an existing PIN is left alone. */
+async function savePin(phoneNumberId: string, pin: string, generated: boolean, replace: boolean): Promise<void> {
+  const pinEnc = encryptSecret(pin, pinAad(phoneNumberId));
+  await prisma.whatsAppRegistrationPin.upsert({
+    where: { phoneNumberId },
+    create: { phoneNumberId, pinEnc, generated },
+    update: replace ? { pinEnc, generated } : {},
+  });
+}
+
+/** Unique-constraint violation (Prisma P2002), without importing the generated client's error classes. */
+const isUniqueViolation = (e: unknown) => typeof e === "object" && e !== null && (e as { code?: string }).code === "P2002";
+
 /**
- * Registering a number that already has a two-step PIN of its own, different from ours, is refused by Meta. Say so in
- * a way the influencer can act on: they know their own PIN, we do not.
+ * The PIN to register `phoneNumberId` with when the influencer did not type one: the one saved for the number, else a new
+ * one (a development default from WHATSAPP_REGISTRATION_PIN, never in production where one shared PIN would become every
+ * influencer's two-step PIN, else random). A new PIN is SAVED here, before anything is sent to Meta: once registered, the
+ * number holds it and only this row can tell us what it is. Two connects racing on one number agree on the first saved.
+ */
+async function pinToRegister(influencerId: string, phoneNumberId: string, env: NodeJS.ProcessEnv): Promise<StoredPin> {
+  const stored = await getRegistrationPin(influencerId, phoneNumberId);
+  if (stored) return stored;
+  const dev = env.WHATSAPP_REGISTRATION_PIN?.trim();
+  const pin = env.NODE_ENV !== "production" && dev && PIN.test(dev) ? dev : generateRegistrationPin();
+  try {
+    await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId, pinEnc: encryptSecret(pin, pinAad(phoneNumberId)), generated: true } });
+    return { pin, generated: true };
+  } catch (e) {
+    const winner = isUniqueViolation(e) ? await readStoredPin(phoneNumberId) : null;
+    if (winner) return winner;
+    throw e;
+  }
+}
+
+/** Where to look when a number's two-step PIN is not one we know. */
+const FIND_PIN = "Open WhatsApp Manager, choose this phone number and look for Two-step verification in its settings, where the PIN can be changed.";
+
+/**
+ * Registering a number whose two-step PIN differs from the one we sent is refused by Meta. Say so in a way the
+ * influencer can act on.
  */
 function registrationError(e: unknown, supplied: boolean): WhatsAppConnectError {
   if (e instanceof WhatsAppGraphError && e.pinMismatch) {
     return new WhatsAppConnectError(
       supplied
-        ? "That two-step verification PIN does not match the one set on this number. Check it and try again."
-        : "This number already has a two-step verification PIN. Enter it in the PIN field and connect again.",
+        ? `That two-step verification PIN does not match the one set on this number. Check it and try again. If you have forgotten it, ${FIND_PIN}`
+        : `This number has a two-step verification PIN that does not match the one we have. Enter its current PIN in the PIN field and connect again. If you do not remember setting one, ${FIND_PIN}`,
       400,
       "pin",
     );
@@ -126,6 +197,43 @@ function registrationError(e: unknown, supplied: boolean): WhatsAppConnectError 
     return new WhatsAppConnectError("WhatsApp has paused PIN attempts on this number after too many tries. Wait a while, then connect again.", 400, "pin");
   }
   return friendly(e);
+}
+
+/**
+ * Registers `phoneNumberId` with Meta with its two-step PIN.
+ *  - A PIN the influencer typed is used as it is, and kept once it works. If Meta refuses it, that is their PIN to fix.
+ *  - Otherwise the number's saved PIN (saved before this call) or a new one. If the number holds a different PIN, one a
+ *    previous run lost track of, and we generated ours, set it to ours with Meta's set-PIN call and register again.
+ */
+async function registerWithPin(
+  influencerId: string,
+  phoneNumberId: string,
+  token: string,
+  opts: { supplied?: string; env: NodeJS.ProcessEnv },
+  deps: ConnectDeps,
+): Promise<void> {
+  if (opts.supplied) {
+    try {
+      await deps.registerNumber(phoneNumberId, token, opts.supplied);
+    } catch (e) {
+      throw registrationError(e, true);
+    }
+    await savePin(phoneNumberId, opts.supplied, false, true);
+    return;
+  }
+  const plan = await pinToRegister(influencerId, phoneNumberId, opts.env);
+  try {
+    await deps.registerNumber(phoneNumberId, token, plan.pin);
+  } catch (first) {
+    if (!plan.generated || !(first instanceof WhatsAppGraphError) || !(first.pinMismatch || first.pinLocked)) throw registrationError(first, false);
+    try {
+      await deps.setPin(phoneNumberId, token, plan.pin);
+      await deps.registerNumber(phoneNumberId, token, plan.pin);
+    } catch (second) {
+      // The reset did not work (or Meta still refuses): tell the influencer about the original problem, not the retry.
+      throw registrationError(second instanceof WhatsAppGraphError && (second.pinMismatch || second.pinLocked) ? second : first, false);
+    }
+  }
 }
 
 /**
@@ -161,7 +269,14 @@ async function subscribeWebhooks(wabaId: string, token: string, deps: ConnectDep
 
 async function persist(
   influencerId: string,
-  c: { wabaId: string; phoneNumberId: string; token: string; source: "manual" | "embedded"; pin?: string; pinSupplied?: boolean },
+  c: {
+    wabaId: string;
+    phoneNumberId: string;
+    token: string;
+    source: "manual" | "embedded";
+    /** Register the number with its two-step PIN: with the one the influencer typed, else the number's own saved or new one. Absent = leave the number as it is. */
+    register?: { supplied?: string; env: NodeJS.ProcessEnv };
+  },
   deps: ConnectDeps,
 ): Promise<WhatsAppConnectionView & { notes: string[] }> {
   const notes = await vetToken(c.token, deps);
@@ -182,15 +297,10 @@ async function persist(
   // Best effort, like the template sync: the number works without it. The outcome is saved and shown.
   const webhook = await subscribeWebhooks(c.wabaId, c.token, deps);
 
-  // Register last of the checks that can refuse the connection, so a number we then turn away is never left
-  // registered with a PIN we did not keep.
-  if (c.pin) {
-    try {
-      await deps.registerNumber(c.phoneNumberId, c.token, c.pin);
-    } catch (e) {
-      throw registrationError(e, c.pinSupplied === true);
-    }
-  }
+  // Register after the checks that can refuse the connection, so a number we turn away is not registered. The PIN is
+  // saved BEFORE it is sent to Meta (see registerWithPin) and outlives this connection, so nothing between here and the
+  // save below, nor a later disconnect, can leave the number holding a PIN we have forgotten.
+  if (c.register) await registerWithPin(influencerId, c.phoneNumberId, c.token, c.register, deps);
 
   // Template trouble must not block connecting: the number works as soon as templates are approved, and the
   // influencer can retry from the dashboard.
@@ -207,7 +317,6 @@ async function persist(
     displayPhone: phone.displayPhone,
     verifiedName: phone.verifiedName,
     tokenEnc: encryptSecret(c.token, aad(influencerId)),
-    ...(c.pin ? { registrationPinEnc: encryptSecret(c.pin, pinAad(influencerId)) } : {}),
     source: c.source,
     status: "ACTIVE" as const,
     lastError: sync && sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null,
@@ -235,21 +344,7 @@ export async function connectManual(
   if (!ID.test(phoneNumberId)) throw new WhatsAppConnectError("The phone number id is a number, like 109283746501928.", 400, "phoneNumberId");
   if (token.length < 20 || /\s/.test(token)) throw new WhatsAppConnectError("Paste the full access token.", 400, "accessToken");
   const pin = suppliedPin(input.pin);
-  return persist(influencerId, { wabaId, phoneNumberId, token, source: "manual", pin, pinSupplied: pin !== undefined }, deps);
-}
-
-/**
- * The PIN to register an Embedded Signup number with: the one the influencer typed (their number already has one),
- * else the one we registered this number with before, else a development default from WHATSAPP_REGISTRATION_PIN
- * (never in production, where one shared PIN would become every influencer's two-step PIN), else a new random one.
- */
-async function pinForEmbedded(influencerId: string, phoneNumberId: string, supplied: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
-  if (supplied) return supplied;
-  const stored = await getRegistrationPin(influencerId, phoneNumberId);
-  if (stored) return stored;
-  const dev = env.WHATSAPP_REGISTRATION_PIN?.trim();
-  if (env.NODE_ENV !== "production" && dev && PIN.test(dev)) return dev;
-  return generateRegistrationPin();
+  return persist(influencerId, { wabaId, phoneNumberId, token, source: "manual", register: pin ? { supplied: pin, env: process.env } : undefined }, deps);
 }
 
 /** Finish Meta Embedded Signup: exchange the code, subscribe to webhooks, register the number with its own PIN, save. */
@@ -268,8 +363,7 @@ export async function connectEmbedded(
   } catch (e) {
     throw friendly(e);
   }
-  const pin = await pinForEmbedded(influencerId, input.phoneNumberId, supplied, env);
-  return persist(influencerId, { wabaId: input.wabaId, phoneNumberId: input.phoneNumberId, token, source: "embedded", pin, pinSupplied: supplied !== undefined }, deps);
+  return persist(influencerId, { wabaId: input.wabaId, phoneNumberId: input.phoneNumberId, token, source: "embedded", register: { supplied, env } }, deps);
 }
 
 export interface WhatsAppConnectionView {

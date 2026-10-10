@@ -269,6 +269,15 @@ export async function subscribeApp(wabaId: string, token: string, fetchFn?: Fetc
 }
 
 /**
+ * Sets (or changes) the two-step verification PIN of a number that is already registered, without needing the current
+ * one (Meta's "set two-step verification code" call, authorised by the business token). Used to bring a number back in
+ * line with a PIN we generated when it holds a different one that nobody here knows.
+ */
+export async function setTwoStepPin(phoneNumberId: string, token: string, pin: string, fetchFn?: FetchFn): Promise<void> {
+  await graph(`/${encodeURIComponent(phoneNumberId)}`, { method: "POST", token, body: JSON.stringify({ pin }) }, fetchFn);
+}
+
+/**
  * Registers the number for the Cloud API (needed for a newly added number) and sets its two-step verification PIN to
  * `pin`. Idempotent for the same PIN. A number that already has a different PIN fails with WhatsAppGraphError.pinMismatch.
  */

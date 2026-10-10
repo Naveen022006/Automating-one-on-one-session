@@ -197,10 +197,14 @@ dashboard overview lists it until they reconnect (Reconnect in the settings card
   refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within 7 days
   (the 24-hour token on the API Setup page); a token that expires later, or one we could not check (no app id and secret
   configured, or Meta did not answer), connects with a note. Use a System User token that never expires.
-- **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN (stored AES-GCM encrypted, bound to
-  its owner, and listed in the key-rotation tool). A number that already has a PIN of its own is refused with a message asking
-  for it; the connect form takes it in an optional field. `WHATSAPP_REGISTRATION_PIN` is a development default only and is
-  ignored in production. A manual connection registers the number only if given a PIN.
+- **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN. Meta keeps the PIN on the number, so
+  it is saved (AES-GCM encrypted, bound to the phone number, listed in the key-rotation tool, in `whatsapp_registration_pins`)
+  BEFORE the number is registered, and it is kept when the influencer disconnects or a connection fails to save; a reconnect
+  registers with the same PIN. If the number holds a different PIN that we generated and lost, we reset it with Meta's set-PIN
+  call and register again. A PIN the influencer typed is never overwritten: if it no longer matches they are asked for the
+  current one (optional field in the connect form) and told where to look in WhatsApp Manager.
+  `WHATSAPP_REGISTRATION_PIN` is a development default only and is ignored in production. A manual connection registers the
+  number only if given a PIN.
 - **The Meta app secret** is one value with two names: `WHATSAPP_APP_SECRET` (webhook signatures) and `META_APP_SECRET`
   (Embedded Signup, token checks). Set either; both uses read it.
 - **Graph API version.** `WHATSAPP_GRAPH_VERSION` (default in `lib/whatsapp-graph-version.ts`) is used for every Meta call and for

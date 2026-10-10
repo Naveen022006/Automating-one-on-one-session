@@ -633,8 +633,9 @@ model WhatsAppConnection {
   // status webhook and the Refresh button.
   templates           Json?
   templatesSyncedAt   DateTime?                @map("templates_synced_at")
-  // The two-step verification PIN this app registered the number with (Embedded Signup), AES-GCM encrypted with the
-  // owner's AAD (whatsappPinAad). A reconnect registers again with the same PIN instead of failing on a mismatch.
+  // Superseded by WhatsAppRegistrationPin (below), which outlives this row: a PIN kept only here was lost on
+  // disconnect, and when saving this row failed after the number was registered. No longer written; read once as a
+  // fallback and moved over (lib/whatsapp-connection.ts getRegistrationPin). Kept, not dropped, so migrations stay additive.
   registrationPinEnc  String?                  @map("registration_pin_enc")
   // When our Meta app was last subscribed to the account's webhooks (template and delivery updates), or why that failed.
   // Null time and null error = never attempted (connections made before this was recorded).
@@ -647,4 +648,20 @@ model WhatsAppConnection {
 
   @@index([wabaId])
   @@map("whatsapp_connections")
+}
+
+// The two-step verification PIN a WhatsApp number was registered with, one row per phone number. It is saved BEFORE the
+// number is registered with Meta and is deliberately not tied to a connection: Meta keeps the PIN on the number, so it
+// must outlive a disconnect, and a connection that fails to save after the number was registered. The PIN is AES-GCM
+// encrypted with the phone number id as its AAD (whatsappPinAad), and listed for key rotation.
+model WhatsAppRegistrationPin {
+  phoneNumberId String   @id @map("phone_number_id")
+  pinEnc        String   @map("pin_enc")
+  // true = we generated (or defaulted) it, so we may reset it with Meta when it no longer matches; false = the
+  // influencer typed their own, which we never overwrite.
+  generated     Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_registration_pins")
 }

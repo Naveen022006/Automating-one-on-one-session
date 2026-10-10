@@ -332,7 +332,8 @@ table, column, the column its AAD is derived from (`ownerColumn`) and the AAD fu
 | `payout_accounts.account_number_enc` | `payout:<influencerId>:account` |
 | `payout_accounts.upi_id_enc` | `payout:<influencerId>:upi` |
 | `whatsapp_connections.token_enc` | `whatsapp:<influencerId>` |
-| `whatsapp_connections.registration_pin_enc` | `whatsapp-pin:<influencerId>` |
+| `whatsapp_registration_pins.pin_enc` | `whatsapp-pin-number:<phoneNumberId>` (the two-step PIN belongs to the number, so this row outlives a disconnect) |
+| `whatsapp_connections.registration_pin_enc` | `whatsapp-pin:<influencerId>` (superseded; still rotated, and read once if it holds a PIN) |
 
 **How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
 `TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.
