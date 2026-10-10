@@ -24,10 +24,12 @@ import {
   applyTemplateStatusUpdate,
   connectEmbedded,
   connectManual,
+  connectionsAwaitingTemplates,
   disconnect,
   generateRegistrationPin,
   getConnectionView,
   markTokenInvalid,
+  refreshTemplates,
   resolveSendCredentials,
   whatsappPinAad,
   whatsappTokenAad,
@@ -363,6 +365,48 @@ test("a manual connection registers the number only when given a PIN", { skip },
   await connectManual(b, input, deps);
   assert.ok((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).registrationPinEnc, "reconnecting without a PIN keeps the stored one");
   await assert.rejects(connectManual(b, { ...input, pin: "12" }, deps), (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin");
+  await disconnect(b);
+});
+
+test("connecting subscribes the app to the account's webhooks (manual too) and records the outcome, shown to the influencer", { skip }, async () => {
+  const phone = String(Number(PHONE) + 7);
+  const subscribed: string[] = [];
+  const input = { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-subscribe-token-for-tests-1234567890" };
+  const view = await connectManual(b, input, fakeDeps({ subscribeApp: async (w) => void subscribed.push(w) }));
+  assert.deepEqual(subscribed, [WABA], "manual connect subscribes too, not only Embedded Signup");
+  assert.deepEqual(view.webhook, { subscribed: true, error: null });
+  assert.ok(!/live updates/i.test(view.lastError ?? ""), "nothing to warn about");
+  assert.ok((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).webhookSubscribedAt);
+
+  // A failing subscription does not block connecting; it is recorded and shown, and "Check template status" retries it.
+  const failing = await connectManual(b, input, fakeDeps({ subscribeApp: async () => { throw new WhatsAppGraphError("(#200) Requires whatsapp_business_management permission", 403, 200); } }));
+  assert.equal(failing.status, "ACTIVE");
+  assert.equal(failing.webhook.subscribed, false);
+  assert.match(failing.webhook.error ?? "", /whatsapp_business_management/);
+  assert.match(failing.lastError ?? "", /not sending us live updates \(.*whatsapp_business_management/);
+
+  const retried: string[] = [];
+  await refreshTemplates(b, fakeDeps({ subscribeApp: async (w) => void retried.push(w), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
+  assert.deepEqual(retried, [WABA]);
+  const healed = await getConnectionView(b);
+  assert.deepEqual(healed?.webhook, { subscribed: true, error: null });
+  assert.ok(!/live updates/i.test(healed?.lastError ?? ""));
+  await refreshTemplates(b, fakeDeps({ subscribeApp: async () => void retried.push("again"), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
+  assert.deepEqual(retried, [WABA], "already subscribed: not asked again");
+  await disconnect(b);
+});
+
+test("only healthy connections with unapproved templates are picked for the scheduled sync", { skip }, async () => {
+  const phone = String(Number(PHONE) + 8);
+  await connectManual(b, { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-sync-token-for-tests-1234567890" }, fakeDeps());
+  assert.ok((await connectionsAwaitingTemplates()).includes(b), "a template is still in review");
+  const approved = Object.fromEntries(KNOWN_TEMPLATES.map((k) => [k, { status: "APPROVED", language: "en" }]));
+  await prisma.whatsAppConnection.update({ where: { influencerId: b }, data: { templates: approved } });
+  assert.ok(!(await connectionsAwaitingTemplates()).includes(b), "everything approved: nothing to ask Meta");
+  await prisma.whatsAppConnection.update({ where: { influencerId: b }, data: { templates: { ...approved, reschedule: { status: "REJECTED", language: "en" } } } });
+  assert.ok((await connectionsAwaitingTemplates()).includes(b), "a rejected template is worth a look");
+  await prisma.whatsAppConnection.update({ where: { influencerId: b }, data: { status: "ERROR" } });
+  assert.ok(!(await connectionsAwaitingTemplates()).includes(b), "an errored connection needs a reconnect, not a sync");
   await disconnect(b);
 });
 

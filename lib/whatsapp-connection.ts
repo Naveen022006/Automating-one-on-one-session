@@ -118,6 +118,18 @@ function registrationError(e: unknown, supplied: boolean): WhatsAppConnectError 
   return friendly(e);
 }
 
+/** Subscribes our Meta app to the account's webhooks and says how it went, in the shape stored on the connection. */
+async function subscribeWebhooks(wabaId: string, token: string, deps: ConnectDeps): Promise<{ webhookSubscribedAt: Date | null; webhookError: string | null }> {
+  try {
+    await deps.subscribeApp(wabaId, token);
+    return { webhookSubscribedAt: new Date(), webhookError: null };
+  } catch (e) {
+    const why = e instanceof Error ? e.message : "failed";
+    console.error("[whatsapp] could not subscribe to webhooks", why);
+    return { webhookSubscribedAt: null, webhookError: why.slice(0, 300) };
+  }
+}
+
 async function persist(
   influencerId: string,
   c: { wabaId: string; phoneNumberId: string; token: string; source: "manual" | "embedded"; pin?: string; pinSupplied?: boolean },
@@ -135,6 +147,10 @@ async function persist(
 
   const taken = await prisma.whatsAppConnection.findUnique({ where: { phoneNumberId: c.phoneNumberId }, select: { influencerId: true } });
   if (taken && taken.influencerId !== influencerId) throw new WhatsAppConnectError("This WhatsApp number is already connected to another account.", 409, "phoneNumberId");
+
+  // Subscribe our Meta app to the account so template approvals and delivery statuses reach /api/webhooks/whatsapp.
+  // Best effort, like the template sync: the number works without it. The outcome is saved and shown.
+  const webhook = await subscribeWebhooks(c.wabaId, c.token, deps);
 
   // Register last of the checks that can refuse the connection, so a number we then turn away is never left
   // registered with a PIN we did not keep.
@@ -166,6 +182,7 @@ async function persist(
     status: "ACTIVE" as const,
     lastError: sync && sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null,
     ...(sync ? { templates: sync.templates, templatesSyncedAt: new Date() } : {}),
+    ...webhook,
   };
   await prisma.whatsAppConnection.upsert({ where: { influencerId }, create: { influencerId, ...data }, update: { ...data, connectedAt: new Date() } });
   return (await getConnectionView(influencerId))!;
@@ -218,7 +235,6 @@ export async function connectEmbedded(
   let token: string;
   try {
     token = await deps.exchangeCode(input.code);
-    await deps.subscribeApp(input.wabaId, token);
   } catch (e) {
     throw friendly(e);
   }
@@ -231,11 +247,14 @@ export interface WhatsAppConnectionView {
   verifiedName: string | null;
   source: string;
   status: "ACTIVE" | "ERROR";
+  /** What to show the influencer as the problem: the last error, plus a note when Meta is not sending us live updates. */
   lastError: string | null;
   connectedAt: Date;
   templates: { name: string; status: string; reason: string | null }[];
   /** Every template we send is approved: WhatsApp messages will actually go out. */
   ready: boolean;
+  /** Whether Meta sends us template approvals and delivery statuses for this account (otherwise they only change on a manual check). */
+  webhook: { subscribed: boolean; error: string | null };
 }
 
 type StoredTemplates = Record<string, { status: string; reason?: string | null }>;
@@ -249,16 +268,30 @@ export async function getConnectionView(influencerId: string): Promise<WhatsAppC
   const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId } });
   if (!row) return null;
   const templates = viewTemplates(row.templates);
+  const subscribed = row.webhookSubscribedAt !== null;
+  // The pages show lastError field by field, so the live-updates note rides along with it (only while the connection
+  // is healthy: an errored one has a bigger problem to show).
+  const webhookNote =
+    subscribed || row.status !== "ACTIVE"
+      ? null
+      : `Meta is not sending us live updates${row.webhookError ? ` (${row.webhookError})` : " yet"}, so template approvals only change when you press Check template status.`;
   return {
     displayPhone: row.displayPhone,
     verifiedName: row.verifiedName,
     source: row.source,
     status: row.status,
-    lastError: row.lastError,
+    lastError: [row.lastError, webhookNote].filter(Boolean).join(" ") || null,
     connectedAt: row.connectedAt,
     templates,
     ready: row.status === "ACTIVE" && templates.every((t) => isApproved(t.status)),
+    webhook: { subscribed, error: row.webhookError },
   };
+}
+
+/** Connections that are healthy but still have templates that are not approved: the ones worth asking Meta about. */
+export async function connectionsAwaitingTemplates(): Promise<string[]> {
+  const rows = await prisma.whatsAppConnection.findMany({ where: { status: "ACTIVE" }, select: { influencerId: true, templates: true } });
+  return rows.filter((r) => !viewTemplates(r.templates).every((t) => isApproved(t.status))).map((r) => r.influencerId);
 }
 
 export interface SendCredentials {
@@ -293,18 +326,25 @@ export async function markTokenInvalid(influencerId: string, reason: string, ale
   return count > 0;
 }
 
-/** Re-reads template statuses from Meta and submits any that are missing. */
+/**
+ * Re-reads template statuses from Meta and submits any that are missing. Also tries again to subscribe to Meta's
+ * webhooks when that has not worked yet (connections made before it was recorded, or a failure on connect).
+ */
 export async function refreshTemplates(influencerId: string, deps: ConnectDeps = defaultDeps) {
   const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId } });
   if (!row) throw new WhatsAppConnectError("WhatsApp is not connected.", 404);
   try {
-    const sync = await deps.ensureTemplates(row.wabaId, decryptSecret(row.tokenEnc, aad(influencerId)), language());
+    const token = decryptSecret(row.tokenEnc, aad(influencerId));
+    const sync = await deps.ensureTemplates(row.wabaId, token, language());
+    const webhook = row.webhookSubscribedAt ? {} : await subscribeWebhooks(row.wabaId, token, deps);
     await prisma.whatsAppConnection.update({
       where: { influencerId },
       data: {
         templates: sync.templates,
         templatesSyncedAt: new Date(),
-        lastError: sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null,
+        // An errored connection keeps the reason it errored.
+        ...(row.status === "ACTIVE" ? { lastError: sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null } : {}),
+        ...webhook,
       },
     });
     return { submitted: sync.submitted, failed: sync.failed };

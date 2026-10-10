@@ -11,6 +11,7 @@ import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeetin
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
+import { startWhatsAppSync } from "./whatsapp-sync";
 
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
 import { initEnvOrExit } from "../lib/env";
@@ -118,6 +119,7 @@ if (!process.env.REDIS_URL) {
 // --- payment recovery + health monitoring (worker/monitoring.ts): heartbeat, missed-webhook recovery, health monitor ---
 startMonitoring();
 // --- end payment recovery + health monitoring ---
+startWhatsAppSync(); // template status backup for Meta's webhook (worker/whatsapp-sync.ts)
 
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
