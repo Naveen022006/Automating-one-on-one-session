@@ -1,81 +1,14 @@
 import type { Metadata } from "next";
-import { PageHead } from "@/components/app/AppShell";
-import { TwoFactorPanel } from "@/components/admin/TwoFactorPanel";
-import { Badge, Card } from "@/components/ui/primitives";
-import { listAdministrators } from "@/lib/admin/data";
-import { getMfaStatus } from "@/lib/admin/mfa";
-import { admin2faRequired } from "@/lib/admin/policy";
-import { canViewAdminList, requireAdminPage } from "@/lib/admin/session";
-import { fourEyesEnabled, fourEyesMinMinor } from "@/lib/payouts";
+import { SecurityView } from "@/components/views/admin/SecurityView";
+import { requireAdminPage } from "@/lib/admin/session";
+import { jsonify } from "@/lib/jsonify";
+import { loadAdminSecurityView } from "@/lib/views/admin-security";
 
 export const metadata: Metadata = { title: "Security" };
 
-// The only console page open to an administrator who still has to set up two-factor (ADMIN_REQUIRE_2FA).
+// The only console page open to an administrator who still has to set up two-factor (ADMIN_REQUIRE_2FA). The administrator
+// list is only part of the view once this session has passed what it must (loadAdminSecurityView); it is null before that.
 export default async function AdminSecurityPage() {
   const admin = await requireAdminPage("/admin/security");
-  // The administrator list (who has 2FA, who signed in when) is only shown once this session has passed what it must: a
-  // stolen cookie of an admin who has not enrolled yet must not be able to read it.
-  const showAdmins = canViewAdminList(admin);
-  const [status, admins] = await Promise.all([getMfaStatus(admin.adminId), showAdmins ? listAdministrators() : Promise.resolve([])]);
-  const required = admin2faRequired();
-  const fourEyes = fourEyesEnabled();
-  const minMinor = fourEyesMinMinor();
-
-  return (
-    <div className="stack stack--lg">
-      <PageHead
-        title="Security"
-        description={`Two-factor sign-in for ${admin.email}. ${required ? "It is required for every administrator." : "It is optional on this deployment, but strongly recommended."}`}
-      />
-      <Card title="Two-factor authentication">
-        <TwoFactorPanel enabled={status.enabled} recoveryCodesLeft={status.recoveryCodesLeft} required={required} />
-      </Card>
-
-      <Card title="Payout approval">
-        <p className="muted">
-          {fourEyes
-            ? `A second administrator has to approve each payout before it can be marked as paid${minMinor > 0 ? ` (when the payout plus that influencer's other unapproved payouts of the last 24 hours reach ${minMinor} minor units of its currency)` : ""}.`
-            : "Payout approval by a second administrator is off (PAYOUT_FOUR_EYES=false). One administrator can create and pay a payout."}
-        </p>
-      </Card>
-
-      {!showAdmins ? (
-        <Card title="Administrators">
-          <p className="muted">The list of administrators is shown after you have set up two-factor authentication and signed in with it.</p>
-        </Card>
-      ) : (
-      <Card title={`Administrators (${admins.length})`}>
-        <div className="table-wrap">
-          <table className="table table--stack">
-            <caption className="sr-only">Administrators</caption>
-            <thead>
-              <tr>
-                <th scope="col">Email</th>
-                <th scope="col">Name</th>
-                <th scope="col">Two-factor</th>
-                <th scope="col">Last sign-in</th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {admins.map((a) => (
-                <tr key={a.id}>
-                  <td data-label="Email">
-                    {a.email}
-                    {a.id === admin.adminId && <span className="subtle"> (you)</span>}
-                  </td>
-                  <td data-label="Name">{a.name}</td>
-                  <td data-label="Two-factor">{a.totpEnabled ? <Badge tone="success">On</Badge> : <Badge tone={required ? "danger" : "neutral"}>Off</Badge>}</td>
-                  <td data-label="Last sign-in">{a.lastLoginAt ? a.lastLoginAt.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "Never"}</td>
-                  <td data-label="Status">{a.disabled ? <Badge tone="danger">Disabled</Badge> : <Badge tone="success">Active</Badge>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="subtle">Administrators are created from the command line: <code>npm run admin:create</code>.</p>
-      </Card>
-      )}
-    </div>
-  );
+  return <SecurityView data={jsonify(await loadAdminSecurityView(admin))} />;
 }

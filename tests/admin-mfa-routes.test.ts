@@ -63,14 +63,23 @@ async function redirectOf(fn: () => Promise<unknown>): Promise<string | null> {
   }
 }
 
-/** Every string reachable through a React element tree's props (titles, text, rows), without rendering client components. */
+/**
+ * Every string reachable through a React element tree's props (titles, text, rows), without rendering client components.
+ * The Security page now returns `<SecurityView data={...} />`: the shared view component (hook-free, named `...View`) is called
+ * so the text it prints is part of the tree, and plain data objects (the JSON the view is rendered from) are walked too.
+ */
 function textOf(node: unknown, seen = new Set<unknown>(), out: string[] = []): string[] {
   if (typeof node === "string") out.push(node);
   else if (Array.isArray(node)) for (const n of node) textOf(n, seen, out);
   else if (node && typeof node === "object" && !seen.has(node)) {
     seen.add(node);
-    const props = (node as { props?: Record<string, unknown> }).props;
-    if (props) for (const v of Object.values(props)) textOf(v, seen, out);
+    const el = node as { $$typeof?: unknown; type?: unknown; props?: Record<string, unknown> };
+    if (el.$$typeof) {
+      if (typeof el.type === "function" && el.type.name.endsWith("View")) textOf((el.type as (props: unknown) => unknown)(el.props), seen, out);
+      if (el.props) for (const v of Object.values(el.props)) textOf(v, seen, out);
+    } else {
+      for (const v of Object.values(node)) textOf(v, seen, out);
+    }
   }
   return out;
 }

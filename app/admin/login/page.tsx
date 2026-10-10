@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { AdminLoginForm } from "@/components/admin/AdminForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { LoginView } from "@/components/views/admin/LoginView";
 import { getAdminAuth, mfaGateStatus } from "@/lib/admin/session";
 import { safeNextPath } from "@/lib/http";
 
@@ -14,15 +13,5 @@ export default async function AdminLoginPage({ searchParams }: { searchParams: P
   // between here and the console.
   const current = await getAdminAuth();
   if (current && mfaGateStatus(current) !== "verify") redirect(safeNextPath(next, "/admin"));
-  return (
-    <FocusedLayout footer={<span>Authorised administrators only. Activity is logged.</span>}>
-      <div className="stack stack--lg">
-        <div className="stack stack--sm">
-          <h1 className="focused__title">Admin console</h1>
-          <p className="muted">Sign in with your administrator account.</p>
-        </div>
-        <AdminLoginForm next={next} />
-      </div>
-    </FocusedLayout>
-  );
+  return <LoginView next={next} />;
 }
