@@ -37,7 +37,7 @@ export type MessageOutcome = "sent" | "already-sent" | "skipped";
  * Statuses from which a customer message still makes sense. A booking that has been cancelled, expired or
  * failed should not receive a confirmation/reminder, so those are skipped (read at run time, never trusted
  * from enqueue time: the booking may have changed since the job was queued). A cancellation message is a
- * deliberate exception handled by its caller (lib/booking-actions.cancelBooking sends it BEFORE the flip).
+ * deliberate exception: it is also sendable for a CANCELLED booking (see the template check in the sender).
  */
 const SENDABLE_STATUSES = new Set(["PAID", "SCHEDULED", "COMPLETED"]);
 

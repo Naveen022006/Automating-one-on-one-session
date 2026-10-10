@@ -7,7 +7,7 @@ import {
   google as defaultGoogle,
   type GoogleClient,
 } from "@/lib/google";
-import { getRefreshToken } from "@/lib/google-tokens";
+import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
 import { activeSeatWhere } from "@/lib/holds";
 import { calendarEventId, sessionEventId } from "@/lib/meeting";
 import { CANCELLATION_TEMPLATE, CONFIRMATION_TEMPLATE, RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
@@ -118,19 +118,18 @@ export async function resendBookingLink(bookingId: string, overrides: Partial<Ma
   await step("enqueue confirmation", () => deps.enqueueSendMessage(bookingId, CONFIRMATION_TEMPLATE, `resend-${Date.now()}`));
 }
 
-/** Resolves an access token for the booking's influencer, or throws ManageBlockedError if not connected. */
+/**
+ * Resolves an access token for the booking's influencer. Throws ManageBlockedError if Google is not connected or is
+ * already flagged for reconnect. A grant Google rejects right now surfaces as GoogleReconnectError (not wrapped), so
+ * recordCalendarProblem can flag the connection.
+ */
 async function accessTokenFor(deps: ManageDeps, booking: BookingWithContext): Promise<string> {
   const influencerId = booking.session.service.influencer.id;
   const token = await getRefreshToken(influencerId);
   if (token.state !== "ok") {
     throw new ManageBlockedError("The influencer's Google Calendar is not connected; the change was saved but the calendar was not updated");
   }
-  try {
-    return await deps.google.refreshAccessToken(token.refreshToken);
-  } catch (e) {
-    if (e instanceof GoogleReconnectError) throw new ManageBlockedError(e.message);
-    throw e;
-  }
+  return deps.google.refreshAccessToken(token.refreshToken);
 }
 
 export interface CancelOptions {
@@ -142,12 +141,19 @@ export interface CancelOptions {
 export interface CancelResult {
   /** issued: "yes" (refunded now), "pending" (sent to Razorpay, not yet confirmed), "no" (flagged or not due). */
   refund: { eligible: boolean; reason: string; issued: "yes" | "pending" | "no" };
+  /**
+   * Set when the booking was cancelled but its Calendar event could not be updated (Google not connected, revoked,
+   * unreachable or rejecting the change). The reminders, refund and customer notice all went ahead anyway.
+   */
+  warning?: string;
 }
 
 /**
  * Cancels a booking: marks it CANCELLED, updates the shared/1:1 Calendar event, drops its reminders, decides the
  * refund from the service policy, and tells the customer (WhatsApp/SMS + email). The DB change always happens; a
- * calendar failure is best-effort (recorded + alerted) so a cancel is never blocked by Google being unreachable.
+ * calendar failure is best-effort: it is remembered, the rest of the cancel carries on (the booking is already
+ * CANCELLED, so nothing could retry the reminders, refund or customer notice later), and it is recorded, alerted
+ * and returned as `warning` at the end, the way rescheduleBooking handles it.
  *
  *  - 1:1    -> delete the booking's own event.
  *  - GROUP  -> remove ONLY this attendee from the shared session event; delete the event (and clear the
@@ -193,6 +199,7 @@ export async function cancelBooking(
   }
 
   // 2) Calendar (best-effort): remove the attendee / delete the event.
+  let calendarError: unknown = null;
   if (booking.eventId || session.eventId) {
     try {
       const accessToken = await accessTokenFor(deps, booking);
@@ -207,7 +214,7 @@ export async function cancelBooking(
         await deps.google.deleteEvent(accessToken, booking.eventId);
       }
     } catch (e) {
-      await handleCalendarError(deps, influencerId, booking.id, e, "cancel");
+      calendarError = e;
     }
   }
 
@@ -258,7 +265,13 @@ export async function cancelBooking(
   await createMessage({ bookingId: booking.id, channel: "whatsapp", template: CANCELLATION_TEMPLATE, status: "queued" });
   await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));
 
-  return { refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued } };
+  // 6) Only now report the calendar problem (record it on the booking, flag a dead grant, alert the influencer).
+  const problem = calendarError ? await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "cancel") : null;
+
+  return {
+    refund: { eligible: decision.refund && hasCapturedPayment, reason: decision.reason, issued },
+    ...(problem ? { warning: problem.detail } : {}),
+  };
 }
 
 /** AUTO_REFUND_ON_CANCEL=true makes eligible cancellations refund immediately through Razorpay. */
@@ -371,21 +384,50 @@ export async function rescheduleBooking(
     await step("enqueue reschedule notice", () => deps.enqueueSendMessage(b.id, RESCHEDULE_TEMPLATE, suffix));
   }
 
-  if (calendarError) await handleCalendarError(deps, influencerId, booking.id, calendarError, "reschedule");
+  if (calendarError) {
+    const problem = await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "reschedule");
+    if (problem.kind === "blocked") throw new ManageBlockedError(problem.detail);
+    if (problem.kind === "rejected") throw new ManageRejectedError(problem.detail);
+    // Transient: the DB change already landed; the influencer was alerted and can retry from the dashboard.
+  }
 }
 
-/** Records a calendar failure on the booking and alerts the influencer. Does not rethrow transient failures. */
-async function handleCalendarError(
+interface CalendarProblem {
+  /** blocked: Google is not connected or the grant is dead. rejected: Google refused this change. transient: try again. */
+  kind: "blocked" | "rejected" | "transient";
+  detail: string;
+}
+
+/**
+ * Records a calendar failure on the booking and alerts the influencer. Never throws: the caller decides whether to
+ * surface the problem (reschedule throws it, cancel returns it as a warning).
+ *
+ * A grant Google rejects right now (revoked, expired, password changed) is dead for every booking, not just this
+ * one, so it is flagged exactly like lib/meeting.ts does: the dashboard stops saying "Connected", the booking page
+ * goes offline until they reconnect, and the influencer gets one "Reconnect Google" alert (only the call that flips
+ * the flag sends it) instead of a generic calendar alert per booking.
+ */
+async function recordCalendarProblem(
   deps: ManageDeps,
   influencerId: string,
   bookingId: string,
   e: unknown,
   action: "cancel" | "reschedule",
-): Promise<void> {
-  const detail = `Could not ${action} the calendar event: ${e instanceof Error ? e.message : String(e)}`;
+): Promise<CalendarProblem> {
+  const message = e instanceof Error ? e.message : String(e);
+  const detail = `Could not ${action} the calendar event: ${message}`;
   await prisma.booking.update({ where: { id: bookingId }, data: { lastError: detail.slice(0, 500) } }).catch(() => {});
-  await deps.alert(influencerId, { kind: "meeting-creation-failed", detail, bookingId });
-  if (e instanceof GoogleReconnectError || e instanceof ManageBlockedError) throw new ManageBlockedError(detail);
-  if (e instanceof GoogleRequestError) throw new ManageRejectedError(detail);
-  // Transient: the DB change already landed; the influencer was alerted and can retry from the dashboard.
+  const flagged = e instanceof GoogleReconnectError ? await markReconnectNeeded(influencerId, message).catch(() => false) : false;
+  if (flagged) {
+    await deps.alert(influencerId, {
+      kind: "google-reconnect-needed",
+      detail: `Google stopped accepting the connection (${message}). Reconnect to keep creating Meet links. ${detail}`,
+      bookingId,
+    });
+  } else {
+    await deps.alert(influencerId, { kind: "meeting-creation-failed", detail, bookingId });
+  }
+  if (e instanceof GoogleReconnectError || e instanceof ManageBlockedError) return { kind: "blocked", detail };
+  if (e instanceof GoogleRequestError) return { kind: "rejected", detail };
+  return { kind: "transient", detail };
 }
