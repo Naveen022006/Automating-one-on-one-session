@@ -8,15 +8,15 @@ import {
   ensureTemplates,
   exchangeEmbeddedCode,
   checkTokenInfo,
-  debugToken,
   getPhoneNumber,
+  inspectToken,
   listTemplates,
-  metaAppCredentials,
   registerNumber,
   setTwoStepPin,
   subscribeApp,
   wabaOwnsNumber,
   type PhoneNumberInfo,
+  type SubscriptionResult,
   type TemplateSyncResult,
   type TokenInfo,
 } from "@/lib/whatsapp-connect";
@@ -59,11 +59,12 @@ export interface ConnectDeps {
   wabaOwnsNumber: (wabaId: string, phoneNumberId: string, token: string) => Promise<boolean>;
   ensureTemplates: (wabaId: string, token: string, language: string) => Promise<TemplateSyncResult>;
   exchangeCode: (code: string) => Promise<string>;
-  subscribeApp: (wabaId: string, token: string) => Promise<void>;
+  /** Subscribes to the account's webhooks and says whether OUR app is the subscribed one (see subscribeApp). */
+  subscribeApp: (wabaId: string, token: string) => Promise<SubscriptionResult>;
   registerNumber: (phoneNumberId: string, token: string, pin: string) => Promise<void>;
   /** Sets the two-step PIN of a registered number to `pin`, whatever it was (Meta's set-PIN call). */
   setPin: (phoneNumberId: string, token: string, pin: string) => Promise<void>;
-  /** Meta's view of the token (permissions, expiry), or null when this server has no Meta app id and secret to ask with. */
+  /** Meta's view of the token (permissions, expiry). Throws when Meta cannot say; null when it was not asked. */
   inspectToken: (token: string) => Promise<TokenInfo | null>;
 }
 
@@ -75,10 +76,7 @@ const defaultDeps: ConnectDeps = {
   subscribeApp: (w, t) => subscribeApp(w, t),
   registerNumber: (p, t, pin) => registerNumber(p, t, pin),
   setPin: (p, t, pin) => setTwoStepPin(p, t, pin),
-  inspectToken: async (t) => {
-    const app = metaAppCredentials();
-    return app ? debugToken(t, app.appId, app.appSecret) : null;
-  },
+  inspectToken: (t) => inspectToken(t),
 };
 
 const ID = /^\d{5,30}$/;
@@ -254,11 +252,15 @@ async function vetToken(token: string, deps: ConnectDeps): Promise<string[]> {
   return check.notes;
 }
 
-/** Subscribes our Meta app to the account's webhooks and says how it went, in the shape stored on the connection. */
+/**
+ * Subscribes to the account's webhooks and says how it went, in the shape stored on the connection. "Subscribed" is
+ * recorded only when OUR Meta app is the one subscribed (a pasted token usually belongs to the influencer's own app, and
+ * subscribing that one sends us nothing); otherwise the reason is recorded and shown.
+ */
 async function subscribeWebhooks(wabaId: string, token: string, deps: ConnectDeps): Promise<{ webhookSubscribedAt: Date | null; webhookError: string | null }> {
   try {
-    await deps.subscribeApp(wabaId, token);
-    return { webhookSubscribedAt: new Date(), webhookError: null };
+    const result = await deps.subscribeApp(wabaId, token);
+    return result.subscribed ? { webhookSubscribedAt: new Date(), webhookError: null } : { webhookSubscribedAt: null, webhookError: (result.reason ?? "not subscribed").slice(0, 300) };
   } catch (e) {
     const why = e instanceof Error ? e.message : "failed";
     console.error("[whatsapp] could not subscribe to webhooks", why);
@@ -402,7 +404,7 @@ export async function getConnectionView(influencerId: string): Promise<WhatsAppC
   const webhookNote =
     subscribed || row.status !== "ACTIVE"
       ? null
-      : `Meta is not sending us live updates${row.webhookError ? ` (${row.webhookError})` : " yet"}, so template approvals only change when you press Check template status.`;
+      : `Live updates from Meta are not available for this connection${row.webhookError ? ` (${row.webhookError})` : " yet"}. Template statuses refresh about every 30 minutes, or when you press Check template status.`;
   return {
     displayPhone: row.displayPhone,
     verifiedName: row.verifiedName,

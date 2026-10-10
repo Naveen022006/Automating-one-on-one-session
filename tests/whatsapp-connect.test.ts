@@ -19,9 +19,11 @@ import {
   ensureTemplates,
   exchangeEmbeddedCode,
   getPhoneNumber,
+  inspectToken,
   listTemplates,
   metaAppCredentials,
   registerNumber,
+  subscribeApp,
   templatePayload,
   wabaOwnsNumber,
   webhookAppSecret,
@@ -333,6 +335,104 @@ test("debug_token is read with the app's token, and its answer is turned into to
   await assert.rejects(debugToken("t", "a", "s", (async () => json(200, {})) as unknown as typeof fetch), WhatsAppGraphError);
 });
 
+const OUR_APP = "1234567890";
+const appEnv = { META_APP_ID: OUR_APP, META_APP_SECRET: "app-secret" } as unknown as NodeJS.ProcessEnv;
+
+/** A fake Graph for the subscribed_apps calls of one account: `apps` is what GET lists. */
+function fakeSubscriptions(apps: unknown[] | "fail", opts: { postFails?: boolean } = {}) {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${new URL(url).pathname.replace(/^\/v[\d.]+/, "")}`);
+    if (init?.method === "POST") return opts.postFails ? json(403, { error: { message: "(#200) no permission", code: 200 } }) : json(200, { success: true });
+    return apps === "fail" ? json(500, { error: { message: "Meta is down", code: 2 } }) : json(200, { data: apps });
+  }) as unknown as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+test("subscribing: 'subscribed' is reported only when OUR Meta app is among the subscribed apps", async () => {
+  const mine = fakeSubscriptions([{ whatsapp_business_api_data: { id: OUR_APP, name: "Session Automation" } }]);
+  assert.deepEqual(await subscribeApp("waba1", "tok", mine.fetchImpl, appEnv), { subscribed: true, reason: null });
+  assert.deepEqual(mine.calls, ["POST /waba1/subscribed_apps", "GET /waba1/subscribed_apps"], "subscribes, then reads the list back");
+
+  const flat = fakeSubscriptions([{ id: OUR_APP }]);
+  assert.equal((await subscribeApp("waba1", "tok", flat.fetchImpl, appEnv)).subscribed, true, "either shape of the list");
+
+  // The pasted token belongs to the influencer's own app: it is theirs that got subscribed.
+  const theirs = fakeSubscriptions([{ whatsapp_business_api_data: { id: "999", name: "Their App" } }]);
+  const other = await subscribeApp("waba1", "tok", theirs.fetchImpl, appEnv);
+  assert.equal(other.subscribed, false);
+  assert.match(other.reason ?? "", /different Meta app than ours/);
+
+  const empty = await subscribeApp("waba1", "tok", fakeSubscriptions([]).fetchImpl, appEnv);
+  assert.equal(empty.subscribed, false);
+
+  // Without our app id there is nothing to compare with, so it cannot be called subscribed.
+  const unknown = await subscribeApp("waba1", "tok", fakeSubscriptions([{ id: OUR_APP }]).fetchImpl, {} as unknown as NodeJS.ProcessEnv);
+  assert.equal(unknown.subscribed, false);
+  assert.match(unknown.reason ?? "", /META_APP_ID is not set/);
+
+  // The list cannot be read back: unconfirmed, not assumed.
+  const unreadable = await subscribeApp("waba1", "tok", fakeSubscriptions("fail").fetchImpl, appEnv);
+  assert.equal(unreadable.subscribed, false);
+  assert.match(unreadable.reason ?? "", /could not confirm/);
+
+  // The subscribe call itself failing is an error for the caller to record.
+  await assert.rejects(subscribeApp("waba1", "tok", fakeSubscriptions([], { postFails: true }).fetchImpl, appEnv), (e: unknown) => e instanceof WhatsAppGraphError && e.code === 200);
+});
+
+/** A fake debug_token: `byAuth` answers per Authorization header ("Bearer app|secret" is our app, "Bearer <token>" the token itself). */
+function fakeDebug(byAuth: Record<string, () => Response>) {
+  const asked: string[] = [];
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    const auth = new Headers(init?.headers).get("authorization") ?? "";
+    asked.push(auth.replace("Bearer ", ""));
+    const answer = byAuth[auth.replace("Bearer ", "")];
+    return answer ? answer() : json(400, { error: { message: "unexpected", code: 100 } });
+  }) as unknown as typeof fetch;
+  return { asked, fetchImpl };
+}
+
+const APP_AUTH = `${OUR_APP}|app-secret`;
+const dayToken = () => json(200, { data: { is_valid: true, app_id: "999", expires_at: Math.floor((Date.now() + 23 * 3_600_000) / 1000), scopes: [...REQUIRED_SCOPES] } });
+
+test("inspecting a token: our app first, then the token inspecting itself when our app cannot", async () => {
+  // Our app can inspect it: one question.
+  const ours = fakeDebug({ [APP_AUTH]: () => json(200, { data: { is_valid: true, app_id: OUR_APP, expires_at: 0, scopes: [...REQUIRED_SCOPES] } }) });
+  assert.equal((await inspectToken("TOK", appEnv, ours.fetchImpl)).valid, true);
+  assert.deepEqual(ours.asked, [APP_AUTH]);
+
+  // A token of the influencer's own app: asking as our app is refused (app mismatch), so it inspects itself, and the
+  // 24-hour API Setup token is seen for what it is.
+  const mismatch = fakeDebug({ [APP_AUTH]: () => json(400, { error: { message: "(#100) You must use an app access token of the app that issued this token", code: 100 } }), TOK: dayToken });
+  const short = await inspectToken("TOK", appEnv, mismatch.fetchImpl);
+  assert.deepEqual(mismatch.asked, [APP_AUTH, "TOK"], "retried with the token as its own access token");
+  assert.equal(short.valid, true);
+  const verdict = checkTokenInfo(short);
+  assert.ok(!verdict.ok && /expires in 23 hour/.test(verdict.message), "the 24-hour token is refused, not waved through with a note");
+
+  // Our app answers 200 but says not valid (it cannot see another app's token), or names another app: same retry.
+  const invalid = fakeDebug({ [APP_AUTH]: () => json(200, { data: { is_valid: false, scopes: [] } }), TOK: dayToken });
+  assert.equal((await inspectToken("TOK", appEnv, invalid.fetchImpl)).appId, "999");
+  assert.deepEqual(invalid.asked, [APP_AUTH, "TOK"]);
+  const foreign = fakeDebug({ [APP_AUTH]: () => json(200, { data: { is_valid: true, app_id: "999", expires_at: 0, scopes: [] } }), TOK: dayToken });
+  await inspectToken("TOK", appEnv, foreign.fetchImpl);
+  assert.deepEqual(foreign.asked, [APP_AUTH, "TOK"]);
+
+  // No app credentials here at all: the token inspects itself.
+  const noApp = fakeDebug({ TOK: dayToken });
+  assert.equal((await inspectToken("TOK", {} as unknown as NodeJS.ProcessEnv, noApp.fetchImpl)).valid, true);
+  assert.deepEqual(noApp.asked, ["TOK"]);
+
+  // A token that truly is not valid says so about itself too.
+  const dead = fakeDebug({ [APP_AUTH]: () => json(200, { data: { is_valid: false } }), TOK: () => json(200, { data: { is_valid: false, scopes: [] } }) });
+  assert.equal((await inspectToken("TOK", appEnv, dead.fetchImpl)).valid, false);
+
+  // Only when both fail does it throw, which the connect flow turns into a note rather than a refusal.
+  const neither = fakeDebug({ [APP_AUTH]: () => json(400, { error: { message: "mismatch", code: 100 } }), TOK: () => json(400, { error: { message: "Invalid OAuth access token", code: 190 } }) });
+  await assert.rejects(inspectToken("TOK", appEnv, neither.fetchImpl), WhatsAppGraphError);
+  assert.deepEqual(neither.asked, [APP_AUTH, "TOK"]);
+});
+
 test("registering a number: a PIN mismatch is recognised, 'already registered' is fine, 'not registered' is not", async () => {
   const fail = (status: number, error: Record<string, unknown>) => (async () => json(status, { error })) as unknown as typeof fetch;
   await assert.rejects(registerNumber("111", "tok", "123456", fail(400, { message: "Two step verification PIN Mismatch", code: 133005 })), (e: unknown) => e instanceof WhatsAppGraphError && e.pinMismatch && !e.pinLocked && !e.invalidToken);
@@ -402,7 +502,7 @@ function fakeDeps(over: Partial<ConnectDeps> = {}): ConnectDeps {
     wabaOwnsNumber: async () => true,
     ensureTemplates: async () => ({ templates: { "booking-confirmation": { status: "PENDING", language: "en" } }, submitted: ["booking-confirmation"], failed: [] }),
     exchangeCode: async () => "business-token-from-meta-0123456789",
-    subscribeApp: async () => {},
+    subscribeApp: async () => ({ subscribed: true, reason: null }),
     registerNumber: async () => {},
     setPin: async () => {},
     inspectToken: async () => ({ valid: true, expiresAt: null, scopes: [...REQUIRED_SCOPES, "business_management"] }),
@@ -496,7 +596,7 @@ test("a template-sync failure does not block connecting", { skip }, async () => 
 
 test("Embedded Signup exchanges the code, subscribes the account and saves", { skip }, async () => {
   const calls: string[] = [];
-  const deps = fakeDeps({ subscribeApp: async (w) => void calls.push(`subscribe:${w}`), registerNumber: async (p, _t, pin) => void calls.push(`register:${p}:${pin}`) });
+  const deps = fakeDeps({ subscribeApp: async (w) => (calls.push(`subscribe:${w}`), { subscribed: true, reason: null }), registerNumber: async (p, _t, pin) => void calls.push(`register:${p}:${pin}`) });
   const phone = String(Number(PHONE) + 3);
   const view = await connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone }, deps, { WHATSAPP_REGISTRATION_PIN: "123456" } as unknown as NodeJS.ProcessEnv);
   assert.equal(view.source, "embedded");
@@ -692,11 +792,11 @@ test("a manual connection registers the number only when given a PIN", { skip },
   await disconnect(b);
 });
 
-test("connecting subscribes the app to the account's webhooks (manual too) and records the outcome, shown to the influencer", { skip }, async () => {
+test("connecting subscribes to the account's webhooks (manual too) and records the outcome, shown to the influencer", { skip }, async () => {
   const phone = String(Number(PHONE) + 7);
   const subscribed: string[] = [];
   const input = { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-subscribe-token-for-tests-1234567890" };
-  const view = await connectManual(b, input, fakeDeps({ subscribeApp: async (w) => void subscribed.push(w) }));
+  const view = await connectManual(b, input, fakeDeps({ subscribeApp: async (w) => (subscribed.push(w), { subscribed: true, reason: null }) }));
   assert.deepEqual(subscribed, [WABA], "manual connect subscribes too, not only Embedded Signup");
   assert.deepEqual(view.webhook, { subscribed: true, error: null });
   assert.ok(!/live updates/i.test(view.lastError ?? ""), "nothing to warn about");
@@ -707,16 +807,46 @@ test("connecting subscribes the app to the account's webhooks (manual too) and r
   assert.equal(failing.status, "ACTIVE");
   assert.equal(failing.webhook.subscribed, false);
   assert.match(failing.webhook.error ?? "", /whatsapp_business_management/);
-  assert.match(failing.lastError ?? "", /not sending us live updates \(.*whatsapp_business_management/);
+  assert.match(failing.lastError ?? "", /Live updates from Meta are not available.*whatsapp_business_management.*every 30 minutes/);
 
   const retried: string[] = [];
-  await refreshTemplates(b, fakeDeps({ subscribeApp: async (w) => void retried.push(w), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
+  const ok = { subscribed: true, reason: null };
+  await refreshTemplates(b, fakeDeps({ subscribeApp: async (w) => (retried.push(w), ok), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
   assert.deepEqual(retried, [WABA]);
   const healed = await getConnectionView(b);
   assert.deepEqual(healed?.webhook, { subscribed: true, error: null });
   assert.ok(!/live updates/i.test(healed?.lastError ?? ""));
-  await refreshTemplates(b, fakeDeps({ subscribeApp: async () => void retried.push("again"), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
+  await refreshTemplates(b, fakeDeps({ subscribeApp: async () => (retried.push("again"), ok), ensureTemplates: async () => ({ templates: {}, submitted: [], failed: [] }) }));
   assert.deepEqual(retried, [WABA], "already subscribed: not asked again");
+  await disconnect(b);
+});
+
+test("the 24-hour token of the influencer's own Meta app is refused although our app cannot inspect it", { skip }, async () => {
+  const token = "EAAG-own-app-day-token-1234567890";
+  const mismatch = fakeDebug({ [APP_AUTH]: () => json(400, { error: { message: "(#100) You must use an app access token of the app that issued this token", code: 100 } }), [token]: dayToken });
+  await assert.rejects(
+    connectManual(b, { wabaId: WABA, phoneNumberId: String(Number(PHONE) + 32), accessToken: token }, fakeDeps({ inspectToken: (t) => inspectToken(t, appEnv, mismatch.fetchImpl) })),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "accessToken" && /expires in 23 hour/.test(e.message),
+  );
+  assert.deepEqual(mismatch.asked, [APP_AUTH, token]);
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0, "nothing saved");
+
+  // Both ways of asking failing is a note on a connection that goes ahead, not a refusal.
+  const neither = fakeDebug({});
+  const view = await connectManual(b, { wabaId: WABA, phoneNumberId: String(Number(PHONE) + 32), accessToken: token }, fakeDeps({ inspectToken: (t) => inspectToken(t, appEnv, neither.fetchImpl) }));
+  assert.match(view.notes.join(" "), /could not check this token/);
+  await disconnect(b);
+});
+
+test("a token of the influencer's own Meta app subscribes THEIR app: not recorded as subscribed, with a clear note", { skip }, async () => {
+  const phone = String(Number(PHONE) + 31);
+  const ownApp = { subscribed: false, reason: "the access token belongs to a different Meta app than ours, so Meta's updates do not reach us" };
+  const view = await connectManual(b, { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-their-own-app-token-for-tests-1234567890" }, fakeDeps({ subscribeApp: async () => ownApp }));
+  assert.equal(view.status, "ACTIVE", "the number still connects");
+  assert.deepEqual(view.webhook, { subscribed: false, error: ownApp.reason });
+  assert.equal((await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).webhookSubscribedAt, null);
+  assert.match(view.lastError ?? "", /Live updates from Meta are not available for this connection \(the access token belongs to a different Meta app/);
+  assert.match(view.lastError ?? "", /every 30 minutes/, "says the periodic sync keeps statuses fresh");
   await disconnect(b);
 });
 

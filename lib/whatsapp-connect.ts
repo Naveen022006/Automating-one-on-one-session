@@ -219,14 +219,16 @@ export interface TokenInfo {
   expiresAt: Date | null;
   /** The permissions granted, or null when Meta did not list any (so they cannot be checked). */
   scopes: string[] | null;
+  /** The Meta app the token was issued for, when Meta says. */
+  appId?: string;
 }
 
-/** What Meta's debug_token says about `token`. Needs the Meta app's id and secret, which are not the influencer's. */
-export async function debugToken(token: string, appId: string, appSecret: string, fetchFn?: FetchFn): Promise<TokenInfo> {
-  const qs = new URLSearchParams({ input_token: token });
-  const r = await graph<{ data?: { is_valid?: boolean; expires_at?: number; scopes?: string[]; granular_scopes?: { scope?: string }[] } }>(
+/** Asks debug_token about `inputToken`, authorised by `accessToken` (an app access token, or the token itself). */
+async function debugWith(inputToken: string, accessToken: string, fetchFn?: FetchFn): Promise<TokenInfo> {
+  const qs = new URLSearchParams({ input_token: inputToken });
+  const r = await graph<{ data?: { is_valid?: boolean; app_id?: string; expires_at?: number; scopes?: string[]; granular_scopes?: { scope?: string }[] } }>(
     `/debug_token?${qs}`,
-    { token: `${appId}|${appSecret}` }, // an app access token; the influencer's token is only the thing being inspected
+    { token: accessToken },
     fetchFn,
   );
   const d = r.data;
@@ -236,7 +238,33 @@ export async function debugToken(token: string, appId: string, appSecret: string
     valid: d.is_valid === true,
     expiresAt: d.expires_at ? new Date(d.expires_at * 1000) : null, // 0 or missing: never
     scopes: scopes.length ? scopes : null,
+    ...(d.app_id ? { appId: String(d.app_id) } : {}),
   };
+}
+
+/** What Meta's debug_token says about `token`, asked as our Meta app (its id and secret are not the influencer's). */
+export async function debugToken(token: string, appId: string, appSecret: string, fetchFn?: FetchFn): Promise<TokenInfo> {
+  return debugWith(token, `${appId}|${appSecret}`, fetchFn); // an app access token; the influencer's token is only the thing being inspected
+}
+
+/**
+ * Inspects a token. A pasted token usually belongs to the influencer's OWN Meta app, which our app credentials cannot
+ * inspect (Meta answers with an app mismatch, or says the token is not valid), so when asking as our app does not give a
+ * valid answer about a token of ours, the token is asked to inspect itself (debug_token with the token as both
+ * input_token and access_token). Throws only when neither could say, so the caller can say "not checked" rather than
+ * refuse a token that may be fine.
+ */
+export async function inspectToken(token: string, env = process.env, fetchFn?: FetchFn): Promise<TokenInfo> {
+  const app = metaAppCredentials(env);
+  if (app) {
+    try {
+      const info = await debugToken(token, app.appId, app.appSecret, fetchFn);
+      if (info.valid && (!info.appId || info.appId === app.appId)) return info;
+    } catch {
+      /* cannot be inspected as our app: let the token inspect itself */
+    }
+  }
+  return debugWith(token, token, fetchFn);
 }
 
 export type TokenCheck = { ok: true; notes: string[] } | { ok: false; message: string };
@@ -307,9 +335,37 @@ export async function exchangeEmbeddedCode(code: string, env = process.env, fetc
   return r.access_token;
 }
 
-/** Subscribes our Meta app to the account's webhooks (delivery statuses, template status). */
-export async function subscribeApp(wabaId: string, token: string, fetchFn?: FetchFn): Promise<void> {
+/** The ids of the Meta apps subscribed to the account's webhooks. */
+export async function listSubscribedApps(wabaId: string, token: string, fetchFn?: FetchFn): Promise<string[]> {
+  const r = await graph<{ data?: { id?: string; whatsapp_business_api_data?: { id?: string } }[] }>(`/${encodeURIComponent(wabaId)}/subscribed_apps`, { token }, fetchFn);
+  return (r.data ?? []).map((a) => String(a.whatsapp_business_api_data?.id ?? a.id ?? "")).filter(Boolean);
+}
+
+export interface SubscriptionResult {
+  /** True only when OUR Meta app is among the apps subscribed to the account, so its webhooks do reach us. */
+  subscribed: boolean;
+  /** Why not, when it is not. */
+  reason: string | null;
+}
+
+/**
+ * Subscribes the Meta app that issued `token` to the account's webhooks (delivery statuses, template status), then reads
+ * the list of subscribed apps back. A hand-pasted token usually belongs to the influencer's OWN Meta app, and then it is
+ * THEIR app that gets subscribed: Meta is happy, but nothing ever reaches our webhook. So "subscribed" is reported only
+ * when our app (META_APP_ID) is in the list.
+ */
+export async function subscribeApp(wabaId: string, token: string, fetchFn?: FetchFn, env = process.env): Promise<SubscriptionResult> {
   await graph(`/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST", token }, fetchFn);
+  if (!env.META_APP_ID) return { subscribed: false, reason: "META_APP_ID is not set on this server, so we cannot tell whether our app is the one subscribed" };
+  let apps: string[];
+  try {
+    apps = await listSubscribedApps(wabaId, token, fetchFn);
+  } catch (e) {
+    return { subscribed: false, reason: `could not confirm which app is subscribed (${e instanceof Error ? e.message.slice(0, 120) : "unknown error"})` };
+  }
+  return apps.includes(env.META_APP_ID)
+    ? { subscribed: true, reason: null }
+    : { subscribed: false, reason: "the access token belongs to a different Meta app than ours, so Meta's updates do not reach us" };
 }
 
 /**

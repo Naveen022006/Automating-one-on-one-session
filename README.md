@@ -191,12 +191,15 @@ recorded). A token Meta rejects, including a permission error, flags the connect
 dashboard overview lists it until they reconnect (Reconnect in the settings card, no need to disconnect first). Set
 `WHATSAPP_PLATFORM_FALLBACK=true` only for testing with the platform's own number.
 
-- **Webhooks.** Both ways of connecting subscribe our Meta app to the account (`subscribed_apps`), best effort; the result is
-  saved and shown, and Check template status retries it.
-- **Pasted tokens are checked.** With `META_APP_ID` and the app secret configured we ask Meta's `debug_token` about the token and
-  refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within 7 days
-  (the 24-hour token on the API Setup page); a token that expires later, or one we could not check (no app id and secret
-  configured, or Meta did not answer), connects with a note. Use a System User token that never expires.
+- **Webhooks.** Both ways of connecting call `subscribed_apps` (best effort) and then read the list back: "subscribed" is
+  recorded only when our own Meta app (`META_APP_ID`) is in it. A hand-pasted token usually belongs to the influencer's OWN Meta
+  app, which subscribes theirs and sends us nothing; then the card says live updates are not available and the 30-minute sync
+  keeps template statuses fresh. The result is saved and shown, and Check template status tries again.
+- **Pasted tokens are checked.** We ask Meta's `debug_token` about the token, as our app when `META_APP_ID` and the app secret
+  are configured and, when our app cannot inspect it (a token of the influencer's own app), by having the token inspect
+  itself. We refuse one that is invalid, lacks `whatsapp_business_management` or `whatsapp_business_messaging`, or expires within
+  7 days (the 24-hour token on the API Setup page); a token that expires later, or one neither way could check, connects with
+  a note. Use a System User token that never expires.
 - **Two-step PIN.** Embedded Signup registers every number with its own random 6-digit PIN. Meta keeps the PIN on the number, so
   it is saved (AES-GCM encrypted, bound to the phone number, listed in the key-rotation tool, in `whatsapp_registration_pins`)
   BEFORE the number is registered, and it is kept when the influencer disconnects or a connection fails to save; a reconnect
