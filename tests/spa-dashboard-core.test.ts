@@ -8,8 +8,11 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, mock, test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { prisma } from "../lib/db";
-import { parsePageParam } from "../lib/views/dashboard-params";
+import { matchRouteRule } from "../lib/rate-limit/policies";
+import { EARNINGS_ROW_CAP, MAX_REPORT_DAY, MIN_REPORT_DAY, parsePageParam, parseReportDay } from "../lib/views/dashboard-params";
 import { parseMessageStatus } from "../lib/views/dashboard-messages";
 import { parseSessionView } from "../lib/views/dashboard-sessions";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
@@ -20,7 +23,7 @@ const DAY = 86_400_000;
 
 const jar = new Map<string, string>();
 type Handler = (req: Request) => Promise<Response>;
-let routes: { overview: Handler; sessions: Handler; messages: Handler; customers: Handler; earnings: Handler };
+let routes: { overview: Handler; sessions: Handler; messages: Handler; customers: Handler; earnings: Handler; earningsExport: Handler };
 let authLib: typeof import("../lib/auth/session");
 
 interface Owner {
@@ -101,6 +104,7 @@ before(async () => {
     messages: (await import("../app/api/dashboard/messages/route")).GET,
     customers: (await import("../app/api/dashboard/customers/route")).GET,
     earnings: (await import("../app/api/dashboard/earnings/route")).GET,
+    earningsExport: (await import("../app/api/dashboard/earnings/export/route")).GET,
   };
   const accounts = await import("../lib/auth/accounts");
   for (const o of [A, B]) {
@@ -357,7 +361,8 @@ test("D5 GET /api/dashboard/earnings: dates default to this month (UTC), the ran
   const after = new Date();
   assert.equal(out.status, 200);
   assert.equal(out.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual(keys(out.body), ["from", "paymentCount", "refundedCount", "summary", "to"]);
+  assert.deepEqual(keys(out.body), ["from", "paymentCount", "refundedCount", "summary", "to", "truncated"]);
+  assert.equal(out.body.truncated, false);
   assert.deepEqual(keys(out.body.summary), ["byService", "totalsByCurrency"]);
   const monthStart = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString().slice(0, 10);
   assert.ok([monthStart(before), monthStart(after)].includes(out.body.from as string), "from = the 1st of this month (UTC)");
@@ -399,7 +404,12 @@ test("D5 GET /api/dashboard/earnings: dates default to this month (UTC), the ran
 
 test("D5: missing or invalid dates fall back to the defaults instead of failing", { skip }, async () => {
   const defaults = await ask(routes.earnings, "", A.cookie);
-  for (const odd of ["?from=abc&to=xyz", "?from=2026-02-31", "?from=2024-13-01&to=2024-00-10", "?from=2024-3-1", "?to=", "?from=&to=", "?from=2024-03-01T00:00:00Z", "?from=%00"]) {
+  const odds = [
+    "?from=abc&to=xyz", "?from=2026-02-31", "?from=2024-13-01&to=2024-00-10", "?from=2024-3-1", "?to=", "?from=&to=", "?from=2024-03-01T00:00:00Z", "?from=%00",
+    // Valid JavaScript dates that Postgres cannot store or that would ask for centuries of rows: outside 2000-01-01..2100-12-31 they are ignored too.
+    "?from=0000-01-01", "?from=0000-01-01&to=0000-12-31", "?from=0001-01-01&to=9999-12-30", "?from=9999-12-31", "?to=9999-12-31", "?from=1999-12-31", "?to=2101-01-01",
+  ];
+  for (const odd of odds) {
     const out = await ask(routes.earnings, odd, A.cookie);
     assert.equal(out.status, 200, odd);
     const wanted = (name: "from" | "to") => (new URLSearchParams(odd.slice(1)).get(name) === "2024-03-01" ? "2024-03-01" : defaults.body[name]);
@@ -422,4 +432,270 @@ test("D5: loadEarningsView fills in this month from the clock it is given", { sk
   const first = await loadEarningsView(A.influencerId, {}, new Date("2031-06-01T00:00:00.000Z"));
   assert.equal(first.from, "2031-06-01");
   assert.equal(first.to, "2031-06-01");
+});
+
+test("D5: the ends of the day window are accepted, and one request never sums more than the row cap", { skip }, async () => {
+  const wide = await ask(routes.earnings, `?from=${MIN_REPORT_DAY}&to=${MAX_REPORT_DAY}`, A.cookie);
+  assert.equal(wide.body.from, MIN_REPORT_DAY);
+  assert.equal(wide.body.to, MAX_REPORT_DAY);
+  assert.equal(wide.body.paymentCount, 3, "this month's, 10 March 2024 and 31 March 2024");
+  assert.equal(wide.body.truncated, false);
+
+  const { loadEarningsView } = await import("../lib/views/dashboard-earnings");
+  const march = { from: "2024-03-01", to: "2024-03-31" };
+  const capped = await loadEarningsView(A.influencerId, march, undefined, { rowCap: 1 });
+  assert.equal(capped.truncated, true);
+  assert.equal(capped.paymentCount, 1, "only the cap is summed");
+  assert.deepEqual(capped.summary.totalsByCurrency, [{ currency: "INR", amountMinor: A.pay.cancelled }], "the OLDEST payment of the range (10 March)");
+  assert.equal(capped.refundedCount, 0, "the part-refunded payment of 31 March is the one left out");
+  const exact = await loadEarningsView(A.influencerId, march, undefined, { rowCap: 2 });
+  assert.equal(exact.truncated, false, "exactly the cap is not truncated");
+  assert.equal(exact.paymentCount, 2);
+  assert.equal((await loadEarningsView(A.influencerId, march, undefined, { rowCap: 3 })).truncated, false);
+  assert.equal(EARNINGS_ROW_CAP, 10_000, "the same cap as the CSV file");
+});
+
+/** Like ask(), for a response that is not JSON (the CSV). */
+async function askText(handler: Handler, query: string, cookie: string): Promise<{ status: number; text: string; headers: Headers }> {
+  jar.clear();
+  jar.set(authLib.sessionCookieName(), cookie);
+  const res = await handler(new Request(`http://localhost/api/dashboard/x${query}`));
+  return { status: res.status, text: await res.text(), headers: res.headers };
+}
+
+test("D5 CSV export: the owner's rows only, and the same day rules as the page (an out-of-window day leaves that end open instead of failing)", { skip }, async () => {
+  const march = await askText(routes.earningsExport, "?from=2024-03-01&to=2024-03-31", A.cookie);
+  assert.equal(march.status, 200);
+  assert.match(march.headers.get("content-type") ?? "", /^text\/csv/);
+  assert.equal(march.headers.get("content-disposition"), 'attachment; filename="earnings-2024-03-01-to-2024-03-31.csv"');
+  const lines = march.text.trim().split("\r\n");
+  assert.equal(lines.length, 3, "the header and the two March payments");
+  assert.ok(march.text.includes(customerName(A, "Past")) && !march.text.includes("Bravo"));
+
+  for (const odd of ["?from=0000-01-01", "?from=0001-01-01&to=9999-12-30", "?to=9999-12-31", "?from=1999-12-31&to=2101-01-01", "?from=abc&to=2026-02-31", ""]) {
+    const out = await askText(routes.earningsExport, odd, A.cookie);
+    assert.equal(out.status, 200, odd);
+    assert.equal(out.headers.get("content-disposition"), 'attachment; filename="earnings-all-to-now.csv"', `no range was understood in ${odd}`);
+    assert.equal(out.text.trim().split("\r\n").length, 4, `the header and all three payments of ${odd}`);
+    assert.ok(!out.text.includes("Bravo"));
+  }
+  const half = await askText(routes.earningsExport, "?from=2024-03-10&to=9999-12-31", A.cookie);
+  assert.equal(half.headers.get("content-disposition"), 'attachment; filename="earnings-2024-03-10-to-now.csv"');
+});
+
+test("D4: %, _ and a backslash in a search are ordinary characters, not wildcards or a failing pattern", { skip }, async () => {
+  const service = await prisma.service.findFirstOrThrow({ where: { influencerId: A.influencerId } });
+  const start = new Date(Date.now() + 6 * DAY);
+  const session = await prisma.session.create({ data: { serviceId: service.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+  const wild = `Alpha 50%_off ${run}`;
+  await prisma.booking.create({
+    data: { sessionId: session.id, status: "SCHEDULED", customerName: wild, customerEmail: `alpha-wild-${run}@example.com`, whatsappE164: "+919876543210", whatsappOptIn: false },
+  });
+  try {
+    const search = async (q: string) => {
+      const out = await ask(routes.customers, `?q=${encodeURIComponent(q)}`, A.cookie);
+      assert.equal(out.status, 200, `search ${JSON.stringify(q)}`);
+      return (out.body.customers as { name: string }[]).map((c) => c.name);
+    };
+    assert.deepEqual(await search("%"), [wild], "a percent sign matches only a name that contains one, not everyone");
+    assert.deepEqual(await search("_"), [wild], "an underscore matches only a name that contains one");
+    assert.deepEqual(await search("50%_off"), [wild]);
+    assert.deepEqual(await search("50__off"), [], "two underscores as wildcards would have matched '%_'");
+    assert.deepEqual(await search("5%off"), [], "a percent sign is not 'anything in between'");
+    assert.deepEqual(await search("\\"), [], "a lone backslash is a character too (as an unescaped LIKE pattern it is an error)");
+    assert.deepEqual(await search("off\\"), []);
+  } finally {
+    await prisma.session.delete({ where: { id: session.id } }); // cascades to the booking
+  }
+});
+
+/* ---------- no database: URL rules, rate limits, views ---------- */
+
+test("report days: only real calendar days from 2000-01-01 to 2100-12-31", () => {
+  assert.equal(MIN_REPORT_DAY, "2000-01-01");
+  assert.equal(MAX_REPORT_DAY, "2100-12-31");
+  for (const ok of ["2000-01-01", "2024-02-29", "2026-10-11", "2100-12-31"]) assert.equal(parseReportDay(ok), ok, ok);
+  for (const bad of [
+    null, undefined, "", " ", "0000-01-01", "0001-01-01", "1999-12-31", "2101-01-01", "9999-12-31", "2023-02-29", "2026-02-31", "2024-13-01", "2024-00-10",
+    "2024-1-1", " 2024-01-01", "2024-01-01 ", "2024-01-01T00:00:00Z", "abc", "２０２４-01-01", "2024/01/01", "-2024-01-01",
+  ]) {
+    assert.equal(parseReportDay(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("every new GET path falls under the generic dashboard rate rule (120 a minute per session); the CSV keeps its tight one", () => {
+  for (const p of ["overview", "sessions", "messages", "customers", "earnings"]) {
+    for (const search of ["", "?view=past&page=2", "?q=%25", "?from=0000-01-01"]) {
+      assert.equal(matchRouteRule("GET", `/api/dashboard/${p}`)?.name, "dashboard", `GET /api/dashboard/${p}${search}`);
+    }
+  }
+  assert.equal(matchRouteRule("GET", "/api/dashboard/earnings/export")?.name, "dashboard-export");
+});
+
+type Views = {
+  CustomersView: typeof import("../components/views/dashboard/CustomersView").CustomersView;
+  EarningsView: typeof import("../components/views/dashboard/EarningsView").EarningsView;
+  MessagesView: typeof import("../components/views/dashboard/MessagesView").MessagesView;
+  SessionsView: typeof import("../components/views/dashboard/SessionsView").SessionsView;
+  GetForm: typeof import("../components/views/dashboard/GetForm");
+};
+let viewsLoaded: Promise<Views> | undefined;
+
+/**
+ * The shared views rendered on the server, as the old Next pages render them. Next's router hooks and links, and the two client
+ * components that need a provider (the sessions board with its drawer, the erase button), are replaced by stand-ins, then the
+ * views are imported (mock.module only affects modules imported afterwards, hence the lazy import).
+ */
+function loadViews(): Promise<Views> {
+  viewsLoaded ??= (async () => {
+    mock.module("next/link", { defaultExport: (p: Record<string, unknown>) => createElement("a", p) });
+    mock.module("next/navigation", {
+      namedExports: {
+        useRouter: () => ({ push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} }),
+        usePathname: () => "/dashboard",
+        useSearchParams: () => new URLSearchParams(),
+      },
+    });
+    mock.module("@/components/app/SessionsBoard", {
+      namedExports: {
+        SessionsBoard: (p: { sessions: unknown[]; emptyTitle: string; initialBookingId?: string | null }) =>
+          createElement("div", { "data-board": JSON.stringify({ rows: p.sessions.length, emptyTitle: p.emptyTitle, initialBookingId: p.initialBookingId ?? null }) }),
+      },
+    });
+    mock.module("@/components/app/CustomerActions", { namedExports: { EraseCustomer: (p: { email: string }) => createElement("button", { "data-erase": p.email }) } });
+    return {
+      CustomersView: (await import("../components/views/dashboard/CustomersView")).CustomersView,
+      EarningsView: (await import("../components/views/dashboard/EarningsView")).EarningsView,
+      MessagesView: (await import("../components/views/dashboard/MessagesView")).MessagesView,
+      SessionsView: (await import("../components/views/dashboard/SessionsView")).SessionsView,
+      GetForm: await import("../components/views/dashboard/GetForm"),
+    };
+  })();
+  return viewsLoaded;
+}
+
+/** The text of the page's visually hidden live status line (HTML-unescaped). */
+function statusLine(html: string): string {
+  const m = /<p role="status" class="sr-only">([^<]*)<\/p>/.exec(html);
+  assert.ok(m, "the view has a status line");
+  return m[1].replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+const busyAttr = (html: string) => /aria-busy="true"/.test(html);
+
+/** The attributes of the `<input>` with this id (their order and the design system's classes do not matter). */
+function inputAttrs(html: string, id: string): Record<string, string> {
+  const m = new RegExp(`<input [^>]*id="${id}"[^>]*>`).exec(html);
+  assert.ok(m, `an input with id ${id}`);
+  return Object.fromEntries([...m[0].matchAll(/([a-z-]+)="([^"]*)"/g)].map((a) => [a[1], a[2]]));
+}
+
+test("GetForm: a plain GET form that keeps its fields, builds the URL from text fields only, and puts the boxes back to the loaded filter", async () => {
+  const { GetForm } = await loadViews();
+  const html = renderToStaticMarkup(
+    createElement(GetForm.GetForm, { action: "/dashboard/customers", values: { q: "abc" }, className: "row", role: "search" }, createElement("input", { name: "q", defaultValue: "abc" })),
+  );
+  assert.match(html, /<form [^>]*action="\/dashboard\/customers"/);
+  assert.match(html, /<form [^>]*method="get"/);
+  assert.match(html, /<form [^>]*role="search"/);
+  assert.match(html, /<input name="q" value="abc"\/>/, "the server markup carries the value, so the box is filled before any script runs");
+
+  // The URL a submit navigates to.
+  assert.equal(GetForm.getFormUrl("/dashboard/customers", [["q", "a b&c"]]), "/dashboard/customers?q=a+b%26c");
+  assert.equal(GetForm.getFormUrl("/dashboard/earnings", [["from", "2024-03-01"], ["to", "2024-03-31"]]), "/dashboard/earnings?from=2024-03-01&to=2024-03-31");
+  assert.equal(GetForm.getFormUrl("/dashboard/customers", [["q", ""]]), "/dashboard/customers?q=", "an empty box is sent (and means 'no filter')");
+  assert.equal(GetForm.getFormUrl("/x", [["file", new Blob(["x"])]]), "/x?", "a non-text value is left out");
+
+  // What the effect does when the loaded filter changes (browser Back): a box showing something else is reset, one already showing it is not touched.
+  const field = (value: unknown) => ({ value });
+  const fields: Record<string, { value: unknown }> = { q: field("abc"), from: field("2024-01-01"), n: field(5) };
+  const form = { elements: { namedItem: (name: string) => fields[name] ?? null } };
+  GetForm.setFieldValues(form, { q: "", from: "2024-01-01", n: "7", missing: "x" });
+  assert.equal(fields.q.value, "", "the search box is emptied when the loaded search is");
+  assert.equal(fields.from.value, "2024-01-01");
+  assert.equal(fields.n.value, 5, "a field whose value is not text is left alone");
+  GetForm.setFieldValues(form, { q: "typed" });
+  assert.equal(fields.q.value, "typed");
+  fields.q.value = "typed more";
+  GetForm.setFieldValues(form, { q: "typed more" });
+  assert.equal(fields.q.value, "typed more", "text the person has already typed that equals the loaded value is not rewritten");
+});
+
+test("CustomersView: status line for a screen reader, escaped search text, busy only when told", async () => {
+  const { CustomersView } = await loadViews();
+  const row = (email: string) => ({ email, name: `Name of ${email}`, bookings: 1, spentByCurrency: [], lastSession: null, nextSession: null });
+
+  const none = renderToStaticMarkup(createElement(CustomersView, { data: { q: "abc", customers: [] } }));
+  assert.equal(statusLine(none), "No customers match “abc”.");
+  assert.deepEqual(
+    { name: inputAttrs(none, "q").name, value: inputAttrs(none, "q").value, placeholder: inputAttrs(none, "q").placeholder },
+    { name: "q", value: "abc", placeholder: "Search by name or email" },
+    "the search box is filled with the search",
+  );
+  assert.match(none, /<form [^>]*role="search"/);
+  assert.ok(!busyAttr(none), "the old page never sets aria-busy");
+  assert.ok(busyAttr(renderToStaticMarkup(createElement(CustomersView, { data: { q: "abc", customers: [] }, busy: true }))));
+  assert.ok(!busyAttr(renderToStaticMarkup(createElement(CustomersView, { data: { q: "abc", customers: [] }, busy: false }))));
+
+  assert.equal(statusLine(renderToStaticMarkup(createElement(CustomersView, { data: { q: "", customers: [] } }))), "No customers yet.");
+  const two = renderToStaticMarkup(createElement(CustomersView, { data: { q: "", customers: [row("a@x.com"), row("b@x.com")] } }));
+  assert.equal(statusLine(two), "2 customers.");
+  assert.ok(two.includes('data-erase="a@x.com"') && two.includes("mailto:b@x.com"));
+  assert.equal(statusLine(renderToStaticMarkup(createElement(CustomersView, { data: { q: "x", customers: [row("a@x.com")] } }))), "1 customer found for “x”.");
+
+  const hostile = '"><script>alert(1)</script>';
+  const html = renderToStaticMarkup(createElement(CustomersView, { data: { q: hostile, customers: [] } }));
+  assert.ok(!html.includes("<script>"), "the search text is escaped everywhere");
+  assert.equal(statusLine(html), `No customers match “${hostile}”.`);
+});
+
+test("EarningsView: dates in the boxes and the export link, status line with the range and totals, a visible note when truncated, busy only when told", async () => {
+  const { EarningsView } = await loadViews();
+  const data = {
+    from: "2024-03-01",
+    to: "2024-03-31",
+    paymentCount: 2,
+    refundedCount: 1,
+    truncated: false,
+    summary: { totalsByCurrency: [{ currency: "INR", amountMinor: 220000 }], byService: [{ serviceTitle: "Call", currency: "INR", amountMinor: 220000, count: 2 }] },
+  };
+  const html = renderToStaticMarkup(createElement(EarningsView, { data }));
+  assert.deepEqual(
+    { from: inputAttrs(html, "from"), to: inputAttrs(html, "to") },
+    {
+      from: { ...inputAttrs(html, "from"), name: "from", type: "date", value: "2024-03-01" },
+      to: { ...inputAttrs(html, "to"), name: "to", type: "date", value: "2024-03-31" },
+    },
+    "the date boxes show the range that was loaded",
+  );
+  assert.ok(html.includes('href="/api/dashboard/earnings/export?from=2024-03-01&amp;to=2024-03-31"'), "a plain anchor to the CSV");
+  assert.match(statusLine(html), /^2 payments from 2024-03-01 to 2024-03-31\. Net earnings .*2,200\.00\.$/);
+  assert.ok(!html.includes("Only part of this range"), "no truncation note for a complete range");
+  assert.ok(!busyAttr(html));
+  assert.ok(busyAttr(renderToStaticMarkup(createElement(EarningsView, { data, busy: true }))));
+
+  const cut = renderToStaticMarkup(createElement(EarningsView, { data: { ...data, paymentCount: 10_000, truncated: true } }));
+  assert.ok(cut.includes("Only part of this range is counted") && cut.includes("first 10,000 payments"), "the visible note says how many were summed");
+
+  const empty = renderToStaticMarkup(createElement(EarningsView, { data: { ...data, paymentCount: 0, refundedCount: 0, summary: { totalsByCurrency: [], byService: [] } } }));
+  assert.equal(statusLine(empty), "No payments from 2024-03-01 to 2024-03-31.");
+  assert.ok(empty.includes("No payments in this period"));
+});
+
+test("MessagesView and SessionsView: status line with the filter and page, tab and pagination links, busy only when told", async () => {
+  const { MessagesView, SessionsView } = await loadViews();
+  const message = { bookingId: "b1", customerName: "Cust", serviceTitle: "Call", sessionStart: "2020-01-01T10:00:00.000Z", channel: "EMAIL", template: "receipt", status: "FAILED", error: "boom", at: "2020-01-01T10:00:00.000Z" };
+  const failed = renderToStaticMarkup(createElement(MessagesView, { data: { status: "FAILED", page: 1, pageCount: 2, messages: [message] } }));
+  assert.equal(statusLine(failed), "Failed: 1 message shown, page 1 of 2.");
+  assert.match(failed, /<a [^>]*aria-current="page"[^>]*>Failed<\/a>|<a [^>]*>Failed<\/a>/);
+  assert.ok(failed.includes('href="/dashboard/messages?status=FAILED&amp;page=2"'), "the next page keeps the filter");
+  assert.ok(failed.includes("/dashboard/sessions?view=past&amp;booking=b1"), "an old session links to Past with its drawer");
+  assert.equal(statusLine(renderToStaticMarkup(createElement(MessagesView, { data: { status: "", page: 1, pageCount: 1, messages: [] } }))), "All: no messages, page 1 of 1.");
+  assert.ok(!busyAttr(failed) && busyAttr(renderToStaticMarkup(createElement(MessagesView, { data: { status: "", page: 1, pageCount: 1, messages: [] }, busy: true }))));
+
+  const sessions = renderToStaticMarkup(createElement(SessionsView, { data: { view: "past", total: 26, page: 2, pageCount: 2, sessions: [] }, bookingId: "bk1" }));
+  assert.equal(statusLine(sessions), "Past: 26 sessions, page 2 of 2.");
+  assert.ok(sessions.includes('href="/dashboard/sessions?view=past&amp;page=1"'), "Previous keeps the tab");
+  assert.ok(sessions.includes("&quot;initialBookingId&quot;:&quot;bk1&quot;"), "?booking= reaches the board");
+  assert.equal(statusLine(renderToStaticMarkup(createElement(SessionsView, { data: { view: "attention", total: 1, page: 1, pageCount: 1, sessions: [] } }))), "Needs attention: 1 session, page 1 of 1.");
+  assert.ok(!busyAttr(sessions) && busyAttr(renderToStaticMarkup(createElement(SessionsView, { data: { view: "past", total: 0, page: 1, pageCount: 1, sessions: [] }, busy: true }))));
 });
