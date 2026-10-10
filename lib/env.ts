@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { keyFingerprint, parseKeyBytes } from "./crypto";
+import { SPA_GROUPS, parseSpaGroups, unknownSpaGroups } from "./spa/routes";
+import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell";
 
 /**
  * Start-up configuration validation.
@@ -179,6 +183,7 @@ export const KNOWN_ENV_VARS = [
   "HEALTH_MEETING_STUCK_MINUTES", "HEALTH_QUEUE_FAILED_MAX", "HEALTH_QUEUE_WAITING_MAX", "HEALTH_HOLD_SWEEP_GRACE_MINUTES",
   "HEALTH_RECOVERY_FAILING_RUNS", "HEALTH_RECOVERY_STALE_MINUTES", "HEALTH_ALERT_DEDUPE_MINUTES",
   "ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR",
+  "SPA_GROUPS", "SPA_API_TARGET",
 ] as const;
 
 /* ---------- helpers ---------- */
@@ -277,6 +282,12 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     env.TOKEN_ENCRYPTION_KEY_PREVIOUS === env.TOKEN_ENCRYPTION_KEY
   ) {
     warn("TOKEN_ENCRYPTION_KEY_PREVIOUS", "is identical to TOKEN_ENCRYPTION_KEY; remove it");
+  }
+
+  // 2b. SPA_GROUPS (doc/10-react-migration-plan.md): which page groups the React SPA serves. A misspelt group would silently
+  // leave that group on the old pages, so say so; the names are not echoed (a pasted value could be anything).
+  if (unknownSpaGroups(env.SPA_GROUPS).length) {
+    warn("SPA_GROUPS", `has names that are not page groups and are ignored; use "all" or a comma separated list of: ${SPA_GROUPS.join(", ")}`);
   }
 
   // 3. Production-only requirements.
@@ -402,10 +413,40 @@ export function resetConfigForTests(): void {
   logged = false;
 }
 
-/** Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook. */
-export function initEnv(label: string): AppConfig {
+/**
+ * The web process's start-up check for the React SPA (doc/10-react-migration-plan.md, section 1.8). When SPA_GROUPS
+ * enables any group, the shell template web/dist/index.html (written by `npm run build`) must exist and carry the CSP
+ * placeholders, otherwise every enabled page would be a blank screen or a 500. This is the one impure check in this
+ * module (it reads a file), so it is a separate function with an injectable reader and working directory for tests, and
+ * only the "web" start-up path calls it (the worker has no pages). Returns problems by variable name, never values.
+ */
+export function spaTemplateProblems(
+  env: EnvRecord,
+  readFile: (file: string) => string = (file) => readFileSync(file, "utf8"),
+  cwd: string = process.cwd(),
+): string[] {
+  if (parseSpaGroups(env.SPA_GROUPS).size === 0) return [];
+  let text: string;
+  try {
+    text = readFile(path.join(cwd, SHELL_TEMPLATE_RELATIVE_PATH));
+  } catch {
+    return [`SPA_GROUPS: is set, but ${SHELL_TEMPLATE_RELATIVE_PATH} is missing (it is written by \`npm run build\`; the image or deployment bundle must contain it)`];
+  }
+  const problem = shellTemplateProblem(text);
+  return problem ? [`SPA_GROUPS: is set, but ${problem}`] : [];
+}
+
+/**
+ * Validates, logs the warnings once, and throws EnvValidationError in production. For the web app's start-up hook.
+ * For the "web" label it also checks the SPA shell template (see spaTemplateProblems): fatal in production, a warning
+ * elsewhere (a development server serves the SPA from Vite, not from a build).
+ */
+export function initEnv(label: string, deps: { readFile?: (file: string) => string; cwd?: string } = {}): AppConfig {
   const config = getConfig();
+  const spaProblems = label === "web" ? spaTemplateProblems(process.env, deps.readFile, deps.cwd) : [];
+  if (spaProblems.length && config.isProduction) throw new EnvValidationError(spaProblems);
   if (!logged) {
+    if (spaProblems.length) for (const p of spaProblems) console.warn(`[env] warning (${label}): ${p}`);
     logged = true;
     const warnings = cached?.warnings ?? [];
     for (const w of warnings) console.warn(`[env] warning (${label}): ${w}`);

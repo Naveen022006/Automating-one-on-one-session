@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isCsrfExempt, isSameOriginRequest } from "@/lib/auth/csrf";
 import { rateLimitHeaders, type RateLimitResult } from "@/lib/rate-limit/core";
 import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule, tooManyRequests } from "@/lib/rate-limit";
+import { matchEnabledSpaRoute, parseSpaGroups } from "@/lib/spa/routes";
 
 /**
  * Next.js 16 proxy (formerly middleware; runs on the Node.js runtime). The single request boundary for:
@@ -14,9 +15,15 @@ import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule, tooManyRequests } from 
  *     authenticated by signature).
  *  3. Page security: a per-request CSP nonce (strict-dynamic) and the login redirect for /dashboard and
  *     /onboarding. The redirect only checks that a session cookie exists; pages validate it against the database.
+ *  4. The React SPA switch (doc/10-react-migration-plan.md): a page whose SPA group is listed in SPA_GROUPS is not
+ *     rendered by Next; the request is rewritten to the internal shell route (app/spa-shell), which returns the
+ *     Vite-built index.html with this request's nonce. With SPA_GROUPS empty nothing changes: every page is the old
+ *     Next page. The group a path belongs to comes from lib/spa/routes.ts.
  */
 
 const DEV = process.env.NODE_ENV !== "production";
+// Read once at start-up (like every other environment value); changing it needs a restart, which is also the rollback.
+const SPA_ENABLED = parseSpaGroups(process.env.SPA_GROUPS);
 // Meta Embedded Signup (an influencer connecting their own WhatsApp number) loads the Facebook SDK and a dialog.
 const META_EMBEDDED = Boolean(process.env.META_APP_ID && process.env.META_ES_CONFIG_ID);
 
@@ -34,6 +41,24 @@ function sessionCookie(req: NextRequest): string | undefined {
 
 function sessionKey(token: string): string {
   return `s:${createHash("sha256").update(token).digest("hex").slice(0, 32)}`;
+}
+
+/**
+ * Rolling 30-day session: pushes the browser-side expiry of an existing session cookie forward on a GET. The value is
+ * unchanged (the server-side expiry is slid in lib/auth/session.ts) and an invalid cookie is still rejected by whoever
+ * validates it. Pages did this on every visit; the SPA makes few full page loads, so GET /api/* does it too, otherwise
+ * the browser could drop the cookie while the session is still alive on the server.
+ */
+function refreshSessionCookie(req: NextRequest, res: NextResponse, cookie: string | undefined): void {
+  if (!cookie || req.method !== "GET") return;
+  const name = SESSION_COOKIES.find((n) => req.cookies.get(n)?.value) ?? "sa_session";
+  res.cookies.set(name, cookie, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: name.startsWith("__Host-"),
+    path: "/",
+    maxAge: SESSION_MAX_AGE_SEC,
+  });
 }
 
 function strictest(results: (RateLimitResult | null)[]): RateLimitResult | null {
@@ -79,6 +104,8 @@ async function handleApi(req: NextRequest): Promise<NextResponse> {
 
   const res = NextResponse.next();
   if (result) for (const [k, v] of Object.entries(rateLimitHeaders(result))) res.headers.set(k, v);
+  // Webhooks are server-to-server (no browser session); everything else a signed-in tab calls keeps the cookie rolling.
+  if (!pathname.startsWith("/api/webhooks/")) refreshSessionCookie(req, res, cookie);
   return res;
 }
 
@@ -103,6 +130,10 @@ function contentSecurityPolicy(nonce: string): string {
 function handlePage(req: NextRequest): NextResponse {
   const { pathname, search } = req.nextUrl;
   const cookie = sessionCookie(req);
+
+  // The SPA shell route is internal: it is only reachable through the rewrite below. A direct request (which could also
+  // carry a forged x-nonce) gets a plain 404 and never reaches it.
+  if (pathname === "/spa-shell" || pathname.startsWith("/spa-shell/")) return new NextResponse("Not found", { status: 404 });
 
   // The admin console is a separate plane with its own cookie. Pages re-validate it against the database; this
   // only saves a render for visitors who obviously have no admin session.
@@ -132,21 +163,26 @@ function handlePage(req: NextRequest): NextResponse {
   requestHeaders.set("x-pathname", pathname);
   requestHeaders.set("Content-Security-Policy", csp);
 
-  const res = NextResponse.next({ request: { headers: requestHeaders } });
+  // SPA: serve the Vite-built shell instead of the Next page, when this path's group is switched on (SPA_GROUPS).
+  const spa = matchEnabledSpaRoute(req.method, pathname, SPA_ENABLED);
+  // A Next <Link> on a page that is still served by Next may prefetch a path that is now an SPA page. Answer cheaply (no
+  // shell render, no profile lookup); a click then makes a normal navigation request, which Next's client turns into a
+  // full page load because the answer is HTML, not an RSC payload.
+  if (spa && req.headers.get("next-router-prefetch")) return new NextResponse(null, { status: 204 });
+
+  let res: NextResponse;
+  if (spa) {
+    const url = req.nextUrl.clone();
+    url.pathname = `/spa-shell${pathname === "/" ? "" : pathname}`;
+    res = NextResponse.rewrite(url, { request: { headers: requestHeaders } });
+  } else {
+    res = NextResponse.next({ request: { headers: requestHeaders } });
+  }
   res.headers.set("Content-Security-Policy", csp);
 
   // Rolling 30-day session: every page visit pushes the browser-side expiry forward (the server-side expiry is
   // slid in lib/auth/session.ts). The value is unchanged; an invalid cookie is still rejected by the page.
-  if (cookie && req.method === "GET") {
-    const name = SESSION_COOKIES.find((n) => req.cookies.get(n)?.value) ?? "sa_session";
-    res.cookies.set(name, cookie, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: name.startsWith("__Host-"),
-      path: "/",
-      maxAge: SESSION_MAX_AGE_SEC,
-    });
-  }
+  refreshSessionCookie(req, res, cookie);
   return res;
 }
 
@@ -158,6 +194,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 export const config = {
   matcher: [
     // Everything except static assets and image optimisation. Prefetches still get the API/page handling.
-    "/((?!_next/static|_next/image|favicon.ico|icon.svg|robots.txt|sitemap.xml|opengraph-image).*)",
+    // `assets/` is the SPA's hashed build output (public/assets): static files that skip the proxy entirely.
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|robots.txt|sitemap.xml|opengraph-image|assets/).*)",
   ],
 };
