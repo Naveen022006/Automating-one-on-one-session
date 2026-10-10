@@ -5,17 +5,27 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, mock, test } from "node:test";
 import { hashPassword } from "../lib/auth/password";
+import { hashToken, randomToken } from "../lib/auth/tokens";
 import { prisma } from "../lib/db";
+import type { OutgoingEmail } from "../lib/email/providers";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = Date.now();
 const PASSWORD = "correct-horse-battery-9";
 const emailX = `routes-x-${run}@example.com`; // has two-factor
 const emailY = `routes-y-${run}@example.com`; // does not (yet)
+const emailQ = `routes-q-${run}@example.com`; // has two-factor; fail-closed and many-IP guessing tests
+const emailZ = `routes-z-${run}@example.com`; // has two-factor; the per-admin hourly caps
 let X = "";
 let Y = "";
+let Q = "";
+let Z = "";
 let secretX = "";
 let recoveryX: string[] = [];
+let secretQ = "";
+let recoveryQ: string[] = [];
+const sent: OutgoingEmail[] = [];
+const URL2FA = "/api/admin/security/2fa";
 
 let currentCookie = "";
 // Loaded after the mock is registered (so session.ts binds to the fake next/headers).
@@ -28,6 +38,50 @@ let changePasswordRoute: (req: Request) => Promise<Response>;
 let session: typeof import("../lib/admin/session");
 let mfa: typeof import("../lib/admin/mfa");
 let totp: typeof import("../lib/admin/totp");
+let rateLimit: typeof import("../lib/rate-limit");
+let securityPage: () => Promise<unknown>;
+
+/**
+ * A password-only session row for an admin (no mfaVerifiedAt), like one created before they enrolled. Inserted directly
+ * because createAdminSession refuses to create one for an admin who has 2FA on.
+ */
+async function passwordOnlySession(adminId: string): Promise<string> {
+  const token = randomToken();
+  await prisma.adminSession.create({ data: { tokenHash: hashToken(token), adminId, expiresAt: new Date(Date.now() + 3_600_000) } });
+  return token;
+}
+
+/** The URL a `redirect()` thrown by a server component points to, or null if the callback did not redirect. */
+async function redirectOf(fn: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await fn();
+    return null;
+  } catch (e) {
+    const digest = (e as { digest?: string }).digest;
+    if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")) return digest.split(";")[2];
+    throw e;
+  }
+}
+
+/** Every string reachable through a React element tree's props (titles, text, rows), without rendering client components. */
+function textOf(node: unknown, seen = new Set<unknown>(), out: string[] = []): string[] {
+  if (typeof node === "string") out.push(node);
+  else if (Array.isArray(node)) for (const n of node) textOf(n, seen, out);
+  else if (node && typeof node === "object" && !seen.has(node)) {
+    seen.add(node);
+    const props = (node as { props?: Record<string, unknown> }).props;
+    if (props) for (const v of Object.values(props)) textOf(v, seen, out);
+  }
+  return out;
+}
+
+async function enrol(adminId: string): Promise<{ secret: string; recovery: string[] }> {
+  const past = Date.now() - 60_000; // a minute "in the past", so codes for the real clock are fresh
+  const secret = (await mfa.startTotpEnrollment(adminId)).secret;
+  const done = await mfa.confirmTotpEnrollment(adminId, totp.totpAt(secret, past), null, past);
+  assert.ok(done.ok);
+  return { secret, recovery: done.ok ? done.recoveryCodes : [] };
+}
 
 function json(url: string, body: unknown, ip = "203.0.113.1"): Request {
   return new Request(`http://localhost${url}`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": ip }, body: JSON.stringify(body) });
@@ -62,6 +116,12 @@ before(async () => {
   session = await import("../lib/admin/session");
   mfa = await import("../lib/admin/mfa");
   totp = await import("../lib/admin/totp");
+  rateLimit = await import("../lib/rate-limit");
+  (await import("../lib/email")).setEmailSender(async (e) => {
+    sent.push(e); // captured, never sent
+    return { providerMessageId: null };
+  });
+  securityPage = (await import("../app/admin/(console)/security/page")).default as unknown as () => Promise<unknown>;
   routes = {
     fee: await import("../app/api/admin/influencers/[id]/fee/route"),
     payoutAccount: await import("../app/api/admin/influencers/[id]/payout-account/route"),
@@ -78,20 +138,19 @@ before(async () => {
   const hash = await hashPassword(PASSWORD);
   X = (await prisma.adminUser.create({ data: { email: emailX, name: "Routes X", passwordHash: hash } })).id;
   Y = (await prisma.adminUser.create({ data: { email: emailY, name: "Routes Y", passwordHash: hash } })).id;
-  // X enrols through the library, a minute "in the past" so that codes for the real clock are fresh.
-  const past = Date.now() - 60_000;
-  secretX = (await mfa.startTotpEnrollment(X)).secret;
-  const done = await mfa.confirmTotpEnrollment(X, totp.totpAt(secretX, past), null, past);
-  assert.ok(done.ok);
-  if (done.ok) recoveryX = done.recoveryCodes;
+  Q = (await prisma.adminUser.create({ data: { email: emailQ, name: "Routes Q", passwordHash: hash } })).id;
+  Z = (await prisma.adminUser.create({ data: { email: emailZ, name: "Routes Z", passwordHash: hash } })).id;
+  ({ secret: secretX, recovery: recoveryX } = await enrol(X));
+  ({ secret: secretQ, recovery: recoveryQ } = await enrol(Q));
+  await enrol(Z);
 });
 
 after(async () => {
   if (!skip && X) {
-    await prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY] } } });
+    await prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY, emailQ, emailZ] } } });
     // Rejected pending tokens are audited without a known admin (email "unknown").
     await prisma.adminAuditLog.deleteMany({ where: { adminEmail: "unknown", action: "admin.mfa_failed", createdAt: { gte: new Date(run - 1000) } } });
-    await prisma.adminUser.deleteMany({ where: { id: { in: [X, Y] } } });
+    await prisma.adminUser.deleteMany({ where: { id: { in: [X, Y, Q, Z] } } });
   }
   delete process.env.ADMIN_REQUIRE_2FA;
   await prisma.$disconnect();
@@ -189,7 +248,7 @@ test("second step is rate limited per admin and IP, and a lockout also stops the
 });
 
 test("every sensitive admin route refuses a session that did not pass the second factor, and allows one that did", { skip }, async () => {
-  const stale = await session.createAdminSession(X); // password only, although X has 2FA
+  const stale = await passwordOnlySession(X); // password only, although X has 2FA
   const verified = await session.createAdminSession(X, {}, { mfaVerified: true });
 
   const calls = sensitiveCalls();
@@ -228,22 +287,38 @@ test("ADMIN_REQUIRE_2FA: an admin who has not enrolled is locked out of every ad
     assert.equal(pw.status, 403, "even a non-sensitive admin route is closed");
     assert.equal((await pw.json()).mfaRequired, true);
 
-    // Enrolment itself is open: set up, confirm with a wrong code, then with the right one.
-    const setup = await securityRoute(json("/api/admin/security/2fa", { action: "setup" }));
+    // A session cookie alone cannot enrol: without the password (missing or wrong) nothing is generated or stored.
+    const ip = "198.51.100.60";
+    const noPassword = await securityRoute(json(URL2FA, { action: "setup" }, ip));
+    assert.equal(noPassword.status, 400, "setup without a password is refused");
+    const wrongPassword = await securityRoute(json(URL2FA, { action: "setup", password: "not-the-password-1" }, ip));
+    assert.equal(wrongPassword.status, 400);
+    assert.equal((await wrongPassword.json()).field, "password");
+    assert.equal((await prisma.adminUser.findUniqueOrThrow({ where: { id: Y } })).totpSecretEnc, null, "no secret was created for the cookie holder");
+
+    // With the password it works: set up, confirm with a wrong code / password / no password, then the right ones.
+    const setup = await securityRoute(json(URL2FA, { action: "setup", password: PASSWORD }, ip));
     assert.equal(setup.status, 200);
     const { secret, uri } = await setup.json();
     assert.match(secret, /^[A-Z2-7]{32}$/);
     assert.match(uri, /^otpauth:\/\/totp\//);
 
-    const badEnable = await securityRoute(json("/api/admin/security/2fa", { action: "enable", code: "000000" }));
+    const goodCode = totp.totpAt(secret, Date.now());
+    assert.equal((await securityRoute(json(URL2FA, { action: "enable", code: goodCode }, ip))).status, 400, "enable without a password is refused");
+    const wrongPwEnable = await securityRoute(json(URL2FA, { action: "enable", password: "not-the-password-1", code: goodCode }, ip));
+    assert.equal(wrongPwEnable.status, 400, "a valid code with the wrong password does not enable 2FA");
+    assert.equal((await wrongPwEnable.json()).field, "password");
+    assert.equal((await prisma.adminUser.findUniqueOrThrow({ where: { id: Y } })).totpEnabledAt, null);
+    const badEnable = await securityRoute(json(URL2FA, { action: "enable", password: PASSWORD, code: "000000" }, ip));
     assert.equal(badEnable.status, 400);
     const stillBlocked = await sensitiveCalls()[0].run();
     assert.equal(stillBlocked.status, 403, "a failed confirmation does not unlock anything");
 
-    const enable = await securityRoute(json("/api/admin/security/2fa", { action: "enable", code: totp.totpAt(secret, Date.now()) }));
+    const enable = await securityRoute(json(URL2FA, { action: "enable", password: PASSWORD, code: goodCode }, ip));
     assert.equal(enable.status, 200);
     const { recoveryCodes } = await enable.json();
     assert.equal(recoveryCodes.length, 10);
+    assert.ok(sent.some((e) => e.to.email === emailY && /turned on/i.test(e.subject)), "the admin is emailed when 2FA is enabled");
 
     // The session that enrolled is now verified: the gate opens (the sensitive calls reach their handlers).
     for (const c of sensitiveCalls()) assert.equal((await c.run()).status, c.passes, c.name);
@@ -251,17 +326,29 @@ test("ADMIN_REQUIRE_2FA: an admin who has not enrolled is locked out of every ad
     assert.equal(ctx?.mfaVerified, true);
     assert.equal(ctx?.totpEnabled, true);
 
-    // Turning it off needs a valid code; the code that just enrolled is spent, a wrong one fails.
-    const noCode = await securityRoute(json("/api/admin/security/2fa", { action: "disable", code: "000000" }));
+    // Turning it off needs the password AND a valid code; a wrong code or password fails and nothing changes.
+    const other = await session.createAdminSession(Y, {}, { mfaVerified: true }); // a second browser of the same admin
+    const stolen = await passwordOnlySession(Y); // and a leftover password-only session
+    const noCode = await securityRoute(json(URL2FA, { action: "disable", password: PASSWORD, code: "000000" }, ip));
     assert.equal(noCode.status, 400);
-    const viaRecovery = await securityRoute(json("/api/admin/security/2fa", { action: "disable", code: recoveryCodes[0] }));
+    const wrongPwDisable = await securityRoute(json(URL2FA, { action: "disable", password: "not-the-password-1", code: recoveryCodes[0] }, ip));
+    assert.equal(wrongPwDisable.status, 400);
+    assert.equal((await mfa.getMfaStatus(Y)).enabled, true, "still on after the refused attempts");
+    assert.equal((await mfa.getMfaStatus(Y)).recoveryCodesLeft, 10, "the recovery code was not consumed by the wrong-password attempt");
+    const viaRecovery = await securityRoute(json(URL2FA, { action: "disable", password: PASSWORD, code: recoveryCodes[0] }, ip));
     assert.equal(viaRecovery.status, 200);
     assert.equal((await sensitiveCalls()[0].run()).status, 403, "required again once 2FA is off");
+    assert.equal(await session.resolveAdminSession(other), null, "disabling signs every OTHER session of the admin out");
+    assert.equal(await session.resolveAdminSession(stolen), null, "including a leftover password-only one that could race to re-enrol");
+    assert.equal((await session.resolveAdminSession(currentCookie))?.adminId, Y, "the session that made the change survives");
+    assert.ok(sent.some((e) => e.to.email === emailY && /turned off/i.test(e.subject)), "the admin is emailed when 2FA is disabled");
 
     const actions = (await prisma.adminAuditLog.findMany({ where: { adminEmail: emailY } })).map((a) => a.action);
     for (const expected of ["admin.2fa_setup_started", "admin.mfa_failed", "admin.2fa_enabled", "admin.2fa_disabled"]) {
       assert.ok(actions.includes(expected), `audited: ${expected}`);
     }
+    const reasons = (await prisma.adminAuditLog.findMany({ where: { adminEmail: emailY, action: "admin.mfa_failed" } })).map((a) => (a.detail as { reason?: string }).reason);
+    assert.ok(reasons.includes("wrong-password"), "wrong passwords are audited");
   } finally {
     delete process.env.ADMIN_REQUIRE_2FA;
     currentCookie = "";
@@ -326,5 +413,191 @@ test("payout approval over HTTP: the creator is refused, another administrator a
     currentCookie = "";
     await prisma.payout.deleteMany({ where: { influencerId: influencer.id } });
     await prisma.influencer.delete({ where: { id: influencer.id } });
+  }
+});
+
+test("regenerating recovery codes needs the password as well as a code, and the admin is emailed", { skip }, async () => {
+  currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
+  const ip = "198.51.100.80";
+  try {
+    const unused = () => prisma.adminRecoveryCode.count({ where: { adminId: X, usedAt: null } });
+    const start = await unused();
+    assert.equal((await securityRoute(json(URL2FA, { action: "regenerate", code: recoveryX[3] }, ip))).status, 400, "no password");
+    const wrongPw = await securityRoute(json(URL2FA, { action: "regenerate", password: "not-the-password-1", code: recoveryX[3] }, ip));
+    assert.equal(wrongPw.status, 400);
+    assert.equal(await unused(), start, "nothing changed and the code was not consumed");
+
+    const ok = await securityRoute(json(URL2FA, { action: "regenerate", password: PASSWORD, code: recoveryX[3] }, ip));
+    assert.equal(ok.status, 200);
+    const { recoveryCodes } = await ok.json();
+    assert.equal(recoveryCodes.length, 10);
+    recoveryX = recoveryCodes;
+    assert.ok(sent.some((e) => e.to.email === emailX && /recovery codes/i.test(e.subject)), "the admin is emailed");
+    assert.ok((await prisma.adminAuditLog.count({ where: { adminEmail: emailX, action: "admin.2fa_recovery_regenerated" } })) >= 1);
+  } finally {
+    currentCookie = "";
+  }
+});
+
+test("every password attempt, wrong ones included, counts against the re-auth limiter", { skip }, async () => {
+  currentCookie = await session.createAdminSession(Y);
+  const ip = "198.51.100.90";
+  try {
+    const statuses: number[] = [];
+    for (let i = 0; i < 10; i++) statuses.push((await securityRoute(json(URL2FA, { action: "setup", password: `wrong-password-${i}` }, ip))).status);
+    assert.deepEqual(statuses, Array(10).fill(400), "ten wrong passwords are answered, not stored");
+    const limited = await securityRoute(json(URL2FA, { action: "setup", password: PASSWORD }, ip));
+    assert.equal(limited.status, 429, "the eleventh attempt is refused even with the right password");
+    assert.equal((await prisma.adminUser.findUniqueOrThrow({ where: { id: Y } })).totpSecretEnc, null, "nothing was enrolled");
+    // The limit is per admin AND IP: the right password from another address is accepted.
+    assert.equal((await securityRoute(json(URL2FA, { action: "setup", password: PASSWORD }, "198.51.100.91"))).status, 200);
+  } finally {
+    currentCookie = "";
+  }
+});
+
+test("when the rate limiter is down the admin code and password checks refuse (503) instead of allowing unlimited guesses", { skip }, async () => {
+  const ip = "198.51.100.110";
+  const { pendingToken } = await (await loginRoute(json("/api/admin/auth/login", { email: emailQ, password: PASSWORD }, ip))).json();
+  const code = totp.totpAt(secretQ, Date.now());
+  const lastStep = () => prisma.adminUser.findUniqueOrThrow({ where: { id: Q }, select: { totpLastStep: true } }).then((r) => r.totpLastStep);
+  const stepBefore = await lastStep();
+  const sessionsBefore = await prisma.adminSession.count({ where: { adminId: Q } });
+
+  rateLimit.setStore({
+    name: "broken",
+    hit: async () => {
+      throw new Error("rate-limit store down");
+    },
+  });
+  try {
+    const res = await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code }, ip));
+    assert.equal(res.status, 503, "the login code step fails closed");
+    assert.match((await res.json()).error, /temporarily unavailable/);
+    assert.equal(cookieValue(res), null);
+    assert.equal(await prisma.adminSession.count({ where: { adminId: Q } }), sessionsBefore, "no session was created");
+    assert.equal(await lastStep(), stepBefore, "the correct code was never evaluated, so it is not consumed");
+
+    currentCookie = await session.createAdminSession(Q, {}, { mfaVerified: true });
+    const manage = await securityRoute(json(URL2FA, { action: "regenerate", password: PASSWORD, code: recoveryQ[9] }, ip));
+    assert.equal(manage.status, 503, "so does the Security page");
+    assert.equal(await prisma.adminRecoveryCode.count({ where: { adminId: Q, usedAt: null } }), 10, "no recovery code was touched");
+  } finally {
+    rateLimit.setStore(null);
+    currentCookie = "";
+  }
+  // With the limiter back the very same code works.
+  const ok = await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code }, ip));
+  assert.equal(ok.status, 200);
+});
+
+test("guessing spread over many IP addresses still hits the durable lockout; a recovery code still lets the real admin in", { skip }, async () => {
+  await prisma.adminUser.update({ where: { id: Q }, data: { mfaFailedCount: 0, mfaLockLevel: 0, mfaLockedUntil: null } });
+  const { pendingToken } = await (await loginRoute(json("/api/admin/auth/login", { email: emailQ, password: PASSWORD }, "198.51.100.120"))).json();
+
+  const statuses: number[] = [];
+  for (let i = 0; i < 10; i++) statuses.push((await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code: "000000" }, `198.51.100.${130 + i}`))).status);
+  assert.deepEqual(statuses, Array(10).fill(401), "ten wrong guesses from ten addresses: no per-IP limit is ever reached");
+
+  const sessionsBefore = await prisma.adminSession.count({ where: { adminId: Q } });
+  const correct = totp.totpAt(secretQ, Date.now() + 30_000); // a fresh step, so only the lock can refuse it
+  const locked = await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code: correct }, "198.51.100.150"));
+  assert.equal(locked.status, 429);
+  const body = await locked.json();
+  assert.equal(body.locked, true);
+  assert.match(body.error, /locked/i);
+  assert.equal(cookieValue(locked), null);
+  assert.equal(await prisma.adminSession.count({ where: { adminId: Q } }), sessionsBefore, "even the correct code gets no session while locked");
+  assert.ok(sent.some((e) => e.to.email === emailQ && /locked/i.test(e.subject)), "the admin was emailed about the lock");
+
+  // Break-glass: password (the pending token) + a recovery code works while locked, and clears the lock.
+  const rec = await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code: recoveryQ[0] }, "198.51.100.151"));
+  assert.equal(rec.status, 200);
+  assert.ok(cookieValue(rec));
+  const state = await prisma.adminUser.findUniqueOrThrow({ where: { id: Q }, select: { mfaLockedUntil: true, mfaLockLevel: true } });
+  assert.deepEqual(state, { mfaLockedUntil: null, mfaLockLevel: 0 });
+});
+
+test("per-admin hourly caps hold across many IP addresses: 30 attempts at the code step and 30 on the Security page", { skip }, async () => {
+  // Code step: lock Z so every attempt is cheap and cannot succeed, then use a different IP for each.
+  await prisma.adminUser.update({ where: { id: Z }, data: { mfaLockedUntil: new Date(Date.now() + 3_600_000) } });
+  const { pendingToken } = await (await loginRoute(json("/api/admin/auth/login", { email: emailZ, password: PASSWORD }, "198.51.100.160"))).json();
+  const attempts: { status: number; body: { locked?: boolean; error: string } }[] = [];
+  for (let i = 0; i < 31; i++) {
+    const res = await mfaRoute(json("/api/admin/auth/mfa", { pendingToken, code: "000000" }, `198.51.100.${170 + i}`));
+    attempts.push({ status: res.status, body: await res.json() });
+  }
+  for (const a of attempts.slice(0, 30)) assert.ok(a.status === 429 && a.body.locked === true, "the first 30 reach the lockout check");
+  assert.equal(attempts[30].status, 429);
+  assert.equal(attempts[30].body.locked, undefined, "the 31st is stopped by the per-admin cap, before the lockout check");
+  assert.match(attempts[30].body.error, /Too many attempts on this account/);
+
+  // Security page: 30 wrong-password attempts from 30 addresses, then the 31st is stopped by the per-admin cap.
+  currentCookie = await session.createAdminSession(Z, {}, { mfaVerified: true });
+  try {
+    const results: { status: number; error: string }[] = [];
+    for (let i = 0; i < 31; i++) {
+      const res = await securityRoute(json(URL2FA, { action: "regenerate", password: `wrong-password-${i}`, code: "000000" }, `198.51.100.${210 + i}`));
+      results.push({ status: res.status, error: (await res.json()).error });
+    }
+    for (const r of results.slice(0, 30)) assert.equal(r.status, 400, "wrong password");
+    assert.equal(results[30].status, 429);
+    assert.match(results[30].error, /Too many attempts on this account/);
+  } finally {
+    currentCookie = "";
+  }
+});
+
+test("page guards: signed-out, must-enrol and password-only sessions are each sent where they belong", { skip }, async () => {
+  process.env.ADMIN_REQUIRE_2FA = "true";
+  try {
+    currentCookie = "";
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts")), "/admin/login?next=%2Fadmin%2Fpayouts");
+
+    // "enroll": 2FA is required and Y has none -> Security is the only page open.
+    currentCookie = await session.createAdminSession(Y);
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts")), "/admin/security");
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin")), "/admin/security");
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/security")), null);
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts", { mfaGate: false })), null, "mfaGate:false skips the redirect");
+
+    // "verify": X has 2FA, this session is password-only -> back to sign in with a code, from every page.
+    currentCookie = await passwordOnlySession(X);
+    for (const p of ["/admin", "/admin/payouts", "/admin/security"]) {
+      assert.equal(await redirectOf(() => session.requireAdminPage(p)), `/admin/login?next=${encodeURIComponent(p)}`, p);
+    }
+    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts", { mfaGate: false })), null);
+
+    // verified session: everywhere.
+    currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
+    for (const p of ["/admin", "/admin/payouts", "/admin/security"]) assert.equal(await redirectOf(() => session.requireAdminPage(p)), null, p);
+  } finally {
+    delete process.env.ADMIN_REQUIRE_2FA;
+    currentCookie = "";
+  }
+});
+
+test("the administrator list is hidden from sessions that have not passed what they must", { skip }, async () => {
+  process.env.ADMIN_REQUIRE_2FA = "true";
+  try {
+    // A cookie of an admin who has not enrolled (2FA required) sees the page, but not who the other admins are.
+    currentCookie = await session.createAdminSession(Y);
+    const hidden = textOf(await securityPage()).join("\n");
+    for (const other of [emailX, emailQ, emailZ]) assert.ok(!hidden.includes(other), `${other} is not shown`);
+    assert.ok(!/Administrators \(\d+\)/.test(hidden));
+    assert.match(hidden, /shown after you have set up two-factor/);
+
+    // A password-only session of an admin who HAS 2FA does not even get the page.
+    currentCookie = await passwordOnlySession(X);
+    assert.equal(await redirectOf(() => securityPage()), "/admin/login?next=%2Fadmin%2Fsecurity");
+
+    // A verified session of an enrolled admin sees the list.
+    currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
+    const shown = textOf(await securityPage()).join("\n");
+    assert.match(shown, /Administrators \(\d+\)/);
+    for (const other of [emailX, emailY, emailQ, emailZ]) assert.ok(shown.includes(other), `${other} is listed`);
+  } finally {
+    delete process.env.ADMIN_REQUIRE_2FA;
+    currentCookie = "";
   }
 });

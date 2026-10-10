@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/generated/prisma/client";
+import { totpAad } from "@/lib/admin/totp-aad";
 import { googleTokenAad } from "@/lib/google-tokens";
 import type { EncryptedColumn, RotationDb, RotationTx } from "@/lib/key-rotation";
 import { payoutAad } from "@/lib/payout-account";
@@ -15,15 +16,14 @@ import { whatsappTokenAad } from "@/lib/whatsapp-connection";
  *                    where the AAD is built from the row's own id
  *   idColumn         the primary key, only if it is not "id"
  *   aad              (ownerId) => the exact AAD string the writing module uses; export it from that module and import it here
- * For example, the admin 2FA secret (added by the branch that introduces admin_users.totp_secret_enc) is:
- *   { name: "admin_users.totp_secret_enc", table: "admin_users", column: "totp_secret_enc", ownerColumn: "id",
- *     aad: (adminId) => `admin-totp:${adminId}` },
+ * The admin 2FA secret below is the example of a row that is its own owner (ownerColumn "id").
  */
 export const ENCRYPTED_COLUMNS: EncryptedColumn[] = [
   { name: "google_tokens.refresh_token_enc", table: "google_tokens", column: "refresh_token_enc", ownerColumn: "influencer_id", aad: googleTokenAad },
   { name: "payout_accounts.account_number_enc", table: "payout_accounts", column: "account_number_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "account") },
   { name: "payout_accounts.upi_id_enc", table: "payout_accounts", column: "upi_id_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "upi") },
   { name: "whatsapp_connections.token_enc", table: "whatsapp_connections", column: "token_enc", ownerColumn: "influencer_id", aad: whatsappTokenAad },
+  { name: "admin_users.totp_secret_enc", table: "admin_users", column: "totp_secret_enc", ownerColumn: "id", aad: totpAad },
 ];
 
 const IDENT = /^[a-z][a-z_]*$/;

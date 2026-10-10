@@ -48,9 +48,10 @@ export const ROUTE_RULES: RouteRule[] = [
   // --- Administrator console: sign-in is a brute-force target, everything else is low volume.
   { name: "admin-login", pattern: /^\/api\/admin\/auth\/login$/, methods: ["POST"], limit: 8, windowMs: 15 * MIN, by: "ip" },
   // Second step of sign-in (authenticator or recovery code): a 6-digit code is guessable, so this is as tight as the password step.
-  { name: "admin-mfa", pattern: /^\/api\/admin\/auth\/mfa$/, methods: ["POST"], limit: 10, windowMs: 15 * MIN, by: "ip" },
-  // Enrolling, regenerating recovery codes and turning off 2FA all check codes too.
-  { name: "admin-security", pattern: /^\/api\/admin\/security\//, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
+  // The admin MFA rules are failClosed: if no rate-limit store is up they refuse (503) instead of allowing unlimited guesses.
+  { name: "admin-mfa", pattern: /^\/api\/admin\/auth\/mfa$/, methods: ["POST"], limit: 10, windowMs: 15 * MIN, by: "ip", failClosed: true },
+  // Enrolling, regenerating recovery codes and turning off 2FA all check a password and a code.
+  { name: "admin-security", pattern: /^\/api\/admin\/security\//, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip", failClosed: true },
   { name: "admin-payout-account", pattern: /^\/api\/admin\/influencers\/[^/]+\/payout-account$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   // Reconciliation calls Razorpay once per payment; payouts and fees move money. Tight, low-volume limits.
   { name: "admin-reconcile", pattern: /^\/api\/admin\/payments\/reconcile$/, methods: ["POST"], limit: 20, windowMs: HOUR, by: "ip" },
@@ -94,13 +95,16 @@ export const IDENTITY_RULES = {
   /** Password re-entry for sensitive actions / change password, keyed by user id + IP (separate from login). */
   reauthUser: { name: "auth-reauth-user-ip", limit: 10, windowMs: 15 * MIN },
   adminLoginEmail: { name: "admin-login-email-ip", limit: 5, windowMs: 15 * MIN },
-  adminReauth: { name: "admin-password-user-ip", limit: 10, windowMs: 15 * MIN },
-  /** Second sign-in step, keyed by admin id AND client IP (the id comes from the verified pending token). */
-  adminMfaIp: { name: "admin-mfa-admin-ip", limit: 6, windowMs: 15 * MIN },
-  /** Second sign-in step per admin from ANY IP, so guessing spread over many addresses is still capped. */
-  adminMfaAdmin: { name: "admin-mfa-admin", limit: 30, windowMs: HOUR },
-  /** Code checks on the Security page (enable, regenerate recovery codes, disable), keyed by admin id + IP. */
-  adminMfaManage: { name: "admin-mfa-manage-admin-ip", limit: 10, windowMs: 15 * MIN },
+  /** Password re-entry by a signed-in admin (change password, and 2FA setup/enable/regenerate/disable). Fails closed. */
+  adminReauth: { name: "admin-password-user-ip", limit: 10, windowMs: 15 * MIN, failClosed: true },
+  /** Second sign-in step, keyed by admin id AND client IP (the id comes from the verified pending token). Fails closed. */
+  adminMfaIp: { name: "admin-mfa-admin-ip", limit: 6, windowMs: 15 * MIN, failClosed: true },
+  /** Second sign-in step per admin from ANY IP, so guessing spread over many addresses is still capped. Fails closed. */
+  adminMfaAdmin: { name: "admin-mfa-admin", limit: 30, windowMs: HOUR, failClosed: true },
+  /** Code checks on the Security page (enable, regenerate recovery codes, disable), keyed by admin id + IP. Fails closed. */
+  adminMfaManage: { name: "admin-mfa-manage-admin-ip", limit: 10, windowMs: 15 * MIN, failClosed: true },
+  /** Everything on the Security page per admin from ANY IP (password and code guesses spread over addresses). Fails closed. */
+  adminMfaManageAdmin: { name: "admin-mfa-manage-admin", limit: 30, windowMs: HOUR, failClosed: true },
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },

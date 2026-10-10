@@ -14,7 +14,8 @@ const schema = z.object({
 
 // Administrator sign-in, step 2 of 2: the pending token from /api/admin/auth/login plus an authenticator code or a
 // single-use recovery code. Only here is the session created, with `mfaVerifiedAt` set. Limited per IP (proxy.ts),
-// per admin + IP and per admin overall (here); every success and failure is audited.
+// per admin + IP and per admin overall (here, failing closed if no rate-limit store is up), and by the durable
+// per-admin lockout in verifySecondFactor; every success and failure is audited.
 export async function POST(req: Request) {
   const parsed = await parseJson(req, schema);
   if (!parsed.ok) return parsed.response;
@@ -39,6 +40,10 @@ export async function POST(req: Request) {
   const result = await verifySecondFactor(pending.adminId, code);
   if (!result.ok) {
     await recordAudit(actor, { action: "admin.mfa_failed", detail: { reason: result.reason, context: "login" }, ip });
+    if (result.reason === "locked") {
+      const retryAfterSec = result.lockedUntil ? Math.max(1, Math.ceil((result.lockedUntil.getTime() - Date.now()) / 1000)) : 900;
+      return jsonError(codeFailureMessage("locked", result.lockedUntil), 429, { locked: true, retryAfterSec });
+    }
     return jsonError(codeFailureMessage(result.reason), 401, result.reason === "not-enabled" ? { restart: true } : {});
   }
 

@@ -69,9 +69,21 @@ export async function authenticateAdmin(emailInput: string, password: string): P
   return { adminId: admin.id, totpEnabled: admin.totpEnabledAt != null, passwordFingerprint: adminPasswordFingerprint(admin.passwordHash) };
 }
 
+/** A password-only session was requested for an admin who has two-factor on. Sign-in must go through the second step. */
+export class AdminMfaRequiredError extends Error {
+  constructor() {
+    super("This administrator has two-factor authentication on; a code is required to sign in.");
+  }
+}
+
 /**
  * Creates the session row and returns the raw cookie token. Call it only once sign-in is complete: after the
  * password for an admin without 2FA, or after the second factor (`mfaVerified: true`) for one with it.
+ *
+ * A password-only session (no `mfaVerified`) is REFUSED with AdminMfaRequiredError when the admin has 2FA on. The check
+ * and the insert share a transaction that holds a share lock on the admin row, so it cannot race with an enrollment:
+ * either the enrollment committed first (the check sees it and refuses), or this session committed first and the
+ * enrollment, which waits for the row, then signs every other session out.
  */
 export async function createAdminSession(
   adminId: string,
@@ -80,18 +92,36 @@ export async function createAdminSession(
 ): Promise<string> {
   const token = randomToken();
   const now = new Date();
-  await prisma.adminSession.create({
-    data: {
-      tokenHash: hashToken(token),
-      adminId,
-      expiresAt: new Date(now.getTime() + ADMIN_SESSION_TTL_MS),
-      userAgent: meta.userAgent?.slice(0, 300) ?? null,
-      ip: meta.ip?.slice(0, 64) ?? null,
-      mfaVerifiedAt: opts.mfaVerified ? now : null,
-    },
-  });
+  const data = {
+    tokenHash: hashToken(token),
+    adminId,
+    expiresAt: new Date(now.getTime() + ADMIN_SESSION_TTL_MS),
+    userAgent: meta.userAgent?.slice(0, 300) ?? null,
+    ip: meta.ip?.slice(0, 64) ?? null,
+    mfaVerifiedAt: opts.mfaVerified ? now : null,
+  };
+  if (opts.mfaVerified) {
+    await prisma.adminSession.create({ data });
+  } else {
+    await prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ totp_enabled_at: Date | null }[]>`SELECT totp_enabled_at FROM admin_users WHERE id = ${adminId} FOR SHARE`;
+        if (rows.length === 0) throw new Error("Administrator not found");
+        if (rows[0].totp_enabled_at) throw new AdminMfaRequiredError();
+        await tx.adminSession.create({ data });
+      },
+      { timeout: 20_000 },
+    );
+  }
   await prisma.adminUser.update({ where: { id: adminId }, data: { lastLoginAt: now } });
   return token;
+}
+
+/** Re-checks the signed-in admin's own password (constant-time compare; always spends one hash). */
+export async function verifyAdminPassword(adminId: string, password: string): Promise<boolean> {
+  const row = await prisma.adminUser.findUnique({ where: { id: adminId }, select: { passwordHash: true } });
+  const ok = await verifyPassword(password, row ? row.passwordHash : await dummyPasswordHash());
+  return Boolean(row) && ok;
 }
 
 /** Resolves a raw cookie token to the signed-in admin. Null if missing, expired, revoked or the admin is disabled. */
@@ -161,17 +191,29 @@ export function adminApiGate(
 }
 
 /**
- * Page guard: unauthenticated visitors go to the admin login, and an admin who must enrol is sent to the Security
- * page (the only page open to them). `mfaGate: false` skips the enrollment redirect for callers that cannot tell
- * which page they are guarding.
+ * Page guard: unauthenticated visitors go to the admin login; an admin who must enrol is sent to the Security page
+ * (the only page open to them); and a password-only session of an admin who HAS 2FA ("verify": a session older than
+ * the enrollment) is sent back to sign in with a code, so it cannot browse the console. `mfaGate: false` skips both
+ * redirects for callers that cannot tell which page they are guarding.
  */
 export async function requireAdminPage(path = "/admin", opts: { mfaGate?: boolean } = {}): Promise<AdminContext> {
   const admin = await getAdminAuth();
   if (!admin) redirect(`/admin/login?next=${encodeURIComponent(path)}`);
-  if (opts.mfaGate !== false && path.split("?")[0] !== ADMIN_SECURITY_PATH && mfaGateStatus(admin) === "enroll") {
-    redirect(ADMIN_SECURITY_PATH);
+  if (opts.mfaGate !== false) {
+    const gate = mfaGateStatus(admin);
+    if (gate === "verify") redirect(`/admin/login?next=${encodeURIComponent(path)}`);
+    if (gate === "enroll" && path.split("?")[0] !== ADMIN_SECURITY_PATH) redirect(ADMIN_SECURITY_PATH);
   }
   return admin;
+}
+
+/**
+ * Whether this session may see the list of administrators and their 2FA status. Hidden from a session that has not
+ * passed what it must (a stolen cookie of an admin who has not enrolled, or a password-only session) so it cannot be
+ * used to pick targets; with 2FA required that means "enrolled and verified".
+ */
+export function canViewAdminList(admin: Pick<AdminContext, "totpEnabled" | "mfaVerified">, env: NodeJS.ProcessEnv = process.env): boolean {
+  return mfaGateStatus(admin, env) === "ok";
 }
 
 /**

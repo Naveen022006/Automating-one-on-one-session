@@ -30,7 +30,10 @@ async function main() {
     const admin = await prisma.adminUser.findUnique({ where: { email } });
     if (!admin) throw new Error(`${email} is not an admin.`);
     await prisma.$transaction([
-      prisma.adminUser.update({ where: { id: admin.id }, data: { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null } }),
+      prisma.adminUser.update({
+        where: { id: admin.id },
+        data: { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, mfaFailedCount: 0, mfaLockLevel: 0, mfaLockedUntil: null },
+      }),
       prisma.adminRecoveryCode.deleteMany({ where: { adminId: admin.id } }),
       prisma.adminSession.deleteMany({ where: { adminId: admin.id } }),
       prisma.adminAuditLog.create({ data: { adminId: admin.id, adminEmail: "cli", action: "admin.2fa_reset_cli", targetType: "admin", targetId: admin.id } }),

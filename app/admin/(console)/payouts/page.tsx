@@ -8,7 +8,7 @@ import { activeAdminCount, PAGE_SIZE, parsePage } from "@/lib/admin/data";
 import { requireAdminPage } from "@/lib/admin/session";
 import { prisma } from "@/lib/db";
 import { formatMoney } from "@/lib/format";
-import { fourEyesEnabled, formatFeePercent, payoutApprovalView, postPayoutRefunds } from "@/lib/payouts";
+import { fourEyesEnabled, formatFeePercent, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor } from "@/lib/payouts";
 
 export const metadata: Metadata = { title: "Payouts" };
 
@@ -31,6 +31,7 @@ export default async function AdminPayoutsPage({ searchParams }: { searchParams:
     prisma.payout.groupBy({ by: ["status"], _count: { _all: true } }),
   ]);
   const owed = new Map(await Promise.all(rows.filter((r) => r.status === "PAID").map(async (r) => [r.id, await postPayoutRefunds(r.id)] as const)));
+  const recentUnapproved = await recentUnapprovedFor(rows);
   const countOf = (k: string) => (k === "all" ? counts.reduce((n, c) => n + c._count._all, 0) : (counts.find((c) => c.status === k)?._count._all ?? 0));
   const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
 
@@ -66,7 +67,7 @@ export default async function AdminPayoutsPage({ searchParams }: { searchParams:
             </thead>
             <tbody>
               {rows.map((p) => {
-                const approval = payoutApprovalView(p, admin.email);
+                const approval = payoutApprovalView(p, admin.email, process.env, recentUnapproved.get(p.id) ?? 0);
                 return (
                   <tr key={p.id}>
                     <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>

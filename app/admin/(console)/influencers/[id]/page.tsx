@@ -10,7 +10,7 @@ import { prisma } from "@/lib/db";
 import { evaluateReadiness, readinessInput } from "@/lib/readiness";
 import { viewTemplates } from "@/lib/whatsapp-connection";
 import { getPayoutAccountView } from "@/lib/payout-account";
-import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, fourEyesEnabled, loadPayable, payoutApprovalView, postPayoutRefunds, summariseCurrencies, type Blocker } from "@/lib/payouts";
+import { BLOCKER_LABEL, defaultFeeBps, effectiveFeeBps, formatFeePercent, fourEyesEnabled, loadPayable, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor, summariseCurrencies, type Blocker } from "@/lib/payouts";
 import { formatMoney } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Influencer" };
@@ -29,6 +29,7 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
   ]);
   const currencies = summariseCurrencies(payable, feeBps);
   const owed = new Map(await Promise.all(payouts.filter((p) => p.status === "PAID").map(async (p) => [p.id, await postPayoutRefunds(p.id)] as const)));
+  const recentUnapproved = await recentUnapprovedFor(payouts);
   const verified = payout?.status === "VERIFIED";
   const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
   const readiness = evaluateReadiness(readinessInput({ ...i, payoutAccount: payout ? { status: payout.status } : null, _count: { rules: await prisma.availabilityRule.count({ where: { influencerId: id } }), services: i.services.filter((s) => s.active).length } }, i.user?.emailVerifiedAt != null || !i.user));
@@ -144,7 +145,7 @@ export default async function AdminInfluencerPage({ params }: { params: Promise<
                 </thead>
                 <tbody>
                   {payouts.map((p) => {
-                    const approval = payoutApprovalView(p, admin.email);
+                    const approval = payoutApprovalView(p, admin.email, process.env, recentUnapproved.get(p.id) ?? 0);
                     return (
                       <tr key={p.id}>
                         <td data-label="Created">{p.createdAt.toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>

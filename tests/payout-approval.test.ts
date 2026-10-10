@@ -13,6 +13,8 @@ import {
   markPayoutPaid,
   payoutApprovalView,
   PayoutError,
+  payoutNeedsApproval,
+  recentUnapprovedMinor,
 } from "../lib/payouts";
 
 const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv;
@@ -70,12 +72,24 @@ const CREATOR = `po-creator-${run}@example.com`;
 const SECOND = `po-second-${run}@example.com`;
 const THIRD = `po-third-${run}@example.com`;
 let influencerId = "";
+const extraInfluencers: string[] = [];
 
-async function newPayout(netMinor = 45_000, createdByEmail = CREATOR) {
+/** A fresh influencer, so tests about the 24-hour sum are not affected by other tests' payouts. */
+async function freshInfluencer(): Promise<string> {
+  const id = (await prisma.influencer.create({ data: { slug: `po-x${extraInfluencers.length}-${run}`, name: "Approval extra", email: `po-x${extraInfluencers.length}-${run}@example.com` } })).id;
+  extraInfluencers.push(id);
+  return id;
+}
+
+async function newPayout(
+  netMinor = 45_000,
+  createdByEmail = CREATOR,
+  opts: { influencerId?: string; currency?: string; createdAt?: Date; approved?: boolean; status?: "PENDING" | "PAID" | "CANCELLED" } = {},
+) {
   return prisma.payout.create({
     data: {
-      influencerId,
-      currency: "INR",
+      influencerId: opts.influencerId ?? influencerId,
+      currency: opts.currency ?? "INR",
       grossMinor: netMinor,
       refundsMinor: 0,
       feeBps: 0,
@@ -84,6 +98,9 @@ async function newPayout(netMinor = 45_000, createdByEmail = CREATOR) {
       paymentCount: 1,
       destination: "HDFC Bank XXXXXXXX9012",
       createdByEmail,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      ...(opts.approved ? { approvedAt: new Date(), approvedByEmail: SECOND } : {}),
+      ...(opts.status ? { status: opts.status } : {}),
     },
   });
 }
@@ -97,8 +114,10 @@ before(async () => {
 
 after(async () => {
   if (!skip && influencerId) {
-    await prisma.payout.deleteMany({ where: { influencerId } });
-    await prisma.influencer.delete({ where: { id: influencerId } });
+    for (const id of [influencerId, ...extraInfluencers]) {
+      await prisma.payout.deleteMany({ where: { influencerId: id } });
+      await prisma.influencer.delete({ where: { id } });
+    }
   }
   await prisma.$disconnect();
 });
@@ -162,16 +181,109 @@ test("with four-eyes off a payout can be paid without approval (and the default 
 
 test("threshold: only payouts at or above PAYOUT_FOUR_EYES_MIN_MINOR need approval", { skip }, async () => {
   const th = env({ PAYOUT_FOUR_EYES: "true", PAYOUT_FOUR_EYES_MIN_MINOR: "100000" });
-  const small = await newPayout(99_999);
+  // Each case has its own influencer: payouts of one influencer count together (see the split test below).
+  const small = await newPayout(99_999, CREATOR, { influencerId: await freshInfluencer() });
   assert.equal((await markPayoutPaid(small.id, "UTR-SMALL-001", CREATOR, th)).status, "PAID", "below the threshold: no approval needed");
 
-  const exactly = await newPayout(100_000);
+  const exactly = await newPayout(100_000, CREATOR, { influencerId: await freshInfluencer() });
   await assert.rejects(markPayoutPaid(exactly.id, "UTR-EXACT-001", CREATOR, th), failsWith(409, /second administrator/), "at the threshold: approval needed");
 
-  const big = await newPayout(250_000);
+  const big = await newPayout(250_000, CREATOR, { influencerId: await freshInfluencer() });
   await assert.rejects(markPayoutPaid(big.id, "UTR-BIG-0001", CREATOR, th), failsWith(409, /second administrator/));
   await approvePayout(big.id, SECOND);
   assert.equal((await markPayoutPaid(big.id, "UTR-BIG-0001", CREATOR, th)).status, "PAID");
+});
+
+test("splitting one transfer into payouts under the threshold does not avoid approval", { skip }, async () => {
+  const th = env({ PAYOUT_FOUR_EYES: "true", PAYOUT_FOUR_EYES_MIN_MINOR: "100000" });
+  const inf = await freshInfluencer();
+
+  // One administrator creates 59,000 and pays it: alone it is under the threshold, so no approval.
+  const first = await newPayout(59_000, CREATOR, { influencerId: inf });
+  assert.equal((await markPayoutPaid(first.id, "UTR-SPLIT-001", CREATOR, th)).status, "PAID");
+
+  // The "second half" is created next: together with the unapproved first payout it is 118,000 >= 100,000.
+  const second = await newPayout(59_000, CREATOR, { influencerId: inf });
+  assert.equal(await recentUnapprovedMinor(second, new Date(), th), 59_000, "the first payout counts towards the second");
+  assert.equal(await payoutNeedsApproval(second, new Date(), th), true);
+  await assert.rejects(markPayoutPaid(second.id, "UTR-SPLIT-002", CREATOR, th), failsWith(409, /second administrator/), "the split part needs approval");
+  assert.equal((await reload(second.id)).status, "PENDING");
+
+  // The console shows it the same way (Awaiting approval for the creator, Approve for another administrator).
+  const view = payoutApprovalView(second, SECOND, th, await recentUnapprovedMinor(second, new Date(), th));
+  assert.equal(view.required, true);
+  assert.equal(view.canApprove, true);
+  assert.equal(view.canMarkPaid, false);
+
+  // Several pending payouts that are each small count each other: every one of them needs approval.
+  const inf2 = await freshInfluencer();
+  const a = await newPayout(40_000, CREATOR, { influencerId: inf2 });
+  const b = await newPayout(40_000, CREATOR, { influencerId: inf2 });
+  assert.equal(await payoutNeedsApproval(a, new Date(), th), false, "80,000 in total is still below");
+  const c = await newPayout(40_000, CREATOR, { influencerId: inf2 });
+  for (const p of [a, b, c]) assert.equal(await payoutNeedsApproval(p, new Date(), th), true, "120,000 in total: all need approval");
+  await assert.rejects(markPayoutPaid(a.id, "UTR-SPLIT-00A", CREATOR, th), failsWith(409, /second administrator/));
+
+  // Approving one of them takes it out of the sum for the others.
+  await approvePayout(c.id, SECOND);
+  assert.equal(await recentUnapprovedMinor(a, new Date(), th), 40_000, "only b is left unapproved");
+  assert.equal((await markPayoutPaid(a.id, "UTR-SPLIT-00A", CREATOR, th)).status, "PAID", "80,000 unapproved in total: under the threshold again");
+});
+
+test("what counts towards the threshold: same influencer, same currency, unapproved, not cancelled, last 24 hours only", { skip }, async () => {
+  const th = env({ PAYOUT_FOUR_EYES: "true", PAYOUT_FOUR_EYES_MIN_MINOR: "100000" });
+  const inf = await freshInfluencer();
+  const other = await freshInfluencer();
+  const target = await newPayout(10_000, CREATOR, { influencerId: inf });
+  const ago = (h: number) => new Date(Date.now() - h * 3_600_000);
+
+  await newPayout(20_000, CREATOR, { influencerId: inf }); // counts
+  await newPayout(5_000, CREATOR, { influencerId: inf, status: "PAID", createdAt: ago(23) }); // counts: paid without approval, 23 h ago
+  await newPayout(7_000, CREATOR, { influencerId: inf, createdAt: ago(25) }); // too old
+  await newPayout(11_000, CREATOR, { influencerId: inf, currency: "USD" }); // other currency
+  await newPayout(13_000, CREATOR, { influencerId: other }); // other influencer
+  await newPayout(17_000, CREATOR, { influencerId: inf, approved: true }); // approved
+  await newPayout(19_000, CREATOR, { influencerId: inf, status: "CANCELLED" }); // cancelled
+  assert.equal(await recentUnapprovedMinor(target, new Date(), th), 25_000);
+  assert.equal(await recentUnapprovedMinor(target, new Date(), env({ PAYOUT_FOUR_EYES: "true", PAYOUT_FOUR_EYES_MIN_MINOR: "0" })), 0, "no query when the threshold is 0");
+  assert.equal(await recentUnapprovedMinor(target, new Date(), OFF), 0, "none when four-eyes is off");
+  assert.equal(await recentUnapprovedMinor(target, new Date(Date.now() + 2 * 3_600_000), th), 20_000, "two hours later the 23-hour-old payout has left the window");
+});
+
+test("mark-paid racing approve and cancel: exactly one outcome, and an unapproved payout is never marked paid", { skip }, async () => {
+  const inf = await freshInfluencer();
+  const outcomes: string[] = [];
+  for (let round = 0; round < 8; round++) {
+    const p = await newPayout(45_000, CREATOR, { influencerId: inf });
+    const settled = await Promise.allSettled([
+      markPayoutPaid(p.id, `UTR-RACE-${round}-0001`, CREATOR, ON),
+      approvePayout(p.id, SECOND),
+      cancelPayout(p.id, "race"),
+    ]);
+    const row = await reload(p.id);
+    const [paid, approved, cancelled] = settled.map((s) => s.status === "fulfilled");
+    outcomes.push(`${row.status}${row.approvedAt ? "+approved" : ""}`);
+
+    // The invariant: money is only ever marked paid for an approved payout.
+    if (row.status === "PAID") assert.ok(row.approvedAt && row.approvedByEmail === SECOND, `round ${round}: PAID implies an approval by someone else`);
+    // Terminal states exclude each other.
+    assert.ok(!(paid && cancelled), `round ${round}: a payout cannot be both paid and cancelled`);
+    if (row.status === "PAID") assert.equal(paid, true, `round ${round}: PAID means the paid call succeeded`);
+    if (row.status === "CANCELLED") assert.equal(cancelled, true);
+    if (row.status === "CANCELLED") assert.equal(paid, false, `round ${round}: nothing was marked paid on a cancelled payout`);
+    if (paid) assert.equal(approved, true, `round ${round}: mark-paid only succeeded because the approval had landed`);
+    assert.ok(["PAID", "CANCELLED", "PENDING"].includes(row.status));
+  }
+  assert.ok(outcomes.length === 8);
+});
+
+test("a payout can be approved and then paid, or cancelled instead, but never paid after it was cancelled", { skip }, async () => {
+  const inf = await freshInfluencer();
+  const p = await newPayout(45_000, CREATOR, { influencerId: inf });
+  await approvePayout(p.id, SECOND);
+  await cancelPayout(p.id, "no longer needed");
+  await assert.rejects(markPayoutPaid(p.id, "UTR-AFTER-CANCEL", CREATOR, ON), failsWith(409, /not pending/));
+  assert.equal((await reload(p.id)).status, "CANCELLED");
 });
 
 test("approve edge cases: unknown payout, cancelled payout; an approved payout can still be cancelled", { skip }, async () => {

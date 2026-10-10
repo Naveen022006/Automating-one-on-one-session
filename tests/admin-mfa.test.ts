@@ -17,17 +17,21 @@ import {
   verifySecondFactor,
 } from "../lib/admin/mfa";
 import {
+  AdminMfaRequiredError,
   adminApiGate,
   adminPasswordFingerprint,
   authenticateAdmin,
+  canViewAdminList,
   createAdminSession,
   mfaGateStatus,
   resolveAdminSession,
 } from "../lib/admin/session";
 import { hashRecoveryCode, timeStepOf, totpAt } from "../lib/admin/totp";
 import { hashPassword } from "../lib/auth/password";
+import { hashToken, randomToken } from "../lib/auth/tokens";
 import { decryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/db";
+import { setEmailSender } from "../lib/email";
 import { signToken } from "../lib/signing";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
@@ -58,8 +62,19 @@ function wrongCode(secret: string, now: number): string {
   throw new Error("unreachable");
 }
 
+/**
+ * A password-only session row (no mfaVerifiedAt): what a session created before the enrollment looks like. Inserted
+ * directly because createAdminSession now refuses to create one for an admin who has 2FA on.
+ */
+async function passwordOnlySession(adminId: string): Promise<{ token: string; id: string }> {
+  const token = randomToken();
+  const row = await prisma.adminSession.create({ data: { tokenHash: hashToken(token), adminId, expiresAt: new Date(Date.now() + 3_600_000) } });
+  return { token, id: row.id };
+}
+
 before(async () => {
   if (skip) return;
+  setEmailSender(async () => ({ providerMessageId: null })); // never send real mail from tests
   const hash = await hashPassword(PASSWORD);
   A = (await prisma.adminUser.create({ data: { email: emailA, name: "MFA A", passwordHash: hash } })).id;
   B = (await prisma.adminUser.create({ data: { email: emailB, name: "MFA B", passwordHash: hash } })).id;
@@ -247,10 +262,19 @@ test("two-step sign-in end to end: only the second factor produces an MFA-verifi
   assert.equal(mfaGateStatus(ctx!, {} as NodeJS.ProcessEnv), "ok");
   assert.ok((await prisma.adminUser.findUniqueOrThrow({ where: { id: B } })).lastLoginAt, "lastLoginAt is set when the session is created");
 
-  // A session created from the password alone is not verified, and the gate says so.
-  const pwOnly = await resolveAdminSession(await createAdminSession(B));
+  // createAdminSession will not make a password-only session for an admin who has 2FA on (this is what closes the
+  // race between a login that read "no 2FA" and an enrollment that committed meanwhile)...
+  const sessionsBefore = await prisma.adminSession.count({ where: { adminId: B } });
+  await assert.rejects(createAdminSession(B), (e: unknown) => e instanceof AdminMfaRequiredError);
+  await assert.rejects(createAdminSession(B, { ip: "127.0.0.1" }, {}), AdminMfaRequiredError);
+  assert.equal(await prisma.adminSession.count({ where: { adminId: B } }), sessionsBefore, "no row was created by the refusals");
+
+  // ...and a leftover password-only session (made before the enrollment) is not verified; the gate says so.
+  const pwOnly = await resolveAdminSession((await passwordOnlySession(B)).token);
   assert.equal(pwOnly?.mfaVerified, false);
   assert.equal(mfaGateStatus(pwOnly!, {} as NodeJS.ProcessEnv), "verify");
+  assert.equal(canViewAdminList(pwOnly!, {} as NodeJS.ProcessEnv), false, "such a session cannot see the administrator list");
+  assert.equal(canViewAdminList(ctx!, {} as NodeJS.ProcessEnv), true);
 });
 
 test("disabling 2FA needs a fresh valid code and clears the secret, the recovery codes and the sessions' MFA mark", { skip }, async () => {
@@ -261,8 +285,14 @@ test("disabling 2FA needs a fresh valid code and clears the secret, the recovery
   assert.equal((await getMfaStatus(A)).enabled, true, "still on after the failed attempts");
 
   const sessionToken = await createAdminSession(A, {}, { mfaVerified: true });
-  assert.equal((await resolveAdminSession(sessionToken))?.mfaVerified, true);
-  assert.deepEqual(await disableTotp(A, at(secretA, STEP + 4), { now }), { ok: true });
+  const mine = (await resolveAdminSession(sessionToken))!;
+  assert.equal(mine.mfaVerified, true);
+  // Other sessions of the same admin (a second browser, a stolen cookie): all must be signed out by the disable.
+  const otherVerified = await createAdminSession(A, {}, { mfaVerified: true });
+  const otherPasswordOnly = await passwordOnlySession(A);
+  assert.deepEqual(await disableTotp(A, at(secretA, STEP + 4), { now, keepSessionId: mine.sessionId }), { ok: true });
+  assert.equal(await resolveAdminSession(otherVerified), null, "another verified session is signed out");
+  assert.equal(await resolveAdminSession(otherPasswordOnly.token), null, "a leftover password-only session is signed out");
 
   const row = await prisma.adminUser.findUniqueOrThrow({ where: { id: A } });
   assert.equal(row.totpSecretEnc, null);
@@ -280,6 +310,27 @@ test("disabling 2FA needs a fresh valid code and clears the secret, the recovery
   const again = await startTotpEnrollment(A);
   assert.notEqual(again.secret, secretA);
   assert.equal((await prisma.adminUser.findUniqueOrThrow({ where: { id: A } })).totpLastStep, null);
+});
+
+test("a login racing an enrollment never leaves a password-only session behind", { skip }, async () => {
+  const hash = await hashPassword(PASSWORD);
+  const created: string[] = [];
+  try {
+    for (let round = 0; round < 6; round++) {
+      const r = (await prisma.adminUser.create({ data: { email: `mfa-race-${run}-${round}@example.com`, name: "Race", passwordHash: hash } })).id;
+      created.push(r);
+      const s = (await startTotpEnrollment(r)).secret;
+      const now = Date.now();
+      // The login's session creation and the enrollment's commit start together. Either the enrollment wins (the
+      // session is refused) or the session wins (the enrollment then signs every other session out): never both.
+      const [login, enrol] = await Promise.allSettled([createAdminSession(r, { ip: "127.0.0.1" }), confirmTotpEnrollment(r, at(s, timeStepOf(now)), null, now)]);
+      assert.ok(enrol.status === "fulfilled" && enrol.value.ok, `round ${round}: the enrollment succeeds`);
+      assert.ok(login.status === "fulfilled" || login.reason instanceof AdminMfaRequiredError, `round ${round}: refused with AdminMfaRequiredError or created`);
+      assert.equal(await prisma.adminSession.count({ where: { adminId: r } }), 0, `round ${round}: no password-only session survives the enrollment`);
+    }
+  } finally {
+    await prisma.adminUser.deleteMany({ where: { id: { in: created } } });
+  }
 });
 
 test("the API gate: enrol-first, verify-first, and open", () => {

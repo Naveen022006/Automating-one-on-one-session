@@ -70,8 +70,9 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
   );
 }
 
-/** A "type a fresh code to confirm" form used by regenerate and disable. */
-function CodeConfirm({ label, help, cta, danger, busy, error, onSubmit }: { label: string; help: string; cta: string; danger?: boolean; busy: boolean; error?: string; onSubmit: (code: string) => void }) {
+/** A "type your password and a fresh code to confirm" form used by regenerate and disable. */
+function CodeConfirm({ label, help, cta, danger, busy, error, onSubmit }: { label: string; help: string; cta: string; danger?: boolean; busy: boolean; error?: string; onSubmit: (password: string, code: string) => void }) {
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   return (
     <form
@@ -79,10 +80,14 @@ function CodeConfirm({ label, help, cta, danger, busy, error, onSubmit }: { labe
       style={{ maxWidth: 420 }}
       onSubmit={(e: React.FormEvent) => {
         e.preventDefault();
-        onSubmit(code);
+        onSubmit(password, code);
         setCode("");
+        setPassword("");
       }}
     >
+      <Field id={`pw-${cta}`} label="Your password" help="Needed so nobody with only your open browser can change this.">
+        <Input id={`pw-${cta}`} type="password" autoComplete="current-password" required value={password} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)} />
+      </Field>
       <Field id={`code-${cta}`} label={label} help={help} error={error}>
         <Input id={`code-${cta}`} inputMode="numeric" autoComplete="one-time-code" spellCheck={false} required maxLength={20} value={code} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value)} />
       </Field>
@@ -100,14 +105,17 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
   const router = useRouter();
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null);
   const [code, setCode] = useState("");
+  // The password typed to start the setup is kept (in memory only) to confirm it again when the first code is entered.
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<"setup" | "enable" | "regenerate" | "disable" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [codes, setCodes] = useState<string[] | null>(null);
 
-  async function start() {
+  async function start(e: React.FormEvent) {
+    e.preventDefault();
     setBusy("setup");
     setError(null);
-    const r = await post({ action: "setup" });
+    const r = await post({ action: "setup", password });
     setBusy(null);
     if (!r.ok || !r.data.secret || !r.data.uri) return setError(r.data.error ?? "Could not start the setup.");
     setSetup({ secret: r.data.secret, uri: r.data.uri });
@@ -117,7 +125,7 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
     e.preventDefault();
     setBusy("enable");
     setError(null);
-    const r = await post({ action: "enable", code });
+    const r = await post({ action: "enable", password, code });
     setBusy(null);
     if (!r.ok || !r.data.recoveryCodes) {
       setCode("");
@@ -125,14 +133,15 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
     }
     setSetup(null);
     setCode("");
+    setPassword("");
     setCodes(r.data.recoveryCodes);
     toast("Two-factor authentication is on.");
   }
 
-  async function confirm(action: "regenerate" | "disable", typed: string) {
+  async function confirm(action: "regenerate" | "disable", typedPassword: string, typed: string) {
     setBusy(action);
     setError(null);
-    const r = await post({ action, code: typed });
+    const r = await post({ action, password: typedPassword, code: typed });
     setBusy(null);
     if (!r.ok) return setError(r.data.error ?? "Could not complete that.");
     if (action === "regenerate" && r.data.recoveryCodes) {
@@ -169,7 +178,7 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
         <div className="stack">
           <h3 className="card__title">New recovery codes</h3>
           <p className="muted">Replaces all your current recovery codes. Enter a fresh code from your authenticator app to confirm; a code can be used only once, so wait for the next one if you just signed in.</p>
-          <CodeConfirm label="Authentication code" help="6 digits from your authenticator app." cta="Generate new codes" busy={busy === "regenerate"} onSubmit={(c) => confirm("regenerate", c)} />
+          <CodeConfirm label="Authentication code" help="6 digits from your authenticator app." cta="Generate new codes" busy={busy === "regenerate"} onSubmit={(p, c) => confirm("regenerate", p, c)} />
         </div>
         <div className="stack">
           <h3 className="card__title">Turn off two-factor authentication</h3>
@@ -177,7 +186,7 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
             {required ? "Two-factor is required here, so you will have to set it up again before you can use the console." : "Anyone with your password could then sign in."} Enter a fresh code
             to confirm.
           </p>
-          <CodeConfirm label="Authentication code" help="6 digits from your authenticator app, or a recovery code." cta="Turn off" danger busy={busy === "disable"} onSubmit={(c) => confirm("disable", c)} />
+          <CodeConfirm label="Authentication code" help="6 digits from your authenticator app, or a recovery code." cta="Turn off" danger busy={busy === "disable"} onSubmit={(p, c) => confirm("disable", p, c)} />
         </div>
       </div>
     );
@@ -192,11 +201,16 @@ export function TwoFactorPanel({ enabled, recoveryCodesLeft, required }: { enabl
       {required && <Alert tone="warning">Two-factor authentication is required. Set it up to use the rest of the admin console.</Alert>}
       {error && <Alert tone="danger">{error}</Alert>}
       {!setup ? (
-        <div className="form-actions">
-          <Button variant="primary" onClick={start} loading={busy === "setup"}>
-            Set up two-factor authentication
-          </Button>
-        </div>
+        <form className="stack" onSubmit={start} style={{ maxWidth: 420 }}>
+          <Field id="setup-password" label="Your password" help="Confirm it is you before a new authenticator is added.">
+            <Input id="setup-password" type="password" autoComplete="current-password" required value={password} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)} />
+          </Field>
+          <div className="form-actions">
+            <Button type="submit" variant="primary" loading={busy === "setup"}>
+              Set up two-factor authentication
+            </Button>
+          </div>
+        </form>
       ) : (
         <form className="stack" onSubmit={enable} style={{ maxWidth: 560 }}>
           <ol className="stack" style={{ paddingLeft: 20, margin: 0 }}>
