@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { alertInfluencer } from "@/lib/alerts";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
-import { TEMPLATE_SPECS, templateKeyFromMetaName } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, templateKeyFromMetaName, templateState, type TemplateState } from "@/lib/message-templates";
 import {
   WhatsAppGraphError,
   ensureTemplates,
@@ -294,6 +294,11 @@ export function viewTemplates(raw: unknown): WhatsAppConnectionView["templates"]
   return Object.keys(TEMPLATE_SPECS).map((name) => ({ name, status: stored[name]?.status ?? "NOT_SUBMITTED", reason: stored[name]?.reason ?? null }));
 }
 
+/** Where a connection's stored templates stand (see templateState). */
+export function whatsappTemplateState(raw: unknown): TemplateState {
+  return templateState(viewTemplates(raw).map((t) => t.status));
+}
+
 export async function getConnectionView(influencerId: string): Promise<WhatsAppConnectionView | null> {
   const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId } });
   if (!row) return null;
@@ -330,15 +335,23 @@ export interface SendCredentials {
 }
 
 /**
- * Credentials to send an influencer's customer messages with. Their own connected number when it is healthy;
- * otherwise a WhatsAppNotConnectedError so the message falls back to SMS (never a surprise message from the
- * platform's number, unless WHATSAPP_PLATFORM_FALLBACK=true is set for testing). In MESSAGING_DRY_RUN nothing is
- * sent, so no connection is needed.
+ * Credentials to send an influencer's customer messages with. Their own connected number when it is healthy and, if
+ * a `template` is given, that template is approved on their account; otherwise a WhatsAppNotConnectedError saying why,
+ * so the message goes straight to SMS (never a surprise message from the platform's number, unless
+ * WHATSAPP_PLATFORM_FALLBACK=true is set for testing). In MESSAGING_DRY_RUN nothing is sent, so no connection is needed.
  */
-export async function resolveSendCredentials(influencerId: string, env = process.env): Promise<SendCredentials | undefined> {
+export async function resolveSendCredentials(influencerId: string, env = process.env, template?: string): Promise<SendCredentials | undefined> {
   if (env.MESSAGING_DRY_RUN === "true") return undefined;
   const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId } });
-  if (row && row.status === "ACTIVE") return { token: decryptSecret(row.tokenEnc, aad(influencerId)), phoneNumberId: row.phoneNumberId };
+  if (row && row.status === "ACTIVE") {
+    // Meta refuses a template message whose template is not approved, so do not try: it would only fail, and leave a
+    // failed WhatsApp row behind for every message.
+    if (template) {
+      const status = viewTemplates(row.templates).find((t) => t.name === template)?.status ?? "NOT_SUBMITTED";
+      if (!isApproved(status)) throw new WhatsAppNotConnectedError(`The "${template}" WhatsApp template is not approved yet (${status})`);
+    }
+    return { token: decryptSecret(row.tokenEnc, aad(influencerId)), phoneNumberId: row.phoneNumberId };
+  }
   if (env.WHATSAPP_PLATFORM_FALLBACK === "true" && env.WHATSAPP_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) return undefined;
   throw new WhatsAppNotConnectedError(row ? "The influencer's WhatsApp connection needs to be renewed" : "The influencer has not connected WhatsApp");
 }

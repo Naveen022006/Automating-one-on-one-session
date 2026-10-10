@@ -84,6 +84,23 @@ export function metaTemplateName(key: string): string {
   return DEFS[key]?.meta ?? key;
 }
 
+/** Meta statuses that mean "this template will not be sent unless someone acts", as opposed to waiting for a review. */
+const BLOCKED_STATUSES = new Set(["REJECTED", "PAUSED", "DISABLED", "DELETED"]);
+
+export type TemplateState = "ready" | "pending" | "rejected" | "not-submitted";
+
+/**
+ * Where a set of template statuses stands, worst first: `rejected` (Meta rejected, paused or disabled at least one: needs
+ * the influencer's attention), `not-submitted` (at least one never reached Meta: a sync would send it), `pending`
+ * (everything submitted, Meta is still reviewing), `ready` (all approved). `NOT_SUBMITTED` is our own marker for a
+ * template with no status stored. Pure, and shared with the settings card in the browser.
+ */
+export function templateState(statuses: string[]): TemplateState {
+  if (statuses.some((s) => BLOCKED_STATUSES.has(s))) return "rejected";
+  if (statuses.includes("NOT_SUBMITTED")) return "not-submitted";
+  return statuses.every((s) => s === "APPROVED") ? "ready" : "pending";
+}
+
 /** Back from Meta's name (as seen in the template list and status webhooks) to our key, or null if it is not one of ours. */
 export function templateKeyFromMetaName(name: string): string | null {
   return Object.keys(DEFS).find((key) => DEFS[key].meta === name) ?? null;

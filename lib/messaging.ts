@@ -11,7 +11,7 @@ import {
 } from "@/lib/message-templates";
 import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
-import { markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
+import { WhatsAppNotConnectedError, markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
 
 /** Template used for the booking confirmation message (must be approved in WhatsApp Business). */
@@ -65,7 +65,7 @@ const defaultDeps: MessagingDeps = {
   sendWhatsApp: async (input) => {
     // Each influencer messages from their own connected number. No healthy connection means this throws and the
     // caller falls back to SMS; a rejected token flags the connection so the influencer is told once.
-    const credentials = input.influencerId ? await resolveSendCredentials(input.influencerId) : undefined;
+    const credentials = input.influencerId ? await resolveSendCredentials(input.influencerId, process.env, input.template) : undefined;
     try {
       return await realSendWhatsApp({ ...(input as never as Parameters<typeof realSendWhatsApp>[0]), credentials });
     } catch (e) {
@@ -164,11 +164,17 @@ export async function sendMessageForBooking(
       components: whatsappComponents(template, context),
     });
   } catch (whatsappError) {
-    console.warn(
-      `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
-    );
-    // Record the WhatsApp failure on its own row so the dashboard shows the attempt, then try SMS.
-    await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
+    if (whatsappError instanceof WhatsAppNotConnectedError) {
+      // WhatsApp was not even tried (no healthy connection, or this template is not approved yet), so there is no
+      // failed attempt to record: go straight to SMS and say why in the log.
+      console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError)}); sending by SMS`);
+    } else {
+      console.warn(
+        `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
+      );
+      // Record the WhatsApp failure on its own row so the dashboard shows the attempt, then try SMS.
+      await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
+    }
     channel = "SMS";
     try {
       result = await deps.sendSMS({ to, body, template, variables: templateParams(template, context) });

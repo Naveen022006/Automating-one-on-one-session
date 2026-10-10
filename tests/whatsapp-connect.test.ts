@@ -548,7 +548,8 @@ test("template status webhooks update the matching account", { skip }, async () 
   assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "reschedule", language: "en", status: "APPROVED" }), false);
 });
 
-test("without a connection a booking message goes to SMS (default sender wiring, no network)", { skip }, async () => {
+/** Sends `template` for a fresh booking of influencer `b` through the real wiring (credentials from the database), SMS faked. */
+async function sendThroughDefaultWiring(template: string) {
   const prev = { dry: process.env.MESSAGING_DRY_RUN, fb: process.env.WHATSAPP_PLATFORM_FALLBACK };
   process.env.MESSAGING_DRY_RUN = "false";
   delete process.env.WHATSAPP_PLATFORM_FALLBACK;
@@ -560,19 +561,54 @@ test("without a connection a booking message goes to SMS (default sender wiring,
       data: { sessionId: session.id, status: "SCHEDULED", customerName: "C", customerEmail: `c-${run}@example.com`, whatsappE164: "+919876543210", whatsappOptIn: true, meetLink: "https://meet.google.com/abc-defg-hij" },
     });
     const sms: string[] = [];
-    const outcome = await sendMessageForBooking(booking.id, "booking-confirmation", {
+    const outcome = await sendMessageForBooking(booking.id, template, {
       sendSMS: async (i) => (sms.push(i.body), { providerMessageId: "sms-1" }),
       alert: async () => {},
     });
-    assert.equal(outcome, "sent");
-    assert.equal(sms.length, 1, "SMS carried the message");
-    const rows = await prisma.message.findMany({ where: { bookingId: booking.id } });
-    assert.equal(rows.find((r) => r.channel === "WHATSAPP")?.status, "PENDING", "the WhatsApp attempt is recorded");
-    assert.match(rows.find((r) => r.channel === "WHATSAPP")?.error ?? "", /not connected/i);
-    assert.equal(rows.find((r) => r.channel === "SMS")?.status, "SENT");
+    return { outcome, sms, rows: await prisma.message.findMany({ where: { bookingId: booking.id } }) };
   } finally {
     if (prev.dry === undefined) delete process.env.MESSAGING_DRY_RUN;
     else process.env.MESSAGING_DRY_RUN = prev.dry;
     if (prev.fb !== undefined) process.env.WHATSAPP_PLATFORM_FALLBACK = prev.fb;
   }
+}
+
+test("without a connection a booking message goes straight to SMS, with no failed WhatsApp row (default sender wiring, no network)", { skip }, async () => {
+  const { outcome, sms, rows } = await sendThroughDefaultWiring("booking-confirmation");
+  assert.equal(outcome, "sent");
+  assert.equal(sms.length, 1, "SMS carried the message");
+  assert.equal(rows.find((r) => r.channel === "WHATSAPP"), undefined, "WhatsApp was not tried, so there is no attempt to record");
+  assert.equal(rows.find((r) => r.channel === "SMS")?.status, "SENT");
+});
+
+test("a template that is not approved is not attempted over WhatsApp: straight to SMS, no failure row", { skip }, async () => {
+  const phone = String(Number(PHONE) + 10);
+  // booking-confirmation is in review, reschedule was rejected, the rest were approved, cancellation was never submitted.
+  const templates = {
+    "booking-confirmation": { status: "PENDING", language: "en" },
+    "reminder-24h": { status: "APPROVED", language: "en" },
+    "reminder-15m": { status: "APPROVED", language: "en" },
+    reschedule: { status: "REJECTED", language: "en" },
+  };
+  await connectManual(b, { wabaId: WABA, phoneNumberId: phone, accessToken: "EAAG-unapproved-token-for-tests-1234567890" }, fakeDeps({ ensureTemplates: async () => ({ templates, submitted: [], failed: [] }) }));
+  const env = {} as unknown as NodeJS.ProcessEnv;
+
+  // The credentials are handed out per template.
+  assert.ok((await resolveSendCredentials(b, env, "reminder-24h"))?.token, "an approved template can be sent");
+  assert.ok((await resolveSendCredentials(b, env))?.token, "without naming a template the connection alone decides");
+  for (const [template, status] of [["booking-confirmation", "PENDING"], ["reschedule", "REJECTED"], ["cancellation", "NOT_SUBMITTED"]] as const) {
+    await assert.rejects(
+      resolveSendCredentials(b, env, template),
+      (e: unknown) => e instanceof WhatsAppNotConnectedError && e.message.includes(`"${template}"`) && e.message.includes(status),
+      `${template} is ${status}`,
+    );
+  }
+
+  const { outcome, sms, rows } = await sendThroughDefaultWiring("booking-confirmation");
+  assert.equal(outcome, "sent");
+  assert.equal(sms.length, 1, "customers still get the message, by SMS");
+  assert.equal(rows.find((r) => r.channel === "WHATSAPP"), undefined, "no failed WhatsApp row for a message that was never attempted");
+  assert.equal(rows.find((r) => r.channel === "SMS")?.status, "SENT");
+  assert.equal(rows.find((r) => r.channel === "SMS")?.error, null);
+  await disconnect(b);
 });

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
+import { templateState } from "@/lib/message-templates";
 import { Alert, Badge, Button, Field, Input, describedBy } from "@/components/ui/primitives";
 import { useApi } from "./ApiProvider";
 
@@ -233,6 +234,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   }
 
   if (connection) {
+    const templatesState = templateState(connection.templates.map((t) => t.status));
     return (
       <div className="stack">
         <div className="row row--between">
@@ -248,7 +250,17 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
             </div>
           </div>
           <div className="row">
-            {connection.status === "ERROR" ? <Badge tone="danger">Reconnect needed</Badge> : connection.ready ? <Badge tone="success">Ready</Badge> : <Badge tone="warning">Waiting for template approval</Badge>}
+            {connection.status === "ERROR" ? (
+              <Badge tone="danger">Reconnect needed</Badge>
+            ) : connection.ready ? (
+              <Badge tone="success">Ready</Badge>
+            ) : templatesState === "rejected" ? (
+              <Badge tone="danger">Templates rejected</Badge>
+            ) : templatesState === "not-submitted" ? (
+              <Badge tone="warning">Templates not submitted</Badge>
+            ) : (
+              <Badge tone="warning">Waiting for template approval</Badge>
+            )}
             <Button size="sm" variant="danger" onClick={() => setConfirm(true)}>
               Disconnect
             </Button>
@@ -265,9 +277,20 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
             {n}
           </Alert>
         ))}
-        {!connection.ready && connection.status === "ACTIVE" && (
+        {connection.status === "ACTIVE" && templatesState === "rejected" && (
+          <Alert tone="warning" title="Meta rejected or paused some message templates">
+            Customers get those messages by SMS. The reason is shown next to each one below. Fix it in WhatsApp Manager, then press
+            Check template status.
+          </Alert>
+        )}
+        {connection.status === "ACTIVE" && templatesState === "not-submitted" && (
+          <Alert tone="warning" title="Some message templates were never sent to Meta">
+            Customers get those messages by SMS until they are approved. Press Check template status to send them for review.
+          </Alert>
+        )}
+        {connection.status === "ACTIVE" && templatesState === "pending" && (
           <Alert tone="info">
-            Meta reviews each message template, usually within minutes to a day. Until every one is approved, customers get their
+            Meta reviews each message template, usually within minutes to a day. Until every one is approved, customers get those
             messages by SMS instead.
           </Alert>
         )}
