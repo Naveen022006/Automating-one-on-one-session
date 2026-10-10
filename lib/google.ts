@@ -20,6 +20,11 @@ export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 export class GoogleReconnectError extends Error {}
 export class GoogleTransientError extends Error {}
 export class GoogleRequestError extends Error {}
+/**
+ * The Calendar event this call needed is gone: deleted (404/410) or left as a "cancelled" tombstone. Still a
+ * GoogleRequestError for callers that do not care, but lib/meeting.ts reacts to it by creating a replacement.
+ */
+export class GoogleEventGoneError extends GoogleRequestError {}
 
 export interface CalendarEvent {
   id: string;
@@ -66,8 +71,9 @@ export interface GoogleClient {
   /**
    * Removes a single attendee from a shared event (a group cancel). GETs the event, drops the matching email,
    * and PATCHes with sendUpdates=all so the removed attendee's invite is withdrawn. Returns the number of
-   * attendees still on the event, so the caller can delete it once the last one leaves. Idempotent: removing
-   * someone who is not on the event is a no-op.
+   * attendees still on the event. Informational only: Google's list can miss paying customers, so whether to delete
+   * the event is decided from the database (lib/manage.ts), not from this number. Idempotent: removing someone who
+   * is not on the event is a no-op. Both this and addAttendee write with If-Match and retry on a concurrent edit.
    */
   removeAttendee(accessToken: string, eventId: string, email: string): Promise<{ remaining: number }>;
   /**
@@ -158,6 +164,8 @@ function classifyCalendarError(status: number, reason: string, message: string):
 
 interface RawEvent {
   id?: string;
+  /** Changes with every edit of the event; sent back as If-Match so a concurrent edit makes our write fail (412). */
+  etag?: string;
   status?: string;
   hangoutLink?: string;
   attendees?: { email?: string; displayName?: string }[];
@@ -165,6 +173,14 @@ interface RawEvent {
     createRequest?: { status?: { statusCode?: string } };
     entryPoints?: { entryPointType?: string; uri?: string }[];
   };
+}
+
+/** How many times a read-modify-write of an event's attendee list is retried when another edit got in first (412). */
+const ATTENDEE_WRITE_ATTEMPTS = 4;
+
+/** `If-Match` for a write based on `raw`: only applies if the event is unchanged since it was read. No etag, no header. */
+function ifMatch(raw: RawEvent): Record<string, string> {
+  return raw.etag ? { "If-Match": raw.etag } : {};
 }
 
 function toCalendarEvent(raw: RawEvent): CalendarEvent {
@@ -256,40 +272,53 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
     async addAttendee(accessToken, eventId, attendee) {
       // GET the current event so we PATCH the full attendee list (a PATCH with only the newcomer would
-      // replace the list and drop everyone else).
-      const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (getRes.status === 404 || getRes.status === 410) {
-        // The shared event vanished (deleted off the calendar). Caller can recreate; this is request-specific.
-        throw new GoogleRequestError("The shared calendar event for this group session no longer exists");
+      // replace the list and drop everyone else). The write carries the etag we read (If-Match): with several
+      // attendees joining or leaving at once, a plain read-modify-write would silently drop one of the changes, so
+      // a concurrent edit answers 412 and we read again.
+      for (let attempt = 0; attempt < ATTENDEE_WRITE_ATTEMPTS; attempt++) {
+        const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (getRes.status === 404 || getRes.status === 410) {
+          // The shared event vanished (deleted off the calendar). Caller can recreate; this is request-specific.
+          throw new GoogleEventGoneError("The shared calendar event for this group session no longer exists");
+        }
+        if (!getRes.ok) {
+          const { reason, message } = await readError(getRes);
+          throw classifyCalendarError(getRes.status, reason, message);
+        }
+        const raw = (await getRes.json()) as RawEvent;
+        // A deleted event can still be readable as a "cancelled" tombstone; attendees patched onto it would get no invite.
+        if (raw.status === "cancelled") {
+          throw new GoogleEventGoneError("The shared calendar event for this group session was deleted");
+        }
+        const email = attendee.email.toLowerCase();
+        const existing = raw.attendees ?? [];
+        const already = existing.some((a) => (a.email ?? "").toLowerCase() === email);
+        if (already) {
+          // Idempotent: the attendee is on the event already (e.g. a retry). Just report the current state.
+          return toCalendarEvent(raw);
+        }
+        const attendees = [...existing, { email: attendee.email, displayName: attendee.displayName }];
+        const patchRes = await call(
+          `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
+          {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...ifMatch(raw) },
+            body: JSON.stringify({ attendees }),
+          },
+        );
+        if (patchRes.status === 412) continue; // the attendee list changed between our read and write: read it again
+        if (patchRes.status === 404 || patchRes.status === 410) {
+          throw new GoogleEventGoneError("The shared calendar event for this group session was deleted");
+        }
+        if (!patchRes.ok) {
+          const { reason, message } = await readError(patchRes);
+          throw classifyCalendarError(patchRes.status, reason, message);
+        }
+        return toCalendarEvent((await patchRes.json()) as RawEvent);
       }
-      if (!getRes.ok) {
-        const { reason, message } = await readError(getRes);
-        throw classifyCalendarError(getRes.status, reason, message);
-      }
-      const raw = (await getRes.json()) as RawEvent;
-      const email = attendee.email.toLowerCase();
-      const existing = raw.attendees ?? [];
-      const already = existing.some((a) => (a.email ?? "").toLowerCase() === email);
-      if (already) {
-        // Idempotent: the attendee is on the event already (e.g. a retry). Just report the current state.
-        return toCalendarEvent(raw);
-      }
-      const attendees = [...existing, { email: attendee.email, displayName: attendee.displayName }];
-      const patchRes = await call(
-        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
-        {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ attendees }),
-        },
-      );
-      if (!patchRes.ok) {
-        const { reason, message } = await readError(patchRes);
-        throw classifyCalendarError(patchRes.status, reason, message);
-      }
-      return toCalendarEvent((await patchRes.json()) as RawEvent);
+      throw new GoogleTransientError("The group session's calendar event kept changing while adding an attendee; try again");
     },
 
     async updateEvent(accessToken, eventId, times) {
@@ -305,7 +334,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
         },
       );
       if (res.status === 404 || res.status === 410) {
-        throw new GoogleRequestError("The calendar event for this booking no longer exists");
+        throw new GoogleEventGoneError("The calendar event for this booking no longer exists");
       }
       if (!res.ok) {
         const { reason, message } = await readError(res);
@@ -316,37 +345,43 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
     async removeAttendee(accessToken, eventId, email) {
       const target = email.toLowerCase();
-      const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (getRes.status === 404 || getRes.status === 410) {
-        // The event is already gone; nobody is left on it.
-        return { remaining: 0 };
+      // Read, drop the attendee, write back with If-Match; a concurrent edit answers 412 and we read again (see addAttendee).
+      for (let attempt = 0; attempt < ATTENDEE_WRITE_ATTEMPTS; attempt++) {
+        const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (getRes.status === 404 || getRes.status === 410) {
+          // The event is already gone; nobody is left on it.
+          return { remaining: 0 };
+        }
+        if (!getRes.ok) {
+          const { reason, message } = await readError(getRes);
+          throw classifyCalendarError(getRes.status, reason, message);
+        }
+        const raw = (await getRes.json()) as RawEvent;
+        const existing = raw.attendees ?? [];
+        const kept = existing.filter((a) => (a.email ?? "").toLowerCase() !== target);
+        if (kept.length === existing.length) {
+          // Not on the event (idempotent): report how many remain.
+          return { remaining: existing.length };
+        }
+        const patchRes = await call(
+          `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
+          {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...ifMatch(raw) },
+            body: JSON.stringify({ attendees: kept.map((a) => ({ email: a.email, displayName: a.displayName })) }),
+          },
+        );
+        if (patchRes.status === 412) continue;
+        if (patchRes.status === 404 || patchRes.status === 410) return { remaining: 0 };
+        if (!patchRes.ok) {
+          const { reason, message } = await readError(patchRes);
+          throw classifyCalendarError(patchRes.status, reason, message);
+        }
+        return { remaining: kept.length };
       }
-      if (!getRes.ok) {
-        const { reason, message } = await readError(getRes);
-        throw classifyCalendarError(getRes.status, reason, message);
-      }
-      const raw = (await getRes.json()) as RawEvent;
-      const existing = raw.attendees ?? [];
-      const kept = existing.filter((a) => (a.email ?? "").toLowerCase() !== target);
-      if (kept.length === existing.length) {
-        // Not on the event (idempotent): report how many remain so the caller can decide to delete.
-        return { remaining: existing.length };
-      }
-      const patchRes = await call(
-        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
-        {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ attendees: kept.map((a) => ({ email: a.email, displayName: a.displayName })) }),
-        },
-      );
-      if (!patchRes.ok) {
-        const { reason, message } = await readError(patchRes);
-        throw classifyCalendarError(patchRes.status, reason, message);
-      }
-      return { remaining: kept.length };
+      throw new GoogleTransientError("The group session's calendar event kept changing while removing an attendee; try again");
     },
 
     async deleteEvent(accessToken, eventId) {

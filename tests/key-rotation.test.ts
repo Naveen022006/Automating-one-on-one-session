@@ -390,7 +390,8 @@ test("integration: dry run counts our rows, changes nothing, and proves every AA
 
 test("integration: during a rolling deploy (current = new, previous = old) un-rotated rows are still readable", { skip }, async () => {
   await withKeys({ current: newKey, previous: realKey }, async () => {
-    assert.deepEqual(await getRefreshToken(a), { state: "ok", refreshToken: "google-refresh-A" });
+    const lookupA = await getRefreshToken(a);
+    assert.ok(lookupA.state === "ok" && lookupA.refreshToken === "google-refresh-A" && lookupA.connectedAt instanceof Date);
     assert.equal((await revealPayoutAccount(a))?.accountNumber, "123456789012");
     assert.equal((await revealPayoutAccount(b))?.upiId, "ravi@okhdfcbank");
     assert.equal((await resolveSendCredentials(a, NO_ENV))?.token, "wa-token-A");
@@ -430,7 +431,8 @@ test("integration: apply rotates our rows to the new key, keeps updated_at, and 
 
   // The app, running with the new key as current and the old as previous, reads everything.
   await withKeys({ current: newKey, previous: realKey }, async () => {
-    assert.deepEqual(await getRefreshToken(b), { state: "ok", refreshToken: "google-refresh-B" });
+    const lookupB = await getRefreshToken(b);
+    assert.ok(lookupB.state === "ok" && lookupB.refreshToken === "google-refresh-B" && lookupB.connectedAt instanceof Date);
     assert.equal((await revealPayoutAccount(a))?.accountNumber, "123456789012");
     assert.equal((await resolveSendCredentials(a, NO_ENV))?.token, "wa-token-A");
   });

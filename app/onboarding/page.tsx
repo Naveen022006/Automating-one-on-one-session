@@ -25,17 +25,17 @@ export default async function OnboardingPage({ searchParams }: { searchParams: P
     prisma.service.findMany({ where: { influencerId: auth.influencerId }, orderBy: { createdAt: "asc" } }),
     prisma.availabilityRule.findMany({ where: { influencerId: auth.influencerId }, orderBy: [{ weekday: "asc" }, { startTime: "asc" }] }),
     prisma.blockedDate.findMany({ where: { influencerId: auth.influencerId }, orderBy: { date: "asc" } }),
-    getGoogleStatus(auth.influencerId),
+    getGoogleStatus(auth.influencerId, { details: true }),
     getConnectionView(auth.influencerId),
     getPayoutAccountView(auth.influencerId),
     loadReadiness(auth.influencerId, auth.emailVerified),
   ]);
   const googleView: GoogleStatusView =
     google.state === "connected"
-      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend }
+      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend, liveEvents: google.liveEvents ?? 0, gmailFailing: google.gmailFailing ?? false }
       : google.state === "reconnect-needed"
-        ? { state: "reconnect-needed", email: google.email, reason: google.reason }
-        : { state: "not-connected" };
+        ? { state: "reconnect-needed", email: google.email, reason: google.reason, liveEvents: google.liveEvents ?? 0 }
+        : { state: "not-connected", requestsGmail: google.requestsGmail, liveEvents: google.liveEvents ?? 0, previousEmail: google.previousEmail ?? null };
 
   return (
     <OnboardingWizard

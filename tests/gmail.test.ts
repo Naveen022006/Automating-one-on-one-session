@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { sendCustomerEmail, type CustomerEmailDeps, type InfluencerMailContext } from "../lib/customer-email";
-import { buildAuthUrl, GMAIL_SEND_SCOPE, GoogleReconnectError, GoogleTransientError, requestGmailByDefault } from "../lib/google";
+import { mock, test } from "node:test";
+import { sendCustomerEmail, shouldLogGmailFallback, type CustomerEmailDeps, type InfluencerMailContext } from "../lib/customer-email";
+import { buildAuthUrl, GMAIL_SEND_SCOPE, GoogleReconnectError, GoogleRequestError, GoogleTransientError, requestGmailByDefault } from "../lib/google";
+import { gmailSendingFailing } from "../lib/google-tokens";
 import { buildMime, encodeHeader, hasGmailSendScope, sendGmail, type GmailMessage } from "../lib/gmail";
 import type { OutgoingEmail } from "../lib/email/providers";
 
@@ -143,4 +144,64 @@ test("if both Gmail and the platform fail the error reaches the caller", async (
     platformSend: async () => { throw new Error("provider down"); },
   });
   await assert.rejects(sendCustomerEmail("inf", email, d), /provider down/);
+});
+
+// ---- A6: a Gmail API that is not enabled must be visible ----
+
+test("a Gmail API that is not enabled is named as such instead of looking like a generic 403", async () => {
+  const body = { error: { code: 403, status: "PERMISSION_DENIED", message: "Gmail API has not been used in project 1 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=1 then retry.", errors: [{ reason: "accessNotConfigured" }] } };
+  const respond = (async () => new Response(JSON.stringify(body), { status: 403 })) as unknown as typeof fetch;
+  await assert.rejects(sendGmail("t", msg, respond), (e) => {
+    assert.ok(e instanceof GoogleRequestError);
+    assert.match((e as Error).message, /accessNotConfigured/);
+    assert.match((e as Error).message, /Gmail API is not enabled/);
+    return true;
+  });
+});
+
+test("the fallback is logged at most once an hour per influencer", () => {
+  const t0 = Date.UTC(2030, 0, 1);
+  assert.equal(shouldLogGmailFallback("fallback-a", t0), true);
+  assert.equal(shouldLogGmailFallback("fallback-a", t0 + 59 * 60_000), false, "same influencer within the hour");
+  assert.equal(shouldLogGmailFallback("fallback-b", t0 + 59 * 60_000), true, "another influencer is independent");
+  assert.equal(shouldLogGmailFallback("fallback-a", t0 + 61 * 60_000), true, "an hour later it is logged again");
+});
+
+test("a failing Gmail send warns once for many emails, and every email still goes out through the platform", async () => {
+  const warnings: string[] = [];
+  const spy = mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args.join(" ")));
+  try {
+    const { d, calls } = deps(withGmail, { sendGmail: async () => { throw new GoogleRequestError("Gmail 403 accessNotConfigured: the Gmail API is not enabled"); } });
+    for (let i = 0; i < 3; i++) assert.equal((await sendCustomerEmail("warn-once-inf", email, d)).via, "platform");
+    assert.equal(calls.platform.length, 3, "no customer email is lost");
+    const mine = warnings.filter((w) => w.includes("warn-once-inf"));
+    assert.equal(mine.length, 1, "one warning, not three");
+    assert.match(mine[0], /Gmail sending is not working/);
+    assert.match(mine[0], /accessNotConfigured/);
+  } finally {
+    spy.mock.restore();
+  }
+});
+
+test("the Google panel says Gmail is not working when the latest customer email went out through the platform", () => {
+  assert.equal(gmailSendingFailing(null), false, "no email sent yet: nothing to say");
+  assert.equal(gmailSendingFailing({ providerMessageId: "gmail:18c3" }), false);
+  assert.equal(gmailSendingFailing({ providerMessageId: "re_123abc" }), true, "sent by the platform provider = Gmail failed");
+  assert.equal(gmailSendingFailing({ providerMessageId: null }), true);
+});
+
+test("S3: a dead-grant verdict from a Gmail send carries the version of the grant that was used", async () => {
+  const connectedAt = new Date("2030-01-01T00:00:00Z");
+  const seen: (Date | undefined)[] = [];
+  const ctx: InfluencerMailContext = { ...withGmail, gmail: { ...withGmail.gmail!, connectedAt } };
+  const { d, calls } = deps(ctx, {
+    refreshAccessToken: async () => { throw new GoogleReconnectError("Refresh token rejected"); },
+    onReconnectNeeded: async (_id, _reason, at) => void seen.push(at),
+  });
+
+  const r = await sendCustomerEmail("inf", email, d);
+
+  assert.equal(r.via, "platform", "the email still goes out");
+  assert.deepEqual(seen, [connectedAt], "so a reconnect meanwhile is not marked dead by this stale error");
+  assert.equal(calls.platform.length, 1);
 });

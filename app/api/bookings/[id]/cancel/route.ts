@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import { BookingNotManageableError, ManageBlockedError, ManageRejectedError, autoRefundOnCancel, cancelBooking } from "@/lib/manage";
+import { BookingNotManageableError, autoRefundOnCancel, cancelBooking } from "@/lib/manage";
 
 // Phase 5 cancel endpoint, now authenticated (Phase 7): only the logged-in influencer who owns the booking may
 // call it (customers use their signed /manage link instead). Delegates to the same lib/manage.ts cancel the
@@ -33,11 +33,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   try {
     const result = await cancelBooking(id, { actor: "influencer", reason: parsed.data.reason });
-    return NextResponse.json({ status: "CANCELLED", outcome: "cancelled", refund: result.refund });
+    return NextResponse.json({
+      status: "CANCELLED",
+      outcome: "cancelled",
+      refund: result.refund,
+      ...(result.warning ? { warning: result.warning } : {}),
+    });
   } catch (e) {
     if (e instanceof BookingNotManageableError) return NextResponse.json({ error: e.message }, { status: 409 });
-    if (e instanceof ManageBlockedError) return NextResponse.json({ status: "CANCELLED", warning: e.message }, { status: 202 });
-    if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
     throw e;
   }
 }
