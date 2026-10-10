@@ -216,8 +216,11 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
   };
 }
 
-/** Captured (and refunded) payments in [from, to), as input for the pure earnings aggregation. */
-export async function earningsPayments(influencerId: string, from: Date | null, to: Date | null): Promise<EarningsPaymentInput[]> {
+/**
+ * Captured (and refunded) payments in [from, to), as input for the pure earnings aggregation. `take` reads only the oldest N
+ * (the earnings page uses it so a request for a huge range cannot load every payment); without it everything in the range is read.
+ */
+export async function earningsPayments(influencerId: string, from: Date | null, to: Date | null, opts: { take?: number } = {}): Promise<EarningsPaymentInput[]> {
   const payments = await prisma.payment.findMany({
     where: {
       status: { in: ["CAPTURED", "REFUNDED"] },
@@ -225,6 +228,7 @@ export async function earningsPayments(influencerId: string, from: Date | null, 
       ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}),
     },
     include: { booking: { select: { session: { select: { service: { select: { id: true, title: true } } } } } } },
+    ...(opts.take ? { orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }], take: opts.take } : {}),
   });
   return payments.map((p) => ({
     amountMinor: p.amountMinor,
