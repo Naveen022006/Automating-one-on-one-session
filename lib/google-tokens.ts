@@ -30,6 +30,8 @@ export async function saveGoogleToken(
       connectedAt: new Date(),
     },
   });
+  // The account of record is the connected one again (see deleteGoogleToken); nothing left to remember from a disconnect.
+  await prisma.influencer.updateMany({ where: { id: influencerId, disconnectedGoogleEmail: { not: null } }, data: { disconnectedGoogleEmail: null } });
 }
 
 export type TokenLookup =
@@ -45,12 +47,26 @@ export async function getRefreshToken(influencerId: string): Promise<TokenLookup
 }
 
 /**
+ * An ACTIVE grant together with the `connectedAt` it was read at, for a caller that checks the grant against Google and
+ * may then flag it dead: passing that value to markReconnectNeeded makes sure it is the SAME grant that gets flagged.
+ * Null when there is no grant or it is already flagged.
+ */
+export async function getActiveGrant(influencerId: string): Promise<{ refreshToken: string; connectedAt: Date } | null> {
+  const row = await prisma.googleToken.findUnique({ where: { influencerId } });
+  if (!row || row.status !== "ACTIVE") return null;
+  return { refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)), connectedAt: row.connectedAt };
+}
+
+/**
  * Flags the influencer as needing to reconnect. Returns true only for the call that flipped
  * ACTIVE -> RECONNECT_NEEDED, so the caller alerts once per revocation instead of once per failed job.
+ *
+ * `onlyIfConnectedAt`: flag only if the grant is still the one that was read at that time. A check that was in flight
+ * while the influencer reconnected would otherwise mark their brand new, working connection dead.
  */
-export async function markReconnectNeeded(influencerId: string, reason: string): Promise<boolean> {
+export async function markReconnectNeeded(influencerId: string, reason: string, onlyIfConnectedAt?: Date): Promise<boolean> {
   const { count } = await prisma.googleToken.updateMany({
-    where: { influencerId, status: "ACTIVE" },
+    where: { influencerId, status: "ACTIVE", ...(onlyIfConnectedAt ? { connectedAt: onlyIfConnectedAt } : {}) },
     data: { status: "RECONNECT_NEEDED", reconnectReason: reason.slice(0, 500), reconnectNeededAt: new Date() },
   });
   return count > 0;
@@ -58,8 +74,9 @@ export async function markReconnectNeeded(influencerId: string, reason: string):
 
 /**
  * Upcoming bookings whose Calendar event lives on the connected Google account (customers' invites included). Switching
- * or disconnecting the account strands them: later reschedules 404, cancels cannot remove the old invite and new group
- * attendees cannot be added. Group attendees count one each, because each booking carries the shared event id.
+ * or disconnecting the account strands them: later reschedules 404, cancels cannot remove the old invite, and a later
+ * booking of a group session starts a second Meet on the new calendar instead of joining the first. Group attendees
+ * count one each, because each booking carries the shared event id.
  */
 export async function countLiveCalendarEvents(influencerId: string): Promise<number> {
   return prisma.booking.count({
@@ -71,10 +88,17 @@ export async function countLiveCalendarEvents(influencerId: string): Promise<num
   });
 }
 
-/** The Google account the stored grant belongs to (whatever its status), or null if none or unknown. */
-export async function getConnectedGoogleEmail(influencerId: string): Promise<string | null> {
+/**
+ * The Google account the Calendar events are on: the stored grant's (whatever its status) or, after a disconnect, the
+ * one remembered then (influencers.disconnected_google_email). `connected` says whether a grant row exists; `email` is
+ * null when no account is on record or it is unknown. This is what an account switch is measured against, so
+ * disconnecting first does not make a different account look like a first connection.
+ */
+export async function getGoogleAccountOfRecord(influencerId: string): Promise<{ connected: boolean; email: string | null }> {
   const row = await prisma.googleToken.findUnique({ where: { influencerId }, select: { googleEmail: true } });
-  return row?.googleEmail ?? null;
+  if (row) return { connected: true, email: row.googleEmail };
+  const influencer = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { disconnectedGoogleEmail: true } });
+  return { connected: false, email: influencer?.disconnectedGoogleEmail ?? null };
 }
 
 /** Only customer emails sent in this long window say anything about whether Gmail sending works right now. */
@@ -105,7 +129,7 @@ async function lastCustomerEmailSince(influencerId: string, connectedAt: Date, n
 }
 
 export type GoogleConnectionStatus =
-  | { state: "not-connected"; requestsGmail: boolean }
+  | { state: "not-connected"; requestsGmail: boolean; liveEvents?: number; previousEmail?: string | null }
   | { state: "connected"; email: string | null; connectedAt: Date; gmailSend: boolean; liveEvents?: number; gmailFailing?: boolean }
   | { state: "reconnect-needed"; email: string | null; reason: string | null; since: Date | null; liveEvents?: number };
 
@@ -119,7 +143,13 @@ export async function getGoogleStatus(influencerId: string, opts: { details?: bo
     where: { influencerId },
     select: { status: true, googleEmail: true, connectedAt: true, reconnectReason: true, reconnectNeededAt: true, scope: true },
   });
-  if (!row) return { state: "not-connected", requestsGmail: requestGmailByDefault() };
+  if (!row) {
+    const requestsGmail = requestGmailByDefault();
+    if (!opts.details) return { state: "not-connected", requestsGmail };
+    // After a disconnect the old account's events are still on its calendar: say so, so reconnecting is a choice.
+    const { email } = await getGoogleAccountOfRecord(influencerId);
+    return { state: "not-connected", requestsGmail, liveEvents: await countLiveCalendarEvents(influencerId), previousEmail: email };
+  }
   const liveEvents = opts.details ? { liveEvents: await countLiveCalendarEvents(influencerId) } : {};
   if (row.status === "RECONNECT_NEEDED") {
     return { state: "reconnect-needed", email: row.googleEmail, reason: row.reconnectReason, since: row.reconnectNeededAt, ...liveEvents };
@@ -131,12 +161,17 @@ export async function getGoogleStatus(influencerId: string, opts: { details?: bo
 
 /**
  * Disconnects Google: deletes the stored grant and returns the decrypted refresh token (if readable) so the caller
- * can revoke it at Google. New paid bookings then wait as PAID until the influencer connects again.
+ * can revoke it at Google. New paid bookings then wait as PAID until the influencer connects again. The account the
+ * events are on is remembered (influencers.disconnected_google_email) so that connecting a DIFFERENT account later is
+ * still recognised as a switch; the next successful connect clears it (saveGoogleToken).
  */
 export async function deleteGoogleToken(influencerId: string): Promise<string | null> {
   const row = await prisma.googleToken.findUnique({ where: { influencerId } });
   if (!row) return null;
-  await prisma.googleToken.delete({ where: { influencerId } });
+  await prisma.$transaction(async (tx) => {
+    if (row.googleEmail) await tx.influencer.update({ where: { id: influencerId }, data: { disconnectedGoogleEmail: row.googleEmail } });
+    await tx.googleToken.delete({ where: { influencerId } });
+  });
   try {
     return decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId));
   } catch {

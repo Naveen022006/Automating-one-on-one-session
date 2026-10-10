@@ -29,7 +29,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend, liveEvents: google.liveEvents ?? 0, gmailFailing: google.gmailFailing ?? false }
       : google.state === "reconnect-needed"
         ? { state: "reconnect-needed", email: google.email, reason: google.reason, liveEvents: google.liveEvents ?? 0 }
-        : { state: "not-connected", requestsGmail: google.requestsGmail };
+        : { state: "not-connected", requestsGmail: google.requestsGmail, liveEvents: google.liveEvents ?? 0, previousEmail: google.previousEmail ?? null };
 
   return (
     <div className="stack stack--lg">

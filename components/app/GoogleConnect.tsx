@@ -8,7 +8,7 @@ import { Alert, Badge, Button } from "@/components/ui/primitives";
 import { useApi } from "./ApiProvider";
 
 export type GoogleStatusView =
-  | { state: "not-connected"; requestsGmail?: boolean }
+  | { state: "not-connected"; requestsGmail?: boolean; liveEvents?: number; previousEmail?: string | null }
   | { state: "connected"; email: string | null; connectedAt: string; gmailSend: boolean; liveEvents?: number; gmailFailing?: boolean }
   | { state: "reconnect-needed"; email: string | null; reason: string | null; liveEvents?: number };
 
@@ -47,19 +47,20 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
   const [busy, setBusy] = useState(false);
   const href = `/api/google/connect?returnTo=${encodeURIComponent(returnTo)}`;
   const banner = outcome ? OUTCOME[outcome] : null;
-  const email = status.state === "not-connected" ? null : status.email;
-  const liveEvents = status.state === "not-connected" ? 0 : (status.liveEvents ?? 0);
+  // The account the calendar events are on: the connected one, or after a disconnect the one remembered then.
+  const email = status.state === "not-connected" ? (status.previousEmail ?? null) : status.email;
+  const liveEvents = status.liveEvents ?? 0;
 
   // "Switch account" replaces the connection. With upcoming bookings it asks first, and the server refuses a switch
   // without ?confirm=1 anyway (app/api/google/connect), so this dialog is the explanation, not the safeguard.
-  const switchAccount =
+  const switchAccount = (label: string) =>
     liveEvents > 0 ? (
       <Button size="sm" onClick={() => setDialog("switch")}>
-        Switch account
+        {label}
       </Button>
     ) : (
       <a className="btn btn--sm" href={`${href}&switch=1`}>
-        Switch account
+        {label}
       </a>
     );
 
@@ -97,7 +98,7 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
             </div>
           </div>
           <div className="row">
-            {switchAccount}
+            {switchAccount("Switch account")}
             <Button size="sm" variant="danger" onClick={() => setDialog("disconnect")}>
               Disconnect
             </Button>
@@ -112,7 +113,7 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
               <a className="btn btn--primary btn--sm" href={href}>
                 Reconnect
               </a>
-              {switchAccount}
+              {switchAccount("Switch account")}
             </div>
           }
         >
@@ -134,11 +135,20 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
                   ? "We only ask for permission to create and update Calendar events."
                   : "We ask for permission to create and update Calendar events, and to send your customers’ booking emails from your Gmail. You can untick the email permission on Google’s screen."}
               </p>
+              {liveEvents > 0 && email && (
+                <p className="subtle" style={{ marginTop: 4 }}>
+                  Your {liveEvents} upcoming booking{liveEvents === 1 ? "" : "s"} {liveEvents === 1 ? "has its" : "have their"} calendar event on {email}. Connect that
+                  account again to keep them working, or use a different one.
+                </p>
+              )}
             </div>
           </div>
-          <a className="btn btn--primary" href={href}>
-            Connect Google Calendar
-          </a>
+          <div className="row">
+            {liveEvents > 0 && email && switchAccount("Use a different account")}
+            <a className="btn btn--primary" href={href}>
+              Connect Google Calendar
+            </a>
+          </div>
         </div>
       )}
       <ConfirmDialog
@@ -146,9 +156,9 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
         onClose={() => setDialog(null)}
         danger
         title="Switch Google account?"
-        description={`${strandedNote(liveEvents, email)} Keep this account until those sessions are over, or switch anyway.`}
+        description={`${strandedNote(liveEvents, email)} People already booked into group sessions are not moved to the new calendar: they keep the old Meet link, and a later booking of the same session starts a different Meet on the new calendar. Wait until those sessions are over, or switch anyway.`}
         confirmLabel="Switch anyway"
-        cancelLabel="Keep this account"
+        cancelLabel={status.state === "not-connected" ? "Cancel" : "Keep this account"}
         onConfirm={() => {
           window.location.href = `${href}&switch=1&confirm=1`;
         }}
@@ -163,10 +173,15 @@ export function GoogleConnect({ status, returnTo, outcome }: { status: GoogleSta
         confirmLabel="Disconnect"
         onConfirm={async () => {
           setBusy(true);
-          const r = await api("/api/dashboard/google", { method: "DELETE" });
+          // The server wants the confirmation whenever upcoming bookings have events; the dialog above is what warned them.
+          const r = await api("/api/dashboard/google", { method: "DELETE", body: liveEvents > 0 ? { confirm: true } : undefined });
           setBusy(false);
           setDialog(null);
-          if (!r.ok) return toast(r.data.error ?? "Could not disconnect.", "error");
+          if (!r.ok) {
+            toast(r.data.error ?? "Could not disconnect.", "error");
+            if (r.status === 409) router.refresh(); // bookings came in since this page loaded: show the warning with the new count
+            return;
+          }
           toast("Google Calendar disconnected.");
           router.refresh();
         }}

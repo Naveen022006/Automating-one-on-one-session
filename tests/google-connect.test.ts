@@ -46,6 +46,8 @@ test("a switch needs confirmation only when upcoming bookings have events and it
 
 const tokens = {
   liveEvents: 0,
+  /** Whether a grant row exists, and the Google account on record (the grant's, or the one remembered at disconnect). */
+  connected: true,
   connectedEmail: "old@gmail.com" as string | null,
   saved: [] as { influencerId: string; email: string | null; scope: string }[],
   counted: 0,
@@ -59,7 +61,7 @@ async function loadRoute(which: "connect" | "callback") {
       NONCE_COOKIE: "g_oauth_nonce",
       OAUTH_STATE_PURPOSE: "google-oauth-state",
       countLiveCalendarEvents: async () => (tokens.counted++, tokens.liveEvents),
-      getConnectedGoogleEmail: async () => tokens.connectedEmail,
+      getGoogleAccountOfRecord: async () => ({ connected: tokens.connected, email: tokens.connectedEmail }),
       saveGoogleToken: async (influencerId: string, _rt: string, scope: string, email: string | null) => void tokens.saved.push({ influencerId, email, scope }),
     },
   });
@@ -68,7 +70,7 @@ async function loadRoute(which: "connect" | "callback") {
 }
 
 function reset(over: Partial<typeof tokens> = {}) {
-  Object.assign(tokens, { liveEvents: 0, connectedEmail: "old@gmail.com", saved: [], counted: 0 }, over);
+  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", saved: [], counted: 0 }, over);
   auth = { influencerId: "inf1", email: "login@example.com" };
 }
 
@@ -201,12 +203,110 @@ async function runCallback(google: { email: string; scope: string }, opts: { c?:
   }
 }
 
-test("callback: Calendar permission unticked -> the token Google already issued is revoked and nothing is saved", async () => {
-  reset();
-  const r = await runCallback({ email: "old@gmail.com", scope: `openid email ${GMAIL}` });
+test("callback: Calendar unticked on a first connection or another account -> the token Google issued is revoked, nothing saved", async () => {
+  reset({ connected: false, connectedEmail: null });
+  const first = await runCallback({ email: "new@gmail.com", scope: `openid email ${GMAIL}` });
+  assert.equal(first.outcome, "missing-permission");
+  assert.deepEqual(first.revoked, ["rt-new"]);
+
+  reset({ connected: true, connectedEmail: "old@gmail.com" });
+  const other = await runCallback({ email: "other@gmail.com", scope: `openid email ${GMAIL}` });
+  assert.equal(other.outcome, "missing-permission");
+  assert.deepEqual(other.revoked, ["rt-new"], "a different account's grant cannot hurt the connection that works");
+  assert.deepEqual(tokens.saved, []);
+});
+
+test("callback: Calendar unticked on the account that is already connected -> NOT revoked (Google would end the working connection too)", async () => {
+  reset({ connected: true, connectedEmail: "old@gmail.com" });
+  const r = await runCallback({ email: "OLD@gmail.com", scope: `openid email ${GMAIL}` });
   assert.equal(r.outcome, "missing-permission");
+  assert.deepEqual(r.revoked, []);
+  assert.deepEqual(tokens.saved, []);
+
+  // A connection whose account is unknown is treated the same way: better a stray grant than killing a working one.
+  reset({ connected: true, connectedEmail: null });
+  assert.deepEqual((await runCallback({ email: "any@gmail.com", scope: `openid email ${GMAIL}` })).revoked, []);
+});
+
+test("callback: after a disconnect, a different account is still a switch (the account is remembered) and is refused unconfirmed", async () => {
+  reset({ connected: false, connectedEmail: "old@gmail.com", liveEvents: 3 }); // no grant row, but the old account is remembered
+  const r = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR}` });
+  assert.equal(r.outcome, "switch-unconfirmed");
   assert.deepEqual(r.revoked, ["rt-new"]);
   assert.deepEqual(tokens.saved, []);
+});
+
+test("callback: after a disconnect, the same account reconnects, and a confirmed switch to another account goes through", async () => {
+  reset({ connected: false, connectedEmail: "old@gmail.com", liveEvents: 3 });
+  assert.equal((await runCallback({ email: "old@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` })).outcome, "connected");
+  reset({ connected: false, connectedEmail: "old@gmail.com", liveEvents: 3 });
+  const switched = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
+  assert.equal(switched.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
+});
+
+// ---- disconnect (DELETE /api/dashboard/google) ----
+
+async function loadDisconnect() {
+  const calls = { deleted: 0 };
+  mock.module("@/lib/auth/session", {
+    namedExports: { requireApiAuth: async () => ({ influencerId: "inf1" }), requireRecentAuth: async () => ({ influencerId: "inf1" }) },
+  });
+  mock.module("@/lib/google-tokens", {
+    namedExports: {
+      countLiveCalendarEvents: async () => tokens.liveEvents,
+      deleteGoogleToken: async () => (calls.deleted++, "rt-old"),
+      getGoogleStatus: async () => ({ state: "not-connected", requestsGmail: true }),
+    },
+  });
+  const route = await import(`../app/api/dashboard/google/route.ts?disconnect=${Math.random()}`);
+  return { DELETE: route.DELETE as (req: Request) => Promise<Response>, calls };
+}
+
+const deleteReq = (body?: unknown) =>
+  new Request("http://localhost:3000/api/dashboard/google", {
+    method: "DELETE",
+    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+
+test("disconnect: refused without confirmation while upcoming bookings have events (the server asks, not just the dialog)", async () => {
+  reset({ liveEvents: 2 });
+  const fake = fakeGoogle({ email: "x", scope: "" });
+  try {
+    const { DELETE, calls } = await loadDisconnect();
+
+    for (const body of [undefined, {}, { confirm: false }, { confirm: "true" }]) {
+      const res = await DELETE(deleteReq(body));
+      assert.equal(res.status, 409);
+      const json = (await res.json()) as { needsConfirmation: boolean; liveEvents: number; error: string };
+      assert.equal(json.needsConfirmation, true);
+      assert.equal(json.liveEvents, 2);
+      assert.match(json.error, /2 upcoming bookings/);
+    }
+    assert.equal(calls.deleted, 0, "nothing was disconnected");
+    assert.deepEqual(fake.revoked, []);
+  } finally {
+    fake.restore();
+    mock.reset();
+  }
+});
+
+test("disconnect: confirmed, or with nothing at stake, disconnects and revokes the grant", async () => {
+  reset({ liveEvents: 2 });
+  const fake = fakeGoogle({ email: "x", scope: "" });
+  try {
+    const { DELETE, calls } = await loadDisconnect();
+    assert.equal((await DELETE(deleteReq({ confirm: true }))).status, 200);
+    assert.equal(calls.deleted, 1);
+    assert.deepEqual(fake.revoked, ["rt-old"]);
+
+    tokens.liveEvents = 0;
+    assert.equal((await DELETE(deleteReq())).status, 200);
+    assert.equal(calls.deleted, 2);
+  } finally {
+    fake.restore();
+    mock.reset();
+  }
 });
 
 test("callback: a different Google account that was not chosen with Switch account is refused when events would be stranded", async () => {

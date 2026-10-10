@@ -30,8 +30,10 @@ export function isAccountSwitch(current: string | null | undefined, next: string
 
 /**
  * Switching accounts replaces the connection, but Calendar events that already exist (and customers' invites for them)
- * stay on the old account: later reschedules 404, cancels leave the old invite behind and new group attendees cannot be
- * added. So a switch with such bookings needs the influencer's explicit confirmation, which the server checks itself.
+ * stay on the old account: later reschedules 404, cancels leave the old invite behind, and a later booking of a group
+ * session cannot join the first one's event, so it starts a second Meet on the new calendar. So a switch (or a
+ * disconnect, which strands the same events) with such bookings needs the influencer's explicit confirmation, which the
+ * server checks itself.
  */
 export function switchNeedsConfirmation(opts: { liveEvents: number; confirmed: boolean }): boolean {
   return opts.liveEvents > 0 && !opts.confirmed;

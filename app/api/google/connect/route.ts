@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { buildAuthUrl, requestGmailByDefault } from "@/lib/google";
 import { outcomeTarget, switchNeedsConfirmation, type GoogleOutcome } from "@/lib/google-connect";
-import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, countLiveCalendarEvents, getConnectedGoogleEmail } from "@/lib/google-tokens";
+import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, countLiveCalendarEvents, getGoogleAccountOfRecord } from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
 import { randomNonce, signToken } from "@/lib/signing";
 
@@ -49,7 +49,7 @@ export async function GET(req: NextRequest) {
 
   // Reconnecting or adding the Gmail permission should stay on the account the calendar events are on, so hint that
   // one (the login email is only a guess); a deliberate switch gets Google's account chooser.
-  const hint = switching ? undefined : ((await getConnectedGoogleEmail(auth.influencerId)) ?? auth.email);
+  const hint = switching ? undefined : ((await getGoogleAccountOfRecord(auth.influencerId)).email ?? auth.email);
   let authUrl: string;
   try {
     authUrl = buildAuthUrl(state, hint, { gmail });
