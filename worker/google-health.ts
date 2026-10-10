@@ -1,7 +1,7 @@
 import { alertInfluencer } from "../lib/alerts";
 import { prisma } from "../lib/db";
 import { GoogleReconnectError, google } from "../lib/google";
-import { getRefreshToken, markReconnectNeeded } from "../lib/google-tokens";
+import { getActiveGrant, markReconnectNeeded } from "../lib/google-tokens";
 import { reportError, reportNotice } from "../lib/observability";
 
 /**
@@ -11,7 +11,8 @@ import { reportError, reportNotice } from "../lib/observability";
  *
  * Each ACTIVE token is exchanged for an access token (the cheapest call that proves the grant is alive). Only Google
  * answering invalid_grant (GoogleReconnectError) marks a connection RECONNECT_NEEDED, with the same helper and alert
- * lib/meeting.ts uses, so the page goes offline and the influencer is told once. Anything else (network down, Google 5xx,
+ * lib/meeting.ts uses, so the page goes offline and the influencer is told once. The flag only lands if the grant is still
+ * the one that was read (an influencer who reconnected while Google was being asked keeps the new connection). Anything else (network down, Google 5xx,
  * a wrong client secret of ours, an unreadable stored token) is "unknown": logged, never held against the influencer.
  */
 
@@ -28,13 +29,25 @@ export function verdictForRefreshError(e: unknown): RefreshVerdict {
   return e instanceof GoogleReconnectError ? "dead" : "unknown";
 }
 
+/** The grant being checked and the version of it that was read (its `connectedAt`, which changes when it is renewed). */
+export interface Grant {
+  refreshToken: string;
+  connectedAt: Date;
+}
+
 export interface GoogleHealthDeps {
   /** Influencers whose connection is currently ACTIVE. */
   listActive(): Promise<string[]>;
-  /** Resolves when Google accepts the stored refresh token, throws what the Google client throws otherwise. */
-  refresh(influencerId: string): Promise<void>;
-  /** Flags the connection for reconnect. True only for the call that flipped ACTIVE -> RECONNECT_NEEDED (dedupes the alert). */
-  markDead(influencerId: string, reason: string): Promise<boolean>;
+  /** The grant to check, or null when it is gone or already flagged since the list was read. */
+  load(influencerId: string): Promise<Grant | null>;
+  /** Resolves when Google accepts the refresh token, throws what the Google client throws otherwise. */
+  refresh(refreshToken: string): Promise<void>;
+  /**
+   * Flags the connection for reconnect, but only if it is still the grant that was checked (`connectedAt` unchanged): an
+   * influencer who reconnected while Google was being asked keeps their new connection. True only for the call that
+   * flipped ACTIVE -> RECONNECT_NEEDED (dedupes the alert).
+   */
+  markDead(influencerId: string, reason: string, connectedAt: Date): Promise<boolean>;
   alert(influencerId: string, reason: string): Promise<void>;
   concurrency?: number;
 }
@@ -42,6 +55,8 @@ export interface GoogleHealthDeps {
 export interface GoogleHealthSummary {
   checked: number;
   ok: number;
+  /** Connections that were gone or already flagged by the time they were looked at. */
+  skipped: number;
   dead: number;
   unknown: number;
   alerted: number;
@@ -52,7 +67,7 @@ export interface GoogleHealthSummary {
 /** One pass over every ACTIVE connection with bounded concurrency. Exported for tests and for a manual one-off run. */
 export async function checkGoogleConnections(deps: GoogleHealthDeps): Promise<GoogleHealthSummary> {
   const ids = await deps.listActive();
-  const summary: GoogleHealthSummary = { checked: ids.length, ok: 0, dead: 0, unknown: 0, alerted: 0, lastError: null };
+  const summary: GoogleHealthSummary = { checked: ids.length, ok: 0, skipped: 0, dead: 0, unknown: 0, alerted: 0, lastError: null };
   const unknown = (e: unknown) => {
     summary.unknown++;
     summary.lastError ??= e instanceof Error ? e.message : String(e);
@@ -62,8 +77,19 @@ export async function checkGoogleConnections(deps: GoogleHealthDeps): Promise<Go
   const lane = async () => {
     for (let i = next++; i < ids.length; i = next++) {
       const id = ids[i];
+      let grant: Grant | null;
       try {
-        await deps.refresh(id);
+        grant = await deps.load(id);
+      } catch (e) {
+        unknown(e); // e.g. the stored token cannot be decrypted: ours to fix, not the influencer's
+        continue;
+      }
+      if (!grant) {
+        summary.skipped++;
+        continue;
+      }
+      try {
+        await deps.refresh(grant.refreshToken);
         summary.ok++;
       } catch (e) {
         if (verdictForRefreshError(e) === "unknown") {
@@ -72,7 +98,7 @@ export async function checkGoogleConnections(deps: GoogleHealthDeps): Promise<Go
         }
         const reason = e instanceof Error ? e.message : String(e);
         try {
-          const flipped = await deps.markDead(id, reason);
+          const flipped = await deps.markDead(id, reason, grant.connectedAt);
           summary.dead++;
           if (flipped) {
             await deps.alert(id, reason);
@@ -94,10 +120,9 @@ const defaultDeps: GoogleHealthDeps = {
     const rows = await prisma.googleToken.findMany({ where: { status: "ACTIVE" }, select: { influencerId: true }, orderBy: { updatedAt: "asc" } });
     return rows.map((r) => r.influencerId);
   },
-  refresh: async (influencerId) => {
-    const token = await getRefreshToken(influencerId);
-    if (token.state !== "ok") return; // flagged or disconnected since the list was read: nothing to check
-    await google.refreshAccessToken(token.refreshToken);
+  load: getActiveGrant,
+  refresh: async (refreshToken) => {
+    await google.refreshAccessToken(refreshToken);
   },
   markDead: markReconnectNeeded,
   alert: (influencerId, reason) =>

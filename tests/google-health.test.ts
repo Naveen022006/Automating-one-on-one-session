@@ -25,15 +25,33 @@ test("only Google saying the grant is gone kills a connection; every other failu
   assert.equal(verdictForRefreshError(undefined), "unknown");
 });
 
-function fakeDeps(outcomes: Record<string, unknown>, over: Partial<GoogleHealthDeps> = {}) {
-  const log = { marked: [] as { id: string; reason: string }[], alerts: [] as { id: string; reason: string }[], refreshed: [] as string[] };
+/** What the fake world does for each influencer: Google accepts ("ok"), answers with an error, the grant is gone, or cannot be read. */
+type Outcome = "ok" | "gone" | { unreadable: Error } | Error;
+
+const connectedAt = (id: string) => new Date(Date.UTC(2030, 0, 1, 0, 0, id.length));
+
+function fakeDeps(outcomes: Record<string, Outcome>, over: Partial<GoogleHealthDeps> = {}) {
+  const log = {
+    marked: [] as { id: string; reason: string; connectedAt: Date }[],
+    alerts: [] as { id: string; reason: string }[],
+    refreshed: [] as string[],
+  };
+  const byToken = new Map(Object.keys(outcomes).map((id) => [`token-${id}`, id]));
   const deps: GoogleHealthDeps = {
     listActive: async () => Object.keys(outcomes),
-    refresh: async (id) => {
-      log.refreshed.push(id);
-      if (outcomes[id] !== "ok") throw outcomes[id];
+    load: async (id) => {
+      const o = outcomes[id];
+      if (o === "gone") return null;
+      if (typeof o === "object" && "unreadable" in o) throw o.unreadable;
+      return { refreshToken: `token-${id}`, connectedAt: connectedAt(id) };
     },
-    markDead: async (id, reason) => (log.marked.push({ id, reason }), true),
+    refresh: async (token) => {
+      const id = byToken.get(token)!;
+      log.refreshed.push(id);
+      const o = outcomes[id];
+      if (o !== "ok") throw o;
+    },
+    markDead: async (id, reason, at) => (log.marked.push({ id, reason, connectedAt: at }), true),
     alert: async (id, reason) => void log.alerts.push({ id, reason }),
     ...over,
   };
@@ -45,17 +63,36 @@ test("a revoked grant is flagged and alerted once; transient failures and unread
     alive: "ok",
     revoked: new GoogleReconnectError("Refresh token rejected: Token has been expired or revoked."),
     offline: new GoogleTransientError("Google request failed: fetch failed"),
-    unreadable: new Error("Unsupported state or unable to authenticate data"),
+    unreadable: { unreadable: new Error("Unsupported state or unable to authenticate data") },
     rejectedByUs: new GoogleTransientError("Token refresh failed (401 invalid_client): Unauthorized"),
+    vanished: "gone",
   });
 
   const s = await checkGoogleConnections(deps);
 
-  assert.deepEqual(s, { checked: 5, ok: 1, dead: 1, unknown: 3, alerted: 1, lastError: s.lastError });
+  assert.deepEqual(s, { checked: 6, ok: 1, skipped: 1, dead: 1, unknown: 3, alerted: 1, lastError: s.lastError });
   assert.deepEqual(log.marked.map((m) => m.id), ["revoked"], "never marks a connection dead on a transient error");
   assert.match(log.marked[0].reason, /expired or revoked/);
   assert.deepEqual(log.alerts.map((a) => a.id), ["revoked"]);
   assert.ok(s.lastError, "the first unknown failure is kept for the log");
+});
+
+test("the verdict is tied to the grant version that was read before asking Google", async () => {
+  const { deps, log } = fakeDeps({ revoked: new GoogleReconnectError("invalid_grant") });
+
+  await checkGoogleConnections(deps);
+
+  assert.deepEqual(log.marked.map((m) => m.connectedAt), [connectedAt("revoked")], "markDead receives the connectedAt that load returned");
+});
+
+test("a verdict for a grant that was renewed meanwhile flips nothing and sends no alert", async () => {
+  // markDead is the conditional update: false because the stored connectedAt moved on (the influencer reconnected).
+  const { deps, log } = fakeDeps({ revoked: new GoogleReconnectError("invalid_grant") }, { markDead: async () => false });
+
+  const s = await checkGoogleConnections(deps);
+
+  assert.equal(s.alerted, 0);
+  assert.deepEqual(log.alerts, []);
 });
 
 test("no second alert when the connection was already flagged (markDead says it did not flip anything)", async () => {
@@ -94,11 +131,11 @@ test("refreshes run with bounded concurrency and every connection is checked exa
   let inFlight = 0;
   let peak = 0;
   const seen: string[] = [];
-  const { deps } = fakeDeps(Object.fromEntries(ids.map((id) => [id, "ok"])), {
-    refresh: async (id) => {
+  const { deps } = fakeDeps(Object.fromEntries(ids.map((id) => [id, "ok" as const])), {
+    refresh: async (token) => {
       inFlight++;
       peak = Math.max(peak, inFlight);
-      seen.push(id);
+      seen.push(token.replace("token-", ""));
       await new Promise((r) => setTimeout(r, 5));
       inFlight--;
     },
@@ -115,7 +152,7 @@ test("refreshes run with bounded concurrency and every connection is checked exa
 test("nothing to check is a clean no-op", async () => {
   const { deps, log } = fakeDeps({});
   const s = await checkGoogleConnections(deps);
-  assert.deepEqual(s, { checked: 0, ok: 0, dead: 0, unknown: 0, alerted: 0, lastError: null });
+  assert.deepEqual(s, { checked: 0, ok: 0, skipped: 0, dead: 0, unknown: 0, alerted: 0, lastError: null });
   assert.deepEqual(log.refreshed, []);
 });
 
