@@ -10,12 +10,12 @@
  * is a blank page under the strict CSP). It also checks the security headers, the immutable asset caching, the internal
  * shell route, the two session endpoints, the CSRF Origin check, and that no body leaks a stack trace or a connection string.
  *
- *   --no-db  the server has no database (the docker CI job): profile routes may answer 503 and the profile API is skipped
+ *   --no-db    the server has no database (the docker CI job): profile routes may answer 503 and the profile API is skipped
+ *   --old      the server runs with SPA_GROUPS empty: checks that the OLD Next pages are served (no shell) and that the same
+ *              guards, headers and endpoints behave as before
  *   --verbose  print a line for every passing check too (by default only failures, skips and the summary)
- *   --old    the server runs with SPA_GROUPS empty: checks that the OLD Next pages are served (no shell) and that the same
- *            guards, headers and endpoints behave as before
  *
- * Exit code 1 if any check fails. Output: one PASS/FAIL line per check.
+ * Exit code 1 if any check fails.
  */
 
 const args = process.argv.slice(2);

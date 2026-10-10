@@ -171,7 +171,8 @@ test("slugs the SPA answers for itself are reserved, so no profile can shadow th
   assert.ok(RESERVED_SLUGS.has("spa-shell"));
   assert.match(slugProblem("assets") ?? "", /reserved/);
   assert.match(slugProblem("spa-shell") ?? "", /reserved/);
-  // Every static page's first segment is a reserved slug, except the two token prefixes (documented gap: "pay").
+  // Every static page's first segment is a reserved slug. (The token prefixes /pay and /manage are dynamic routes and not covered
+  // here: `manage` is reserved, `pay` is not; see doc/10-react-migration-deviations.md.)
   const missing = SPA_ROUTES.filter((r) => !r.path.includes(":")).map((r) => r.path.split("/")[1]).filter((s) => s && !RESERVED_SLUGS.has(s));
   assert.deepEqual(missing, [], "a static SPA page must not be shadowable by a profile slug");
 });

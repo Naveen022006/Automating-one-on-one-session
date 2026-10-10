@@ -14,19 +14,22 @@ type JsonPrimitive = string | number | boolean | null;
 
 /**
  * What JSON.parse(JSON.stringify(value)) gives back, as a type: Date -> string, no functions/symbols/bigint,
- * optional properties stay optional.
+ * optional properties stay optional. `unknown` and `any` stay as they are (a field typed `unknown` is the author's way of
+ * saying "arbitrary JSON"; mapping it to `never` would make it impossible to use).
  */
-export type Jsonify<T> = T extends Date
-  ? string
-  : T extends JsonPrimitive | undefined
-    ? T
-    : T extends bigint | symbol | ((...args: never[]) => unknown)
-      ? never
-      : T extends readonly unknown[]
-        ? { [K in keyof T]: Jsonify<T[K]> }
-        : T extends object
+export type Jsonify<T> = unknown extends T
+  ? T
+  : T extends Date
+    ? string
+    : T extends JsonPrimitive | undefined
+      ? T
+      : T extends bigint | symbol | ((...args: never[]) => unknown)
+        ? never
+        : T extends readonly unknown[]
           ? { [K in keyof T]: Jsonify<T[K]> }
-          : never;
+          : T extends object
+            ? { [K in keyof T]: Jsonify<T[K]> }
+            : never;
 
 /** `JSON.parse(JSON.stringify(value))`, typed as Jsonify<T>. `undefined` stays `undefined`. */
 export function jsonify<T>(value: T): Jsonify<T> {

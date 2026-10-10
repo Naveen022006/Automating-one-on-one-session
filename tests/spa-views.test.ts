@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { safeNextPath as viaHttp } from "../lib/http";
-import { jsonify } from "../lib/jsonify";
+import { jsonify, type Jsonify } from "../lib/jsonify";
 import { safeNextPath } from "../lib/safe-next-path";
 import { jsonView } from "../lib/views/http";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
@@ -15,6 +15,14 @@ test("jsonify gives exactly what the browser receives: Dates become ISO strings,
   // The type is the point: a Date method on a Jsonify'd field must not compile. (Checked by tsc through this expression.)
   const s: string = out.at;
   assert.equal(typeof s, "string");
+  // Other shapes the view components meet: nullable dates, arrays of rows, optional fields, and arbitrary-JSON fields.
+  type Row = { id: string; when: Date | null; at?: Date; answers: Record<string, unknown>; tags: string[]; money: { minor: number; currency: "INR" | "USD" } };
+  const row: Jsonify<Row> = { id: "x", when: null, answers: { a: 1, b: { c: [true] } }, tags: [], money: { minor: 5, currency: "INR" } };
+  const withDates: Jsonify<Row[]> = [{ ...row, when: "2026-01-01T00:00:00.000Z", at: "2026-01-02T00:00:00.000Z" }];
+  assert.equal(withDates.length, 1);
+  // @ts-expect-error a Date must not be assignable to a Jsonify'd date field (this is the whole point of the type)
+  const bad: Jsonify<Row> = { ...row, when: new Date() };
+  void bad;
 });
 
 test("safeNextPath lives in one place: lib/http re-exports the very same function", () => {
