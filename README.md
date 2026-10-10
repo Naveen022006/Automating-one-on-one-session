@@ -27,7 +27,7 @@ advisory `npm audit` against Postgres and Redis service containers, and builds t
 The UI is being moved from Next-rendered pages to a standalone React app (Vite + React Router + TanStack Query) in `web/`;
 Next keeps the JSON API, webhooks, metadata routes and the worker. Plan: `doc/10-react-migration-plan.md`; what differs from
 it and how far the work is: `doc/10-react-migration-deviations.md`. Until a page group is switched on, **nothing changes**:
-`SPA_GROUPS` (in `.env`) is empty and every page is the old Next page.
+`SPA_GROUPS` (in `.env`) is empty and every page is the old Next page. Building the SPA needs Node 22.12 or newer (Vite 8).
 
 - **Develop with two processes.** Terminal 1: `npm run dev` (Next, :3000, the API). Terminal 2: `npm run dev:web` (Vite, :5173,
   hot reload; it proxies `/api` and the metadata routes to Next, `SPA_API_TARGET` if Next is on another port). Open
