@@ -1,0 +1,880 @@
+// Branch spa/41-admin-money: the admin Payments, Payouts, Bookings, Health and Audit pages are shared views that BOTH the old Next
+// page and the SPA page render, fed by five GET endpoints:
+//   M5 GET /api/admin/payments   M6 GET /api/admin/payouts   M7 GET /api/admin/bookings   M8 GET /api/admin/health   M9 GET /api/admin/audit
+// The database part (needs DATABASE_URL, TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise) calls the real route handlers with only
+// `next/headers` replaced (the cookies of a request are chosen per call): every endpoint must refuse a signed-out caller (401), an
+// admin who still has to enrol (403 enroll) and a password-only session of an admin who has 2FA (403 verify), and answer a fully
+// signed-in admin with exactly the hand-picked fields. Every body goes through assertNoSecretKeys. The rest needs no database: the
+// views are rendered from fixtures (including a stale worker heartbeat) and the old-page / SPA-page wiring is checked on the sources.
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import { after, before, mock, test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { repoPathProblem, specifierProblem } from "../web/vite-server-guard";
+import { hashPassword } from "../lib/auth/password";
+import { hashToken, randomToken } from "../lib/auth/tokens";
+import { prisma } from "../lib/db";
+import { BRAND_NAME } from "../lib/brand";
+import { jsonify, type Jsonify } from "../lib/jsonify";
+import { DEFAULT_THRESHOLDS, type HealthSnapshot } from "../lib/health-eval";
+import { QUEUE_NAMES } from "../lib/queue";
+import { formatTitle, spaRouteById, type SpaRouteId } from "../lib/spa/routes";
+import { buildAdminHealthView, scrubHealthText } from "../lib/views/admin-health";
+import { parseBookingStatus } from "../lib/views/admin-bookings";
+import { parsePaymentView } from "../lib/views/admin-payments";
+import { parsePayoutFilter, type AdminPayoutsView } from "../lib/views/admin-payouts";
+import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
+
+const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
+const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+const DAY = 86_400_000;
+const PASSWORD = "correct-horse-battery-9";
+const emailX = `money-x-${run}@example.com`; // administrator with two-factor
+const emailY = `money-y-${run}@example.com`; // administrator without; creates the pending payout
+const emailZ = `money-z-${run}@example.com`; // a second administrator who can approve it
+const auditEmail = `money-audit-${run}@example.com`;
+const DETAIL_MARKER = `detail-marker-${run}`;
+
+const root = path.resolve(__dirname, "..");
+const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
+const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+const keys = (o: unknown) => Object.keys(o as object).sort();
+
+const jar = new Map<string, string>();
+type Handler = (req: Request) => Promise<Response>;
+let routes: { payments: Handler; payouts: Handler; bookings: Handler; health: Handler; audit: Handler };
+let sessionLib: typeof import("../lib/admin/session");
+let payoutsLib: typeof import("../lib/payouts");
+let X = "";
+let Y = "";
+let Z = "";
+let influencerId = "";
+let payoutPending = ""; // created by Y, awaiting approval
+let payoutPaid = ""; // paid, with a payment refunded since
+let payoutCancelled = "";
+const savedEnv: Record<string, string | undefined> = {};
+let secretValues: string[] = [];
+
+/** A password-only session row for an admin who has two-factor (createAdminSession refuses to make one). */
+async function passwordOnlySession(adminId: string): Promise<string> {
+  const token = randomToken();
+  await prisma.adminSession.create({ data: { tokenHash: hashToken(token), adminId, expiresAt: new Date(Date.now() + 3_600_000) } });
+  return token;
+}
+
+async function ask(handler: Handler, query = "", cookie?: string): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
+  jar.clear();
+  if (cookie !== undefined) jar.set(sessionLib.adminCookieName(), cookie);
+  const res = await handler(new Request(`http://localhost/api/admin/x${query}`));
+  return { status: res.status, body: (await res.json()) as Record<string, unknown>, headers: res.headers };
+}
+
+const orderId = (kind: string) => `order_${run}_${kind}`;
+const customer = (kind: string) => `Money ${kind} ${run}`;
+
+/** One payment of every kind the Payments tabs tell apart, a booking of each status the Bookings tabs filter by, and three payouts. */
+async function seed() {
+  const service = await prisma.service.create({ data: { influencerId, title: `Money call ${run}`, durationMin: 30, priceMinor: 1000 } });
+  let n = 0;
+  const booking = async (kind: string, status: "SCHEDULED" | "EXPIRED" | "CANCELLED" | "PENDING_PAYMENT" | "COMPLETED" | "FAILED" | "REQUESTED", extra: Record<string, unknown> = {}) => {
+    const start = new Date(Date.now() + (3 + n++) * DAY);
+    const session = await prisma.session.create({ data: { serviceId: service.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+    return prisma.booking.create({
+      data: { sessionId: session.id, status, customerName: customer(kind), customerEmail: `money-${kind}-${run}@example.com`.toLowerCase(), whatsappE164: "+919876543210", whatsappOptIn: true, ...extra },
+    });
+  };
+  const payment = (bookingId: string, kind: string, extra: Record<string, unknown> = {}) =>
+    prisma.payment.create({ data: { bookingId, providerOrderId: orderId(kind), providerPaymentId: `pay_${run}_${kind}`, amountMinor: 1000, currency: "INR", status: "CAPTURED", ...extra } });
+
+  await payment((await booking("recon", "SCHEDULED")).id, "recon"); // captured, not reconciled: the "To reconcile" tab
+  await payment((await booking("mismatch", "EXPIRED")).id, "mismatch"); // captured, but the booking expired: "No paid booking"
+  await payment((await booking("done", "SCHEDULED")).id, "done", { reconciledAt: new Date(), reconciledByEmail: emailY });
+  await payment((await booking("refunded", "CANCELLED")).id, "refunded", { status: "REFUNDED", refundStatus: "processed", refundAmountMinor: 1000, reconciledAt: new Date() });
+  await payment((await booking("unpaid", "PENDING_PAYMENT", { holdExpiresAt: new Date(Date.now() + DAY) })).id, "unpaid", { status: "CREATED", providerPaymentId: null });
+  await payment((await booking("needsrefund", "CANCELLED")).id, "needsrefund", { needsRefund: true });
+
+  const payoutBase = { influencerId, currency: "INR", grossMinor: 1000, refundsMinor: 0, feeBps: 1050, feeMinor: 105, netMinor: 895, paymentCount: 1, destination: "UPI ****1234", createdByEmail: emailY };
+  payoutPending = (await prisma.payout.create({ data: { ...payoutBase, status: "PENDING" } })).id;
+  payoutPaid = (await prisma.payout.create({ data: { ...payoutBase, status: "PAID", reference: `UTR${run}`, paidAt: new Date(), paidByEmail: emailY, approvedAt: new Date(), approvedByEmail: emailZ } })).id;
+  payoutCancelled = (await prisma.payout.create({ data: { ...payoutBase, status: "CANCELLED" } })).id;
+  // A payment in the paid payout that was partly refunded afterwards: money the influencer received that should come back.
+  await payment((await booking("inpayout", "COMPLETED")).id, "inpayout", { reconciledAt: new Date(), payoutId: payoutPaid, refundStatus: "processed", refundAmountMinor: 300 });
+
+  await booking("failed", "FAILED", { lastError: "E".repeat(200) });
+  await booking("requested", "REQUESTED", { holdExpiresAt: new Date(Date.now() + DAY) });
+
+  // 30 audit entries (more than one page), newest first by their timestamps, each with a free-form `detail` that must never be sent.
+  const now = Date.now();
+  await prisma.adminAuditLog.createMany({
+    data: Array.from({ length: 30 }, (_, i) => ({
+      adminEmail: auditEmail,
+      action: `test.money.${String(i).padStart(2, "0")}`,
+      targetType: "payout",
+      targetId: `target-${run}-${i}`,
+      detail: { marker: DETAIL_MARKER },
+      ip: "203.0.113.7",
+      createdAt: new Date(now - i * 1000),
+    })),
+  });
+}
+
+before(async () => {
+  if (skip) return;
+  process.env.RATE_LIMIT_STORE = "memory";
+  // GET /api/admin/health builds the health report, which would open BullMQ/Redis connections that keep the test process alive
+  // (and touch the shared Redis). Without REDIS_URL the report degrades exactly as it does in production when Redis is down.
+  secretValues = Object.entries(process.env)
+    .filter(([name, value]) => /SECRET|PASSWORD|TOKEN|_KEY|PRIVATE|DATABASE_URL|REDIS_URL/.test(name) && (value ?? "").length >= 8)
+    .map(([, value]) => value as string);
+  for (const name of ["REDIS_URL", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "ADMIN_REQUIRE_2FA"]) savedEnv[name] = process.env[name];
+  delete process.env.REDIS_URL;
+  delete process.env.PAYOUT_FOUR_EYES_MIN_MINOR;
+  delete process.env.ADMIN_REQUIRE_2FA;
+  process.env.PAYOUT_FOUR_EYES = "true"; // a payout needs a second administrator to approve it, whatever NODE_ENV is
+  mock.module("next/headers", {
+    namedExports: {
+      cookies: async () => ({ get: (name: string) => (jar.has(name) ? { name, value: jar.get(name) } : undefined) }),
+      headers: async () => new Headers(),
+    },
+  });
+  sessionLib = await import("../lib/admin/session");
+  payoutsLib = await import("../lib/payouts");
+  const mfa = await import("../lib/admin/mfa");
+  const totp = await import("../lib/admin/totp");
+  routes = {
+    payments: (await import("../app/api/admin/payments/route")).GET,
+    payouts: (await import("../app/api/admin/payouts/route")).GET,
+    bookings: (await import("../app/api/admin/bookings/route")).GET,
+    health: (await import("../app/api/admin/health/route")).GET,
+    audit: (await import("../app/api/admin/audit/route")).GET,
+  };
+
+  const accounts = await import("../lib/auth/accounts");
+  const registered = await accounts.registerAccount({
+    name: `Money Owner ${run}`,
+    email: `money-owner-${run}@example.com`,
+    password: "a long passphrase for the money test",
+    slug: `money-${run}`,
+    timezone: "Asia/Kolkata",
+    acceptTerms: true,
+  });
+  influencerId = (await prisma.user.findUniqueOrThrow({ where: { id: registered.userId } })).influencerId;
+
+  const hash = await hashPassword(PASSWORD);
+  X = (await prisma.adminUser.create({ data: { email: emailX, name: "Money Admin X", passwordHash: hash } })).id;
+  Y = (await prisma.adminUser.create({ data: { email: emailY, name: "Money Admin Y", passwordHash: hash } })).id;
+  Z = (await prisma.adminUser.create({ data: { email: emailZ, name: "Money Admin Z", passwordHash: hash } })).id;
+  const past = Date.now() - 60_000;
+  const secret = (await mfa.startTotpEnrollment(X)).secret;
+  assert.ok((await mfa.confirmTotpEnrollment(X, totp.totpAt(secret, past), null, past)).ok);
+  await seed();
+});
+
+after(async () => {
+  if (!skip) {
+    if (influencerId) {
+      // Payouts restrict the influencer's deletion (their payments let go of them: SET NULL).
+      await prisma.payout.deleteMany({ where: { influencerId } });
+      await prisma.influencer.deleteMany({ where: { id: influencerId } });
+    }
+    await prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY, emailZ, auditEmail] } } });
+    await prisma.adminUser.deleteMany({ where: { id: { in: [X, Y, Z].filter(Boolean) } } });
+  }
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  await prisma.$disconnect();
+});
+
+/* ---------- the gate: the same one the console pages have ---------- */
+
+const ENDPOINTS: { name: string; handler: () => Handler }[] = [
+  { name: "M5 payments", handler: () => routes.payments },
+  { name: "M6 payouts", handler: () => routes.payouts },
+  { name: "M7 bookings", handler: () => routes.bookings },
+  { name: "M8 health", handler: () => routes.health },
+  { name: "M9 audit", handler: () => routes.audit },
+];
+
+test("every endpoint answers 401 without an administrator session, or with a garbage cookie or an influencer-style one, and sends no data", { skip }, async () => {
+  for (const e of ENDPOINTS) {
+    for (const cookie of [undefined, "", "not-a-real-admin-session-token"]) {
+      const out = await ask(e.handler(), "", cookie);
+      assert.equal(out.status, 401, `${e.name} with cookie ${JSON.stringify(cookie)}`);
+      assert.deepEqual(keys(out.body), ["error"], `${e.name}: only an error sentence`);
+      assert.equal(typeof out.body.error, "string");
+    }
+  }
+});
+
+test("every endpoint: 200 for a signed-in admin, 403 enroll when 2FA is required and not set up, 403 verify for a password-only session of a 2FA admin", { skip }, async () => {
+  const plain = await sessionLib.createAdminSession(Y);
+  const stale = await passwordOnlySession(X);
+  const verified = await sessionLib.createAdminSession(X, {}, { mfaVerified: true });
+  const denied = (out: { status: number; body: Record<string, unknown> }, action: "enroll" | "verify", where: string) => {
+    assert.equal(out.status, 403, where);
+    assert.equal(out.body.mfaRequired, true, where);
+    assert.equal(out.body.mfaAction, action, where);
+    assert.deepEqual(keys(out.body), ["error", "mfaAction", "mfaRequired"], `${where}: nothing of the console leaks to a denied session`);
+  };
+
+  for (const e of ENDPOINTS) {
+    // Neither required nor enabled: ok. (A fresh request each time; the health endpoint measures on every call.)
+    const ok = await ask(e.handler(), "", plain);
+    assert.equal(ok.status, 200, `${e.name}: ok`);
+    assert.equal(ok.headers.get("cache-control"), "private, no-store", e.name);
+    assert.equal(ok.headers.get("access-control-allow-origin"), null, e.name);
+    assertNoSecretKeys(ok.body);
+
+    // An admin with 2FA whose session did not pass it ("verify"), with or without the requirement.
+    denied(await ask(e.handler(), "", stale), "verify", `${e.name}: password-only session`);
+  }
+
+  process.env.ADMIN_REQUIRE_2FA = "true";
+  try {
+    for (const e of ENDPOINTS) {
+      denied(await ask(e.handler(), "", plain), "enroll", `${e.name}: must enrol`);
+      denied(await ask(e.handler(), "", stale), "verify", `${e.name}: password-only session, 2FA required`);
+      const ok = await ask(e.handler(), "", verified);
+      assert.equal(ok.status, 200, `${e.name}: a session that passed the second factor`);
+      assertNoSecretKeys(ok.body);
+    }
+  } finally {
+    delete process.env.ADMIN_REQUIRE_2FA;
+  }
+});
+
+test("a disabled administrator's session stops working at once on every endpoint", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Z);
+  assert.equal((await ask(routes.audit, "", token)).status, 200);
+  await prisma.adminUser.update({ where: { id: Z }, data: { disabledAt: new Date() } });
+  try {
+    for (const e of ENDPOINTS) assert.equal((await ask(e.handler(), "", token)).status, 401, e.name);
+  } finally {
+    await prisma.adminUser.update({ where: { id: Z }, data: { disabledAt: null } });
+  }
+});
+
+/* ---------- M5 payments ---------- */
+
+const PAYMENT_ROW_KEYS = [
+  "amountMinor", "booking", "createdAt", "currency", "id", "influencer", "mismatch", "needsRefund", "payoutId", "providerOrderId",
+  "providerPaymentId", "reconciledAt", "refundAmountMinor", "refundStatus", "service", "status",
+];
+type PaymentRow = { providerOrderId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; payoutId: string | null; influencer: { id: string; name: string }; service: { title: string } };
+
+test("M5 GET /api/admin/payments: each tab shows the matching payments, the counts are the tabs', and a row has exactly the hand-picked fields", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const kinds = async (view: string) => {
+    const out = await ask(routes.payments, `?view=${view}`, token);
+    assert.equal(out.status, 200, view);
+    assert.deepEqual(keys(out.body), ["counts", "page", "pageCount", "rows", "total", "view"]);
+    assert.deepEqual(keys(out.body.counts), ["all", "captured", "mismatch", "needsRefund", "unpaid", "unreconciled"]);
+    assert.equal(out.body.view, view);
+    assert.ok((out.body.rows as unknown[]).length <= 25, "one page at a time");
+    assertNoSecretKeys(out.body);
+    return { out, mine: (out.body.rows as PaymentRow[]).filter((r) => r.providerOrderId.startsWith(`order_${run}_`)).map((r) => r.providerOrderId.slice(`order_${run}_`.length)).sort() };
+  };
+
+  assert.deepEqual((await kinds("all")).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded", "unpaid"]);
+  assert.deepEqual((await kinds("unreconciled")).mine, ["mismatch", "needsrefund", "recon"], "captured, not reconciled, not in a payout");
+  assert.deepEqual((await kinds("captured")).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded"], "captured and refunded");
+  assert.deepEqual((await kinds("needs-refund")).mine, ["needsrefund"]);
+  assert.deepEqual((await kinds("mismatch")).mine, ["mismatch"], "captured while the booking expired");
+  assert.deepEqual((await kinds("unpaid")).mine, ["unpaid"]);
+
+  // The fields of a row, and the values worked out on the server.
+  const all = await kinds("all");
+  const row = (kind: string) => (all.out.body.rows as PaymentRow[]).find((r) => r.providerOrderId === orderId(kind))!;
+  for (const r of all.out.body.rows as object[]) assert.deepEqual(keys(r), PAYMENT_ROW_KEYS);
+  assert.equal(row("mismatch").mismatch, true);
+  for (const k of ["recon", "done", "refunded", "unpaid", "needsrefund", "inpayout"]) assert.equal(row(k).mismatch, false, k);
+  assert.equal(row("needsrefund").needsRefund, true);
+  assert.equal(row("inpayout").payoutId, payoutPaid);
+  assert.deepEqual(row("recon").booking, { status: "SCHEDULED", customerName: customer("recon") });
+  assert.equal(row("recon").service.title, `Money call ${run}`);
+  assert.equal(row("recon").influencer.name, `Money Owner ${run}`);
+  assert.equal(row("recon").influencer.id, influencerId);
+  assert.deepEqual(keys(row("recon").booking), ["customerName", "status"]);
+  assert.deepEqual(keys(row("recon").service), ["title"]);
+  assert.deepEqual(keys(row("recon").influencer), ["id", "name"]);
+
+  // Counts are the real numbers behind the tabs (the same function the sidebar badge uses).
+  const { paymentViewCounts } = await import("../lib/admin/data");
+  const counts = all.out.body.counts as Record<string, number>;
+  const truth = await paymentViewCounts();
+  for (const [k, v] of Object.entries(truth)) assert.ok(Math.abs(counts[k] - v) <= 3, `count ${k} (${counts[k]} vs ${v}; other test runs may add rows between the two reads)`);
+  assert.ok(counts.all >= 7 && counts.unreconciled >= 3 && counts.mismatch >= 1 && counts.needsRefund >= 1 && counts.unpaid >= 1);
+
+  // Fallbacks and odd pages.
+  for (const odd of ["", "?view=bogus", "?view=ALL", "?view=__proto__", "?view=needs-refund;drop"]) {
+    const out = await ask(routes.payments, odd, token);
+    assert.equal(out.status, 200, odd);
+    assert.equal(out.body.view, "all", odd);
+  }
+  for (const odd of ["?page=0", "?page=-2", "?page=abc", "?page=1e9", "?page=10000", "?page=99999999999", "?page="]) assert.equal((await ask(routes.payments, odd, token)).body.page, 1, `page ${odd}`);
+  const far = await ask(routes.payments, "?page=9999", token);
+  assert.equal(far.status, 200);
+  assert.deepEqual(far.body.rows, [], "a page past the end is empty, not an error");
+});
+
+test("payment, payout and booking URL rules: an unknown tab is the default one, never an error", () => {
+  for (const v of ["all", "unreconciled", "captured", "needs-refund", "mismatch", "unpaid"]) assert.equal(parsePaymentView(v), v);
+  for (const odd of [null, undefined, "", "ALL", "needsRefund", "../x", "__proto__", "captured "]) assert.equal(parsePaymentView(odd), "all", JSON.stringify(odd));
+  for (const s of ["PENDING", "PAID", "CANCELLED", "all"]) assert.equal(parsePayoutFilter(s), s);
+  for (const odd of [null, undefined, "", "pending", "paid", "FAILED", "__proto__", "ALL"]) assert.equal(parsePayoutFilter(odd), "PENDING", JSON.stringify(odd));
+  for (const s of ["all", "REQUESTED", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED", "EXPIRED"]) assert.equal(parseBookingStatus(s), s);
+  for (const odd of [null, undefined, "", "HELD", "paid", "scheduled", "__proto__", "SCHEDULED;x"]) assert.equal(parseBookingStatus(odd), "all", JSON.stringify(odd));
+});
+
+/* ---------- M6 payouts ---------- */
+
+const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeBps", "feeMinor", "feePercentText", "grossMinor", "id", "influencer", "netMinor", "owedMinor", "reference", "refundsMinor", "status"];
+type PayoutRow = Jsonify<AdminPayoutsView>["rows"][number];
+
+test("M6 GET /api/admin/payouts: the tabs and their counts, the destination masked, 'refunded since' on a paid payout, exactly the hand-picked fields", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const mine = (body: Record<string, unknown>) => (body.rows as PayoutRow[]).filter((r) => r.influencer.id === influencerId);
+  const pending = await ask(routes.payouts, "", token);
+  assert.equal(pending.status, 200);
+  assert.deepEqual(keys(pending.body), ["counts", "onlyOneAdmin", "page", "pageCount", "rows", "status"]);
+  assert.deepEqual(keys(pending.body.counts), ["CANCELLED", "PAID", "PENDING", "all"]);
+  assert.equal(pending.body.status, "PENDING", "the default tab is 'To send'");
+  assert.deepEqual(mine(pending.body).map((r) => r.id), [payoutPending]);
+  assertNoSecretKeys(pending.body);
+
+  const byTab: Record<string, string[]> = { PAID: [payoutPaid], CANCELLED: [payoutCancelled], all: [payoutPending, payoutPaid, payoutCancelled].sort() };
+  for (const [tab, ids] of Object.entries(byTab)) {
+    const out = await ask(routes.payouts, `?status=${tab}`, token);
+    assert.equal(out.body.status, tab);
+    assert.deepEqual(mine(out.body).map((r) => r.id).sort(), ids, tab);
+    assert.ok((out.body.rows as unknown[]).length <= 25);
+    assertNoSecretKeys(out.body);
+  }
+  for (const odd of ["?status=pending", "?status=bogus", "?status=", "?status=__proto__"]) assert.equal((await ask(routes.payouts, odd, token)).body.status, "PENDING", odd);
+
+  const counts = pending.body.counts as Record<string, number>;
+  assert.ok(counts.PENDING >= 1 && counts.PAID >= 1 && counts.CANCELLED >= 1);
+  assert.equal(counts.all, counts.PENDING + counts.PAID + counts.CANCELLED, "the All tab counts every status");
+
+  const paidTab = await ask(routes.payouts, "?status=PAID", token);
+  const paid = mine(paidTab.body)[0];
+  assert.deepEqual(keys(paid), PAYOUT_ROW_KEYS);
+  assert.deepEqual(keys(paid.influencer), ["id", "name"]);
+  assert.deepEqual(keys(paid.approval), ["approved", "approvedByEmail", "canApprove", "canMarkPaid", "createdByViewer", "required"]);
+  assert.equal(paid.destination, "UPI ****1234", "the destination is the masked label stored with the payout");
+  assert.equal(paid.reference, `UTR${run}`);
+  assert.equal(paid.feePercentText, "10.50%");
+  assert.equal(paid.owedMinor, 300, "refunded since it was paid");
+  assert.equal(paid.netMinor, 895);
+  const text = JSON.stringify(paidTab.body);
+  for (const forbidden of ["accountNumber", "ifsc", "upiId", "paidByEmail"]) assert.ok(!text.includes(forbidden), `no ${forbidden}`);
+  assert.equal(mine(pending.body)[0].owedMinor, 0, "only a paid payout can owe");
+
+  // onlyOneAdmin is the real fact: four-eyes is on here and this database has more than one active administrator.
+  const active = await prisma.adminUser.count({ where: { disabledAt: null } });
+  assert.equal(pending.body.onlyOneAdmin, payoutsLib.fourEyesEnabled() && active < 2);
+  assert.equal(pending.body.onlyOneAdmin, false);
+});
+
+test("M6: what a row lets the viewer do is worked out per viewer on the server (the creator cannot approve, a second administrator can)", { skip }, async () => {
+  const asY = await sessionLib.createAdminSession(Y);
+  const asZ = await sessionLib.createAdminSession(Z);
+  const approvalOf = async (token: string, id: string, tab = "PENDING") => {
+    const out = await ask(routes.payouts, `?status=${tab}`, token);
+    return (out.body.rows as PayoutRow[]).find((r) => r.id === id)!.approval;
+  };
+
+  assert.deepEqual(await approvalOf(asY, payoutPending), { required: true, approved: false, approvedByEmail: null, canApprove: false, createdByViewer: true, canMarkPaid: false }, "the creator");
+  assert.deepEqual(await approvalOf(asZ, payoutPending), { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false }, "a second administrator");
+
+  // Once Z has approved it, the creator can mark it paid (and nobody can approve it again).
+  await prisma.payout.update({ where: { id: payoutPending }, data: { approvedAt: new Date(), approvedByEmail: emailZ } });
+  try {
+    assert.deepEqual(await approvalOf(asY, payoutPending), { required: true, approved: true, approvedByEmail: emailZ, canApprove: false, createdByViewer: true, canMarkPaid: true });
+    assert.deepEqual(await approvalOf(asZ, payoutPending), { required: true, approved: true, approvedByEmail: emailZ, canApprove: false, createdByViewer: false, canMarkPaid: true });
+  } finally {
+    await prisma.payout.update({ where: { id: payoutPending }, data: { approvedAt: null, approvedByEmail: null } });
+  }
+
+  // A paid payout offers nothing to anyone.
+  for (const token of [asY, asZ]) {
+    const a = await approvalOf(token, payoutPaid, "PAID");
+    assert.equal(a.canApprove, false);
+    assert.equal(a.canMarkPaid, false);
+  }
+  // The decision matches the library function the old page used (one source of truth), for the same viewer.
+  const row = await prisma.payout.findUniqueOrThrow({ where: { id: payoutPending } });
+  const expected = payoutsLib.payoutApprovalView(row, emailZ, process.env, 0);
+  assert.deepEqual(await approvalOf(asZ, payoutPending), { required: expected.required, approved: expected.approved, approvedByEmail: expected.approvedByEmail, canApprove: expected.canApprove, createdByViewer: expected.createdByViewer, canMarkPaid: expected.canMarkPaid });
+});
+
+/* ---------- M7 bookings ---------- */
+
+const BOOKING_ROW_KEYS = ["currency", "customerName", "id", "influencer", "lastError", "paidMinor", "serviceTitle", "startTime", "status"];
+type BookingRow = { customerName: string; status: string; lastError: string | null; paidMinor: number; currency: string; serviceTitle: string };
+
+test("M7 GET /api/admin/bookings: the status filters, the error text cut to 80 characters, the paid total, exactly the hand-picked fields", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const mine = (body: Record<string, unknown>) => (body.rows as BookingRow[]).filter((r) => r.customerName.endsWith(` ${run}`));
+  const names = (body: Record<string, unknown>) => mine(body).map((r) => r.customerName.replace(/^Money /, "").replace(` ${run}`, "")).sort();
+
+  const all = await ask(routes.bookings, "", token);
+  assert.equal(all.status, 200);
+  assert.deepEqual(keys(all.body), ["page", "pageCount", "rows", "status", "total"]);
+  assert.equal(all.body.status, "all");
+  assert.ok((all.body.total as number) >= 9);
+  assert.ok((all.body.rows as unknown[]).length <= 25);
+  assertNoSecretKeys(all.body);
+  for (const r of all.body.rows as object[]) assert.deepEqual(keys(r), BOOKING_ROW_KEYS);
+
+  const expected: Record<string, string[]> = {
+    REQUESTED: ["requested"],
+    PENDING_PAYMENT: ["unpaid"],
+    SCHEDULED: ["done", "recon"],
+    COMPLETED: ["inpayout"],
+    CANCELLED: ["needsrefund", "refunded"],
+    FAILED: ["failed"],
+    EXPIRED: ["mismatch"],
+    PAID: [],
+  };
+  for (const [status, who] of Object.entries(expected)) {
+    const out = await ask(routes.bookings, `?status=${status}`, token);
+    assert.equal(out.status, 200, status);
+    assert.equal(out.body.status, status);
+    assert.deepEqual(names(out.body), who, status);
+    assert.ok((out.body.rows as BookingRow[]).every((r) => r.status === status), `${status}: only that status`);
+  }
+  for (const odd of ["?status=HELD", "?status=bogus", "?status=paid", "?status=", "?status=__proto__"]) assert.equal((await ask(routes.bookings, odd, token)).body.status, "all", odd);
+
+  const failed = mine((await ask(routes.bookings, "?status=FAILED", token)).body)[0];
+  assert.equal(failed.lastError, "E".repeat(80), "only the first 80 characters leave the server");
+  const row = (kind: string) => mine(all.body).find((r) => r.customerName === customer(kind))!;
+  assert.equal(row("recon").paidMinor, 1000);
+  assert.equal(row("refunded").paidMinor, 1000, "a refunded payment still counts as paid");
+  assert.equal(row("unpaid").paidMinor, 0, "a payment that was never captured does not");
+  assert.equal(row("recon").currency, "INR");
+  assert.equal(row("recon").serviceTitle, `Money call ${run}`);
+});
+
+/* ---------- M9 audit ---------- */
+
+test("M9 GET /api/admin/audit: 25 entries a page, newest first, no free-form detail, odd pages are page 1, there is no way to read it all at once", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const page = async (query: string) => {
+    const out = await ask(routes.audit, query, token);
+    assert.equal(out.status, 200, query);
+    assert.deepEqual(keys(out.body), ["page", "pageCount", "rows"]);
+    assert.ok((out.body.rows as unknown[]).length <= 25, `${query}: at most 25 entries`);
+    assert.equal(typeof out.body.pageCount, "number");
+    assertNoSecretKeys(out.body);
+    return out.body as { page: number; pageCount: number; rows: { id: string; action: string; adminEmail: string }[] };
+  };
+
+  const first = await page("");
+  assert.equal(first.page, 1);
+  assert.ok(first.pageCount >= 2, "more than one page exists (30 entries were added)");
+  assert.equal(first.rows.length, 25);
+  for (const r of first.rows) assert.deepEqual(keys(r), ["action", "adminEmail", "createdAt", "id", "ip", "targetId", "targetType"]);
+  const text = JSON.stringify(first);
+  assert.ok(!text.includes(DETAIL_MARKER) && !text.includes('"detail"'), "the detail column is never sent");
+  const times = (first.rows as unknown as { createdAt: string }[]).map((r) => Date.parse(r.createdAt));
+  assert.deepEqual(times, [...times].sort((a, b) => b - a), "newest first");
+  const ownFirst = first.rows.filter((r) => r.adminEmail === auditEmail).map((r) => r.action);
+  assert.deepEqual(ownFirst, [...ownFirst].sort(), "this run's entries appear in order, test.money.00 first");
+
+  const second = await page("?page=2");
+  assert.equal(second.page, 2);
+  assert.equal(second.pageCount, first.pageCount);
+  assert.ok(second.rows.length >= 1);
+  assert.deepEqual(first.rows.filter((r) => second.rows.some((s) => s.id === r.id)), [], "the pages do not overlap");
+
+  for (const odd of ["?page=0", "?page=-1", "?page=abc", "?page=1e9", "?page=10000", "?page=99999999999", "?page=", "?page=1.5x"]) {
+    assert.equal((await page(odd)).page, 1, `page ${odd}`);
+  }
+  assert.equal((await page("?page=2.7")).page, 2, "a decimal is read as its whole part, like the old page");
+  const far = await page("?page=9999");
+  assert.equal(far.page, 9999);
+  assert.deepEqual(far.rows, []);
+  const limitParam = await page("?limit=100000&pageSize=100000&take=100000");
+  assert.equal(limitParam.rows.length, 25, "no parameter changes the page size");
+});
+
+/* ---------- M8 health ---------- */
+
+test("M8 GET /api/admin/health: the worker, the conditions, the queues and the lists, with exactly the hand-picked fields and no secret", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  // A payment-recovery entry with a connection string in its reason, as an error message could carry one.
+  const secretReason = "Redis said redis://default:hunter2-password@redis.example.com:6379 refused";
+  const recovered = await prisma.adminAuditLog.create({
+    data: { adminEmail: "system:payment-recovery", action: "payment.recovered_needs_refund", targetType: "payment", targetId: `pay-row-${run}`, detail: { razorpayPaymentId: `pay_${run}_rec`, bookingId: `bk-${run}`, amountMinor: 5000, currency: "INR", reason: secretReason } },
+  });
+  let out;
+  try {
+    out = await ask(routes.health, "", token);
+  } finally {
+    await prisma.adminAuditLog.delete({ where: { id: recovered.id } });
+  }
+  assert.equal(out.status, 200);
+  assert.deepEqual(keys(out.body), ["at", "failed", "queueNames", "queues", "recovered", "recovery", "report", "thresholds", "worker"]);
+  assert.equal(typeof out.body.at, "number");
+  assert.deepEqual(keys(out.body.thresholds), ["meetingStuckMinutes", "queueFailedMax", "queueWaitingMax", "workerStaleSeconds"], "only the four limits the page prints");
+  assert.deepEqual(keys(out.body.report), ["conditions", "unhealthy"]);
+  const report = out.body.report as { conditions: { id: string }[]; unhealthy: object[] };
+  assert.equal(report.conditions[0].id, "worker-heartbeat", "the worker is the first condition");
+  for (const c of report.conditions) assert.deepEqual(keys(c), ["detail", "hint", "href", "id", "label", "status", "value"]);
+  for (const u of report.unhealthy) assert.deepEqual(keys(u), ["id", "label", "status"]);
+  assert.deepEqual(keys(out.body.worker), ["detail", "heartbeatReason", "heartbeatState", "hint", "lastBeatAgeText", "lastBeatAt", "status"]);
+  assert.deepEqual(out.body.queueNames, [...QUEUE_NAMES]);
+  assert.deepEqual(keys(out.body.queues), [...QUEUE_NAMES].sort(), "one entry per queue (null when Redis cannot be asked)");
+  assert.deepEqual(keys(out.body.failed), ["jobs", "unavailable"]);
+
+  // Redis is not configured in this test, so nothing can be said about the worker: Unknown, with the reason, never an error.
+  const worker = out.body.worker as { status: string; heartbeatState: string; heartbeatReason: string; lastBeatAt: number | null; lastBeatAgeText: string | null };
+  assert.equal(worker.status, "unknown");
+  assert.equal(worker.heartbeatState, "unknown");
+  assert.equal(worker.heartbeatReason, "Redis is not configured");
+  assert.equal(worker.lastBeatAt, null);
+  assert.equal(worker.lastBeatAgeText, null);
+  assert.deepEqual(out.body.failed && (out.body.failed as { unavailable: string[] }).unavailable.sort(), [...QUEUE_NAMES].sort(), "the failed-job lists could not be read");
+
+  // The recovery row has its fields, and the password and host user part of the connection string in its reason are gone.
+  const rows = out.body.recovered as { paymentId: string | null; razorpayPaymentId: string | null; reason: string | null; outcome: string; amountMinor: number | null }[];
+  const row = rows.find((r) => r.razorpayPaymentId === `pay_${run}_rec`);
+  assert.ok(row, "the recovery entry is listed");
+  assert.deepEqual(keys(row), ["amountMinor", "at", "bookingId", "currency", "id", "outcome", "paymentId", "razorpayPaymentId", "reason"]);
+  assert.equal(row.outcome, "flagged");
+  assert.equal(row.reason, "Redis said redis://***@redis.example.com:6379 refused");
+
+  // No secret value of this process' environment appears anywhere in the body.
+  const textBody = JSON.stringify(out.body);
+  assert.ok(!textBody.includes("hunter2-password"));
+  for (const value of secretValues) assert.ok(!textBody.includes(value), "no secret environment value in the health body");
+  assertNoSecretKeys(out.body);
+});
+
+/* ---------- no database: scrubbing, fixtures, views, wiring ---------- */
+
+test("scrubHealthText: secret environment values and the password part of a URL never reach the page", () => {
+  const env = { REDIS_URL: "redis://default:hunter22pw@redis.example.com:6379", RAZORPAY_KEY_SECRET: "abcdefgh12345678", APP_SECRET: "short", NODE_ENV: "production", LOG_LEVEL: "verbose-logging" };
+  assert.equal(scrubHealthText("connect ECONNREFUSED redis://default:hunter22pw@redis.example.com:6379", env), "connect ECONNREFUSED [hidden]");
+  assert.equal(scrubHealthText("bad key abcdefgh12345678 rejected", env), "bad key [hidden] rejected");
+  assert.equal(scrubHealthText("a postgres://user:pass@db.example.com:5432/app and rediss://:tok@h:1", {}), "a postgres://***@db.example.com:5432/app and rediss://***@h:1", "URLs that are not in the environment too");
+  assert.equal(scrubHealthText("value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays", env), "value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays", "short values and non-secret names are left alone");
+  assert.equal(scrubHealthText("Redis did not answer: Command timed out", env), "Redis did not answer: Command timed out", "ordinary messages pass through");
+  assert.equal(scrubHealthText("a URL without credentials https://example.com/path stays", {}), "a URL without credentials https://example.com/path stays");
+});
+
+const NOW = Date.parse("2026-10-11T10:00:00.000Z");
+const idle = { waiting: 0, active: 0, failed: 0, delayed: 0 };
+function snapshot(over: Partial<HealthSnapshot> = {}): HealthSnapshot {
+  return {
+    at: NOW,
+    heartbeat: { state: "ok", at: NOW - 12_000 },
+    redis: "ok",
+    unrecoveredPayments: 0,
+    recovery: { consecutiveFailedRuns: 0, lastRunAt: NOW - 60_000, lastError: null, lastCandidates: 4, lastRecovered: 1 },
+    stuckMeetings: 0,
+    failedConfirmations: 0,
+    unsweptHolds: 0,
+    queues: Object.fromEntries(QUEUE_NAMES.map((n) => [n, { ...idle }])),
+    ...over,
+  };
+}
+const health = (over: Partial<HealthSnapshot> = {}, extra: { recovered?: Parameters<typeof buildAdminHealthView>[0]["recovered"]; failed?: Parameters<typeof buildAdminHealthView>[0]["failed"] } = {}, env: Record<string, string | undefined> = {}) =>
+  jsonify(buildAdminHealthView({ snapshot: snapshot(over), thresholds: DEFAULT_THRESHOLDS, recovered: extra.recovered ?? [], failed: extra.failed ?? { jobs: [], unavailable: [] }, queueNames: QUEUE_NAMES }, env));
+
+test("buildAdminHealthView: a stale heartbeat is a critical worker with its age, a fresh one is running, an unreadable one is unknown", () => {
+  const stale = health({ heartbeat: { state: "ok", at: NOW - 10 * 60_000 } });
+  assert.equal(stale.worker.status, "critical");
+  assert.equal(stale.worker.detail, "Worker is not running: the last heartbeat was 10 min ago.");
+  assert.equal(stale.worker.lastBeatAt, NOW - 10 * 60_000);
+  assert.equal(stale.worker.lastBeatAgeText, "10 min");
+  assert.ok(stale.worker.hint?.includes("npm run worker"));
+  assert.ok(stale.report.unhealthy.some((c) => c.id === "worker-heartbeat" && c.status === "critical"));
+  assert.equal(stale.at, NOW);
+
+  const missing = health({ heartbeat: { state: "missing" } });
+  assert.equal(missing.worker.status, "critical");
+  assert.equal(missing.worker.lastBeatAt, null);
+  assert.equal(missing.worker.heartbeatState, "missing");
+  assert.equal(missing.worker.heartbeatReason, null);
+
+  const fresh = health();
+  assert.equal(fresh.worker.status, "ok");
+  assert.equal(fresh.worker.lastBeatAgeText, "12 s");
+  assert.equal(fresh.worker.hint, null);
+  assert.deepEqual(fresh.report.unhealthy, []);
+
+  const unknown = health({ heartbeat: { state: "unknown", reason: "Redis did not answer: redis://u:pw@h:6379 timed out", redis: "down" }, redis: "down" }, {}, { REDIS_URL: "redis://u:pw@h:6379" });
+  assert.equal(unknown.worker.status, "unknown");
+  assert.equal(unknown.worker.heartbeatReason, "Redis did not answer: [hidden] timed out", "a secret in the reason is taken out");
+  assert.equal(unknown.worker.lastBeatAt, null);
+  assert.deepEqual(keys(unknown.queues), [...QUEUE_NAMES].sort());
+  assertNoSecretKeys(unknown);
+  assertNoSecretKeys(stale);
+});
+
+type Views = {
+  PaymentsView: typeof import("../components/views/admin/PaymentsView").PaymentsView;
+  PayoutsView: typeof import("../components/views/admin/PayoutsView").PayoutsView;
+  BookingsView: typeof import("../components/views/admin/BookingsView").BookingsView;
+  AuditView: typeof import("../components/views/admin/AuditView").AuditView;
+  HealthView: typeof import("../components/views/admin/HealthView").HealthView;
+};
+let viewsLoaded: Promise<Views> | undefined;
+
+/**
+ * The shared views rendered on the server, as the old Next pages render them. Next's router hooks and links, and the client
+ * components that need a provider (the action buttons), are replaced by stand-ins that print their props; then the views are
+ * imported (mock.module only affects modules imported afterwards, hence the lazy import).
+ */
+function loadViews(): Promise<Views> {
+  viewsLoaded ??= (async () => {
+    mock.module("next/link", { defaultExport: (p: Record<string, unknown>) => createElement("a", p) });
+    mock.module("next/navigation", {
+      namedExports: {
+        useRouter: () => ({ push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} }),
+        usePathname: () => "/admin",
+        useSearchParams: () => new URLSearchParams(),
+      },
+    });
+    mock.module("@/components/admin/PayoutActions", {
+      namedExports: {
+        ReconcileButton: (p: { ids: string[] }) => (p.ids.length === 0 ? null : createElement("button", { "data-reconcile": p.ids.join(",") })), // like the real one: nothing to reconcile, no button
+        UnreconcileButton: (p: { paymentId: string }) => createElement("button", { "data-unreconcile": p.paymentId }),
+        PayoutRowActions: (p: { payoutId: string; status: string; approval: unknown }) => createElement("div", { "data-actions": JSON.stringify({ id: p.payoutId, status: p.status, approval: p.approval }) }),
+        PayoutStatusBadges: (p: { status: string; approval: unknown }) => createElement("span", { "data-badges": JSON.stringify({ status: p.status, approval: p.approval }) }),
+      },
+    });
+    return {
+      PaymentsView: (await import("../components/views/admin/PaymentsView")).PaymentsView,
+      PayoutsView: (await import("../components/views/admin/PayoutsView")).PayoutsView,
+      BookingsView: (await import("../components/views/admin/BookingsView")).BookingsView,
+      AuditView: (await import("../components/views/admin/AuditView")).AuditView,
+      HealthView: (await import("../components/views/admin/HealthView")).HealthView,
+    };
+  })();
+  return viewsLoaded;
+}
+
+const unHtml = (s: string) => s.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+/** The text of the page's visually hidden live status line. */
+function statusLine(html: string): string {
+  const m = /<p role="status" class="sr-only">([^<]*)<\/p>/.exec(html);
+  assert.ok(m, "the view has a status line");
+  return unHtml(m[1]);
+}
+const busyAttr = (html: string) => /aria-busy="true"/.test(html);
+/** The JSON a stand-in printed in a data-* attribute, one entry per occurrence. */
+const printed = (html: string, name: string) => [...html.matchAll(new RegExp(`data-${name}="([^"]*)"`, "g"))].map((m) => JSON.parse(unHtml(m[1])) as Record<string, unknown>);
+
+const payment = (over: Record<string, unknown> = {}) => ({
+  id: "p1",
+  createdAt: "2026-10-01T08:30:00.000Z",
+  status: "CAPTURED",
+  needsRefund: false,
+  refundStatus: null,
+  refundAmountMinor: null,
+  amountMinor: 250000,
+  currency: "INR",
+  reconciledAt: null,
+  payoutId: null,
+  providerPaymentId: "pay_ABC",
+  providerOrderId: "order_ABC",
+  mismatch: false,
+  booking: { status: "SCHEDULED", customerName: "Cust One" },
+  service: { title: "Strategy call" },
+  influencer: { id: "inf1", name: "Ina Fluencer" },
+  ...over,
+});
+const counts = { all: 9, unreconciled: 4, captured: 6, needsRefund: 1, mismatch: 2, unpaid: 3 };
+
+test("PaymentsView: tabs with counts, a status line, reconcile ids for the unreconciled captured payments only, badges, busy only when told", async () => {
+  const { PaymentsView } = await loadViews();
+  const rows = [
+    payment({ id: "recon" }),
+    payment({ id: "mismatch", mismatch: true, booking: { status: "EXPIRED", customerName: "Cust Two" }, providerOrderId: "order_M", providerPaymentId: null }),
+    payment({ id: "done", reconciledAt: "2026-10-02T08:30:00.000Z" }),
+    payment({ id: "inpayout", reconciledAt: "2026-10-02T08:30:00.000Z", payoutId: "po1" }),
+    payment({ id: "refund", needsRefund: true, refundStatus: "processed", refundAmountMinor: 100000 }),
+    payment({ id: "created", status: "CREATED" }),
+  ];
+  const html = renderToStaticMarkup(createElement(PaymentsView, { data: jsonify({ view: "unreconciled" as const, page: 2, pageCount: 3, total: 51, counts, rows }) }));
+  assert.equal(statusLine(html), "To reconcile: 51 payments, page 2 of 3.");
+  assert.equal(count(html, "data-reconcile="), 1);
+  assert.ok(html.includes('data-reconcile="recon,mismatch,refund"'), "captured, not reconciled, not in a payout: and nothing else");
+  assert.ok(html.includes('data-unreconcile="done"') && !html.includes('data-unreconcile="inpayout"'), "undo only where it is allowed");
+  assert.ok(html.includes("Mismatch") && html.includes("In payout") && html.includes("Not yet") && html.includes("Needs refund"));
+  assert.ok(html.includes("Refund processed · ") && html.includes("1,000.00"));
+  assert.ok(html.includes('href="/admin/influencers/inf1"') && html.includes("pay_ABC") && html.includes("order_M"), "the payment id, else the order id");
+  assert.match(html, /<a [^>]*aria-current="page"[^>]*>To reconcile<span class="tab__count">4<\/span>/, "the loaded view is the current tab");
+  for (const [label, n] of [["All", 9], ["Paid", 6], ["Needs refund", 1], ["No paid booking", 2], ["Unpaid / failed", 3]] as const) assert.ok(html.includes(`>${label}<span class="tab__count">${n}</span>`), `tab ${label} ${n}`);
+  assert.ok(html.includes('href="/admin/payments?view=unreconciled&amp;page=3"'), "Next keeps the tab");
+  assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(PaymentsView, { data: jsonify({ view: "all" as const, page: 1, pageCount: 1, total: 0, counts, rows: [] }), busy: true }))));
+
+  const empty = renderToStaticMarkup(createElement(PaymentsView, { data: jsonify({ view: "mismatch" as const, page: 1, pageCount: 1, total: 0, counts, rows: [] }) }));
+  assert.equal(statusLine(empty), "No paid booking: no payments, page 1 of 1.");
+  assert.ok(empty.includes("No payments here") && !empty.includes("data-reconcile"));
+  const hostile = renderToStaticMarkup(createElement(PaymentsView, { data: jsonify({ view: "all" as const, page: 1, pageCount: 1, total: 1, counts, rows: [payment({ booking: { status: "SCHEDULED", customerName: '"><script>alert(1)</script>' } })] }) }));
+  assert.ok(!hostile.includes("<script>"), "a customer name is escaped");
+});
+
+test("PayoutsView: the server's approval fields reach the row's buttons untouched, UTR and 'refunded since' show, the lone-administrator warning shows", async () => {
+  const { PayoutsView } = await loadViews();
+  const approval = { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false };
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer" }, destination: "UPI ****1234", grossMinor: 100000, refundsMinor: 10000,
+    feeMinor: 9000, feeBps: 1000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, approval, ...over,
+  });
+  const data = (over: Record<string, unknown> = {}) =>
+    jsonify({ status: "PENDING" as const, page: 1, pageCount: 1, counts: { PENDING: 2, PAID: 1, CANCELLED: 0, all: 3 }, onlyOneAdmin: false, rows: [row(), row({ id: "po2", status: "PAID", reference: "UTR123456", owedMinor: 30000, approval: { ...approval, canApprove: false, required: false, canMarkPaid: false } })], ...over });
+
+  const html = renderToStaticMarkup(createElement(PayoutsView, { data: data() }));
+  assert.equal(statusLine(html), "To send: 2 payouts, page 1 of 1.");
+  assert.deepEqual(printed(html, "actions")[0], { id: "po1", status: "PENDING", approval }, "the buttons get what the server decided");
+  assert.deepEqual(printed(html, "badges")[0], { status: "PENDING", approval });
+  assert.ok(html.includes("UTR UTR123456") && html.includes("Refunded since: ") && html.includes("300.00") && html.includes("to recover"));
+  assert.ok(html.includes("(10%)") && html.includes("UPI ****1234"));
+  assert.ok(html.includes("900.00"), "gross is shown after refunds (1,000.00 - 100.00)");
+  for (const [label, n] of [["To send", 2], ["Paid", 1], ["Cancelled", 0], ["All", 3]] as const) assert.ok(html.includes(`>${label}<span class="tab__count">${n}</span>`), `tab ${label}`);
+  assert.ok(!html.includes("Payouts need a second administrator"));
+  assert.ok(renderToStaticMarkup(createElement(PayoutsView, { data: data({ onlyOneAdmin: true }) })).includes("Payouts need a second administrator"));
+  assert.equal(statusLine(renderToStaticMarkup(createElement(PayoutsView, { data: data({ status: "all", counts: { PENDING: 0, PAID: 0, CANCELLED: 0, all: 0 }, rows: [] }) }))), "All: no payouts, page 1 of 1.");
+  assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(PayoutsView, { data: data(), busy: true }))));
+});
+
+test("BookingsView and AuditView: status lines with the filter and page, tab and pagination links, the error text, busy only when told", async () => {
+  const { BookingsView, AuditView } = await loadViews();
+  const booking = { id: "b1", serviceTitle: "Call", startTime: "2026-10-12T10:00:00.000Z", influencer: { id: "inf1", name: "Ina" }, customerName: "Cust", status: "FAILED", lastError: "meet link failed", paidMinor: 150000, currency: "INR" };
+  const html = renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "FAILED" as const, page: 1, pageCount: 2, total: 26, rows: [booking, { ...booking, id: "b2", paidMinor: 0, lastError: null }] }) }));
+  assert.equal(statusLine(html), "Needs attention: 26 bookings, page 1 of 2.");
+  assert.ok(html.includes("26 bookings") && html.includes("meet link failed") && html.includes("1,500.00") && html.includes("—"));
+  assert.ok(html.includes('href="/admin/bookings?status=FAILED&amp;page=2"'), "Next keeps the filter");
+  assert.ok(html.includes('href="/admin/bookings?status=PAID"') && html.includes(">Paid, no link<"));
+  assert.equal(statusLine(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 1, rows: [booking] }) }))), "All: 1 booking, page 1 of 1.");
+  assert.ok(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }) })).includes("Nothing matches this filter."));
+  assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }), busy: true }))));
+
+  const entry = { id: "a1", createdAt: "2026-10-01T08:30:00.000Z", adminEmail: "a@example.com", action: "payout.paid", targetType: "payout", targetId: "po1", ip: "203.0.113.7" };
+  const audit = renderToStaticMarkup(createElement(AuditView, { data: jsonify({ page: 2, pageCount: 4, rows: [entry, { ...entry, id: "a2", targetType: null, targetId: null, ip: null }] }) }));
+  assert.equal(statusLine(audit), "2 entries shown, page 2 of 4.");
+  assert.ok(audit.includes("payout po1") && audit.includes("203.0.113.7") && audit.includes('href="/admin/audit?page=3"') && audit.includes('href="/admin/audit?page=1"'));
+  assert.equal(statusLine(renderToStaticMarkup(createElement(AuditView, { data: jsonify({ page: 1, pageCount: 1, rows: [] }) }))), "No entries, page 1 of 1.");
+  assert.ok(!busyAttr(audit) && busyAttr(renderToStaticMarkup(createElement(AuditView, { data: jsonify({ page: 1, pageCount: 1, rows: [] }), busy: true }))));
+});
+
+test("HealthView: 'Worker is not running' for a stale heartbeat, Running for a fresh one, Unknown with the reason, Refresh says Refreshing while busy", async () => {
+  const { HealthView } = await loadViews();
+  const render = (over: Partial<HealthSnapshot> = {}, busy?: boolean, extra: Parameters<typeof health>[1] = {}) => renderToStaticMarkup(createElement(HealthView, { data: health(over, extra), busy }));
+
+  const stale = render({ heartbeat: { state: "ok", at: NOW - 10 * 60_000 } });
+  assert.ok(stale.includes("Worker is not running"), "the alert title");
+  assert.ok(stale.includes("Worker is not running: the last heartbeat was 10 min ago."), "its detail");
+  assert.ok(stale.includes("npm run worker"), "and the hint");
+  assert.ok(stale.includes(">Not running<") && stale.includes("(10 min ago)"));
+  assert.ok(stale.includes("1 condition needs attention") && stale.includes("Background worker."));
+
+  const fresh = render();
+  assert.ok(!fresh.includes("Worker is not running"));
+  assert.ok(fresh.includes(">Running<") && fresh.includes("(12 s ago)") && fresh.includes("Everything is healthy."));
+  assert.ok(fresh.includes("4 checked, 1 recovered"));
+  assert.ok(fresh.includes("worker stale after 180 s") && fresh.includes("after 15 min") && fresh.includes("more than 5 failed or 50 waiting"));
+  for (const q of QUEUE_NAMES) assert.ok(fresh.includes(`>${q}<`), `queue ${q}`);
+  assert.ok(fresh.includes("Monitored conditions") && !fresh.includes('data-label="Condition">Background worker'), "the worker is in its own card, not in the conditions table");
+
+  const unknown = render({ heartbeat: { state: "unknown", reason: "Redis is not configured", redis: "not-configured" }, redis: "not-configured", queues: Object.fromEntries(QUEUE_NAMES.map((n) => [n, null])) });
+  assert.ok(unknown.includes(">Unknown<") && unknown.includes("Redis is not configured"));
+  assert.ok(unknown.includes("No problems found.") && unknown.includes("could not be measured and"));
+  assert.ok(!unknown.includes("Worker is not running"));
+
+  const missing = render({ heartbeat: { state: "missing" } });
+  assert.ok(missing.includes("None recorded") && missing.includes("Worker is not running: no heartbeat has been recorded."));
+
+  // The Refresh button: a link to the page itself; "Refreshing…" and aria-busy while the SPA refetches.
+  assert.ok(/<a [^>]*href="\/admin\/health"[^>]*>Refresh<\/a>/.test(fresh));
+  const busy = render({}, true);
+  assert.ok(/<a [^>]*href="\/admin\/health"[^>]*>Refreshing…<\/a>/.test(busy) && busyAttr(busy));
+  assert.ok(!busyAttr(fresh));
+
+  const lists = render({}, undefined, {
+    recovered: [
+      { id: "r1", at: new Date(NOW - 3600_000), outcome: "recovered", paymentId: "pay-1", razorpayPaymentId: "pay_RZP1", bookingId: "bk1", amountMinor: 50000, currency: "INR", reason: null },
+      { id: "r2", at: new Date(NOW - 7200_000), outcome: "flagged", paymentId: "pay-2", razorpayPaymentId: null, bookingId: null, amountMinor: null, currency: null, reason: "Slot taken" },
+    ],
+    failed: { jobs: [{ queue: "meetings", id: "job-9", name: "create-meeting", bookingId: "bk1", failedReason: "boom", attemptsMade: 5, failedAt: new Date(NOW - 60_000) }], unavailable: ["reminders"] },
+  });
+  assert.ok(lists.includes("pay_RZP1") && lists.includes("Booked") && lists.includes("Needs refund") && lists.includes("Booking bk1") && lists.includes("Slot taken") && lists.includes("500.00"));
+  assert.ok(lists.includes("meetings · create-meeting") && lists.includes("job-9") && lists.includes("boom"));
+  assert.ok(lists.includes("Some queues could not be read") && lists.includes("Redis did not answer for: reminders."));
+  assert.ok(fresh.includes("No payment has needed recovery.") && fresh.includes("No failed jobs"));
+});
+
+/** One row per page of this branch: route id, old Next page, SPA page, the view both render, the view function, the endpoint. */
+const PAGES: { id: SpaRouteId; old: string; spa: string; view: string; fn: string; endpoint: string }[] = [
+  { id: "admin-payments", old: "app/admin/(console)/payments/page.tsx", spa: "web/src/pages/admin/Payments.tsx", view: "PaymentsView", fn: "lib/views/admin-payments.ts", endpoint: "app/api/admin/payments/route.ts" },
+  { id: "admin-payouts", old: "app/admin/(console)/payouts/page.tsx", spa: "web/src/pages/admin/Payouts.tsx", view: "PayoutsView", fn: "lib/views/admin-payouts.ts", endpoint: "app/api/admin/payouts/route.ts" },
+  { id: "admin-bookings", old: "app/admin/(console)/bookings/page.tsx", spa: "web/src/pages/admin/Bookings.tsx", view: "BookingsView", fn: "lib/views/admin-bookings.ts", endpoint: "app/api/admin/bookings/route.ts" },
+  { id: "admin-health", old: "app/admin/(console)/health/page.tsx", spa: "web/src/pages/admin/Health.tsx", view: "HealthView", fn: "lib/views/admin-health.ts", endpoint: "app/api/admin/health/route.ts" },
+  { id: "admin-audit", old: "app/admin/(console)/audit/page.tsx", spa: "web/src/pages/admin/Audit.tsx", view: "AuditView", fn: "lib/views/admin-audit.ts", endpoint: "app/api/admin/audit/route.ts" },
+];
+
+test("every page: the old Next page and the SPA page render the same view from the same view function, behind the same gate as the endpoint", () => {
+  for (const p of PAGES) {
+    const viewImport = `@/components/views/admin/${p.view}`;
+    const fnImport = `@/${p.fn.replace(/\.ts$/, "")}`;
+    const old = read(p.old);
+    const spa = read(p.spa);
+    const endpoint = read(p.endpoint);
+    assert.ok(old.includes(`"${viewImport}"`) && spa.includes(`"${viewImport}"`), `${p.id}: both render ${p.view}`);
+    assert.ok(old.includes(`"${fnImport}"`) && endpoint.includes(`"${fnImport}"`), `${p.id}: the old page and the endpoint load through ${p.fn}`);
+    assert.ok(/jsonify\(await load/.test(old), `${p.old}: the old page renders from exactly the JSON the SPA gets`);
+    assert.ok(old.includes("requireAdminPage("), `${p.old}: keeps its page gate`);
+    // The old page keeps only what Next needs: no table or chrome of its own, no data access.
+    assert.ok(!/from "@\/components\/(ui|app|admin)\//.test(old) && !old.includes("@/lib/db") && !old.includes("@/lib/admin/data"), `${p.old}: no page body or queries left in it`);
+    // The endpoint: the gate that matches the page (requireAdminMfa with no option), jsonView, GET only.
+    assert.ok(/await requireAdminMfa\(\);/.test(endpoint), `${p.endpoint}: requireAdminMfa() without allowEnrollment`);
+    assert.ok(!endpoint.includes("requireAdminApi") && !endpoint.includes("allowEnrollment: true"), `${p.endpoint}: never the weaker gate`);
+    assert.ok(endpoint.includes("jsonView(") && /export async function GET\b/.test(endpoint) && !/export async function (POST|PUT|PATCH|DELETE)\b/.test(endpoint), `${p.endpoint}: a GET that answers with jsonView`);
+    assert.ok(endpoint.includes('export const dynamic = "force-dynamic"'), `${p.endpoint}: never cached`);
+    assert.equal(count(spa, "<PageTitle"), 1, `${p.spa}: exactly one PageTitle`);
+  }
+  assert.ok(read("app/admin/(console)/health/page.tsx").includes('export const dynamic = "force-dynamic"'), "the old health page still measures on every visit");
+});
+
+test("every SPA page sets its title with the same text and template as the route table, and each old page's metadata title equals it", () => {
+  for (const p of PAGES) {
+    const route = spaRouteById(p.id);
+    assert.ok("title" in route && route.title, `${p.id} has a title in the route table`);
+    const m = /<PageTitle title="([^"]+)"(?: template="(\w+)")?/.exec(read(p.spa));
+    assert.ok(m, `${p.spa} renders a <PageTitle> with literal props`);
+    assert.equal(m[1], route.title, `${p.id}: title`);
+    assert.equal(m[2] ?? "brand", route.template, `${p.id}: template`);
+    const old = /title: "([^"]+)"/.exec(read(p.old));
+    assert.ok(old, `${p.old}: metadata title`);
+    assert.equal(old[1], route.title, `${p.id}: the old page's title (the admin layout adds " · Admin")`);
+    assert.equal(formatTitle(old[1], "admin", BRAND_NAME), formatTitle(route.title, route.template, BRAND_NAME));
+  }
+});
+
+test("views and SPA pages import nothing server-side: only allowlisted lib modules, type-only imports from the view functions (what the Vite guard demands)", () => {
+  const viewFiles = readdirSync(path.join(root, "components/views/admin")).filter((f) => f.endsWith(".tsx")).map((f) => `components/views/admin/${f}`);
+  for (const view of PAGES.map((p) => `components/views/admin/${p.view}.tsx`)) assert.ok(viewFiles.includes(view), view);
+  for (const file of [...viewFiles.filter((f) => PAGES.some((p) => f.endsWith(`${p.view}.tsx`))), ...PAGES.map((p) => p.spa)]) {
+    const src = read(file);
+    for (const m of src.matchAll(/^import (?!type )[^"']*from\s+["']([^"']+)["']/gm)) {
+      const spec = m[1];
+      assert.equal(specifierProblem(spec), null, `${file}: ${spec}`);
+      if (spec.startsWith("@/")) {
+        const target = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"].map((ext) => spec.slice(2) + ext).find((rel) => existsSync(path.join(root, rel)) && statSync(path.join(root, rel)).isFile());
+        assert.ok(target, `${file}: ${spec} resolves to a file`);
+        assert.equal(repoPathProblem(target), null, `${file}: ${spec}`);
+      }
+    }
+    assert.ok(!/^import (?!type )[^"']*from\s+["']@\/lib\/(views|admin|payouts|health|db|queue)/m.test(src), `${file}: no value import from server modules`);
+  }
+});

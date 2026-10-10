@@ -19,7 +19,7 @@ const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi;
  * if one slipped in: any secret-looking environment value (8 characters or more) becomes "[hidden]", and the user and
  * password part of a URL (`redis://user:password@host`) becomes `***`.
  */
-export function scrubHealthText(text: string, env: NodeJS.ProcessEnv = process.env): string {
+export function scrubHealthText(text: string, env: Record<string, string | undefined> = process.env): string {
   const secrets = Object.entries(env)
     .filter(([name, value]) => SECRET_ENV_NAME.test(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string)
@@ -88,7 +88,7 @@ export interface AdminHealthView {
 /** The measurements in, the page's data out. Pure, so a test can feed it a snapshot with a stale heartbeat. */
 export function buildAdminHealthView(
   input: { snapshot: HealthSnapshot; thresholds: HealthThresholds; recovered: RecoveredPaymentRow[]; failed: FailedJobsView; queueNames: readonly string[] },
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = process.env,
 ): AdminHealthView {
   const { snapshot, thresholds, recovered, failed } = input;
   const report = evaluateHealth(snapshot, thresholds);
