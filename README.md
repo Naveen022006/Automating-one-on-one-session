@@ -181,9 +181,11 @@ token. Credentials are verified against Meta before saving (the number must belo
 AES-256-GCM encrypted and never shown again.
 
 On connect we submit our five message templates to the influencer's account for approval. Meta only accepts lowercase
-letters, digits and underscores in a template name, so they go out as `booking_confirmation`, `reminder_24h`,
-`reminder_15m`, `reschedule` and `cancellation`; inside the app the keys stay `booking-confirmation`, `reminder-24h` and
-`reminder-15m` (`lib/message-templates.ts` translates at the Graph boundary). Statuses are kept current from Meta's template
+letters, digits and underscores in a template name, and a plain name could clash with a template the influencer already has,
+so they go out as `sa_booking_confirmation`, `sa_reminder_24h`, `sa_reminder_15m`, `sa_reschedule` and `sa_cancellation`;
+inside the app the keys stay `booking-confirmation`, `reminder-24h`, `reminder-15m`, `reschedule` and `cancellation`
+(`lib/message-templates.ts` translates at the Graph boundary). A template that already has one of those names is adopted only
+if its text and number of variables match ours; otherwise the card says so (status "Name already used") and it is not used. Statuses are kept current from Meta's template
 webhook, a "Check template status" button, and a worker job (`worker/whatsapp-sync.ts`) that asks Meta every 30 minutes
 about connections that still have an unapproved template. The dashboard shows which are approved. A message whose template is
 not approved yet, or for an influencer with no healthy connection, goes straight to SMS (no WhatsApp attempt is made or

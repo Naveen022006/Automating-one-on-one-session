@@ -1,4 +1,4 @@
-import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, type TemplateSpec } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, templateConflict, type TemplateSpec } from "@/lib/message-templates";
 import { graphBase, graphVersion } from "@/lib/whatsapp-graph-version";
 
 /**
@@ -175,12 +175,15 @@ export async function ensureTemplates(wabaId: string, token: string, language: s
   const have = new Map(remote.filter((t) => t.language === language).map((t) => [t.name, t]));
   const submitted: string[] = [];
   const failed: { name: string; error: string }[] = [];
+  /** Templates we just created: they say exactly what ours says, so only the ones found already there are compared. */
+  const justCreated = new Set<string>();
 
   for (const [key, spec] of Object.entries(TEMPLATE_SPECS)) {
     if (have.has(spec.name)) continue;
     try {
       const created = await graph<{ id?: string; status?: string }>(`/${encodeURIComponent(wabaId)}/message_templates`, { method: "POST", token, body: JSON.stringify(templatePayload(spec, language)) }, fetchFn);
       have.set(spec.name, { name: spec.name, language, status: normalizeTemplateStatus(created.status ?? "PENDING") });
+      justCreated.add(spec.name);
       submitted.push(key);
     } catch (e) {
       if (!isAlreadyExists(e)) {
@@ -201,7 +204,19 @@ export async function ensureTemplates(wabaId: string, token: string, language: s
   const templates: TemplateSyncResult["templates"] = {};
   for (const [key, spec] of Object.entries(TEMPLATE_SPECS)) {
     const t = have.get(spec.name);
-    if (t) templates[key] = { status: t.status, language, ...(t.rejectedReason ? { reason: t.rejectedReason } : {}) };
+    if (!t) continue;
+    // A template that was already there under our name is adopted only if it is ours. One with other text or another
+    // number of variables would be sent our parameters and fail, so it is reported and not used.
+    const clash = justCreated.has(spec.name) ? null : templateConflict(t.bodyText, spec);
+    if (clash) {
+      templates[key] = {
+        status: "CONFLICT",
+        language,
+        reason: `A template named "${spec.name}" already exists on your WhatsApp account and is not ours: ${clash}. Rename or delete it in WhatsApp Manager, then press Check template status.`,
+      };
+      continue;
+    }
+    templates[key] = { status: t.status, language, ...(t.rejectedReason ? { reason: t.rejectedReason } : {}) };
   }
   return { templates, submitted, failed };
 }

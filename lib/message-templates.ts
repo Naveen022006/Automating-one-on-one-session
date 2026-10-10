@@ -6,15 +6,20 @@
  *
  * Two names per template. The KEY (booking-confirmation, ...) is what the rest of the app stores and passes around:
  * message rows, job data, the stored template status. The META NAME is what is sent to Meta, which only allows
- * lowercase letters, digits and underscores in a template name. They are translated only at the Graph boundary
- * (lib/whatsapp.ts, lib/whatsapp-connect.ts, the template status webhook).
+ * lowercase letters, digits and underscores in a template name, and carries our prefix `sa_` so it cannot clash with a
+ * template the influencer already has on their account (a template called "reschedule" with other text would otherwise
+ * be mistaken for ours and every send would fail on the wrong number of parameters). They are translated only at the
+ * Graph boundary (lib/whatsapp.ts, lib/whatsapp-connect.ts, the template status webhook).
  *
- *   Key                    Meta name              Body variables ({{n}})               Body submitted to Meta (see TEMPLATE_SPECS)
- *   booking-confirmation   booking_confirmation   1 link, 2 service, 3 host, 4 time   "Your booking is confirmed. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
- *   reminder-24h           reminder_24h           1 link, 2 service, 3 host, 4 time   "Reminder: your session is tomorrow. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you soon."
- *   reminder-15m           reminder_15m           1 link, 2 service, 3 host, 4 time   "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
- *   reschedule             reschedule             1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
- *   cancellation           cancellation           1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
+ *   Key                    Meta name                Body variables ({{n}})               Body submitted to Meta (see TEMPLATE_SPECS)
+ *   booking-confirmation   sa_booking_confirmation  1 link, 2 service, 3 host, 4 time   "Your booking is confirmed. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
+ *   reminder-24h           sa_reminder_24h          1 link, 2 service, 3 host, 4 time   "Reminder: your session is tomorrow. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you soon."
+ *   reminder-15m           sa_reminder_15m          1 link, 2 service, 3 host, 4 time   "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there."
+ *   reschedule             sa_reschedule            1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
+ *   cancellation           sa_cancellation          1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
+ *
+ * A template that already has one of these names on the account is adopted only if its text and number of variables are
+ * the same as ours (templateConflict); otherwise it is reported and not used.
  *
  * Meta rejects a template body that starts or ends with a variable, so each body begins and ends with fixed text.
  */
@@ -44,27 +49,27 @@ const LINK_PENDING = "(link coming soon)";
 
 const DEFS: Record<string, TemplateDef> = {
   "booking-confirmation": {
-    meta: "booking_confirmation",
+    meta: "sa_booking_confirmation",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} on ${c.when} is confirmed. Join here: ${c.link}`,
   },
   "reminder-24h": {
-    meta: "reminder_24h",
+    meta: "sa_reminder_24h",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Reminder: ${c.serviceTitle} with ${c.influencerName} is tomorrow, ${c.when}. Join link: ${c.link}`,
   },
   "reminder-15m": {
-    meta: "reminder_15m",
+    meta: "sa_reminder_15m",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `${c.serviceTitle} with ${c.influencerName} starts in 15 minutes (${c.when}). Join here: ${c.link}`,
   },
   reschedule: {
-    meta: "reschedule",
+    meta: "sa_reschedule",
     params: ["link", "serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} was moved to ${c.when}. Updated link: ${c.link}`,
   },
   cancellation: {
-    meta: "cancellation",
+    meta: "sa_cancellation",
     params: ["serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} on ${c.when} was cancelled. Any refund follows our policy.`,
   },
@@ -214,3 +219,21 @@ const BODIES: Record<string, string> = {
 export const TEMPLATE_SPECS: Record<string, TemplateSpec> = Object.fromEntries(
   Object.entries(DEFS).map(([key, d]) => [key, { name: d.meta, body: BODIES[key], examples: d.params.map((f) => EXAMPLES[f]) }]),
 );
+
+const variableCount = (text: string) => new Set([...text.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => m[1])).size;
+const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/**
+ * Why a template found on the account under one of our names is NOT ours, or null when it says what ours says. Sending
+ * our parameters to a template with another number of variables fails, so it must not be adopted: compare the number of
+ * variables and the body text (whitespace aside) with `spec`. A template whose text Meta did not show cannot be vouched
+ * for, so it counts as different.
+ */
+export function templateConflict(existingBody: string | null | undefined, spec: TemplateSpec): string | null {
+  if (existingBody == null) return "Meta did not show its text, so we cannot tell whether it is the same";
+  const have = variableCount(existingBody);
+  const want = variableCount(spec.body);
+  if (have !== want) return `it has ${have} variable${have === 1 ? "" : "s"} and our message needs ${want}`;
+  if (squash(existingBody) !== squash(spec.body)) return "its text is different from ours";
+  return null;
+}

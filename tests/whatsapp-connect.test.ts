@@ -5,7 +5,7 @@ import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { getOverview } from "../lib/dashboard-data";
 import { prisma } from "../lib/db";
 import { ENCRYPTED_COLUMNS } from "../lib/key-rotation-db";
-import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, metaTemplateName, normalizeTemplateStatus, templateKeyFromMetaName, templateParams, templateState } from "../lib/message-templates";
+import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, metaTemplateName, normalizeTemplateStatus, templateConflict, templateKeyFromMetaName, templateParams, templateState } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
 import { DEFAULT_GRAPH_VERSION, graphBase, graphVersion } from "../lib/whatsapp-graph-version";
@@ -77,9 +77,9 @@ test("every template name sent to Meta follows Meta's rule (lowercase letters, d
     assert.ok(!seen.has(name), `${key}: names are unique`);
     seen.add(name);
   }
-  assert.equal(metaTemplateName("booking-confirmation"), "booking_confirmation");
-  assert.equal(metaTemplateName("reminder-24h"), "reminder_24h");
-  assert.equal(metaTemplateName("reminder-15m"), "reminder_15m");
+  assert.equal(metaTemplateName("booking-confirmation"), "sa_booking_confirmation");
+  assert.equal(metaTemplateName("reminder-24h"), "sa_reminder_24h");
+  assert.equal(metaTemplateName("reminder-15m"), "sa_reminder_15m");
   assert.equal(templateKeyFromMetaName("not_ours"), null);
   assert.equal(metaTemplateName("something-else"), "something-else", "a key we do not know passes through");
   assert.throws(() => templatePayload({ ...TEMPLATE_SPECS.reschedule, name: "re-schedule" }, "en"), /not a valid WhatsApp template name/);
@@ -88,7 +88,7 @@ test("every template name sent to Meta follows Meta's rule (lowercase letters, d
 test("the submitted payload is a UTILITY template with examples", () => {
   const p = templatePayload(TEMPLATE_SPECS["booking-confirmation"], "en");
   assert.equal(p.category, "UTILITY");
-  assert.equal(p.name, "booking_confirmation");
+  assert.equal(p.name, "sa_booking_confirmation");
   assert.equal(p.components[0].type, "BODY");
   assert.equal(p.components[0].example.body_text[0].length, 4);
 });
@@ -232,6 +232,66 @@ test("when Meta says a template already exists, its real status is fetched by na
   assert.ok(g.failed.some((f) => f.name === "cancellation"));
   const down = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: "x" }], { hidden: [spec("cancellation").name], lookupFails: true });
   assert.ok((await ensureTemplates("waba1", "tok", "en", down.fetchImpl)).failed.some((f) => f.name === "cancellation"), "a failed lookup is reported too");
+});
+
+test("our Meta names carry the sa_ prefix, so they cannot be mistaken for the influencer's own templates", () => {
+  for (const key of KNOWN_TEMPLATES) {
+    const name = TEMPLATE_SPECS[key].name;
+    assert.ok(name.startsWith("sa_"), name);
+    assert.ok(isMetaTemplateName(name), `${name} is still a name Meta accepts`);
+  }
+  // The plain names are no longer ours: a status for "reschedule" is about someone else's template.
+  for (const plain of ["booking_confirmation", "reminder_24h", "reminder_15m", "reschedule", "cancellation"]) assert.equal(templateKeyFromMetaName(plain), null, plain);
+});
+
+test("a template already on the account under our name is adopted only if it says what ours says", () => {
+  const s = spec("reschedule");
+  assert.equal(templateConflict(s.body, s), null, "identical");
+  assert.equal(templateConflict(`  ${s.body.replace(/ /g, "  ")}\n`, s), null, "whitespace does not matter");
+  assert.match(templateConflict("Your session moved to {{1}}.", s) ?? "", /has 1 variable and our message needs 4/);
+  assert.match(templateConflict(s.body + " {{5}}", s) ?? "", /has 5 variables and our message needs 4/);
+  assert.match(templateConflict(s.body.replace("rescheduled", "moved"), s) ?? "", /text is different/);
+  assert.match(templateConflict("Hello", s) ?? "", /has 0 variables/);
+  assert.match(templateConflict(null, s) ?? "", /did not show its text/, "unreadable counts as different");
+  assert.match(templateConflict(undefined, s) ?? "", /did not show its text/);
+});
+
+test("ensureTemplates does not adopt a same-named template with other text, reports it, and still adopts a real match", async () => {
+  const waba = fakeWaba([
+    { name: spec("reschedule").name, status: "APPROVED", body: "Your session moved to {{1}}." }, // theirs: 1 variable
+    { name: spec("cancellation").name, status: "APPROVED", body: spec("cancellation").body.replace("cancelled", "called off") }, // theirs: same count, other text
+    { name: spec("booking-confirmation").name, status: "PAUSED", body: spec("booking-confirmation").body }, // ours
+    { name: "reschedule", status: "APPROVED", body: "A plain-named template of theirs {{1}}" }, // not even our name now
+  ]);
+  const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+
+  for (const key of ["reschedule", "cancellation"]) {
+    assert.equal(r.templates[key].status, "CONFLICT", `${key} is not adopted`);
+    assert.match(r.templates[key].reason ?? "", new RegExp(`"${spec(key).name}" already exists on your WhatsApp account and is not ours`));
+    assert.match(r.templates[key].reason ?? "", /WhatsApp Manager/);
+  }
+  assert.match(r.templates.reschedule.reason ?? "", /has 1 variable and our message needs 4/);
+  assert.match(r.templates.cancellation.reason ?? "", /text is different/);
+  assert.equal(r.templates["booking-confirmation"].status, "PAUSED", "a template that is ours is adopted with its real status");
+  assert.ok(!waba.posted.includes(spec("reschedule").name) && !waba.posted.includes(spec("cancellation").name), "we do not try to create over it");
+  assert.deepEqual(r.submitted.sort(), ["reminder-15m", "reminder-24h"]);
+  assert.equal(templateState(Object.values(r.templates).map((t) => t.status)), "rejected", "so the card and checklist ask for attention");
+
+  // The same check applies to one found by name after 'already exists'.
+  const hidden = fakeWaba([{ name: spec("cancellation").name, status: "APPROVED", body: "Something else {{1}} {{2}} {{3}}" }], { hidden: [spec("cancellation").name] });
+  assert.equal((await ensureTemplates("waba1", "tok", "en", hidden.fetchImpl)).templates.cancellation.status, "CONFLICT");
+
+  // Their own template under the old plain name is simply not ours: ours is created beside it.
+  const plain = fakeWaba([{ name: "reschedule", status: "APPROVED", body: "Their text" }]);
+  const p = await ensureTemplates("waba1", "tok", "en", plain.fetchImpl);
+  assert.ok(plain.posted.includes(spec("reschedule").name));
+  assert.equal(p.templates.reschedule.status, "PENDING");
+
+  // Once the clash is cleared the next sync adopts or creates ours.
+  waba.rows.splice(waba.rows.findIndex((t) => t.name === spec("reschedule").name), 1);
+  const again = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
+  assert.equal(again.templates.reschedule.status, "PENDING");
+  assert.ok(again.submitted.includes("reschedule"));
 });
 
 test("a template that Meta flagged is still sent; a reinstated one is approved; the rule is one function", () => {
@@ -918,14 +978,14 @@ test("a rejected token flags the connection once, alerts once, and falls back to
 
 test("template status webhooks update the matching account", { skip }, async () => {
   await prisma.whatsAppConnection.update({ where: { influencerId: a }, data: { status: "ACTIVE" } });
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "reschedule", language: "en", status: "APPROVED" }), true);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "sa_reschedule", language: "en", status: "APPROVED" }), true);
   assert.equal((await getConnectionView(a))?.templates.find((t) => t.name === "reschedule")?.status, "APPROVED");
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "booking_confirmation", language: "en", status: "REJECTED", reason: "INVALID_FORMAT" }), true, "Meta's name maps to our key");
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "sa_booking_confirmation", language: "en", status: "REJECTED", reason: "INVALID_FORMAT" }), true, "Meta's name maps to our key");
   const confirmation = (await getConnectionView(a))?.templates.find((t) => t.name === "booking-confirmation");
   assert.deepEqual([confirmation?.status, confirmation?.reason], ["REJECTED", "INVALID_FORMAT"]);
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "not-ours", language: "en", status: "APPROVED" }), false);
   assert.equal(await applyTemplateStatusUpdate({ wabaId: WABA, name: "booking-confirmation", language: "en", status: "APPROVED" }), false, "our key is not a name Meta uses");
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "reschedule", language: "en", status: "APPROVED" }), false);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: "000000", name: "sa_reschedule", language: "en", status: "APPROVED" }), false);
 });
 
 test("a template status update for another language of the same name is ignored", { skip }, async () => {
@@ -934,12 +994,12 @@ test("a template status update for another language of the same name is ignored"
   const waba = String(Number(WABA) + 1); // its own account, so the other tests' connections are not touched
   await connectManual(b, { wabaId: waba, phoneNumberId: String(Number(PHONE) + 11), accessToken: "EAAG-language-token-for-tests-1234567890" }, fakeDeps());
   const status = async () => (await getConnectionView(b))?.templates.find((t) => t.name === "cancellation");
-  await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: lang, status: "APPROVED" });
+  await applyTemplateStatusUpdate({ wabaId: waba, name: "sa_cancellation", language: lang, status: "APPROVED" });
   assert.equal((await status())?.status, "APPROVED");
   // The influencer added their own cancellation template in another language and Meta rejected it: ours is unaffected.
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: other, status: "REJECTED", reason: "INVALID_FORMAT" }), false);
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "sa_cancellation", language: other, status: "REJECTED", reason: "INVALID_FORMAT" }), false);
   assert.deepEqual([(await status())?.status, (await status())?.reason], ["APPROVED", null]);
-  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "cancellation", language: lang, status: "PAUSED" }), true, "our language still updates");
+  assert.equal(await applyTemplateStatusUpdate({ wabaId: waba, name: "sa_cancellation", language: lang, status: "PAUSED" }), true, "our language still updates");
   assert.equal((await status())?.status, "PAUSED");
   const stored = (await prisma.whatsAppConnection.findUniqueOrThrow({ where: { influencerId: b } })).templates as Record<string, { language?: string }>;
   assert.equal(stored.cancellation.language, lang, "the language is kept with the status");
