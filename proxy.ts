@@ -197,7 +197,9 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 export const config = {
   matcher: [
     // Everything except static assets and image optimisation. Prefetches still get the API/page handling.
-    // `assets/` is the SPA's hashed build output (public/assets): static files that skip the proxy entirely.
-    "/((?!_next/static|_next/image|favicon.ico|icon.svg|robots.txt|sitemap.xml|opengraph-image|assets/).*)",
+    // `assets/<name>.<ext>` is the SPA's hashed build output (public/assets): real files that skip the proxy entirely. Only
+    // paths that look like a FILE are excluded: `/assets/book` is still the booking page of a profile with the slug "assets"
+    // (app/[influencer]/book), and must keep the proxy, its CSP and nonce.
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|robots.txt|sitemap.xml|opengraph-image|assets/[^/]+\\.[A-Za-z0-9]+$).*)",
   ],
 };

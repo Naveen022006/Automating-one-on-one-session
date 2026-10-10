@@ -30,8 +30,10 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
-      // Vite names every file in /assets by content hash, so a URL never changes meaning and can be cached for good.
-      { source: "/assets/:path*", headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }] },
+      // Vite names every file in /assets by content hash, so a URL never changes meaning and can be cached for good. Only
+      // paths that look like a file (`<name>.<ext>`): `/assets/book` is a page (the booking page of a profile with the slug
+      // "assets") and must never be cached as immutable, it can be a private owner preview.
+      { source: "/assets/:file([^/]+\\.[A-Za-z0-9]+)", headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }] },
     ];
   },
 };
