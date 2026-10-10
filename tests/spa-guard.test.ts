@@ -24,7 +24,8 @@ test("specifiers: Node built-ins, server-side Next APIs and server-only packages
 test("resolved repository files: only the allowlisted lib modules, never routes, the worker, the generated client or scripts", () => {
   for (const ok of LIB_ALLOWLIST) assert.equal(repoPathProblem(ok), null, ok);
   assert.deepEqual([...LIB_ALLOWLIST].sort(), [
-    "lib/auth/slug.ts", "lib/brand.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts", "lib/spa/routes.ts",
+    "lib/auth/slug.ts", "lib/brand.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/message-templates.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts",
+    "lib/spa/routes.ts", "lib/whatsapp-copy.ts", "lib/whatsapp-graph-version.ts",
   ]);
   for (const bad of [
     "lib/db.ts", "lib/crypto.ts", "lib/env.ts", "lib/auth/session.ts", "lib/admin/session.ts", "lib/payments.ts", "lib/spa/head.ts", "lib/spa/shell.ts", "lib/views/http.ts",
