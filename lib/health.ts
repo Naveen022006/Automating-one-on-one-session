@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { RECOVERABLE_BOOKING_STATUSES, RECOVERY_MAX_AGE_MS } from "@/lib/payment-recovery";
 import { getQueueCounts, QUEUE_NAMES } from "@/lib/queue";
 import {
+  deriveRedisState,
   evaluateHealth,
   nextRecoveryState,
   thresholdsFromEnv,
@@ -59,12 +60,15 @@ export class MemoryKv {
     this.set(key, value, ttlSec);
     return true;
   }
-  del(key: string): void {
+  /** True when a live entry was removed. */
+  del(key: string): boolean {
+    const had = this.get(key) !== null;
     this.data.delete(key);
+    return had;
   }
 }
 
-export type RemoteRead = { ok: true; value: string | null } | { ok: false; reason: string };
+export type RemoteRead = { ok: true; value: string | null } | { ok: false; reason: string; configured: boolean };
 
 let lastFallbackLog = 0;
 function logFallback(e: unknown) {
@@ -92,7 +96,9 @@ export class HealthKv {
   async get(key: string): Promise<string | null> {
     if (this.redis) {
       try {
-        return await this.redis.get(key);
+        const value = await this.redis.get(key);
+        // Something written while Redis was down lives only in memory; it is still the truth for this process.
+        return value ?? this.memory.get(key);
       } catch (e) {
         logFallback(e);
       }
@@ -114,6 +120,8 @@ export class HealthKv {
 
   /** Atomic "claim": true if the key did not exist and now does. */
   async setNx(key: string, value: string, ttlSec: number): Promise<boolean> {
+    // Already claimed in this process while Redis was down: do not claim it a second time now that Redis is back.
+    if (this.memory.get(key) !== null) return false;
     if (this.redis) {
       try {
         return (await this.redis.set(key, value, "EX", ttlSec, "NX")) === "OK";
@@ -125,23 +133,32 @@ export class HealthKv {
   }
 
   async del(key: string): Promise<void> {
-    this.memory.del(key);
+    await this.delIfExists(key);
+  }
+
+  /**
+   * Deletes the key and says whether THIS call removed it. Two callers deleting the same key concurrently (a monitor run
+   * and /api/health, say) cannot both get `true`, which is what lets exactly one of them send a "recovered" note.
+   */
+  async delIfExists(key: string): Promise<boolean> {
+    let removed = this.memory.del(key);
     if (this.redis) {
       try {
-        await this.redis.del(key);
+        removed = Number(await this.redis.del(key)) > 0 || removed;
       } catch (e) {
         logFallback(e);
       }
     }
+    return removed;
   }
 
   /** Redis only, no fallback: lets a reader tell "no heartbeat" from "could not ask". */
   async remoteGet(key: string): Promise<RemoteRead> {
-    if (!this.redis) return { ok: false, reason: "Redis is not configured" };
+    if (!this.redis) return { ok: false, reason: "Redis is not configured", configured: false };
     try {
       return { ok: true, value: await this.redis.get(key) };
     } catch (e) {
-      return { ok: false, reason: `Redis did not answer: ${e instanceof Error ? e.message : e}` };
+      return { ok: false, reason: `Redis did not answer: ${e instanceof Error ? e.message : e}`, configured: true };
     }
   }
 }
@@ -191,7 +208,7 @@ export async function writeHeartbeat(kv: HealthKv = getHealthKv(), now: number =
 
 export async function readHeartbeat(kv: HealthKv = getHealthKv()): Promise<HeartbeatReading> {
   const read = await kv.remoteGet(HEARTBEAT_KEY);
-  if (!read.ok) return { state: "unknown", reason: read.reason };
+  if (!read.ok) return { state: "unknown", reason: read.reason, redis: read.configured ? "down" : "not-configured" };
   if (!read.value) return { state: "missing" };
   try {
     const at = Number((JSON.parse(read.value) as { at?: unknown }).at);
@@ -301,15 +318,17 @@ export async function collectSnapshot(overrides: Partial<SnapshotDeps> = {}): Pr
     ),
   ]);
 
+  const queues: Record<string, QueueCounts | null> = Object.fromEntries(queueEntries);
   return {
     at: now,
     heartbeat,
+    redis: deriveRedisState(heartbeat, queues),
     unrecoveredPayments,
     recovery,
     stuckMeetings,
     failedConfirmations,
     unsweptHolds,
-    queues: Object.fromEntries(queueEntries),
+    queues,
   };
 }
 

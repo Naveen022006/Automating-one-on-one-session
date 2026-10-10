@@ -6,9 +6,12 @@ import {
   DEFAULT_THRESHOLDS,
   HealthKv,
   MemoryKv,
+  deriveRedisState,
   evaluateHealth,
   evaluateQueue,
   evaluateRecovery,
+  evaluateRecoveryStale,
+  evaluateRedis,
   evaluateWorker,
   nextRecoveryState,
   parseAlertEmails,
@@ -22,7 +25,7 @@ import {
   type HealthRedis,
   type HealthSnapshot,
 } from "../lib/health";
-import { processAlerts } from "../lib/health-alerts";
+import { processAlerts, runHealthMonitor, runWatchdog } from "../lib/health-alerts";
 import { singleFlight } from "../worker/monitoring";
 
 /**
@@ -36,6 +39,7 @@ const NOW = Date.parse("2026-10-10T12:00:00Z");
 const healthy: HealthSnapshot = {
   at: NOW,
   heartbeat: { state: "ok", at: NOW - 10_000 },
+  redis: "ok",
   unrecoveredPayments: 0,
   recovery: { consecutiveFailedRuns: 0, lastRunAt: NOW - 60_000, lastError: null, lastCandidates: 3, lastRecovered: 0 },
   stuckMeetings: 0,
@@ -93,7 +97,7 @@ test("worker heartbeat: fresh is ok, past the threshold is critical, missing is 
   const missing = evaluateWorker({ state: "missing" }, NOW, T);
   assert.equal(missing.status, "critical");
   assert.match(missing.detail, /Worker is not running/);
-  const unknown = evaluateWorker({ state: "unknown", reason: "Redis is not configured" }, NOW, T);
+  const unknown = evaluateWorker({ state: "unknown", reason: "Redis is not configured", redis: "not-configured" }, NOW, T);
   assert.equal(unknown.status, "unknown");
   assert.equal(unknown.value, null);
 });
@@ -237,12 +241,12 @@ test("heartbeat: written with a TTL, read back fresh; a stale or absent one is r
 test("heartbeat: with Redis down the writer falls back to memory and never throws; a reader reports unknown", async () => {
   const down = new HealthKv(fakeRedis({ fail: true }));
   await writeHeartbeat(down, NOW);
-  assert.deepEqual(await readHeartbeat(down), { state: "unknown", reason: "Redis did not answer: connection refused" });
+  assert.deepEqual(await readHeartbeat(down), { state: "unknown", reason: "Redis did not answer: connection refused", redis: "down" });
   assert.equal(JSON.parse((await down.get("health:worker-heartbeat"))!).at, NOW, "kept in process memory");
 
   const none = new HealthKv(null);
   await writeHeartbeat(none, NOW);
-  assert.deepEqual(await readHeartbeat(none), { state: "unknown", reason: "Redis is not configured" });
+  assert.deepEqual(await readHeartbeat(none), { state: "unknown", reason: "Redis is not configured", redis: "not-configured" });
 });
 
 test("HealthKv.setNx claims a key exactly once, in Redis and in memory", async () => {
@@ -346,7 +350,7 @@ test("several conditions in one run share one email per recipient; a measurement
   // "a" can no longer be measured (Redis blip): neither a recovery note nor a new alert.
   h.advance(10 * 60_000);
   const gap = await processAlerts({ conditions: [cond("a", "unknown"), cond("b", "critical")] }, h.deps);
-  assert.deepEqual(gap, { alerted: [], recovered: [] });
+  assert.deepEqual(gap, { alerted: [], recovered: [], retrying: [] });
 });
 
 test("no ADMIN_ALERT_EMAILS: the webhook notice still goes out and nothing throws", async () => {
@@ -369,6 +373,7 @@ test("a failing email channel or notice hook never throws out of the monitor", a
     },
   );
   assert.deepEqual(out.alerted, ["a"]);
+  assert.deepEqual(out.retrying, ["a"], "every email failed, so the alert is not considered delivered");
   const broken = await processAlerts(
     { conditions: [cond("b", "critical")] },
     {
@@ -380,6 +385,185 @@ test("a failing email channel or notice hook never throws out of the monitor", a
   );
   assert.deepEqual(broken.alerted, ["b"], "the email channel still ran");
   assert.equal(h.emails.length, 2, "both recipients were emailed even though the notice hook threw");
+});
+
+test("when every email for an alert fails the dedupe key is released so the next run retries; one success keeps it", async () => {
+  const h = alertHarness();
+  const bad = { conditions: [cond("a", "critical")] };
+  let failing = true;
+  const flaky = async (to: string, m: { subject: string; text: string }) => {
+    if (failing) return false; // sendAccountEmail reports failure as false
+    h.emails.push({ to, subject: m.subject, text: m.text });
+    return true;
+  };
+  const first = await processAlerts(bad, { ...h.deps, sendEmail: flaky });
+  assert.deepEqual(first.retrying, ["a"]);
+  h.advance(5 * 60_000); // well inside the hour: without the release this run would be silent
+  failing = false;
+  const second = await processAlerts(bad, { ...h.deps, sendEmail: flaky });
+  assert.deepEqual(second.alerted, ["a"]);
+  assert.deepEqual(second.retrying, []);
+  assert.equal(h.emails.length, 2, "delivered to both recipients on the retry");
+  h.advance(5 * 60_000);
+  assert.deepEqual((await processAlerts(bad, { ...h.deps, sendEmail: flaky })).alerted, [], "now it is deduped as usual");
+
+  // One recipient reachable is enough to keep the dedupe key.
+  const h2 = alertHarness();
+  const oneOk = async (to: string) => to === "ops@example.com";
+  const partial = await processAlerts(bad, { ...h2.deps, sendEmail: oneOk });
+  assert.deepEqual(partial.retrying, []);
+  h2.advance(60_000);
+  assert.deepEqual((await processAlerts(bad, { ...h2.deps, sendEmail: oneOk })).alerted, []);
+});
+
+test("overlapping runs send one recovery note, not one each", async () => {
+  const h = alertHarness();
+  await processAlerts({ conditions: [cond("a", "critical")] }, h.deps);
+  const before = h.emails.length;
+  const good = { conditions: [cond("a", "ok")] };
+  const runs = await Promise.all([processAlerts(good, h.deps), processAlerts(good, h.deps), processAlerts(good, h.deps)]);
+  assert.equal(runs.flatMap((r) => r.recovered).length, 1, "only the run whose delete removed the marker announces it");
+  assert.equal(h.emails.length - before, 2, "one note to each of the two recipients");
+  assert.equal(h.notices.filter((n) => n.level === "info").length, 1);
+});
+
+// --- Redis outage, recovery loop, repair, watchdog ---------------------------------------------------------------
+
+test("Redis configured but not answering is a critical condition; not configured is just unknown", () => {
+  assert.equal(evaluateRedis("down", "Redis did not answer: timeout").status, "critical");
+  assert.match(evaluateRedis("down", "Redis did not answer: timeout").detail, /not answering/);
+  assert.equal(evaluateRedis("ok").status, "ok");
+  assert.equal(evaluateRedis("not-configured").status, "unknown");
+
+  const down = { state: "unknown", reason: "Redis did not answer: x", redis: "down" } as const;
+  assert.equal(deriveRedisState(down, { meetings: null, messages: null }), "down");
+  assert.equal(deriveRedisState(down, { meetings: null, messages: { waiting: 0, active: 0, failed: 0, delayed: 0 } }), "ok", "a queue answered, so one flaky connection is not an outage");
+  assert.equal(deriveRedisState({ state: "unknown", reason: "x", redis: "not-configured" }, {}), "not-configured");
+  assert.equal(deriveRedisState({ state: "missing" }, { meetings: null }), "ok");
+  assert.equal(deriveRedisState({ state: "ok", at: NOW }, {}), "ok");
+
+  const outage = evaluateHealth(
+    withChange({ heartbeat: down, redis: "down", queues: { meetings: null, messages: null, reminders: null } }),
+    T,
+  );
+  assert.ok(outage.unhealthy.some((c) => c.id === "redis-unreachable" && c.status === "critical"), "the outage is visible");
+  assert.equal(outage.conditions.find((c) => c.id === "worker-heartbeat")?.status, "unknown", "the checks that depend on Redis stay unknown");
+  assert.equal(outage.conditions.find((c) => c.id === "recovery-stale")?.status, "unknown");
+  assert.equal(outage.unhealthy.length, 1, "no cascade of alerts for one outage");
+});
+
+test("a recovery loop that has not run for 3x its interval is critical, unless the worker itself is down", () => {
+  const ranAgo = (min: number) => ({ consecutiveFailedRuns: 0, lastRunAt: NOW - min * 60_000, lastError: null, lastCandidates: 0, lastRecovered: 0 });
+  assert.equal(evaluateRecoveryStale(ranAgo(1), true, NOW, T).status, "ok");
+  assert.equal(evaluateRecoveryStale(ranAgo(T.recoveryStaleMinutes), true, NOW, T).status, "ok", "exactly at the limit is fine");
+  const stale = evaluateRecoveryStale(ranAgo(T.recoveryStaleMinutes + 1), true, NOW, T);
+  assert.equal(stale.status, "critical");
+  assert.equal(stale.id, "recovery-stale");
+  assert.match(stale.detail, /should run every 2 minutes/);
+  assert.equal(evaluateRecoveryStale(ranAgo(60), false, NOW, T).status, "unknown", "the worker condition already says so");
+  assert.equal(evaluateRecoveryStale(null, true, NOW, T).status, "unknown");
+  assert.equal(T.recoveryStaleMinutes, 6, "3 x the 2 minute interval");
+  assert.equal(thresholdsFromEnv({ HEALTH_RECOVERY_STALE_MINUTES: "10" }).recoveryStaleMinutes, 10);
+
+  // End to end through the evaluation: a stuck loop under a live worker is an unhealthy condition.
+  const report = evaluateHealth(withChange({ recovery: ranAgo(30) }), T);
+  assert.deepEqual(report.unhealthy.map((c) => c.id), ["recovery-stale"]);
+});
+
+function monitorDeps(over: Record<string, unknown> = {}) {
+  const h = alertHarness();
+  const requeued: number[] = [];
+  const deps = {
+    ...h.deps,
+    emails: [] as string[],
+    collect: async () => healthy,
+    requeuePending: async () => {
+      requeued.push(Date.now());
+      return 2;
+    },
+    ...over,
+  };
+  return { h, deps, requeued };
+}
+
+test("the monitor re-queues paid bookings without a link whenever any are stuck, and survives a failing repair", async () => {
+  const stuck = { ...healthy, stuckMeetings: 3 };
+  const a = monitorDeps({ collect: async () => stuck });
+  const report = await runHealthMonitor(a.deps);
+  assert.ok(report?.unhealthy.some((c) => c.id === "meetings-stuck"));
+  assert.equal(a.requeued.length, 1, "repaired, not only reported");
+
+  const b = monitorDeps();
+  await runHealthMonitor(b.deps);
+  assert.equal(b.requeued.length, 0, "nothing stuck, nothing to re-queue");
+
+  const c = monitorDeps({
+    collect: async () => stuck,
+    requeuePending: async () => {
+      throw new Error("redis down");
+    },
+  });
+  const survived = await runHealthMonitor(c.deps);
+  assert.ok(survived, "a failing repair does not take the monitor down");
+  assert.ok(survived.unhealthy.some((x) => x.id === "meetings-stuck"));
+});
+
+test("the monitor reports a measurement failure as null instead of throwing", async () => {
+  const m = monitorDeps({
+    collect: async () => {
+      throw new Error("database down");
+    },
+  });
+  assert.equal(await runHealthMonitor(m.deps), null);
+});
+
+test("the watchdog alerts on a Redis outage once, retries the read first, and stays quiet without Redis configured", async () => {
+  const h = alertHarness();
+  const reads: number[] = [];
+  const flakyRedis = fakeRedis({ fail: true });
+  const origGet = flakyRedis.get.bind(flakyRedis);
+  flakyRedis.get = async (key: string) => {
+    reads.push(1);
+    return origGet(key);
+  };
+  const kv = new HealthKv(flakyRedis, new MemoryKv(() => NOW));
+  const down = await runWatchdog({ ...h.deps, kv, retryDelayMs: 1 });
+  assert.equal(down.redis.status, "critical");
+  assert.equal(down.worker.status, "unknown");
+  assert.ok(reads.length >= 2, "the failed read was retried before declaring an outage");
+  assert.equal(h.notices.filter((n) => n.level === "warn").length, 1);
+  assert.match(h.notices[0].text, /Redis/);
+
+  await runWatchdog({ ...h.deps, kv, retryDelayMs: 1 });
+  assert.equal(h.notices.filter((n) => n.level === "warn").length, 1, "deduped on the next poll");
+
+  const noRedis = alertHarness();
+  const quiet = await runWatchdog({ ...noRedis.deps, kv: new HealthKv(null), retryDelayMs: 1 });
+  assert.equal(quiet.redis.status, "unknown");
+  assert.equal(noRedis.notices.length, 0);
+
+  // Healthy Redis, stale heartbeat: the worker alert, not a Redis one.
+  const stale = alertHarness();
+  const redis = fakeRedis();
+  const kv2 = new HealthKv(redis);
+  await writeHeartbeat(kv2, Date.now() - 20 * 60_000);
+  const w = await runWatchdog({ ...stale.deps, kv: kv2 });
+  assert.equal(w.redis.status, "ok");
+  assert.equal(w.worker.status, "critical");
+  assert.match(stale.notices[0].text, /Worker is not running/);
+});
+
+test("a value written to memory during a Redis outage is still found, and not claimed twice, once Redis is back", async () => {
+  const memory = new MemoryKv();
+  const kv = new HealthKv(fakeRedis({ fail: true }), memory);
+  await kv.set("health:active:x", "1", 600);
+  assert.equal(await kv.setNx("health:alerted:x", "1", 600), true, "claimed in memory during the outage");
+  // Redis returns (a new, healthy client; the process memory is the same).
+  const recovered = new HealthKv(fakeRedis(), memory);
+  assert.equal(await recovered.get("health:active:x"), "1", "the marker written during the outage is still seen");
+  assert.equal(await recovered.setNx("health:alerted:x", "1", 600), false, "the claim made during the outage still counts");
+  assert.equal(await recovered.delIfExists("health:active:x"), true);
+  assert.equal(await recovered.delIfExists("health:active:x"), false, "only the first deleter gets true");
 });
 
 // --- single flight ----------------------------------------------------------------------------------------------

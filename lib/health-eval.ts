@@ -27,6 +27,8 @@ export interface HealthThresholds {
   holdSweepGraceMinutes: number;
   /** Consecutive recovery runs in which every Razorpay lookup failed. */
   recoveryFailingRuns: number;
+  /** The recovery loop runs every 2 minutes; if its last run is older than this it is stuck or not running (3x the interval). */
+  recoveryStaleMinutes: number;
   /** The same alert key is sent at most once per this many minutes. */
   alertDedupeMinutes: number;
 }
@@ -39,6 +41,7 @@ export const DEFAULT_THRESHOLDS: HealthThresholds = {
   queueWaitingMax: 50,
   holdSweepGraceMinutes: 5,
   recoveryFailingRuns: 3,
+  recoveryStaleMinutes: 6,
   alertDedupeMinutes: 60,
 };
 
@@ -50,6 +53,7 @@ const ENV_KEYS: Record<keyof HealthThresholds, string> = {
   queueWaitingMax: "HEALTH_QUEUE_WAITING_MAX",
   holdSweepGraceMinutes: "HEALTH_HOLD_SWEEP_GRACE_MINUTES",
   recoveryFailingRuns: "HEALTH_RECOVERY_FAILING_RUNS",
+  recoveryStaleMinutes: "HEALTH_RECOVERY_STALE_MINUTES",
   alertDedupeMinutes: "HEALTH_ALERT_DEDUPE_MINUTES",
 };
 
@@ -69,8 +73,23 @@ export type HeartbeatReading =
   | { state: "ok"; at: number }
   /** Redis answered and there is no heartbeat key (never written, or expired). */
   | { state: "missing" }
-  /** Redis is not configured or did not answer, so nothing can be said about the worker. */
-  | { state: "unknown"; reason: string };
+  /**
+   * Nothing can be said about the worker: Redis is not configured (`not-configured`, normal in local development) or it is
+   * configured but did not answer (`down`, an outage).
+   */
+  | { state: "unknown"; reason: string; redis: "not-configured" | "down" };
+
+export type RedisState = "not-configured" | "ok" | "down";
+
+/**
+ * Whether Redis is answering. Not configured is not an outage. A failed heartbeat read alone could be one flaky
+ * connection, so Redis only counts as down when no queue answered either.
+ */
+export function deriveRedisState(heartbeat: HeartbeatReading, queues: Record<string, QueueCounts | null>): RedisState {
+  if (heartbeat.state !== "unknown") return "ok";
+  if (heartbeat.redis === "not-configured") return "not-configured";
+  return Object.values(queues).some((q) => q !== null) ? "ok" : "down";
+}
 
 export interface RecoveryState {
   /** Recovery runs in a row in which Razorpay lookups were attempted and every one failed. */
@@ -85,6 +104,7 @@ export interface RecoveryState {
 export interface HealthSnapshot {
   at: number;
   heartbeat: HeartbeatReading;
+  redis: RedisState;
   unrecoveredPayments: number | null;
   recovery: RecoveryState | null;
   stuckMeetings: number | null;
@@ -191,10 +211,54 @@ export function evaluateRecovery(recovery: RecoveryState | null, t: HealthThresh
   return { ...base, status: "ok", value: recovery.consecutiveFailedRuns, detail: "Razorpay lookups are answering." };
 }
 
+/**
+ * Redis is where the job queues, the worker heartbeat and the alert dedupe live. When it is configured but not answering,
+ * every other Redis-based check turns "unknown", so the outage itself has to be a condition that alerts.
+ */
+export function evaluateRedis(state: RedisState, reason?: string): HealthCondition {
+  const base = { id: "redis-unreachable", label: "Redis", unit: "" };
+  if (state === "not-configured") {
+    return { ...base, status: "unknown", value: null, detail: "Redis is not configured (REDIS_URL): job queues and the worker heartbeat are unavailable." };
+  }
+  if (state === "ok") return { ...base, status: "ok", value: null, detail: "Redis is answering." };
+  return {
+    ...base,
+    status: "critical",
+    value: null,
+    detail: `Redis is configured but is not answering${reason ? ` (${reason})` : ""}. Queued jobs, reminders and the worker heartbeat cannot be checked.`,
+    hint: "Check the Redis service and REDIS_URL. Paid bookings wait without a Meet link until it is back; recovery re-queues them automatically.",
+  };
+}
+
+/** The recovery loop records a timestamp every run; a stale one means the loop is stuck or crashing even though the worker is up. */
+export function evaluateRecoveryStale(
+  recovery: RecoveryState | null,
+  workerOk: boolean,
+  now: number,
+  t: HealthThresholds = DEFAULT_THRESHOLDS,
+): HealthCondition {
+  const base = { id: "recovery-stale", label: "Payment recovery loop", unit: "seconds" };
+  if (!workerOk) return { ...base, status: "unknown", value: null, detail: "Not checked while the worker's state is not known to be running." };
+  if (!recovery?.lastRunAt) return { ...base, status: "unknown", value: null, detail: "No payment recovery run has been recorded (it may be turned off)." };
+  const age = Math.max(0, Math.round((now - recovery.lastRunAt) / 1000));
+  if (age > t.recoveryStaleMinutes * 60) {
+    return {
+      ...base,
+      status: "critical",
+      value: age,
+      detail: `Payment recovery last ran ${formatAge(age)} ago; it should run every 2 minutes. A payment whose webhook was lost would not be found.`,
+      hint: "The recovery loop is stuck or crashing while the worker is up: read the worker log and restart the worker.",
+    };
+  }
+  return { ...base, status: "ok", value: age, detail: `Payment recovery last ran ${formatAge(age)} ago.` };
+}
+
 /** Turns measurements into the list of conditions, in the order the admin page shows them. */
 export function evaluateHealth(snapshot: HealthSnapshot, t: HealthThresholds = DEFAULT_THRESHOLDS): HealthReport {
+  const worker = evaluateWorker(snapshot.heartbeat, snapshot.at, t);
   const conditions: HealthCondition[] = [
-    evaluateWorker(snapshot.heartbeat, snapshot.at, t),
+    worker,
+    evaluateRedis(snapshot.redis, snapshot.heartbeat.state === "unknown" ? snapshot.heartbeat.reason : undefined),
     countCondition("payments-unrecovered", "Paid at Razorpay but not booked", ["payment", "payments"], snapshot.unrecoveredPayments, {
       status: "critical",
       okText: "No captured payment is waiting to be booked.",
@@ -203,6 +267,7 @@ export function evaluateHealth(snapshot: HealthSnapshot, t: HealthThresholds = D
       href: "/admin/payments?view=unpaid",
     }),
     evaluateRecovery(snapshot.recovery, t),
+    evaluateRecoveryStale(snapshot.recovery, worker.status === "ok", snapshot.at, t),
     countCondition("meetings-stuck", "Paid bookings without a Meet link", ["booking", "bookings"], snapshot.stuckMeetings, {
       status: "warn",
       okText: "Every paid booking has its Meet link.",
