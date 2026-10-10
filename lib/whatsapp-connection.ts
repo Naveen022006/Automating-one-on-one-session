@@ -113,33 +113,42 @@ interface StoredPin {
   generated: boolean;
 }
 
-async function readStoredPin(phoneNumberId: string): Promise<StoredPin | null> {
+/** What is saved for a number: its PIN, nothing, or a row that cannot be decrypted with the keys we have (so what the number holds is unknown). */
+type PinLookup = ({ kind: "found" } & StoredPin) | { kind: "none" } | { kind: "unreadable" };
+
+async function lookupPinRow(phoneNumberId: string): Promise<PinLookup> {
   const row = await prisma.whatsAppRegistrationPin.findUnique({ where: { phoneNumberId } });
-  if (!row) return null;
+  if (!row) return { kind: "none" };
   try {
-    return { pin: decryptSecret(row.pinEnc, pinAad(phoneNumberId)), generated: row.generated };
+    return { kind: "found", pin: decryptSecret(row.pinEnc, pinAad(phoneNumberId)), generated: row.generated };
   } catch {
-    return null; // not readable with the current keys: treated as lost, the caller resets or asks
+    return { kind: "unreadable" };
   }
 }
 
 /**
- * The PIN this number was last registered with, or null. A reconnect must register with the same one, so it is read from
- * a table that does not depend on a connection existing. A PIN saved only on a connection row by the earlier version of
- * this code (whatsapp_connections.registration_pin_enc) is moved across the first time it is needed.
+ * What is saved for this number. A reconnect must register with the same PIN, so it is read from a table that does not
+ * depend on a connection existing. A PIN saved only on a connection row by the earlier version of this code
+ * (whatsapp_connections.registration_pin_enc) is moved across the first time it is needed.
  */
-export async function getRegistrationPin(influencerId: string, phoneNumberId: string): Promise<StoredPin | null> {
-  const stored = await readStoredPin(phoneNumberId);
-  if (stored) return stored;
+async function findPin(influencerId: string, phoneNumberId: string): Promise<PinLookup> {
+  const saved = await lookupPinRow(phoneNumberId);
+  if (saved.kind !== "none") return saved;
   const old = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { phoneNumberId: true, registrationPinEnc: true } });
-  if (!old || old.phoneNumberId !== phoneNumberId || !old.registrationPinEnc) return null;
+  if (!old || old.phoneNumberId !== phoneNumberId || !old.registrationPinEnc) return { kind: "none" };
   try {
     const pin = decryptSecret(old.registrationPinEnc, legacyPinAad(influencerId));
     await savePin(phoneNumberId, pin, true, false);
-    return { pin, generated: true };
+    return { kind: "found", pin, generated: true };
   } catch {
-    return null;
+    return { kind: "none" };
   }
+}
+
+/** The PIN this number was last registered with, or null (also when it is saved but cannot be read). */
+export async function getRegistrationPin(influencerId: string, phoneNumberId: string): Promise<StoredPin | null> {
+  const found = await findPin(influencerId, phoneNumberId);
+  return found.kind === "found" ? { pin: found.pin, generated: found.generated } : null;
 }
 
 /** Saves the PIN for a number. `replace` overwrites one already there; otherwise an existing PIN is left alone. */
@@ -166,23 +175,45 @@ interface PinPlan extends StoredPin {
  * influencer's two-step PIN, else random). A new PIN is SAVED here, before anything is sent to Meta: once registered, the
  * number holds it and only this row can tell us what it is. Two connects racing on one number agree on the first saved.
  */
-async function pinToRegister(influencerId: string, phoneNumberId: string, env: NodeJS.ProcessEnv): Promise<PinPlan> {
-  const stored = await getRegistrationPin(influencerId, phoneNumberId);
-  if (stored) return { ...stored, created: false };
+async function pinToRegister(influencerId: string, phoneNumberId: string, env: NodeJS.ProcessEnv, resetPin: boolean): Promise<PinPlan> {
+  const saved = await findPin(influencerId, phoneNumberId);
+  if (saved.kind === "found") return { pin: saved.pin, generated: saved.generated, created: false };
+
   const dev = env.WHATSAPP_REGISTRATION_PIN?.trim();
   const pin = env.NODE_ENV !== "production" && dev && PIN.test(dev) ? dev : generateRegistrationPin();
+
+  if (saved.kind === "unreadable") {
+    // Something is saved for this number but not with a key we have, so what it holds is unknown. Writing a new PIN over
+    // it is the owner's choice (they opted in to a reset); otherwise they are asked, not overwritten.
+    if (!resetPin) throw unreadablePinError();
+    await savePin(phoneNumberId, pin, true, true);
+    return { pin, generated: true, created: true };
+  }
+
   try {
     await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId, pinEnc: encryptSecret(pin, pinAad(phoneNumberId)), generated: true } });
     return { pin, generated: true, created: true };
   } catch (e) {
-    const winner = isUniqueViolation(e) ? await readStoredPin(phoneNumberId) : null;
-    if (winner) return { ...winner, created: false };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    // Another connect for this number saved one first: use that.
+    const winner = await lookupPinRow(phoneNumberId);
+    if (winner.kind === "found") return { pin: winner.pin, generated: winner.generated, created: false };
+    throw winner.kind === "unreadable" ? unreadablePinError() : e;
   }
 }
 
 /** Where to look when a number's two-step PIN is not one we know. */
 const FIND_PIN = "Open WhatsApp Manager, choose this phone number and look for Two-step verification in its settings, where the PIN can be changed.";
+
+/** A PIN is saved for this number but cannot be decrypted (a key was lost), so it can neither be used nor safely replaced unasked. */
+function unreadablePinError(): WhatsAppConnectError {
+  return new WhatsAppConnectError(
+    `The PIN we saved for this number can no longer be read, so we do not know what it is. Enter the number's current two-step verification PIN in the PIN field and connect again. If you do not have it, tick "${RESET_PIN_LABEL}" and connect again: we will then set a new PIN on the number. To look for it yourself, ${FIND_PIN}`,
+    400,
+    "pin",
+    true,
+  );
+}
 
 /**
  * Registering a number whose two-step PIN differs from the one we sent is refused by Meta. Say so in a way the
@@ -235,7 +266,7 @@ async function registerWithPin(
     await savePin(phoneNumberId, opts.supplied, false, true);
     return;
   }
-  const plan = await pinToRegister(influencerId, phoneNumberId, opts.env);
+  const plan = await pinToRegister(influencerId, phoneNumberId, opts.env, opts.resetPin === true);
   try {
     await deps.registerNumber(phoneNumberId, token, plan.pin);
     return;

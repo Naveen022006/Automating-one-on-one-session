@@ -1,5 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { getOverview } from "../lib/dashboard-data";
@@ -812,6 +813,46 @@ test("a PIN the influencer typed is never overwritten, even when they ask for a 
   assert.deepEqual(meta.calls, ["register:000000", "register:246810"], "no set-PIN call");
   assert.equal(meta.onNumber.get(phone), "555555");
   assert.deepEqual(await storedPin(phone), { pin: "246810", generated: false }, "what they typed is still what is saved");
+});
+
+test("a saved PIN that can no longer be read asks the influencer, instead of crashing or being replaced unasked", { skip }, async () => {
+  const unreadable = async (phone: string) => {
+    // Saved with a key we do not have (a lost or mis-rotated TOKEN_ENCRYPTION_KEY).
+    const pinEnc = encryptSecret("111111", whatsappPinAad(phone), randomBytes(32));
+    await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: phone, pinEnc, generated: true } });
+    return pinEnc;
+  };
+  const connect = (phone: string, deps: ConnectDeps, extra: { pin?: string; resetPin?: boolean } = {}) =>
+    connectEmbedded(b, { code: "code-123456", wabaId: WABA, phoneNumberId: phone, ...extra }, deps, NO_ENV);
+
+  // Nothing typed, nothing ticked: a clear field error (not a raw database error), Meta is not touched, the row is left alone.
+  const phone = String(Number(PHONE) + 50);
+  const meta = strictMeta({ [phone]: "777777" });
+  const before = await unreadable(phone);
+  await assert.rejects(
+    connect(phone, fakeDeps(meta.deps)),
+    (e: unknown) => e instanceof WhatsAppConnectError && e.field === "pin" && e.canReset === true && /can no longer be read/.test(e.message) && e.message.includes(`"${RESET_PIN_LABEL}"`) && /WhatsApp Manager/.test(e.message),
+  );
+  assert.deepEqual(meta.calls, []);
+  assert.equal((await pinRow(phone))?.pinEnc, before, "not overwritten");
+  assert.equal(await prisma.whatsAppConnection.count({ where: { influencerId: b } }), 0);
+
+  // They type the PIN: it is used, and replaces the unreadable row.
+  assert.equal((await connect(phone, fakeDeps(meta.deps), { pin: "777777" })).status, "ACTIVE");
+  assert.deepEqual(await storedPin(phone), { pin: "777777", generated: false });
+  await disconnect(b);
+
+  // They tick the reset: the unreadable row is replaced by a new PIN, which is then set on the number.
+  const phone2 = String(Number(PHONE) + 51);
+  const meta2 = strictMeta({ [phone2]: "777777" });
+  const before2 = await unreadable(phone2);
+  assert.equal((await connect(phone2, fakeDeps(meta2.deps), { resetPin: true })).status, "ACTIVE");
+  const now = (await storedPin(phone2))!;
+  assert.notEqual((await pinRow(phone2))?.pinEnc, before2);
+  assert.equal(now.generated, true);
+  assert.deepEqual(meta2.calls.map((c) => c.split(":")[0]), ["register", "setpin", "register"]);
+  assert.equal(meta2.onNumber.get(phone2), now.pin);
+  await disconnect(b);
 });
 
 test("a number registered by an older version with the shared WHATSAPP_REGISTRATION_PIN is recognised, not reset", { skip }, async () => {
