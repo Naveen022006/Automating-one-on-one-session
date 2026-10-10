@@ -3,6 +3,10 @@ import { z } from "zod";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { isValidTimezone } from "@/lib/slots";
+import { loadAvailabilityView } from "@/lib/views/dashboard-availability";
+import { jsonView } from "@/lib/views/http";
+
+export const dynamic = "force-dynamic";
 
 // Create / update / delete weekly availability rules for the logged-in influencer. Every mutation requires a
 // session (401) and that the rule belongs to that influencer (404).
@@ -25,6 +29,14 @@ const updateSchema = z.object({
 });
 
 const deleteSchema = z.object({ ruleId: z.string().min(1) });
+
+// The Availability page's data for the SPA (the old Next page renders from the same loadAvailabilityView): the
+// influencer's time zone, weekly rules and blocked days.
+export async function GET() {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  return jsonView(await loadAvailabilityView(auth.influencerId));
+}
 
 export async function POST(req: Request) {
   const auth = await requireApiAuth();
