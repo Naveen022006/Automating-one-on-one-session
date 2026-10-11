@@ -873,10 +873,9 @@ test("race, refund second: a payout locks the payment AFTER the refund's eligibi
   const row = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
   assert.deepEqual([row.payoutId, row.refundStatus, row.refundAmountMinor, row.status], [payoutId, null, null, "CAPTURED"], "the payout keeps the payment; no refund claim was left behind");
   assert.deepEqual((await auditOf("payment", payment.id)).map((t) => t.action), ["payment.refund_requested", "payment.refund_refused"]);
-  // Other callers of refundPayment (the influencer's dashboard, auto refund on cancel) are unchanged: no option, no new check.
-  const influencerRefund = await refundPayment(payment.id, { reason: "influencer path" });
-  assert.equal(influencerRefund.fullyRefunded, true);
-  assert.equal(razorpayCalls.length, 1);
+  // Every other caller (the influencer's dashboard, auto refund on cancel) is blocked by default too (tests/money-fixes.test.ts pins the messages).
+  await assert.rejects(refundPayment(payment.id, { reason: "influencer path" }), /pending payout/);
+  assert.equal(razorpayCalls.length, 0);
 });
 
 test("race, payout second: a refund is claimed AFTER the payout read the payment; the payout's claim finds it changed and fails with 409, nothing is locked", { skip }, async () => {

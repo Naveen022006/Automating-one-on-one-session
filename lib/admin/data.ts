@@ -1,7 +1,7 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { isEntityId } from "@/lib/http";
-import { CONNECTION_KEYS, approvalRequired, buildPublicInfluencerWhere, evaluateReadiness, isLiveBlocker, readinessInput, type ReadinessInput } from "@/lib/readiness";
+import { approvalRequired, buildPublicInfluencerWhere, evaluateReadiness, isLiveBlocker, readinessInput, type ReadinessInput } from "@/lib/readiness";
 
 export const PAGE_SIZE = 25;
 

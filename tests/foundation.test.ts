@@ -44,6 +44,11 @@ test("no placeholder page remains; the token page keeps the no-referrer policy",
     assert.ok(src.includes(`<PageTitle title="${route(id).title}" />`), `${file}: title equals the route table`);
     assert.ok(!src.includes("Coming soon"), file);
   }
+  // The admin report is a real page too (the placeholder is gone and the title still equals the route table).
+  const reports = read("web/src/pages/admin/Reports.tsx");
+  assert.ok(!reports.includes("Coming soon"), "web/src/pages/admin/Reports.tsx");
+  assert.equal(reports.match(/<PageTitle /g)?.length, 1, "Reports: exactly one PageTitle");
+  assert.ok(reports.includes(`<PageTitle title="${route("admin-reports").title}" template="admin" />`), "Reports: title equals the route table");
 });
 
 test("navigation: the admin sidebar has Reports after Payouts, the site footers link to /bookings", () => {

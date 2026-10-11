@@ -9,13 +9,14 @@ import {
 } from "@/lib/google";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
 import { activeSeatWhere } from "@/lib/holds";
+import { reportNotice } from "@/lib/observability";
 import { calendarEventId, sessionEventId } from "@/lib/meeting";
 import { CANCELLATION_TEMPLATE, CONFIRMATION_TEMPLATE, RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
 import { rearmMessage } from "@/lib/messaging";
 import { createMessage } from "@/lib/messages";
 import { cancelReminders, enqueueReminders, enqueueSendMessage } from "@/lib/queue";
 import { describeRefundPolicy, refundDecision, type CancelActor, type RefundPolicy } from "@/lib/refund-policy";
-import { RefundPendingError, refundPayment } from "@/lib/refunds";
+import { PLATFORM_CANCEL_PREFIX, RefundBlockedByPayoutError, RefundPendingError, refundPayment } from "@/lib/refunds";
 import { NOTICE_MS } from "@/lib/refund-policy";
 import { windowProblem } from "@/lib/booking-window";
 import { blockedDaySet, isSlotStart, type Rule } from "@/lib/slots";
@@ -203,7 +204,11 @@ export async function cancelBooking(
   if (hasCapturedPayment) {
     await prisma.payment.updateMany({
       where: { bookingId: booking.id, status: "CAPTURED" },
-      data: { needsRefund: decision.refund, failureReason: `booking ${decision.reason}${opts.reason ? `: ${opts.reason}` : ""}`.slice(0, 500) },
+      data: {
+        needsRefund: decision.refund,
+        // The prefix is the system's own record that the PLATFORM cancelled (see PLATFORM_CANCEL_PREFIX); a host's reason never starts a failureReason.
+        failureReason: `${opts.byPlatform ? PLATFORM_CANCEL_PREFIX : ""}booking ${decision.reason}${opts.reason ? `: ${opts.reason}` : ""}`.slice(0, 500),
+      },
     });
   }
 
@@ -232,6 +237,8 @@ export async function cancelBooking(
 
   // 4) Refund: issue it automatically if configured, otherwise flag it for the influencer.
   let issued: CancelResult["refund"]["issued"] = "no";
+  // The payment is in a payout that is being prepared: the refund waits (it stays flagged, so the Payments page lists it for the administrator).
+  let blockedByPayout = false;
   if (decision.refund && hasCapturedPayment) {
     if (autoRefundOnCancel()) {
       for (const p of booking.payments) {
@@ -241,6 +248,20 @@ export async function cancelBooking(
         } catch (e) {
           if (e instanceof RefundPendingError) {
             issued = "pending";
+            continue;
+          }
+          if (e instanceof RefundBlockedByPayoutError) {
+            blockedByPayout = true;
+            reportNotice("warn", "automatic refund on cancel waits for a pending payout", { bookingId: booking.id, paymentId: p.id });
+            // The host cannot cancel a payout, so no "cancel that payout" message: only what is true. A platform cancel needs no host message at all.
+            if (!opts.byPlatform) {
+              await deps.alert(influencerId, {
+                kind: "refund-needed",
+                title: "A refund is waiting for a payout",
+                detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason} and is due a full refund. A payout that includes this payment is being prepared, so the platform will process the refund once that payout is settled. You do not need to do anything.`,
+                bookingId: booking.id,
+              });
+            }
             continue;
           }
           // A platform cancel leaves the payment flagged for the administrator, who is the one refunding: the host is not asked to act.
@@ -272,6 +293,8 @@ export async function cancelBooking(
         ? "Your refund has been issued to your original payment method. It usually arrives within 5-7 working days."
         : issued === "pending"
           ? "Your refund is being processed to your original payment method. It usually arrives within 5-7 working days."
+          : blockedByPayout
+            ? "You are due a full refund. The platform will process it to your original payment method as soon as the host's pending payout is settled."
           : opts.byPlatform
             ? "You are due a full refund. We will issue it to your original payment method."
             : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
@@ -351,6 +374,10 @@ export async function rescheduleBooking(
   const { session } = booking;
   const { service } = session;
   if (opts.actor === "customer") {
+    // A suspended host takes no new commitments (the manage page hides the button; this is the rule itself). Cancelling stays allowed.
+    if (service.influencer.suspendedAt) {
+      throw new BookingNotManageableError("This host's account is not taking changes right now, so this session cannot be moved online. You can still cancel it.");
+    }
     if (service.type === "GROUP") {
       throw new BookingNotManageableError("Group sessions can only be moved by the host. Please contact them, or cancel your seat.");
     }

@@ -129,7 +129,7 @@ Only differences from section 2, "WP-B Admin money operations"; everything else 
    always the same shape. The pending-payout check reads payout statuses with one extra query by id in `lib/views/admin-payments.ts`
    (`listPayments` in `lib/admin/data.ts` is not WP-B's).
 3. **Extra audit actions** beyond the plan's, so no `*_requested` entry is left dangling: `payment.refund_refused` (lost the claim race, nothing
-   sent), `payment.refund_error` (unexpected fault after the claim), `booking.cancel_refused` (the booking changed between read and
+   sent), `payment.refund_unconfirmed` (unexpected fault after the claim; renamed from `payment.refund_error`), `booking.cancel_refused` (the booking changed between read and
    cancel), `booking.cancel_error`. Audit writes AFTER the money call are best-effort (reported, never turned into a 500 that hides the
    outcome); the write BEFORE it is awaited and stops the action if it fails.
 4. **Export range defaults:** with only `to` given, `from` defaults to the 1st of `to`'s month (the plan only defines both missing). Invalid
@@ -142,7 +142,8 @@ Only differences from section 2, "WP-B Admin money operations"; everything else 
 7. **Review fixes, with small edits outside WP-B's file list** (all additive; other callers behave as before):
    - `lib/refunds.ts`: `refundPayment` options `blockPendingPayout` (the claim also requires no PENDING payout; a payout that took the payment
      in between gives "in a pending payout") and `expectedRemainingMinor` (a check, never the amount: `RefundAmountChangedError`, and the
-     claim requires the refund total it read to be unchanged). Only the admin path passes them.
+     claim requires the refund total it read to be unchanged). `expectedRemainingMinor` is passed only by the admin path; the PENDING-payout
+     block became the DEFAULT for every caller in `mk/z-money-fixes` (see the last section), `blockPendingPayout: false` is the opt-out.
    - `lib/payouts.ts`: `createPayout`'s claim now also requires no refund in flight and the same refund total as read, so a refund claimed
      in between turns the count check into a 409; optional test-only `hooks.afterRead` to interleave.
    - `lib/manage.ts`: `cancelBooking` option `byPlatform` (no "refund-needed"/"refund-failed" alert to the host; the customer is told the
@@ -153,3 +154,23 @@ Only differences from section 2, "WP-B Admin money operations"; everything else 
      `payment.refund_submitted`. Exports start with a UTF-8 BOM.
 8. **Tests:** `tests/spa-admin-money.test.ts` pinned key sets updated (`refund`, `cancel`, `q`); new `tests/admin-exports.test.ts`,
    `tests/admin-refund-cancel.test.ts`, `tests/admin-money-views.test.ts`.
+
+# Money fixes (`mk/z-money-fixes`): integration-review changes
+
+Not a work package; fixes found by the two Opus reviews. Everything is additive or tightens a check; no migration.
+
+1. **A payout cannot be approved or marked paid after a refund touched one of its payments** (`assertRefundsSettled`, `lib/payouts.ts`): refused with
+   409 `refund-in-flight` when a payment has a refund in flight or the refund total differs from `payout.refundsMinor`, and with 409 `flagged-payment`
+   when a payment is flagged `needsRefund` or its booking is not PAID/SCHEDULED/COMPLETED (a cancelled booking still owed a refund). The administrator cancels
+   the payout and recreates it. `createPayout` also leaves out flagged payments (new blocker `flagged-for-refund`).
+2. **Lock order is payout row first, then its payments** in `createPayout`, `cancelPayout`, `approvePayout`, `markPayoutPaid` (the last two lock the payments
+   `FOR UPDATE OF p` inside their transaction), so a concurrent cancel cannot deadlock; a remaining deadlock / serialization failure is a 409 `try-again`.
+   A cancelled payout answers "not pending", not a refund message.
+3. **`refundPayment` refuses a payment in a PENDING payout by default** for every caller (`blockPendingPayout: false` opts out; none does). The influencer route
+   answers "part of a payout being prepared". With AUTO_REFUND_ON_CANCEL on, a cancel on such a payment keeps `needsRefund` (the Payments page lists it),
+   tells the customer the platform will process the refund once the payout is settled, and gives the host a truthful info alert (a platform cancel: none).
+4. **The suspension check is part of the approve / mark-paid claim**; a customer cannot reschedule while the host is suspended (cancel stays).
+5. **Platform cancel marker:** `cancelBooking({ byPlatform: true })` writes `PLATFORM_CANCEL_PREFIX` ("[platform-cancel] ") at the START of the payment's
+   `failureReason`; `refundPayment` keeps `needsRefund` through a partial refund only when it is present (`startsWith`; a host's own reason can only come after
+   "booking ..."). No column, no migration.
+6. The old `/api/bookings/[id]/cancel|reschedule` routes and their rate rule were deleted (unused, no activity trail).

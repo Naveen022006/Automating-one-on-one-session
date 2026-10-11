@@ -74,7 +74,6 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "booking-resend", pattern: /^\/api\/bookings\/[^/]+\/resend$/, methods: ["POST"], limit: 3, windowMs: HOUR, by: "ip" },
   // The confirmation page polls every 2 s for up to 2 minutes (~60 requests).
   { name: "booking-status", pattern: /^\/api\/bookings\/[^/]+(\/ics)?$/, methods: ["GET"], limit: 120, windowMs: 5 * MIN, by: "ip" },
-  { name: "booking-actions", pattern: /^\/api\/bookings\/[^/]+\/(cancel|reschedule)$/, limit: 30, windowMs: 10 * MIN, by: "session-or-ip" },
   { name: "slots", pattern: /^\/api\/slots(\/days)?$/, limit: 120, windowMs: MIN, by: "ip" },
   // Customer portal ("find your bookings"): the e-mail request is a spam/enumeration target, the token routes read or erase one
   // address's data. The erase and export rules are listed before the portal view, which only matches the bare token path.
