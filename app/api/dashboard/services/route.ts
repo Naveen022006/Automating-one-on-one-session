@@ -6,6 +6,10 @@ import { prisma } from "@/lib/db";
 import { MAX_ADVANCE_DAYS, MAX_NOTICE_HOURS } from "@/lib/booking-window";
 import { activeSeatWhere } from "@/lib/holds";
 import { intakeQuestionsInput } from "@/lib/intake";
+import { loadServicesView } from "@/lib/views/dashboard-services";
+import { jsonView } from "@/lib/views/http";
+
+export const dynamic = "force-dynamic";
 
 // Influencer-authenticated via the login session (lib/auth/session.ts). Every mutation requires a session first
 // and that the targeted service belongs to that influencer; otherwise 401/404. Request
@@ -55,6 +59,14 @@ function meetLimitWarning(type: string | undefined, durationMin: number | undefi
   return type === "GROUP" && (durationMin ?? 0) > 60
     ? "Free Gmail accounts end group Meet calls after 60 minutes. Use a Google Workspace account or keep group sessions to 60 minutes."
     : null;
+}
+
+// The Services page's data for the SPA (the old Next page renders from the same loadServicesView): this influencer's
+// services only, hidden ones included.
+export async function GET() {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+  return jsonView(await loadServicesView(auth.influencerId));
 }
 
 export async function POST(req: Request) {
