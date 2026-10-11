@@ -68,8 +68,8 @@ test("the influencer detail page mounts each stub panel once: status under the h
 });
 
 test("the retention sweeps are wired into sweepExpiredAuthRows and return a count (0 in the stub)", async () => {
-  assert.equal(await sweepOldActivity(), 0);
-  assert.equal(await sweepOldActivity(new Date()), 0);
+  // WP-C filled the activity sweep in: it deletes rows, so it is tested against the database in tests/activity-log.test.ts.
+  assert.equal(typeof sweepOldActivity, "function");
   assert.equal(await sweepExpiredCustomerAccess(), 0);
   assert.equal(await sweepExpiredCustomerAccess(new Date()), 0);
   const sweep = read("lib/auth/sweep.ts");
