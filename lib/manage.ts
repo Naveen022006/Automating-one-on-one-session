@@ -139,6 +139,11 @@ export interface CancelOptions {
   /** Who is cancelling. Customers get the service's refund policy; an influencer cancel always refunds. */
   actor?: CancelActor;
   reason?: string;
+  /**
+   * The platform (an administrator) cancels on the host's behalf: the refund decision is the influencer's (full refund), but the platform
+   * issues it, so the host gets no "issue the refund" alert and the customer is told the platform will refund, not the host.
+   */
+  byPlatform?: boolean;
 }
 
 export interface CancelResult {
@@ -238,14 +243,17 @@ export async function cancelBooking(
             issued = "pending";
             continue;
           }
-          await deps.alert(influencerId, {
-            kind: "refund-failed",
-            detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
-            bookingId: booking.id,
-          });
+          // A platform cancel leaves the payment flagged for the administrator, who is the one refunding: the host is not asked to act.
+          if (!opts.byPlatform) {
+            await deps.alert(influencerId, {
+              kind: "refund-failed",
+              detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
+              bookingId: booking.id,
+            });
+          }
         }
       }
-    } else {
+    } else if (!opts.byPlatform) {
       await deps.alert(influencerId, {
         kind: "refund-needed",
         detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason}. Issue the refund from the Sessions page.`,
@@ -264,7 +272,9 @@ export async function cancelBooking(
         ? "Your refund has been issued to your original payment method. It usually arrives within 5-7 working days."
         : issued === "pending"
           ? "Your refund is being processed to your original payment method. It usually arrives within 5-7 working days."
-          : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
+          : opts.byPlatform
+            ? "You are due a full refund. We will issue it to your original payment method."
+            : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
   await deps.sendBookingEmail(booking.id, "booking-cancelled", { refundNote });
   await createMessage({ bookingId: booking.id, channel: "whatsapp", template: CANCELLATION_TEMPLATE, status: "queued" });
   await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));

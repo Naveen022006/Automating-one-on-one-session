@@ -71,7 +71,7 @@ export function CancelBookingAction({ bookingId, customerName, serviceTitle }: {
         busy={busy}
         danger
         title="Cancel this booking"
-        description={`${customerName}'s session: ${serviceTitle}. The customer and the influencer are told. A payment is flagged for a full refund.`}
+        description={`${customerName}'s session: ${serviceTitle}. The customer and the influencer are told. A payment is refunded in full: at once when automatic refunds are on, otherwise it is flagged for you to refund from Payments.`}
         confirmLabel="Cancel booking"
         cancelLabel="Keep it"
       >

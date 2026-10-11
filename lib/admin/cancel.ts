@@ -80,7 +80,7 @@ export async function adminCancelBooking(
 
   let result: CancelResult;
   try {
-    result = await deps.cancel(bookingId, { actor: "influencer", reason: `Cancelled by the platform: ${reason}` });
+    result = await deps.cancel(bookingId, { actor: "influencer", byPlatform: true, reason: `Cancelled by the platform: ${reason}` });
   } catch (e) {
     if (e instanceof BookingNotManageableError) {
       // The booking changed between the read and the cancel (another administrator, the customer, the influencer).
@@ -99,7 +99,7 @@ export async function adminCancelBooking(
     await deps.alert(influencer.id, {
       kind: "platform-cancelled",
       title: "A booking was cancelled by the platform",
-      detail: `${booking.customerName}'s booking for ${service.title} (${formatSessionTime(startTime, influencer.timezone)}) was cancelled by the platform. Reason: ${reason}. The customer has been notified.${result.refund.eligible ? " A full refund is due." : ""}`,
+      detail: `${booking.customerName}'s booking for ${service.title} (${formatSessionTime(startTime, influencer.timezone)}) was cancelled by the platform. Reason: ${reason}. The customer has been notified.${result.refund.eligible ? " The platform will refund the customer; you do not need to do anything." : ""}`,
       bookingId,
     });
   } catch (e) {

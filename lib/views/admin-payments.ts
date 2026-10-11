@@ -58,6 +58,11 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
   const payoutIds = [...new Set(data.rows.map((p) => p.payoutId).filter((id): id is string => id !== null))];
   const payouts = payoutIds.length ? await prisma.payout.findMany({ where: { id: { in: payoutIds } }, select: { id: true, status: true } }) : [];
   const payoutStatus = new Map(payouts.map((p) => [p.id, p.status as string]));
+  // A flagged payment on a live booking is refundable only when the booking has ANOTHER captured payment (a real duplicate).
+  const flaggedBookingIds = [...new Set(data.rows.filter((p) => p.needsRefund && p.booking).map((p) => p.booking.id))];
+  const captured = flaggedBookingIds.length
+    ? await prisma.payment.findMany({ where: { bookingId: { in: flaggedBookingIds }, status: "CAPTURED" }, select: { id: true, bookingId: true } })
+    : [];
   const now = new Date();
   return {
     view,
@@ -91,6 +96,7 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
         const e = adminRefundEligibility(
           {
             ...p,
+            hasOtherCapturedPayment: captured.some((c) => c.bookingId === p.booking.id && c.id !== p.id),
             booking: { status: p.booking.status, startTime: p.booking.session.startTime },
             payoutStatus: p.payoutId ? (payoutStatus.get(p.payoutId) ?? null) : null,
           },

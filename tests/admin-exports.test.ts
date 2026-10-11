@@ -152,6 +152,11 @@ test("toCsv neutralises a cell that starts with = + - @ tab or CR, and quotes co
   assert.equal(csv, `'=1+1,'+SUM(A1),'-2+3,'@cmd,'\tx,"'\rx","say ""hi"", ok",fine,"a\nb",,5\r\n`);
 });
 
+test("toCsv also neutralises a leading line feed and the full-width = + - @ (U+FF1D, U+FF0B, U+FF0D, U+FF20); numbers are left alone", () => {
+  const csv = toCsv([["\n=1+1", "＝SUM(1)", "＋1", "－1", "＠x", "a=b", "-5", -5, "x＝"]]);
+  assert.equal(csv, `"'\n=1+1",'＝SUM(1),'＋1,'－1,'＠x,a=b,'-5,-5,x＝\r\n`);
+});
+
 test("the export endpoints share one tight rate rule (GET and HEAD), ahead of the generic admin one", () => {
   for (const kind of EXPORT_KINDS) {
     for (const method of ["GET", "HEAD"]) {
@@ -403,6 +408,29 @@ test("each export: the headers of the download, the header row exactly, and only
   assert.equal((await csvOf("payments", range(prev, FROM))).rows.length - 1, 5, "the payment one millisecond before the day is in when the previous day is `from`");
   assert.equal((await csvOf("payouts", range(FROM, next))).rows.length - 1, 2);
 });
+
+test("every export starts with a UTF-8 byte order mark (Excel on Windows), and a non-Latin name survives it", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const customer = await prisma.booking.findFirstOrThrow({ where: { session: { service: { influencerId } }, customerName: { startsWith: "Export normal" } }, select: { id: true } });
+  await prisma.booking.update({ where: { id: customer.id }, data: { customerName: `Åsa 李雷 ${run}` } });
+  try {
+    await bomChecks(token);
+  } finally {
+    await prisma.booking.update({ where: { id: customer.id }, data: { customerName: `Export normal ${run}` } });
+  }
+});
+
+async function bomChecks(token: string) {
+  for (const kind of EXPORT_KINDS) {
+    const res = await ask(kind, range(), token);
+    assert.equal(res.status, 200, kind);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    assert.deepEqual([...bytes.slice(0, 3)], [0xef, 0xbb, 0xbf], `${kind}: BOM`);
+    const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+    assert.ok(text.startsWith("\uFEFF" + HEADERS[kind][0]), `${kind}: header right after the BOM`);
+    if (kind === "bookings") assert.ok(text.includes(`Åsa 李雷 ${run}`));
+  }
+}
 
 test("payments: money as decimals, refunded amounts, flags, the erased customer, and formula-looking names are neutralised", { skip }, async () => {
   const { rows } = await csvOf("payments");

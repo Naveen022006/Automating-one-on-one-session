@@ -5,6 +5,16 @@ import { Alert, Button, Field, Textarea } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 
 /**
+ * The sentence for a refund the server did not accept. A 502 is Razorpay's definite rejection (nothing was refunded) and 409 a refusal with
+ * its reason. Any other 5xx, with or without a body (`error: "outcome-unknown"`), may have reached Razorpay: say so instead of "did not go through".
+ */
+export function refundFailureMessage(status: number, data: { error?: string; code?: string }): string {
+  if (status >= 500 && status !== 502) return "Outcome unknown: check this payment before retrying. Razorpay may have accepted the refund.";
+  if (status === 409 && data.code === "amount-changed") return "The amount left to refund changed. The page was reloaded: check the new amount and confirm again.";
+  return data.error ?? "The refund did not go through.";
+}
+
+/**
  * "Refund..." on a payment the server says can be refunded. The amount is not typed: it is what is left of the payment, shown here only so
  * the administrator knows what they are confirming (the server works it out again and never reads an amount from this request).
  * `inPayout` is set when the payment is already in a PAID payout: the refund goes through, and the payouts page then shows the amount
@@ -48,13 +58,17 @@ export function RefundAction({
       const res = await fetch(`/api/admin/payments/${encodeURIComponent(paymentId)}/refund`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: text, confirm: true }),
+        // `expectedRemainingMinor` is a check for the server (it refuses when the amount left is no longer this); it is never the amount refunded.
+        body: JSON.stringify({ reason: text, confirm: true, expectedRemainingMinor: remainingMinor }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string; amountMinor?: number };
+      const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string; status?: string; amountMinor?: number };
       if (!res.ok) {
-        setError(data.error ?? "The refund did not go through.");
-        // A 409 means the page was out of date (someone else refunded, the booking changed): show the truth behind the dialog.
-        if (res.status === 409) router.refresh();
+        const message = refundFailureMessage(res.status, data);
+        setError(message);
+        if (res.status === 409 || res.status >= 500) toast(message, "error"); // the dialog may disappear with the reloaded row
+        // A 409 means the page was out of date (someone else refunded, the amount changed, the booking changed): reload what is behind the
+        // dialog, which then shows the new amount (or no button) to ask again. So does an unknown outcome: the payment row shows the truth.
+        if (res.status === 409 || res.status >= 500) router.refresh();
         return;
       }
       toast(

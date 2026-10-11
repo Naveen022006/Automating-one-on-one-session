@@ -20,6 +20,7 @@ const PASSWORD = "correct-horse-battery-9";
 const emailX = `rc-x-${run}@example.com`; // administrator with two-factor
 const emailY = `rc-y-${run}@example.com`; // administrator without
 const slug = `rc-${run}`;
+const slug2 = `rc2-${run}`; // the influencer of the payout / refund race tests (its own payable payments)
 const DAY = 86_400_000;
 const keys = (o: unknown) => Object.keys(o as object).sort();
 
@@ -49,6 +50,7 @@ let bookingsView: typeof import("../lib/views/admin-bookings");
 let RazorpayHttpError: typeof import("../lib/payments").RazorpayHttpError;
 let setAlertSender: typeof import("../lib/alerts").setAlertSender;
 let previousSender: ReturnType<typeof import("../lib/alerts").setAlertSender> | undefined;
+let realCancelBooking: typeof import("../lib/manage").cancelBooking;
 let X = "";
 let Y = "";
 let influencerId = "";
@@ -108,6 +110,11 @@ async function seedPayment(
   return { paymentId: payment.id, bookingId: booking.id, sessionId: session.id };
 }
 
+/** A second captured payment on a booking (what a real double payment looks like). */
+async function addPayment(bookingId: string, kind: string) {
+  return prisma.payment.create({ data: { bookingId, providerOrderId: `order_${run}_${kind}`, providerPaymentId: `pay_${run}_${kind}`, amountMinor: 100_000, currency: "INR", status: "CAPTURED" } });
+}
+
 const auditOf = async (targetType: string, targetId: string) =>
   (await prisma.adminAuditLog.findMany({ where: { targetType, targetId }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] })).map((a) => ({ action: a.action, detail: a.detail as Record<string, unknown>, ip: a.ip, email: a.adminEmail }));
 
@@ -135,6 +142,7 @@ const base = (over: Record<string, unknown> = {}) => ({
   refundStatus: null as string | null,
   updatedAt: new Date("2026-10-10T00:00:00Z"),
   needsRefund: false,
+  hasOtherCapturedPayment: false,
   booking: { status: "COMPLETED", startTime: PAST },
   payoutStatus: null as string | null,
   ...over,
@@ -168,11 +176,13 @@ test("adminRefundEligibility: every branch, in the plan's words", () => {
   assert.equal(e({ refundStatus: "pending" }).allowed, true, "a pending (not requested) earlier refund does not block another one for what is left");
   assert.equal(e({ refundStatus: "failed" }).allowed, true);
   // 4. an upcoming live booking
-  const live = (status: string, startTime: Date, needsRefund = false) => e({ booking: { status, startTime }, needsRefund });
+  const live = (status: string, startTime: Date, needsRefund = false, dup = false) => e({ booking: { status, startTime }, needsRefund, hasOtherCapturedPayment: dup });
   for (const status of ["PAID", "SCHEDULED"]) {
     const r = live(status, FUTURE);
     assert.equal(!r.allowed && r.reason, "Cancel the booking first (Bookings > Cancel).", status);
-    assert.equal(live(status, FUTURE, true).allowed, true, `${status}: flagged needsRefund (a double payment) may be refunded`);
+    assert.equal(live(status, FUTURE, true, true).allowed, true, `${status}: flagged and another captured payment on the booking (a real duplicate) may be refunded`);
+    assert.equal(live(status, FUTURE, true, false).allowed, false, `${status}: the flag alone (a failed refund sets it too) is not enough`);
+    assert.equal(live(status, FUTURE, false, true).allowed, false, `${status}: another payment without the flag is not enough`);
     assert.equal(live(status, PAST).allowed, true, `${status}: a session in the past`);
     assert.equal(live(status, NOW).allowed, true, `${status}: starting exactly now is not upcoming`);
   }
@@ -246,6 +256,7 @@ before(async () => {
     },
   });
   const realManage = await import("../lib/manage");
+  realCancelBooking = realManage.cancelBooking;
   mock.module("@/lib/manage", {
     namedExports: {
       ...realManage,
@@ -291,8 +302,8 @@ after(async () => {
   try {
     if (!skip) {
       const steps: [string, () => Promise<unknown>][] = [
-        ["payouts", () => prisma.payout.deleteMany({ where: { influencer: { slug } } })],
-        ["influencer", () => prisma.influencer.deleteMany({ where: { slug } })],
+        ["payouts", () => prisma.payout.deleteMany({ where: { influencer: { slug: { in: [slug, slug2] } } } })],
+        ["influencer", () => prisma.influencer.deleteMany({ where: { slug: { in: [slug, slug2] } } })],
         ["audit", () => prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY] } } })],
         ["admins", () => prisma.adminUser.deleteMany({ where: { email: { in: [emailX, emailY] } } })],
       ];
@@ -469,7 +480,11 @@ test("refund: eligibility against real rows (upcoming live booking, flagged doub
   for (const id of [upcoming.paymentId, inPending.paymentId, fullyRefunded.paymentId]) assert.deepEqual(await auditOf("payment", id), [], "a refusal before the money call writes no audit entry");
 
   // Allowed: a double payment flagged on a live booking, and a payment in a PAID payout.
+  // The flag alone on a live booking (a failed partial refund sets it) is refused; with a second captured payment on the booking it is a real duplicate.
+  const flaggedOnly = await seedPayment("flaggedonly", { bookingStatus: "SCHEDULED", startOffsetMs: 5 * DAY, payment: { needsRefund: true } });
+  await refuse(flaggedOnly.paymentId, /Cancel the booking first/);
   const flagged = await seedPayment("flagged", { bookingStatus: "SCHEDULED", startOffsetMs: 5 * DAY, payment: { needsRefund: true } });
+  await addPayment(flagged.bookingId, "flaggeddup");
   assert.equal((await refundLib.adminRefundPayment(flagged.paymentId, actor(), "Paid twice", null)).kind, "ok");
   const inPaid = await seedPayment("inpaid", { payment: { payoutId: paidPayoutId } });
   assert.equal((await refundLib.adminRefundPayment(inPaid.paymentId, actor(), "Dispute resolved", null)).kind, "ok");
@@ -483,7 +498,7 @@ test("refund route: the gate (401, 403 enroll, 403 verify), the body (confirm an
   const verified = await sessionLib.createAdminSession(X, {}, { mfaVerified: true });
   razorpayCalls.length = 0;
   razorpay = ok();
-  const good = { reason: "Customer was charged twice", confirm: true };
+  const good = { reason: "Customer was charged twice", confirm: true, expectedRemainingMinor: 100_000 };
   const { paymentId } = await seedPayment("route");
 
   for (const cookie of [undefined, "", "not-a-real-admin-session-token"]) {
@@ -507,16 +522,21 @@ test("refund route: the gate (401, 403 enroll, 403 verify), the body (confirm an
 
   // Body validation: nothing is refunded for any of these.
   for (const [body, label] of [
-    [{ reason: "Customer was charged twice" }, "confirm missing"],
-    [{ reason: "Customer was charged twice", confirm: false }, "confirm false"],
-    [{ reason: "Customer was charged twice", confirm: "true" }, "confirm as a string"],
-    [{ reason: "Customer was charged twice", confirm: 1 }, "confirm as a number"],
-    [{ confirm: true }, "reason missing"],
-    [{ reason: "    ", confirm: true }, "reason blank"],
-    [{ reason: "abcd", confirm: true }, "reason too short"],
-    [{ reason: "x".repeat(301), confirm: true }, "reason too long"],
-    [{ reason: 12345678, confirm: true }, "reason not text"],
-    [{ reason: "Customer was charged twice\u0000", confirm: true }, "NUL in the reason"],
+    [{ reason: "Customer was charged twice" }, "confirm and expected amount missing"],
+    [{ reason: "Customer was charged twice", confirm: true }, "expectedRemainingMinor missing"],
+    [{ ...good, expectedRemainingMinor: 0 }, "expected amount zero"],
+    [{ ...good, expectedRemainingMinor: -5 }, "expected amount negative"],
+    [{ ...good, expectedRemainingMinor: 10.5 }, "expected amount fractional"],
+    [{ ...good, expectedRemainingMinor: "100000" }, "expected amount as a string"],
+    [{ ...good, confirm: false }, "confirm false"],
+    [{ ...good, confirm: "true" }, "confirm as a string"],
+    [{ ...good, confirm: 1 }, "confirm as a number"],
+    [{ confirm: true, expectedRemainingMinor: 100_000 }, "reason missing"],
+    [{ ...good, reason: "    " }, "reason blank"],
+    [{ ...good, reason: "abcd" }, "reason too short"],
+    [{ ...good, reason: "x".repeat(301) }, "reason too long"],
+    [{ ...good, reason: 12345678 }, "reason not text"],
+    [{ ...good, reason: "Customer was charged twice\u0000" }, "NUL in the reason"],
     [{}, "empty"],
     [[], "array"],
     ["not json", "not JSON"],
@@ -587,7 +607,7 @@ test("cancel: the audit entry comes first, the cancel is the influencer's (full 
   const out = await cancelLib.adminCancelBooking(bookingId, actor(), "Influencer suspended", "203.0.113.9", { audit: audit as never });
   assert.deepEqual(out, { kind: "ok", refund: { eligible: true, reason: "cancelled by the host", issued: "no" }, warning: "Calendar not updated" });
   assert.deepEqual(events, ["audit:booking.cancel_requested", "cancel", "audit:booking.cancelled_by_admin"]);
-  assert.deepEqual(cancelCalls, [{ id: bookingId, opts: { actor: "influencer", reason: "Cancelled by the platform: Influencer suspended" } }]);
+  assert.deepEqual(cancelCalls, [{ id: bookingId, opts: { actor: "influencer", byPlatform: true, reason: "Cancelled by the platform: Influencer suspended" } }]);
   const trail = await auditOf("booking", bookingId);
   assert.deepEqual(trail.map((t) => t.action), ["booking.cancel_requested", "booking.cancelled_by_admin"]);
   assert.deepEqual(trail[0].detail, { reason: "Influencer suspended", status: "SCHEDULED" });
@@ -721,13 +741,17 @@ test("payments view: each row says whether a refund is offered, why not, and how
   const ok1 = await seedPayment("viewok", { payment: { needsRefund: true } });
   const partial = await seedPayment("viewpartial", { payment: { refundAmountMinor: 30_000, refundStatus: "processed" }, refunds: [{ amountMinor: 30_000, status: "processed" }] });
   const live = await seedPayment("viewlive", { bookingStatus: "SCHEDULED", startOffsetMs: 4 * DAY, payment: { needsRefund: true } });
+  await addPayment(live.bookingId, "viewlivedup");
+  const liveFlagOnly = await seedPayment("viewliveflag", { bookingStatus: "SCHEDULED", startOffsetMs: 4 * DAY, payment: { needsRefund: true } });
   const livePlain = await seedPayment("viewliveplain", { bookingStatus: "SCHEDULED", startOffsetMs: 4 * DAY });
   const inPending = await seedPayment("viewpending", { payment: { payoutId: pendingPayoutId, needsRefund: true } });
   const inPaid = await seedPayment("viewpaid", { payment: { payoutId: paidPayoutId } });
   const unpaid = await seedPayment("viewunpaid", { payment: { status: "CREATED", providerPaymentId: null } });
-  const mine = new Set([ok1, partial, live, livePlain, inPending, inPaid, unpaid].map((s) => s.paymentId));
+  const mine = new Set([ok1, partial, live, liveFlagOnly, livePlain, inPending, inPaid, unpaid].map((s) => s.paymentId));
+  const dupId = (await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: `order_${run}_viewlivedup` } })).id;
+  mine.add(dupId);
   const rows = await findRows(async (page) => paymentsView.loadAdminPaymentsView({ view: "all", page }), (r) => mine.has(r.id), mine.size);
-  assert.equal(rows.size, mine.size, "all seven rows were found");
+  assert.equal(rows.size, mine.size, "all rows were found");
   const row = (s: { paymentId: string }) => rows.get(s.paymentId)!;
   for (const r of rows.values()) {
     assert.deepEqual(keys(r.refund), ["allowed", "reason", "remainingMinor"]);
@@ -736,7 +760,8 @@ test("payments view: each row says whether a refund is offered, why not, and how
   }
   assert.deepEqual(row(ok1).refund, { allowed: true, reason: null, remainingMinor: 100_000 });
   assert.deepEqual(row(partial).refund, { allowed: true, reason: null, remainingMinor: 70_000 });
-  assert.deepEqual(row(live).refund, { allowed: true, reason: null, remainingMinor: 100_000 }, "a flagged double payment on a live booking");
+  assert.deepEqual(row(live).refund, { allowed: true, reason: null, remainingMinor: 100_000 }, "a flagged double payment (another captured payment on the booking) on a live booking");
+  assert.deepEqual(row(liveFlagOnly).refund, { allowed: false, reason: "Cancel the booking first (Bookings > Cancel).", remainingMinor: 100_000 }, "the flag alone is not a duplicate");
   assert.deepEqual(row(livePlain).refund, { allowed: false, reason: "Cancel the booking first (Bookings > Cancel).", remainingMinor: 100_000 });
   assert.deepEqual(row(inPending).refund, { allowed: false, reason: "This payment is in a pending payout. Cancel that payout first.", remainingMinor: 100_000 });
   assert.deepEqual(row(inPaid).refund, { allowed: true, reason: null, remainingMinor: 100_000 });
@@ -806,4 +831,252 @@ test("bookings endpoint: `q` reaches the view (and nothing else changes: still b
   assert.equal(out.body.q, `rc-endpointq-${run}@EXAMPLE.com`);
   assert.deepEqual((out.body.rows as { id: string }[]).map((r) => r.id), [a.bookingId]);
   assertNoSecretKeys(out.body);
+});
+
+/* ---------- review fixes: payout / refund race, amount check, unknown outcome, platform cancel, submitted ---------- */
+
+/** An influencer of its own with verified payout details, so createPayout can run without touching the payments of the other tests. */
+async function seedPayableInfluencer() {
+  const inf = await prisma.influencer.create({ data: { slug: slug2, name: `RC Two ${run}`, email: `rc-two-${run}@example.com`, notifyByEmail: false } });
+  const svc = await prisma.service.create({ data: { influencerId: inf.id, title: `RC two call ${run}`, durationMin: 30, priceMinor: 100_000 } });
+  await prisma.payoutAccount.create({ data: { influencerId: inf.id, method: "UPI", accountHolderName: "RC Two", upiIdMasked: "****1234", status: "VERIFIED" } });
+  let n = 0;
+  /** A payment that is payable now: reconciled, captured, a session that ended well over the hold period ago. */
+  const payable = async (kind: string) => {
+    const start = new Date(Date.now() - (12 + n++) * DAY);
+    const session = await prisma.session.create({ data: { serviceId: svc.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+    const booking = await prisma.booking.create({ data: { sessionId: session.id, status: "COMPLETED", customerName: `RC2 ${kind} ${run}`, customerEmail: `rc2-${kind}-${run}@example.com`, whatsappE164: "+910000000000" } });
+    return prisma.payment.create({
+      data: { bookingId: booking.id, providerOrderId: `order_${run}_rc2${kind}`, providerPaymentId: `pay_${run}_rc2${kind}`, amountMinor: 100_000, currency: "INR", status: "CAPTURED", reconciledAt: new Date(), reconciledByEmail: emailY },
+    });
+  };
+  return { influencerId: inf.id, payable };
+}
+
+test("race, refund second: a payout locks the payment AFTER the refund's eligibility read; the claim refuses and nothing reaches Razorpay", { skip }, async () => {
+  const two = await seedPayableInfluencer();
+  const payment = await two.payable("a");
+  const { createPayout } = await import("../lib/payouts");
+  const { refundPayment } = await import("../lib/refunds");
+  razorpayCalls.length = 0;
+  razorpay = ok();
+  let payoutId = "";
+  // The administrator's eligibility read passed (no payout yet); then another administrator creates the payout; then the claim is taken.
+  const out = await refundLib.adminRefundPayment(payment.id, actor(), "Customer asked for it", null, {
+    refund: async (id, opts) => {
+      payoutId = (await createPayout(two.influencerId, "INR", emailX)).id;
+      return refundPayment(id, opts);
+    },
+  });
+  assert.deepEqual(out, { kind: "not-allowed", reason: "This payment is in a pending payout. Cancel that payout first." });
+  assert.equal(razorpayCalls.length, 0, "Razorpay was never called");
+  const row = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+  assert.deepEqual([row.payoutId, row.refundStatus, row.refundAmountMinor, row.status], [payoutId, null, null, "CAPTURED"], "the payout keeps the payment; no refund claim was left behind");
+  assert.deepEqual((await auditOf("payment", payment.id)).map((t) => t.action), ["payment.refund_requested", "payment.refund_refused"]);
+  // Other callers of refundPayment (the influencer's dashboard, auto refund on cancel) are unchanged: no option, no new check.
+  const influencerRefund = await refundPayment(payment.id, { reason: "influencer path" });
+  assert.equal(influencerRefund.fullyRefunded, true);
+  assert.equal(razorpayCalls.length, 1);
+});
+
+test("race, payout second: a refund is claimed AFTER the payout read the payment; the payout's claim finds it changed and fails with 409, nothing is locked", { skip }, async () => {
+  const two = await seedPayableInfluencer().catch(async () => ({ influencerId: (await prisma.influencer.findUniqueOrThrow({ where: { slug: slug2 } })).id, payable: null as never }));
+  const { createPayout, PayoutError } = await import("../lib/payouts");
+  const { refundPayment } = await import("../lib/refunds");
+  const mk = async (kind: string) => {
+    const svc = await prisma.service.findFirstOrThrow({ where: { influencerId: two.influencerId } });
+    const start = new Date(Date.now() - (30 + counter++) * DAY);
+    const session = await prisma.session.create({ data: { serviceId: svc.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+    const booking = await prisma.booking.create({ data: { sessionId: session.id, status: "COMPLETED", customerName: `RC2 ${kind} ${run}`, customerEmail: `rc2-${kind}-${run}@example.com`, whatsappE164: "+910000000000" } });
+    return prisma.payment.create({
+      data: { bookingId: booking.id, providerOrderId: `order_${run}_rc2${kind}`, providerPaymentId: `pay_${run}_rc2${kind}`, amountMinor: 100_000, currency: "INR", status: "CAPTURED", reconciledAt: new Date(), reconciledByEmail: emailY },
+    });
+  };
+  razorpayCalls.length = 0;
+  razorpay = ok();
+  const payoutsBefore = await prisma.payout.count({ where: { influencerId: two.influencerId } }); // the one the first race test left
+
+  // (1) The administrator's claim lands between the payout's read and its claim and the refund is still in flight.
+  const inFlight = await mk("inflight");
+  await assert.rejects(
+    createPayout(two.influencerId, "INR", emailX, new Date(), {
+      afterRead: async () => {
+        await prisma.payment.updateMany({ where: { id: inFlight.id }, data: { refundStatus: "requested" } });
+      },
+    }),
+    (e: unknown) => e instanceof PayoutError && (e as { status: number }).status === 409,
+  );
+  const stuck = await prisma.payment.findUniqueOrThrow({ where: { id: inFlight.id } });
+  assert.equal(stuck.payoutId, null, "not locked into a payout");
+  assert.equal(await prisma.payout.count({ where: { influencerId: two.influencerId } }), payoutsBefore, "the payout was rolled back");
+  await prisma.payment.update({ where: { id: inFlight.id }, data: { refundStatus: null } });
+
+  // (2) The whole refund goes through between the read and the claim: the refund total changed.
+  await assert.rejects(
+    createPayout(two.influencerId, "INR", emailX, new Date(), {
+      afterRead: async () => {
+        await refundPayment(inFlight.id, { reason: "interleaved" });
+      },
+    }),
+    (e: unknown) => e instanceof PayoutError && (e as { status: number }).status === 409,
+  );
+  assert.equal(razorpayCalls.length, 1, "the interleaved refund did go to the stand-in once");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: inFlight.id } })).payoutId, null);
+  assert.equal(await prisma.payout.count({ where: { influencerId: two.influencerId } }), payoutsBefore);
+
+  // (3) A partial refund between read and claim changes the total too (a snapshot of the old refunds would be wrong).
+  const partial = await mk("partialrace");
+  await assert.rejects(
+    createPayout(two.influencerId, "INR", emailX, new Date(), {
+      afterRead: async () => {
+        await refundPayment(partial.id, { amountMinor: 30_000, reason: "interleaved partial" });
+      },
+    }),
+    (e: unknown) => e instanceof PayoutError && (e as { status: number }).status === 409,
+  );
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: partial.id } })).payoutId, null);
+
+  // Without any interleaving the payout is created and includes the partly refunded payment net of its refund (the claim does not break normal use).
+  const done = await createPayout(two.influencerId, "INR", emailX);
+  assert.equal(done.paymentCount, 1, "only the partly refunded payment is payable now (the other is fully refunded)");
+  assert.equal(done.refundsMinor, 30_000);
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: partial.id } })).payoutId, done.id);
+});
+
+test("amount check: expectedRemainingMinor is only a check, never the amount; a different amount is 'amount-changed' and nothing is sent", { skip }, async () => {
+  const { paymentId } = await seedPayment("expect", { payment: { refundAmountMinor: 30_000, refundStatus: "processed" }, refunds: [{ amountMinor: 30_000, status: "processed" }] });
+  razorpayCalls.length = 0;
+  razorpay = ok();
+  // The page showed the whole 100,000 but 30,000 was refunded since: refused before the audit entry and Razorpay.
+  assert.deepEqual(await refundLib.adminRefundPayment(paymentId, actor(), "Reason is long enough", null, {}, new Date(), 100_000), { kind: "amount-changed" });
+  assert.equal(razorpayCalls.length, 0);
+  assert.deepEqual(await auditOf("payment", paymentId), []);
+  // The same check inside refundPayment (another refund lands between the page's read and the click's read).
+  const out = await refundLib.adminRefundPayment(paymentId, actor(), "Reason is long enough", null, {
+    refund: async (id, opts) => {
+      await prisma.payment.update({ where: { id }, data: { refundAmountMinor: 50_000 } });
+      const { refundPayment } = await import("../lib/refunds");
+      return refundPayment(id, opts);
+    },
+  }, new Date(), 70_000);
+  assert.deepEqual(out, { kind: "amount-changed" });
+  assert.equal(razorpayCalls.length, 0);
+  assert.deepEqual((await auditOf("payment", paymentId)).map((t) => t.action), ["payment.refund_requested", "payment.refund_refused"]);
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } })).refundStatus, "processed", "no claim left behind");
+  await prisma.payment.update({ where: { id: paymentId }, data: { refundAmountMinor: 30_000 } });
+  // Right amount: refunds exactly what is left (70,000), whatever else the body said.
+  assert.equal((await refundLib.adminRefundPayment(paymentId, actor(), "Reason is long enough", null, {}, new Date(), 70_000)).kind, "ok");
+  assert.equal(razorpayCalls[0].amountMinor, 70_000);
+});
+
+test("refund route: a wrong expected amount is 409 amount-changed; an unexpected fault after the claim is a JSON 500 'outcome-unknown' and the payment stays locked", { skip }, async () => {
+  const plain = await sessionLib.createAdminSession(Y);
+  razorpayCalls.length = 0;
+  razorpay = ok();
+  const a = await seedPayment("routeexpect");
+  const wrong = await post(refundRoute, a.paymentId, { reason: "Reason is long enough", confirm: true, expectedRemainingMinor: 99_999 }, plain);
+  assert.equal(wrong.status, 409);
+  assert.deepEqual(wrong.body, { error: "The amount left to refund changed. Reload the page and check it again.", code: "amount-changed" });
+  assert.equal(razorpayCalls.length, 0);
+
+  // A fault after the money call (here: Razorpay's answer carries no refund id, so recording it fails): Razorpay may have the refund.
+  const b = await seedPayment("routeunknown");
+  razorpay = async (input) => ({ id: null as never, payment_id: input.providerPaymentId, amount: input.amountMinor ?? 0, currency: "INR", status: "processed" });
+  const out = await post(refundRoute, b.paymentId, { reason: "Reason is long enough", confirm: true, expectedRemainingMinor: 100_000 }, plain);
+  assert.equal(out.status, 500);
+  assert.deepEqual(out.body, { error: "outcome-unknown" });
+  assert.equal(razorpayCalls.length, 1, "Razorpay was called once");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: b.paymentId } })).refundStatus, "requested", "locked until it is checked");
+  assert.deepEqual((await auditOf("payment", b.paymentId)).map((t) => t.action), ["payment.refund_requested", "payment.refund_unconfirmed"]);
+  const again = await post(refundRoute, b.paymentId, { reason: "Reason is long enough", confirm: true, expectedRemainingMinor: 100_000 }, plain);
+  assert.equal(again.status, 409, "a retry is refused while it is unconfirmed");
+  assert.equal(razorpayCalls.length, 1);
+});
+
+test("refund failure text: a 5xx is 'Outcome unknown' (with or without a body), 502 and 409 keep their sentence, amount-changed says to check again", async () => {
+  const { refundFailureMessage } = await import("../web/src/components/admin/RefundAction");
+  assert.match(refundFailureMessage(500, {}), /^Outcome unknown: check this payment before retrying/);
+  assert.match(refundFailureMessage(500, { error: "outcome-unknown" }), /^Outcome unknown/);
+  assert.match(refundFailureMessage(503, {}), /^Outcome unknown/);
+  assert.equal(refundFailureMessage(502, { error: "Razorpay refund failed (400): bad" }), "Razorpay refund failed (400): bad");
+  assert.equal(refundFailureMessage(409, { error: "This payment was already refunded in full." }), "This payment was already refunded in full.");
+  assert.match(refundFailureMessage(409, { code: "amount-changed", error: "x" }), /amount left to refund changed/);
+  assert.equal(refundFailureMessage(400, {}), "The refund did not go through.");
+});
+
+test("audit: a refund Razorpay has only accepted (status pending) is recorded as payment.refund_submitted, a processed one as payment.refunded", { skip }, async () => {
+  const a = await seedPayment("submitted");
+  const b = await seedPayment("processedone");
+  const fake = (status: string) => async (id: string) => ({ refundId: "rfnd_x", status, amountMinor: 100_000, fullyRefunded: true }) as never;
+  await refundLib.adminRefundPayment(a.paymentId, actor(), "Reason is long enough", null, { refund: fake("pending") });
+  await refundLib.adminRefundPayment(b.paymentId, actor(), "Reason is long enough", null, { refund: fake("processed") });
+  assert.deepEqual((await auditOf("payment", a.paymentId)).map((t) => t.action), ["payment.refund_requested", "payment.refund_submitted"]);
+  assert.deepEqual((await auditOf("payment", b.paymentId)).map((t) => t.action), ["payment.refund_requested", "payment.refunded"]);
+});
+
+test("platform cancel with the REAL cancelBooking (Google, e-mail, queue and Razorpay stand-ins): one alert only, a correct refund note, the payment flagged", { skip }, async () => {
+  const sent: { kind: string; opts: { refundNote?: string | null } | undefined }[] = [];
+  const queued: string[] = [];
+  const hostAlerts: { kind: string; detail: string }[] = [];
+  const refunds: string[] = [];
+  const deps = (refundImpl?: () => Promise<unknown>) => ({
+    google: {} as never,
+    enqueueSendMessage: async (id: string) => void queued.push(id),
+    sendBookingEmail: (async (_id: string, kind: string, opts?: { refundNote?: string | null }) => void sent.push({ kind, opts })) as never,
+    alert: (async (_inf: string, a: { kind: string; detail: string }) => void hostAlerts.push({ kind: a.kind, detail: a.detail })) as never,
+    cancelReminders: async () => {},
+    enqueueReminders: async () => {},
+    rearmMessage: async () => {},
+    refundPayment: (async (id: string) => {
+      refunds.push(id);
+      return refundImpl ? refundImpl() : { refundId: "rfnd_x", status: "processed" };
+    }) as never,
+  });
+  const run1 = async (kind: string, refundImpl?: () => Promise<unknown>) => {
+    const s = await seedPayment(kind, { bookingStatus: "SCHEDULED", startOffsetMs: 6 * DAY });
+    sent.length = 0; queued.length = 0; hostAlerts.length = 0; refunds.length = 0;
+    const d = deps(refundImpl);
+    const out = await cancelLib.adminCancelBooking(s.bookingId, actor(), "Influencer suspended", null, { cancel: (id, opts) => realCancelBooking(id, opts, d), alert: d.alert });
+    return { s, out };
+  };
+
+  // AUTO_REFUND_ON_CANCEL=false: the payment is flagged for the administrator; the host is told only that the platform cancelled.
+  process.env.AUTO_REFUND_ON_CANCEL = "false";
+  const manual = await run1("realcancel1");
+  assert.equal(manual.out.kind, "ok");
+  assert.deepEqual(hostAlerts.map((a) => a.kind), ["platform-cancelled"], "no 'refund-needed' alert: the host is not asked to refund");
+  assert.match(hostAlerts[0].detail, /The platform will refund the customer; you do not need to do anything/);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "booking-cancelled");
+  assert.equal(sent[0].opts?.refundNote, "You are due a full refund. We will issue it to your original payment method.", "the customer is not told the host will refund");
+  assert.equal(refunds.length, 0);
+  const row = await prisma.payment.findUniqueOrThrow({ where: { id: manual.s.paymentId } });
+  assert.equal(row.needsRefund, true, "flagged for the administrator's refund");
+  assert.match(row.failureReason ?? "", /Cancelled by the platform: Influencer suspended/);
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: manual.s.bookingId } })).status, "CANCELLED");
+  assert.equal(manual.out.kind === "ok" && manual.out.refund.issued, "no");
+
+  // AUTO_REFUND_ON_CANCEL=true: refunded at once, the customer is told so, still one alert for the host.
+  process.env.AUTO_REFUND_ON_CANCEL = "true";
+  const auto = await run1("realcancel2");
+  assert.deepEqual(hostAlerts.map((a) => a.kind), ["platform-cancelled"]);
+  assert.deepEqual(refunds, [auto.s.paymentId]);
+  assert.match(sent[0].opts?.refundNote ?? "", /Your refund has been issued/);
+  assert.equal(auto.out.kind === "ok" && auto.out.refund.issued, "yes");
+
+  // An automatic refund that fails: no 'refund-failed' alert to the host either (the payment stays flagged for the administrator).
+  const failing = await run1("realcancel3", async () => {
+    throw new Error("Razorpay refund failed (400): bad");
+  });
+  assert.deepEqual(hostAlerts.map((a) => a.kind), ["platform-cancelled"]);
+  assert.equal(failing.out.kind === "ok" && failing.out.refund.issued, "no");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: failing.s.paymentId } })).needsRefund, true);
+
+  // The influencer's own cancel is unchanged: the host is asked to refund and the customer is told the host will.
+  process.env.AUTO_REFUND_ON_CANCEL = "false";
+  const own = await seedPayment("realcancel4", { bookingStatus: "SCHEDULED", startOffsetMs: 6 * DAY });
+  sent.length = 0; hostAlerts.length = 0;
+  await realCancelBooking(own.bookingId, { actor: "influencer" }, deps());
+  assert.deepEqual(hostAlerts.map((a) => a.kind), ["refund-needed"]);
+  assert.match(sent[0].opts?.refundNote ?? "", /The host has been notified and will issue it/);
 });

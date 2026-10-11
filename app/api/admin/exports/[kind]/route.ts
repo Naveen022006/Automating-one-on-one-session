@@ -35,7 +35,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ kind: string }>
     { adminId: admin.adminId, email: admin.email },
     { action: "admin.export", targetType: "export", targetId: kind, detail: { kind, from: range.from, to: range.to, rows: rows.length - 1 }, ip: clientIp(req.headers) },
   );
-  return new NextResponse(toCsv(rows), {
+  // The BOM makes Excel on Windows read the file as UTF-8 (non-Latin names would otherwise turn into mojibake); other readers skip it.
+  return new NextResponse(`﻿${toCsv(rows)}`, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="${exportFilename(kind, range)}"`,
