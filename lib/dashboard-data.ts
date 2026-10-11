@@ -216,8 +216,11 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
   };
 }
 
-/** Captured (and refunded) payments in [from, to), as input for the pure earnings aggregation. */
-export async function earningsPayments(influencerId: string, from: Date | null, to: Date | null): Promise<EarningsPaymentInput[]> {
+/**
+ * Captured (and refunded) payments in [from, to), as input for the pure earnings aggregation. `take` reads only the oldest N
+ * (the earnings page uses it so a request for a huge range cannot load every payment); without it everything in the range is read.
+ */
+export async function earningsPayments(influencerId: string, from: Date | null, to: Date | null, opts: { take?: number } = {}): Promise<EarningsPaymentInput[]> {
   const payments = await prisma.payment.findMany({
     where: {
       status: { in: ["CAPTURED", "REFUNDED"] },
@@ -225,6 +228,7 @@ export async function earningsPayments(influencerId: string, from: Date | null, 
       ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}),
     },
     include: { booking: { select: { session: { select: { service: { select: { id: true, title: true } } } } } } },
+    ...(opts.take ? { orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }], take: opts.take } : {}),
   });
   return payments.map((p) => ({
     amountMinor: p.amountMinor,
@@ -244,6 +248,14 @@ export interface CustomerRow {
   nextSession: string | null;
 }
 
+/**
+ * Prisma's `contains` puts the text into a LIKE pattern as it is, so "%" and "_" would act as wildcards (a search for "%" listed
+ * everyone) and a trailing backslash would be an invalid pattern. Escaping them makes a search match the characters typed.
+ */
+function likeLiteral(text: string): string {
+  return text.replace(/[\\%_]/g, "\\$&");
+}
+
 /** Customers aggregated by email across the influencer's bookings (customers have no accounts). */
 export async function listCustomers(influencerId: string, query: string | null, now = new Date()): Promise<CustomerRow[]> {
   const q = query?.trim().toLowerCase();
@@ -252,7 +264,7 @@ export async function listCustomers(influencerId: string, query: string | null, 
       redactedAt: null,
       status: { in: ["PAID", "SCHEDULED", "COMPLETED", "CANCELLED"] },
       session: { service: { influencerId } },
-      ...(q ? { OR: [{ customerEmail: { contains: q } }, { customerName: { contains: q, mode: "insensitive" as const } }] } : {}),
+      ...(q ? { OR: [{ customerEmail: { contains: likeLiteral(q) } }, { customerName: { contains: likeLiteral(q), mode: "insensitive" as const } }] } : {}),
     },
     select: {
       customerEmail: true,
