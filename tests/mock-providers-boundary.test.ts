@@ -79,7 +79,7 @@ test("Google and Meta base URLs are written only in lib/provider-endpoints.ts, l
 
 test("the mock never enters an image: the build context excludes it, and nothing in the Dockerfiles copies it by name", () => {
   const ignored = readFileSync(join(root, ".dockerignore"), "utf8").split(/\r?\n/).map((l) => l.trim());
-  assert.ok(ignored.includes("scripts/mock-providers") && ignored.includes("scripts/dev-mock.ts"));
+  assert.ok(ignored.includes("scripts/mock-providers") && ignored.includes("scripts/dev-mock.ts") && ignored.includes("scripts/dev-mock-worker.ts"));
   for (const file of ["Dockerfile", "Dockerfile.worker"]) assert.ok(!/mock-providers|dev-mock/.test(readFileSync(join(root, file), "utf8")), `${file} must not mention the mock`);
   const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts as Record<string, string>;
   assert.equal(scripts["dev:mock"], "tsx scripts/dev-mock.ts");
@@ -100,9 +100,16 @@ test("the mock server imports nothing from lib/ (it shares no parsing or signing
     const text = readFileSync(launcher, "utf8");
     const fromLib = [...text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']*lib\/[^"']*)["']/g)];
     for (const m of fromLib) {
-      assert.match(m[2], /lib\/provider-endpoints$/, `${m[2]}: only lib/provider-endpoints may be imported`);
+      assert.match(m[2], /lib\/provider-endpoints$/, `${m[2]}: only lib/provider-endpoints may be imported statically`);
       assert.deepEqual(m[1].split(",").map((s) => s.trim()).filter(Boolean), ["isLocalAppUrl"]);
     }
+    // Besides isLocalAppUrl the launcher reads the worker heartbeat with the app's own reader (lib/health.ts), by a dynamic import.
+    const libImports = importsOf(launcher).filter((s) => /(^|\/)lib\//.test(s));
+    assert.deepEqual([...new Set(libImports)].sort(), ["../lib/health", "../lib/provider-endpoints"]);
     assert.ok(importsOf(launcher).every((s) => !/(^|\/)(app|worker|components)\//.test(s)), "the launcher imports no app code");
   }
+  // The refusal rule for the worker is a pure module the unit test imports: it imports nothing at all.
+  const rule = join(root, "scripts", "dev-mock-worker.ts");
+  assert.ok(existsSync(rule));
+  assert.deepEqual(importsOf(rule), [], "scripts/dev-mock-worker.ts is pure");
 });
