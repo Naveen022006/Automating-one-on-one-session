@@ -15,8 +15,3 @@ export function graphVersion(env: Record<string, string | undefined> = process.e
   const v = env.WHATSAPP_GRAPH_VERSION?.trim();
   return v && /^v\d+\.\d+$/.test(v) ? v : DEFAULT_GRAPH_VERSION;
 }
-
-/** The base URL of every Graph call. */
-export function graphBase(env: Record<string, string | undefined> = process.env): string {
-  return `https://graph.facebook.com/${graphVersion(env)}`;
-}

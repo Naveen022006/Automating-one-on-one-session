@@ -368,6 +368,60 @@ test("SPA_GROUPS: valid values and an empty one are fine; unknown names are a wa
   assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("SPA_GROUPS") && (KNOWN_ENV_VARS as readonly string[]).includes("SPA_API_TARGET"));
 });
 
+test("MOCK_PROVIDERS_URL: a known variable, documented in .env.example, and an error in production whatever else is set", () => {
+  assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("MOCK_PROVIDERS_URL"));
+  assert.match(readFileSync(join(process.cwd(), ".env.example"), "utf8"), /^MOCK_PROVIDERS_URL=$/m, "documented, and left empty");
+  assert.deepEqual(validateEnv({ ...good, MOCK_PROVIDERS_URL: "" }).errors, [], "blank is the same as unset");
+
+  const mock = "http://127.0.0.1:4010";
+  const r = validateEnv({ ...good, MOCK_PROVIDERS_URL: mock });
+  assert.equal(r.errors.length, 1);
+  assert.ok(r.errors[0].startsWith("MOCK_PROVIDERS_URL: must not be set in production"), r.errors[0]);
+  assert.ok(!r.errors.join("\n").includes(mock), "the value is never printed");
+
+  // Not even the local-run escape hatch tolerates it: the Docker image always runs in production mode.
+  const local = validateEnv({ ...good, APP_URL: "http://localhost:3000", ALLOW_INSECURE_LOCAL_RUN: "true", MOCK_PROVIDERS_URL: mock });
+  assert.ok(local.errors.some((e) => e.startsWith("MOCK_PROVIDERS_URL: must not be set in production")), local.errors.join("\n"));
+  assert.equal(local.localRun, true);
+});
+
+test("a variable holding a mock-providers placeholder value is an error in production, never printed, and fine in development", () => {
+  const r = validateEnv({ ...good, GOOGLE_CLIENT_SECRET: "MOCK-NOT-REAL-google-client-secret" });
+  assert.ok(r.errors.some((e) => e.startsWith("GOOGLE_CLIENT_SECRET: holds a mock-providers placeholder")), r.errors.join("\n"));
+  assert.ok(!r.errors.join("\n").includes("MOCK-NOT-REAL"));
+  const email = validateEnv({ ...good, ADMIN_ALERT_EMAILS: "creator@mock-google.invalid" });
+  assert.ok(email.errors.some((e) => e.startsWith("ADMIN_ALERT_EMAILS: holds a mock-providers placeholder")));
+  assert.deepEqual(validateEnv({ ...good, GOOGLE_CLIENT_SECRET: "a-real-looking-secret" }).errors, []);
+  const dev = validateEnv({ NODE_ENV: "development", GOOGLE_CLIENT_SECRET: "MOCK-NOT-REAL-google-client-secret" });
+  assert.deepEqual(dev.errors, []);
+  assert.ok(!dev.warnings.some((w) => w.includes("placeholder")));
+});
+
+test("MOCK_PROVIDERS_URL in development: a loud warning that says whether the mock is active or ignored", () => {
+  const dev = { NODE_ENV: "development", APP_URL: "http://localhost:3000" };
+  const active = validateEnv({ ...dev, MOCK_PROVIDERS_URL: "http://127.0.0.1:4010" });
+  assert.deepEqual(active.errors, []);
+  const line = active.warnings.find((w) => w.startsWith("MOCK_PROVIDERS_URL:"));
+  assert.ok(line && /ACTIVE/.test(line) && /MOCKED/.test(line) && /nothing reaches the real services/.test(line), String(line));
+  assert.ok(!line.includes("127.0.0.1"), "the value is not printed");
+
+  const ignored = validateEnv({ ...dev, APP_URL: "https://app.example.com", MOCK_PROVIDERS_URL: "http://127.0.0.1:4010" });
+  assert.deepEqual(ignored.errors, []);
+  const w = ignored.warnings.find((x) => x.startsWith("MOCK_PROVIDERS_URL:"));
+  assert.ok(w && /APP_URL/.test(w) && /REAL services/.test(w), String(w));
+  const badMock = validateEnv({ ...dev, MOCK_PROVIDERS_URL: "http://192.168.1.10:4010" }).warnings.find((x) => x.startsWith("MOCK_PROVIDERS_URL:"));
+  assert.ok(badMock && /REAL services/.test(badMock) && !badMock.includes("192.168"), String(badMock));
+  const staging = validateEnv({ NODE_ENV: "staging", APP_URL: "http://localhost:3000", MOCK_PROVIDERS_URL: "http://127.0.0.1:4010" }).warnings.find((x) => x.startsWith("MOCK_PROVIDERS_URL:"));
+  assert.ok(staging && /NODE_ENV/.test(staging) && /REAL services/.test(staging), String(staging));
+
+  for (const value of [undefined, "", "   "]) {
+    const r = validateEnv({ ...dev, ...(value === undefined ? {} : { MOCK_PROVIDERS_URL: value }) });
+    const lines = r.warnings.filter((x) => x.startsWith("MOCK_PROVIDERS_URL:"));
+    // A blank value is the same as unset; padding is reported once, as the whitespace problem it is.
+    assert.equal(lines.filter((x) => /ACTIVE|REAL services/.test(x)).length, value === "   " ? 1 : 0, `${JSON.stringify(value)}: ${lines.join(" | ")}`);
+  }
+});
+
 test("spaTemplateProblems: nothing to check without SPA_GROUPS; otherwise the template must exist and carry the CSP placeholders", () => {
   const html = '<html><head><!--spa-head--><script nonce="__CSP_NONCE__" src="/assets/a.js"></script></head></html>';
   let reads = 0;

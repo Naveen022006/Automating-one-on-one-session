@@ -1,5 +1,6 @@
 import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, templateConflict, type TemplateSpec } from "@/lib/message-templates";
-import { graphBase, graphVersion } from "@/lib/whatsapp-graph-version";
+import { graphBase, mockFacebookSdkUrl } from "@/lib/provider-endpoints";
+import { graphVersion } from "@/lib/whatsapp-graph-version";
 
 /**
  * Meta Graph API calls for connecting an influencer's own WhatsApp Business number: checking credentials, reading and
@@ -335,10 +336,12 @@ export function metaAppCredentials(env = process.env): { appId: string; appSecre
 
 /* ---------- Embedded Signup ---------- */
 
-export function embeddedSignupConfig(env = process.env): { appId: string; configId: string; graphVersion: string } | null {
-  return env.META_APP_ID && env.META_ES_CONFIG_ID && metaAppSecret(env)
-    ? { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID, graphVersion: graphVersion(env) }
-    : null;
+export function embeddedSignupConfig(env = process.env): { appId: string; configId: string; graphVersion: string; sdkUrl?: string } | null {
+  if (!(env.META_APP_ID && env.META_ES_CONFIG_ID && metaAppSecret(env))) return null;
+  const cfg = { appId: env.META_APP_ID, configId: env.META_ES_CONFIG_ID, graphVersion: graphVersion(env) };
+  // Only while the local mock server is active (lib/provider-endpoints.ts): the sign-up window's script then comes from there.
+  const sdkUrl = mockFacebookSdkUrl(env);
+  return sdkUrl ? { ...cfg, sdkUrl } : cfg;
 }
 
 /** Exchanges the code from the Embedded Signup dialog for the business token. */

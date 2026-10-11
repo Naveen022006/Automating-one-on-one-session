@@ -1,7 +1,7 @@
 import { metaTemplateName } from "@/lib/message-templates";
 import { toE164 } from "@/lib/phone";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
-import { graphBase } from "@/lib/whatsapp-graph-version";
+import { graphBase } from "@/lib/provider-endpoints";
 
 function env(name: string): string {
   const v = process.env[name];

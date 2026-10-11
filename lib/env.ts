@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { keyFingerprint, parseKeyBytes } from "./crypto";
+import { mockProvidersOverride } from "./provider-endpoints";
 import { SPA_GROUPS, parseSpaGroups, unknownSpaGroups } from "./spa/routes";
 import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell";
 
@@ -181,7 +182,7 @@ export const KNOWN_ENV_VARS = [
   "EMAIL_PROVIDER", "EMAIL_FROM", "RESEND_API_KEY", "POSTMARK_SERVER_TOKEN", "POSTMARK_MESSAGE_STREAM",
   "ERROR_WEBHOOK_URL", "ENABLE_DESIGN_PAGE", "PAYOUT_HOLD_DAYS", "PLATFORM_FEE_BPS",
   "READINESS_REQUIRED", "READINESS_BYPASS", "ALLOW_INSECURE_LOCAL_RUN",
-  "PAYMENT_RECOVERY_ENABLED", "ADMIN_ALERT_EMAILS", "HEALTH_WORKER_STALE_SECONDS", "HEALTH_PAYMENT_UNRECOVERED_MINUTES",
+  "MOCK_PROVIDERS_URL", "PAYMENT_RECOVERY_ENABLED", "ADMIN_ALERT_EMAILS", "HEALTH_WORKER_STALE_SECONDS", "HEALTH_PAYMENT_UNRECOVERED_MINUTES",
   "HEALTH_MEETING_STUCK_MINUTES", "HEALTH_QUEUE_FAILED_MAX", "HEALTH_QUEUE_WAITING_MAX", "HEALTH_HOLD_SWEEP_GRACE_MINUTES",
   "HEALTH_RECOVERY_FAILING_RUNS", "HEALTH_RECOVERY_STALE_MINUTES", "HEALTH_ALERT_DEDUPE_MINUTES",
   "ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR",
@@ -289,6 +290,22 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
   // leave that group on the old pages, so say so; the names are not echoed (a pasted value could be anything).
   if (unknownSpaGroups(env.SPA_GROUPS).length) {
     warn("SPA_GROUPS", `has names that are not page groups and are ignored; use "all" or a comma separated list of: ${SPA_GROUPS.join(", ")}`);
+  }
+
+  // 2c. MOCK_PROVIDERS_URL (doc/11-provider-simulator.md): points Google and Meta at the local mock server. Never in production,
+  // not even under ALLOW_INSECURE_LOCAL_RUN (the Docker image always runs in production mode). In development say loudly whether it
+  // is in effect or ignored. Judged on the RAW input, exactly as lib/provider-endpoints.ts reads it at run time.
+  if (input.MOCK_PROVIDERS_URL) {
+    const mock = mockProvidersOverride(input);
+    if (production) errors.push("MOCK_PROVIDERS_URL: must not be set in production (it points Google and Meta calls at a local mock server); remove it");
+    else if (!mock.active) warnings.push(`MOCK_PROVIDERS_URL: ${mock.problem}. Google and Meta calls go to the REAL services`);
+    else warnings.push("MOCK_PROVIDERS_URL: ACTIVE. Google (OAuth, Calendar, Gmail) and Meta (Graph API, Embedded Signup SDK) are MOCKED by the local mock server; nothing reaches the real services (development only)");
+  }
+  if (production) {
+    for (const name of KNOWN_ENV_VARS) {
+      const v = input[name];
+      if (v && (v.includes("MOCK-NOT-REAL") || v.includes("mock-google.invalid"))) errors.push(`${name}: holds a mock-providers placeholder value; set the real value`);
+    }
   }
 
   // 3. Production-only requirements.
