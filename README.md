@@ -154,6 +154,24 @@ passwords, and writes them to `dev-logins.local.md` (gitignored; the passwords a
 passwords, or with `-- --remove` to delete the logins. It refuses to run unless `APP_URL` is a local address, so it cannot
 create known logins on a deployed copy.
 
+### Cleaning dummy data from a development database
+Tests and QA runs against a shared development database leave rows behind (test administrators such as
+`routes-x-<timestamp>@example.com`, throwaway influencers such as `ap-<timestamp>` with their services, bookings, payments,
+payouts and connections). `npm run data:cleanup-test` removes them. It is a **dry run by default**: it prints how many rows it
+would delete per table, which influencers and administrators those are, and separately what it KEEPS (the protected ones, and
+anything it cannot positively identify as test data, for example bookings on `demo` whose customer address does not look like
+test data, shown as id prefix, status, date and e-mail domain only).
+
+    npm run data:cleanup-test                                          # dry run, deletes nothing
+    npm run data:cleanup-test -- --apply --confirm=DELETE-TEST-DATA    # delete, in one transaction
+
+`--apply` is refused unless `NODE_ENV` is not `production`, `APP_URL` is a local address and the typed confirmation is given.
+Never touched: the `demo` influencer (its login, services, availability, payout account), the administrators `admin@`,
+`admin1@` and `admin2@example.com`, `admin_audit_logs` (append-only; the rows of a deleted administrator keep their copied
+e-mail), queues and Redis, and every row the patterns do not match. The patterns (timestamped `@example.com` names, the test
+slug prefixes, QA names) are documented in `lib/test-data-cleanup.ts` and pinned by `tests/cleanup-test-data.test.ts`. After
+`--apply`, run the dry run again: every "would be deleted" count should be 0.
+
 ## Payout details
 Influencers add where to be paid under **Dashboard > Payouts** (bank account + IFSC, or UPI). Saving needs a recent
 password entry, stores the account number / UPI id AES-256-GCM encrypted (`TOKEN_ENCRYPTION_KEY`), shows only a masked

@@ -25,6 +25,7 @@ npm run worker           # BullMQ worker + hold expiry (expire-holds is an alias
 npm run db:seed          # demo influencer "demo" with a 1:1 and a group service; npx prisma migrate dev | db:deploy
 npm run admin:create -- --email you@x.com --name "You" [--reset | --reset-2fa]   # administrators (no public registration)
 npm run dev:logins       # random test logins for demo + two admins -> dev-logins.local.md (gitignored; refuses non-local APP_URL)
+npm run data:cleanup-test [-- --apply --confirm=DELETE-TEST-DATA]   # dry run by default: removes test admins/influencers (and their rows) left by tests and QA; see README
 npm run keys:verify | keys:rotate     # TOKEN_ENCRYPTION_KEY rotation, see doc/08 section 9
 node scripts/spa-smoke.mjs <url> [--no-db]   # HTTP smoke test of a built server (CI runs it against the Docker image)
 ```
