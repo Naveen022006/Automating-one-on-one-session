@@ -143,6 +143,10 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
   unless `APP_URL` is exactly that origin: use `http://localhost:<port>`.
 - Nothing is frozen any more (the migration's freeze rule on `web/src/lib`, `lib/spa`, `proxy.ts`... is lifted). Tests that pin a
   behaviour (the guard allowlist, the DTO key sets, the proxy rules) are changed deliberately, with the reason in the commit.
+- After pulling a change that deletes or moves pages (the migration's cleanup did), `npm run typecheck` can fail inside `.next/types`
+  (generated route types of pages that no longer exist). Stop `next dev`, delete the `.next` folder (or run `npm run build`) and run it again.
+- Background processes are not killed when the shell that started them is: `taskkill` or Task Manager for a stray `next dev` or
+  worker, and never run two workers against one database and Redis (a second worker double-processes jobs).
 - Lead times that are not code: WhatsApp template approval, DLT registration and Google OAuth verification take days to weeks.
 
 ## Where to read next
