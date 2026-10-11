@@ -1,7 +1,7 @@
 import { listCustomers, type CustomerRow } from "@/lib/dashboard-data";
 
 /**
- * The Customers page's data, for the old Next page and GET /api/dashboard/customers. Scoped to the influencer id from
+ * The Customers page's data, for GET /api/dashboard/customers. Scoped to the influencer id from
  * the login session. Names and emails are shown here, to the influencer they booked with, exactly as the page always did.
  */
 

@@ -7,7 +7,7 @@ import { jsonView } from "@/lib/views/http";
 
 export const dynamic = "force-dynamic";
 
-// The onboarding wizard's data for the SPA (the old Next page renders from the same loadOnboardingView). Any signed-in
+// The onboarding wizard's data for the SPA (loadOnboardingView is the one source). Any signed-in
 // influencer may read it, finished onboarding or not: this is the screen an account sees BEFORE it has finished. The
 // step (?step=) and Google's return outcome (?google=) stay in the URL.
 export async function GET() {

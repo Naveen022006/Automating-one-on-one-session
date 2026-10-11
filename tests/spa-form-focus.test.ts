@@ -1,14 +1,14 @@
 // QA-2 / QA-11 / M4 / M7: keyboard focus after a failed submit and after a step change of the booking flow.
 // Effects do not run in a static render and there is no DOM in these tests, so the RULES are tested where they live, as pure functions
-// (components/ui/focus.ts) that BookingFlow and the register form call, plus what a server render of BookingFlow shows (the focus
+// (web/src/components/ui/focus.ts) that BookingFlow and the register form call, plus what a server render of BookingFlow shows (the focus
 // targets exist). No database, no browser.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { BookingFlow } from "../app/[influencer]/book/BookingFlow";
-import { INVALID_SELECTOR, REQUESTED_HEADING_ID, STEP_HEADING_IDS, focusFirstInvalid, headingToFocus, stepHeadingId } from "../components/ui/focus";
+import { BookingFlow } from "../web/src/pages/booking/BookingFlow";
+import { INVALID_SELECTOR, REQUESTED_HEADING_ID, STEP_HEADING_IDS, focusFirstInvalid, headingToFocus, stepHeadingId } from "../web/src/components/ui/focus";
 
 type FakeField = { id: string; focused: number; focus(): void };
 const field = (id: string): FakeField => ({ id, focused: 0, focus() { this.focused++; } });
@@ -80,7 +80,7 @@ test("the focus targets exist: the heading of the step a visitor lands on is foc
 });
 
 test("every heading id the rule can name is a focusable h2 of BookingFlow (steps 2 to 4 cannot be rendered without a browser)", () => {
-  const source = readFileSync("app/[influencer]/book/BookingFlow.tsx", "utf8");
+  const source = readFileSync("web/src/pages/booking/BookingFlow.tsx", "utf8");
   for (const id of [...STEP_HEADING_IDS, REQUESTED_HEADING_ID]) {
     assert.match(source, new RegExp(`<h2 id="${id}" tabIndex=\\{-1\\}`), `${id} must be focusable (tabIndex -1), or focus() on it does nothing`);
   }

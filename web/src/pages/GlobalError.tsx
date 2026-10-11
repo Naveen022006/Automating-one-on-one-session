@@ -1,8 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 /**
- * Last-resort boundary (what app/global-error.tsx was): a crash OUTSIDE the router, where no stylesheet or component can be
- * trusted, so it renders with inline styles only. Same copy as the Next file.
+ * Last-resort boundary: a crash OUTSIDE the router, where no stylesheet or component can be trusted, so it renders with inline
+ * styles only.
  */
 export function GlobalError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (

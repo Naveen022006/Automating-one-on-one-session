@@ -1,4 +1,4 @@
-import { HealthView } from "@/components/views/admin/HealthView";
+import { HealthView } from "@web/components/views/admin/HealthView";
 import type { AdminHealthView } from "@/lib/views/admin-health";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

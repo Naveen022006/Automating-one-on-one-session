@@ -353,25 +353,29 @@ test("initEnv logs warnings once; initEnvOrExit prints the problems and exits 1"
   }
 });
 
-/* ---------- React SPA (SPA_GROUPS), doc/10-react-migration-plan.md section 1.8 ---------- */
+/* ---------- React SPA start-up checks, doc/12-front-end.md ---------- */
 
 /** Variables that make initEnv treat the process as serverless (warnings instead of a refusal); tests clear them for determinism. */
 const SERVERLESS_VARS = ["VERCEL", "AWS_LAMBDA_FUNCTION_NAME", "LAMBDA_TASK_ROOT", "NETLIFY"];
 
-test("SPA_GROUPS: valid values and an empty one are fine; unknown names are a warning that does not echo the value", () => {
-  for (const value of [undefined, "", "all", "public", "public,auth,booking,dashboard,admin", "Public, AUTH"]) {
+test("SPA_GROUPS is no longer a setting: unset or blank is quiet, any value is ignored with a warning that does not echo it", () => {
+  for (const value of [undefined, "", "   "]) {
     const r = validateEnv({ ...good, ...(value === undefined ? {} : { SPA_GROUPS: value }) });
     assert.deepEqual(r.errors, [], String(value));
     assert.ok(!r.warnings.some((w) => w.startsWith("SPA_GROUPS:")), `no warning for ${JSON.stringify(value)}`);
   }
-  const r = validateEnv({ ...good, SPA_GROUPS: "public,bogus-secret-looking-name" });
-  assert.deepEqual(r.errors, [], "a misspelt group never stops the app: that group simply stays on the old pages");
-  const warning = r.warnings.find((w) => w.startsWith("SPA_GROUPS:"));
-  assert.ok(warning && /public, auth, booking, dashboard, admin/.test(warning));
-  assert.ok(!warning.includes("bogus"), "values are never printed");
-  // In development too.
-  assert.ok(validateEnv({ NODE_ENV: "development", SPA_GROUPS: "nonsense" }).warnings.some((w) => w.startsWith("SPA_GROUPS:")));
-  assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("SPA_GROUPS") && (KNOWN_ENV_VARS as readonly string[]).includes("SPA_API_TARGET"));
+  for (const value of ["all", "public", "public,auth,booking,dashboard,admin", "bogus-secret-looking-name"]) {
+    const r = validateEnv({ ...good, SPA_GROUPS: value });
+    assert.deepEqual(r.errors, [], `${value}: a leftover setting never stops the app, in production either`);
+    const warning = r.warnings.find((w) => w.startsWith("SPA_GROUPS:"));
+    assert.ok(warning && /ignored/.test(warning) && /Remove it/.test(warning), `${value}: ${warning}`);
+    assert.ok(!warning.includes(value), "values are never printed");
+  }
+  // In development too, and the setting is not a known variable any more (only the dev proxy target is).
+  assert.ok(validateEnv({ NODE_ENV: "development", SPA_GROUPS: "all" }).warnings.some((w) => w.startsWith("SPA_GROUPS:")));
+  assert.ok(!(KNOWN_ENV_VARS as readonly string[]).includes("SPA_GROUPS"));
+  assert.ok((KNOWN_ENV_VARS as readonly string[]).includes("SPA_API_TARGET"));
+  assert.doesNotMatch(readFileSync(join(process.cwd(), ".env.example"), "utf8"), /^\s*#?\s*SPA_GROUPS\b/m, ".env.example does not offer it any more");
 });
 
 test("MOCK_PROVIDERS_URL: a known variable, documented in .env.example, and an error in production whatever else is set", () => {
@@ -428,7 +432,7 @@ test("MOCK_PROVIDERS_URL in development: a loud warning that says whether the mo
   }
 });
 
-test("spaTemplateProblems: nothing to check without SPA_GROUPS; otherwise the template must exist and carry the CSP placeholders", () => {
+test("spaTemplateProblems: the template must exist and carry the CSP placeholders (always: every page is the SPA)", () => {
   const html = '<html><head><!--spa-head--><script nonce="__CSP_NONCE__" src="/assets/a.js"></script></head></html>';
   let reads = 0;
   const reader = (content: string | Error) => (file: string) => {
@@ -437,19 +441,14 @@ test("spaTemplateProblems: nothing to check without SPA_GROUPS; otherwise the te
     if (content instanceof Error) throw content;
     return content;
   };
-  assert.deepEqual(spaTemplateProblems({}, reader(html), "/work"), []);
-  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "" }, reader(html), "/work"), []);
-  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "bogus" }, reader(html), "/work"), [], "no valid group, nothing is served by the SPA");
-  assert.equal(reads, 0, "the file is not even read when no group is enabled");
-
-  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "all" }, reader(html), "/work"), []);
-  assert.deepEqual(spaTemplateProblems({ SPA_GROUPS: "admin" }, reader(html), "/work"), []);
-  const missing = spaTemplateProblems({ SPA_GROUPS: "all" }, reader(new Error("ENOENT")), "/work");
+  assert.deepEqual(spaTemplateProblems(reader(html), "/work"), []);
+  assert.equal(reads, 1, "the file is read, no setting switches the check off");
+  const missing = spaTemplateProblems(reader(new Error("ENOENT")), "/work");
   assert.equal(missing.length, 1);
-  assert.match(missing[0], /^SPA_GROUPS: .*web\/dist\/index\.html is missing/);
-  const noNonce = spaTemplateProblems({ SPA_GROUPS: "all" }, reader("<html><!--spa-head--></html>"), "/work");
-  assert.match(noNonce[0] ?? "", /^SPA_GROUPS: .*__CSP_NONCE__/);
-  const noHead = spaTemplateProblems({ SPA_GROUPS: "all" }, reader('<html nonce="__CSP_NONCE__"></html>'), "/work");
+  assert.match(missing[0], /^web\/dist\/index\.html is missing/);
+  const noNonce = spaTemplateProblems(reader("<html><!--spa-head--></html>"), "/work");
+  assert.match(noNonce[0] ?? "", /__CSP_NONCE__/);
+  const noHead = spaTemplateProblems(reader('<html nonce="__CSP_NONCE__"></html>'), "/work");
   assert.match(noHead[0] ?? "", /spa-head/);
 });
 
@@ -471,31 +470,32 @@ test("initEnv('web') refuses to start a production process whose SPA template is
     };
     const fine = { readFile: () => html, cwd: "/work" };
 
-    // Production + SPA enabled + no template: one aggregated, secret-free error.
-    Object.assign(process.env, good, { SPA_GROUPS: "all" });
+    // Production + no template: one aggregated, secret-free error.
+    Object.assign(process.env, good);
     resetConfigForTests();
     assert.throws(
       () => initEnv("web", broken),
-      (e: unknown) => e instanceof EnvValidationError && e.issues.length === 1 && e.issues[0].startsWith("SPA_GROUPS:") && !e.message.includes(APP_SECRET),
+      (e: unknown) => e instanceof EnvValidationError && e.issues.length === 1 && e.issues[0].startsWith("web/dist/index.html is missing") && !e.message.includes(APP_SECRET),
     );
-    // With the template, or with SPA_GROUPS empty, it starts.
+    // With the template it starts. A leftover SPA_GROUPS neither helps nor hurts: it is ignored.
     resetConfigForTests();
     initEnv("web", fine);
     process.env.SPA_GROUPS = "";
     resetConfigForTests();
-    initEnv("web", broken);
+    assert.throws(() => initEnv("web", broken), EnvValidationError, "an empty SPA_GROUPS does not switch the check off any more");
     // The worker has no pages: it never looks for the template.
     process.env.SPA_GROUPS = "all";
     resetConfigForTests();
     initEnv("worker", broken);
 
-    // Development: a missing template is only a warning (the dev server serves the SPA from Vite).
+    // Development: a missing template is only a warning (`npm run dev` builds it while it runs).
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
-    Object.assign(process.env, saved, { NODE_ENV: "development", SPA_GROUPS: "all" });
+    Object.assign(process.env, saved, { NODE_ENV: "development" });
+    delete process.env.SPA_GROUPS;
     resetConfigForTests();
     warned.length = 0;
     initEnv("web", broken);
-    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("web/dist/index.html")), warned.join("\n"));
+    assert.ok(warned.some((w) => w.includes("web/dist/index.html")), warned.join("\n"));
   } finally {
     console.warn = realWarn;
     console.log = realLog;
@@ -508,18 +508,15 @@ test("initEnv('web') refuses to start a production process whose SPA template is
 test("spaHostnameProblems: a standalone server bound to a loopback IP cannot serve the SPA (Next turns the rewrite into an external proxy)", () => {
   const bad = ["127.0.0.1", "127.1.2.3", "::1", "[::1]", " 127.0.0.1 "];
   for (const HOSTNAME of bad) {
-    const problems = spaHostnameProblems({ SPA_GROUPS: "all", HOSTNAME });
+    const problems = spaHostnameProblems({ HOSTNAME });
     assert.equal(problems.length, 1, HOSTNAME);
-    assert.match(problems[0], /^SPA_GROUPS: .*HOSTNAME/);
+    assert.match(problems[0], /^HOSTNAME: /);
     assert.ok(!problems[0].includes("127.1.2.3"), "the value is never printed");
   }
-  // Fine: what the Docker image sets, a name, localhost, no value, a machine name, or no SPA at all.
+  // Fine: what the Docker image sets, a name, localhost, no value, a machine name.
   for (const HOSTNAME of ["0.0.0.0", "localhost", "app.internal", "my-laptop", "a1b2c3d4e5f6", "", undefined]) {
-    assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "all", HOSTNAME }), [], String(HOSTNAME));
+    assert.deepEqual(spaHostnameProblems({ HOSTNAME }), [], String(HOSTNAME));
   }
-  assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "", HOSTNAME: "127.0.0.1" }), [], "no SPA group, nothing to break");
-  assert.deepEqual(spaHostnameProblems({ HOSTNAME: "127.0.0.1" }), []);
-  assert.deepEqual(spaHostnameProblems({ SPA_GROUPS: "nonsense", HOSTNAME: "127.0.0.1" }), []);
 
   // And it stops a production web start (the template being present does not help).
   const saved = { ...process.env };
@@ -528,7 +525,7 @@ test("spaHostnameProblems: a standalone server bound to a loopback IP cannot ser
   try {
     console.log = () => {};
     const fine = { readFile: () => '<html><!--spa-head--><script nonce="__CSP_NONCE__"></script></html>', cwd: "/work" };
-    Object.assign(process.env, good, { SPA_GROUPS: "all", HOSTNAME: "127.0.0.1" });
+    Object.assign(process.env, good, { HOSTNAME: "127.0.0.1" });
     resetConfigForTests();
     assert.throws(
       () => initEnv("web", fine),
@@ -565,7 +562,7 @@ test("serverless platforms: the SPA start-up checks are warnings there, because 
       cwd: "/var/task",
     };
     for (const k of SERVERLESS_VARS) delete process.env[k];
-    Object.assign(process.env, good, { SPA_GROUPS: "all" });
+    Object.assign(process.env, good);
     resetConfigForTests();
     // Anywhere else in production a missing template stops the process ...
     assert.throws(() => initEnv("web", missing), EnvValidationError);
@@ -576,8 +573,8 @@ test("serverless platforms: the SPA start-up checks are warnings there, because 
     resetConfigForTests();
     warned.length = 0;
     initEnv("web", missing);
-    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("web/dist/index.html")), warned.join("\n"));
-    assert.ok(warned.some((w) => w.includes("SPA_GROUPS:") && w.includes("HOSTNAME")));
+    assert.ok(warned.some((w) => w.includes("web/dist/index.html")), warned.join("\n"));
+    assert.ok(warned.some((w) => w.startsWith("[env] warning (web): HOSTNAME:")));
 
     // Other, real configuration errors are still fatal on a serverless platform.
     process.env.APP_SECRET = "short";

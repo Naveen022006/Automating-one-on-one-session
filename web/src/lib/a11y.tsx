@@ -58,7 +58,7 @@ export function RouteAnnouncer() {
 /**
  * After a client-side navigation to another PATH, moves keyboard and screen reader focus to the new page's `<main id="main">`
  * (made programmatically focusable with tabIndex=-1; spa.css hides the focus ring on it), so the next Tab starts at the
- * new content and not in the old page's sidebar. Not on the first load, not for back/forward (the browser restores
+ * new content and not in the previous page's sidebar. Not on the first load, not for back/forward (the browser restores
  * position), not for search-only changes (tabs, filters, pagination keep the user where they are), and not when the URL has
  * a #hash (HashScroller owns that). `#main` is looked up for up to 3 s because data-driven pages render it late (10 s while a
  * loading placeholder's `main` is on screen; a placeholder never gets the focus, see ./focus-main.ts).

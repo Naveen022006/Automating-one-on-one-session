@@ -6,9 +6,9 @@ import { fourEyesEnabled, fourEyesMinMinor } from "@/lib/payouts";
 
 /**
  * The admin console's Security page: the signed-in administrator's own two-factor state, the payout-approval policy and
- * (only once this session has passed what it must) the list of administrators. One function, two callers: the old Next page
- * (app/admin/(console)/security/page.tsx) and GET /api/admin/security for the SPA. The caller has already passed the gate
- * (`requireAdminPage("/admin/security")` / `requireAdminMfa({ allowEnrollment: true })`): the one console screen an
+ * (only once this session has passed what it must) the list of administrators. Served by
+ * GET /api/admin/security. The caller has already passed the gate
+ * (`requireAdminMfa({ allowEnrollment: true })`): the one console screen an
  * administrator who still has to enrol two-factor may open, a password-only session of one who has it may not.
  *
  * Never in here: the TOTP secret or the recovery codes (they only ever leave through POST /api/admin/security/2fa, at the

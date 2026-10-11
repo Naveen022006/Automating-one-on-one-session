@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router";
-import { ResetPasswordView } from "@/components/views/auth/ResetPasswordView";
+import { ResetPasswordView } from "@web/components/views/auth/ResetPasswordView";
 import { PageTitle } from "../../lib/head";
 
 /** The token comes from the emailed link's query string; the shell answers this URL with `Referrer-Policy: no-referrer`. */

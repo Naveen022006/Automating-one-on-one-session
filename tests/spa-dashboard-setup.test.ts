@@ -1,14 +1,14 @@
-// Branch spa/31-dashboard-setup: the Services, Availability, Payouts, Settings and Onboarding pages are shared view components
-// that BOTH the old Next page and the SPA page render, fed by view functions that the endpoints
+// The Services, Availability, Payouts, Settings and Onboarding pages are view components (web/src/components/views/dashboard)
+// that the SPA pages render, fed by view functions that the endpoints
 //   D6 GET /api/dashboard/services   D7 GET /api/dashboard/availability   D8 GET /api/dashboard/payouts
 //   D9 GET /api/dashboard/settings   D10 GET /api/dashboard/onboarding
 // also answer with. Three parts:
 //   1. pure tests (no database): the field-by-field copies drop everything the panels do not show; the views render from JSON
-//      fixtures; the old pages and the SPA pages render the same views; titles match the route table.
+//      fixtures; each SPA page renders its view from its endpoint; titles match the route table.
 //   2. endpoint tests (need DATABASE_URL, TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise): three influencers ("Alpha",
 //      "Bravo", "Charlie" who has nothing and has not finished onboarding). Every endpoint must show a signed-in influencer
 //      their own rows and never the other's, never a stored token, and answer 401 without a session.
-// Only `next/headers` (cookies per call) and, for rendering, `next/navigation` are replaced. Every body goes through
+// Only `next/headers` (cookies per call) and, for rendering, `@web/lib/navigate` are replaced. Every body goes through
 // assertNoSecretKeys and the exact key sets are pinned, so adding a field is a deliberate act.
 import "dotenv/config";
 import assert from "node:assert/strict";
@@ -28,6 +28,7 @@ import type { DashboardPayoutsView } from "../lib/views/dashboard-payouts";
 import type { DashboardServicesView } from "../lib/views/dashboard-services";
 import type { DashboardSettingsView } from "../lib/views/dashboard-settings";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
+import { fakeNavigate } from "./helpers/fake-navigate";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -46,12 +47,9 @@ let viewsLib: {
   payouts: typeof import("../lib/views/dashboard-payouts");
 };
 
-/** The shared components call `useRouter` from next/navigation, which only works inside Next's router; rendering them needs a stand-in. */
+/** The components call `useRouter` from web/src/lib/navigate, which needs a Router and a QueryClient provider; rendering them here needs a stand-in. */
 function mockNavigation() {
-  const router = { push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} };
-  mock.module("next/navigation", {
-    namedExports: { useRouter: () => router, usePathname: () => "/dashboard/test", useSearchParams: () => new URLSearchParams() },
-  });
+  mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/dashboard/test") });
 }
 
 interface Owner {
@@ -370,7 +368,7 @@ test("loadEmbeddedSignupView: null unless the Meta app is configured; then exact
 const when = "2030-02-01T12:00:00.000Z";
 
 test("PayoutsView renders from JSON: money, the fee text, masked details, the history with its reference; an empty state without data", async () => {
-  const { PayoutsView } = await import("../components/views/dashboard/PayoutsView");
+  const { PayoutsView } = await import("../web/src/components/views/dashboard/PayoutsView");
   const data: DashboardPayoutsView = {
     account: { method: "BANK", accountHolderName: "Pat Doe", bankName: "HDFC Bank", ifsc: "HDFC0001234", accountNumber: "XXXXXXXX3333", upiId: null, status: "PENDING_REVIEW", rejectionReason: null },
     summary: {
@@ -391,8 +389,8 @@ test("PayoutsView renders from JSON: money, the fee text, masked details, the hi
 });
 
 test("ServicesView and AvailabilityView render from JSON, including hidden services, questions, ordered hours and days off", async () => {
-  const { ServicesView } = await import("../components/views/dashboard/ServicesView");
-  const { AvailabilityView } = await import("../components/views/dashboard/AvailabilityView");
+  const { ServicesView } = await import("../web/src/components/views/dashboard/ServicesView");
+  const { AvailabilityView } = await import("../web/src/components/views/dashboard/AvailabilityView");
   const service = (over: Partial<DashboardServicesView["services"][number]>): DashboardServicesView["services"][number] => ({
     id: "s1", title: "Career chat", description: null, durationMin: 45, priceMinor: 49900, currency: "INR", type: "ONE_TO_ONE", capacity: 1, active: true, refundPolicy: "FULL",
     intakeQuestions: [{ id: "q1", label: "What do you want to cover?", type: "text", required: true }], minNoticeHours: 0, maxAdvanceDays: 60, prepNotes: null, requiresApproval: false, ...over,
@@ -410,7 +408,7 @@ test("ServicesView and AvailabilityView render from JSON, including hidden servi
 });
 
 test("SettingsView renders every panel from JSON: anchors for #google and #whatsapp, the outcome banner, the address field, the verify banner", async () => {
-  const { SettingsView } = await import("../components/views/dashboard/SettingsView");
+  const { SettingsView } = await import("../web/src/components/views/dashboard/SettingsView");
   const data: DashboardSettingsView = {
     profile: { name: "Pat Doe", bio: "Hello", photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
     google: { state: "connected", email: "pat@gmail.com", connectedAt: when, gmailSend: true, liveEvents: 0, gmailFailing: false },
@@ -434,7 +432,7 @@ test("SettingsView renders every panel from JSON: anchors for #google and #whats
 });
 
 test("OnboardingView renders the step from the URL with Google's outcome, and every step is reachable", async () => {
-  const { OnboardingView } = await import("../components/views/dashboard/OnboardingView");
+  const { OnboardingView } = await import("../web/src/components/views/dashboard/OnboardingView");
   const data: DashboardOnboardingView = {
     profile: { name: "Pat Doe", bio: null, photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
     services: [],
@@ -465,30 +463,28 @@ test("OnboardingView renders the step from the URL with Google's outcome, and ev
 
 /* ---------- pure: wiring ---------- */
 
-/** One row per page of this branch: route id, old Next page, SPA page, the view both render, the view function and the endpoint file. */
-const PAGES: { id: SpaRouteId; old: string; spa: string; view: string; load: string; endpoint: string; url: string }[] = [
-  { id: "dashboard-services", old: "app/dashboard/services/page.tsx", spa: "web/src/pages/dashboard/Services.tsx", view: "ServicesView", load: "loadServicesView", endpoint: "app/api/dashboard/services/route.ts", url: "/api/dashboard/services" },
-  { id: "dashboard-availability", old: "app/dashboard/availability/page.tsx", spa: "web/src/pages/dashboard/Availability.tsx", view: "AvailabilityView", load: "loadAvailabilityView", endpoint: "app/api/dashboard/availability/route.ts", url: "/api/dashboard/availability" },
-  { id: "dashboard-payouts", old: "app/dashboard/payouts/page.tsx", spa: "web/src/pages/dashboard/Payouts.tsx", view: "PayoutsView", load: "loadPayoutsView", endpoint: "app/api/dashboard/payouts/route.ts", url: "/api/dashboard/payouts" },
-  { id: "dashboard-settings", old: "app/dashboard/settings/page.tsx", spa: "web/src/pages/dashboard/Settings.tsx", view: "SettingsView", load: "loadSettingsView", endpoint: "app/api/dashboard/settings/route.ts", url: "/api/dashboard/settings" },
-  { id: "onboarding", old: "app/onboarding/page.tsx", spa: "web/src/pages/dashboard/Onboarding.tsx", view: "OnboardingView", load: "loadOnboardingView", endpoint: "app/api/dashboard/onboarding/route.ts", url: "/api/dashboard/onboarding" },
+/** One row per page: route id, SPA page, the view it renders, the view function and the endpoint file. */
+const PAGES: { id: SpaRouteId; spa: string; view: string; load: string; endpoint: string; url: string }[] = [
+  { id: "dashboard-services", spa: "web/src/pages/dashboard/Services.tsx", view: "ServicesView", load: "loadServicesView", endpoint: "app/api/dashboard/services/route.ts", url: "/api/dashboard/services" },
+  { id: "dashboard-availability", spa: "web/src/pages/dashboard/Availability.tsx", view: "AvailabilityView", load: "loadAvailabilityView", endpoint: "app/api/dashboard/availability/route.ts", url: "/api/dashboard/availability" },
+  { id: "dashboard-payouts", spa: "web/src/pages/dashboard/Payouts.tsx", view: "PayoutsView", load: "loadPayoutsView", endpoint: "app/api/dashboard/payouts/route.ts", url: "/api/dashboard/payouts" },
+  { id: "dashboard-settings", spa: "web/src/pages/dashboard/Settings.tsx", view: "SettingsView", load: "loadSettingsView", endpoint: "app/api/dashboard/settings/route.ts", url: "/api/dashboard/settings" },
+  { id: "onboarding", spa: "web/src/pages/dashboard/Onboarding.tsx", view: "OnboardingView", load: "loadOnboardingView", endpoint: "app/api/dashboard/onboarding/route.ts", url: "/api/dashboard/onboarding" },
 ];
 
-test("every page: the old Next page and the SPA page render the same view, the old page and the endpoint call the same view function", () => {
+test("every page: the SPA page renders its view from its endpoint, and the endpoint answers with jsonView(await the view function) behind the influencer session", () => {
   for (const p of PAGES) {
-    const viewImport = `@/components/views/dashboard/${p.view}`;
-    assert.ok(read(p.old).includes(`"${viewImport}"`), `${p.old} must render ${p.view}`);
+    const viewImport = `@web/components/views/dashboard/${p.view}`;
     assert.ok(read(p.spa).includes(`"${viewImport}"`), `${p.spa} must render ${p.view}`);
-    assert.ok(read(p.old).includes(`await ${p.load}(`) && read(p.old).includes("jsonify("), `${p.old} must pass jsonify(await ${p.load}(...)) so it renders from exactly the JSON the SPA gets`);
     assert.ok(read(p.endpoint).includes(`await ${p.load}(`) && read(p.endpoint).includes("jsonView("), `${p.endpoint} must answer with jsonView(await ${p.load}(...))`);
     assert.ok(read(p.endpoint).includes("requireApiAuth()"), `${p.endpoint}: the influencer session is required`);
     assert.ok(read(p.spa).includes(`"${p.url}"`), `${p.spa} reads ${p.url}`);
-    // The old page keeps only what Next needs (metadata and the auth redirect); the page body lives in the view.
-    assert.ok(!/from "@\/components\/app\//.test(read(p.old)), `${p.old} still renders panels itself`);
+    // The page body lives in the view: the page itself renders no panels.
+    assert.ok(!/from "@web\/components\/app\//.test(read(p.spa)), `${p.spa} still renders panels itself`);
   }
 });
 
-test("every SPA page sets its title with the same text and template as the route table, and the old metadata says the same", () => {
+test("every SPA page sets its title with the same text and template as the route table", () => {
   for (const p of PAGES) {
     const route = spaRouteById(p.id);
     assert.ok("title" in route && route.title);
@@ -497,10 +493,9 @@ test("every SPA page sets its title with the same text and template as the route
     assert.equal(m[1], route.title, `${p.id}: title`);
     assert.equal(m[2] ?? "brand", route.template, `${p.id}: template`);
     assert.equal(count(read(p.spa), "<PageTitle"), 1, `${p.spa}: exactly one PageTitle`);
-    const meta = /title: "([^"]+)"/.exec(read(p.old));
-    assert.ok(meta, `${p.old}: metadata title`);
-    // The old dashboard layout adds " · Dashboard"; the onboarding page has no layout and uses the root template.
-    assert.equal(formatTitle(meta[1], route.template, BRAND_NAME), formatTitle(route.title as string, route.template, BRAND_NAME));
+    // The suffix: the dashboard pages end in " · Dashboard"; the onboarding page has no frame and uses the product name.
+    const suffix = p.id === "onboarding" ? ` · ${BRAND_NAME}` : " · Dashboard";
+    assert.ok(formatTitle(route.title as string, route.template, BRAND_NAME).endsWith(suffix), `${p.id}: ${suffix}`);
   }
 });
 
@@ -746,7 +741,7 @@ test("D10 GET /api/dashboard/onboarding: any signed-in influencer, finished or n
   assertOnlyOwn((await ask(routes.onboarding, B.cookie)).body, B, A, C);
 });
 
-test("a view function and the jsonify round trip agree: what the old page renders from is exactly what the endpoint sends", { skip }, async () => {
+test("a view function and the jsonify round trip agree: what the view function returns is exactly what the endpoint sends", { skip }, async () => {
   const auth = { influencerId: A.influencerId, email: A.email, emailVerified: false, userId: A.userId } as Parameters<typeof viewsLib.settings.loadSettingsView>[0];
   const direct = jsonify(await viewsLib.settings.loadSettingsView(auth));
   assert.deepEqual(direct, (await ask(routes.settings, A.cookie)).body);

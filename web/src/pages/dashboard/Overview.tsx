@@ -1,4 +1,4 @@
-import { OverviewView } from "@/components/views/dashboard/OverviewView";
+import { OverviewView } from "@web/components/views/dashboard/OverviewView";
 import type { DashboardOverviewView } from "@/lib/views/dashboard-overview";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

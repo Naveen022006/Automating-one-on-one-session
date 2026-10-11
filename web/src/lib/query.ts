@@ -4,7 +4,7 @@ import { ApiError, handleApiAuthError } from "./api";
 /**
  * The one QueryClient (doc/10-react-migration-plan.md, section 1.3).
  *
- *  - staleTime 0: data is fetched again whenever a page mounts, like a dynamic Next page was rendered on every visit.
+ *  - staleTime 0: data is fetched again whenever a page mounts, like a server-rendered page would be on every visit.
  *    Background refetches keep the current UI (a page only shows a skeleton while it has NO data yet), so components that
  *    hold local state (the onboarding wizard, an open drawer, a half-typed form) are never unmounted by a refresh.
  *  - no refetch on window focus or reconnect: the database has 15 connections in total.
@@ -25,7 +25,7 @@ export const queryClient = new QueryClient({
 });
 
 /**
- * Query keys. Use these helpers so that invalidation by prefix works (`router.refresh()` in the next/navigation shim
+ * Query keys. Use these helpers so that invalidation by prefix works (`router.refresh()` in lib/navigate.tsx
  * invalidates everything; a page can invalidate just `["dashboard"]`). Put everything the URL depends on in `params`.
  */
 export const queryKeys = {

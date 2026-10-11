@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { PaymentsView } from "@/components/views/admin/PaymentsView";
+import { PaymentsView } from "@web/components/views/admin/PaymentsView";
 import type { AdminPaymentsView } from "@/lib/views/admin-payments";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

@@ -25,6 +25,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@web/*": [
+        "./web/src/*"
       ]
     }
   },
@@ -37,6 +40,6 @@
   ],
   "exclude": [
     "node_modules",
-    "web"
+    "web/vite.config.ts"
   ]
 }

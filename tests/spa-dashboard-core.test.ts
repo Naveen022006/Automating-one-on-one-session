@@ -16,6 +16,7 @@ import { EARNINGS_ROW_CAP, MAX_REPORT_DAY, MIN_REPORT_DAY, parsePageParam, parse
 import { parseMessageStatus } from "../lib/views/dashboard-messages";
 import { parseSessionView } from "../lib/views/dashboard-sessions";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
+import { fakeNavigate } from "./helpers/fake-navigate";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -533,42 +534,35 @@ test("every new GET path falls under the generic dashboard rate rule (120 a minu
 });
 
 type Views = {
-  CustomersView: typeof import("../components/views/dashboard/CustomersView").CustomersView;
-  EarningsView: typeof import("../components/views/dashboard/EarningsView").EarningsView;
-  MessagesView: typeof import("../components/views/dashboard/MessagesView").MessagesView;
-  SessionsView: typeof import("../components/views/dashboard/SessionsView").SessionsView;
-  GetForm: typeof import("../components/views/dashboard/GetForm");
+  CustomersView: typeof import("../web/src/components/views/dashboard/CustomersView").CustomersView;
+  EarningsView: typeof import("../web/src/components/views/dashboard/EarningsView").EarningsView;
+  MessagesView: typeof import("../web/src/components/views/dashboard/MessagesView").MessagesView;
+  SessionsView: typeof import("../web/src/components/views/dashboard/SessionsView").SessionsView;
+  GetForm: typeof import("../web/src/components/views/dashboard/GetForm");
 };
 let viewsLoaded: Promise<Views> | undefined;
 
 /**
- * The shared views rendered on the server, as the old Next pages render them. Next's router hooks and links, and the two client
- * components that need a provider (the sessions board with its drawer, the erase button), are replaced by stand-ins, then the
- * views are imported (mock.module only affects modules imported afterwards, hence the lazy import).
+ * The views rendered on the server. The navigation hooks (they need a Router and a QueryClient) and the two client components that
+ * need a provider (the sessions board with its drawer, the erase button) are replaced by stand-ins, then the views are imported
+ * (mock.module only affects modules imported afterwards, hence the lazy import). The real link component renders a plain <a> here.
  */
 function loadViews(): Promise<Views> {
   viewsLoaded ??= (async () => {
-    mock.module("next/link", { defaultExport: (p: Record<string, unknown>) => createElement("a", p) });
-    mock.module("next/navigation", {
-      namedExports: {
-        useRouter: () => ({ push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} }),
-        usePathname: () => "/dashboard",
-        useSearchParams: () => new URLSearchParams(),
-      },
-    });
-    mock.module("@/components/app/SessionsBoard", {
+    mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/dashboard") });
+    mock.module("@web/components/app/SessionsBoard", {
       namedExports: {
         SessionsBoard: (p: { sessions: unknown[]; emptyTitle: string; initialBookingId?: string | null }) =>
           createElement("div", { "data-board": JSON.stringify({ rows: p.sessions.length, emptyTitle: p.emptyTitle, initialBookingId: p.initialBookingId ?? null }) }),
       },
     });
-    mock.module("@/components/app/CustomerActions", { namedExports: { EraseCustomer: (p: { email: string }) => createElement("button", { "data-erase": p.email }) } });
+    mock.module("@web/components/app/CustomerActions", { namedExports: { EraseCustomer: (p: { email: string }) => createElement("button", { "data-erase": p.email }) } });
     return {
-      CustomersView: (await import("../components/views/dashboard/CustomersView")).CustomersView,
-      EarningsView: (await import("../components/views/dashboard/EarningsView")).EarningsView,
-      MessagesView: (await import("../components/views/dashboard/MessagesView")).MessagesView,
-      SessionsView: (await import("../components/views/dashboard/SessionsView")).SessionsView,
-      GetForm: await import("../components/views/dashboard/GetForm"),
+      CustomersView: (await import("../web/src/components/views/dashboard/CustomersView")).CustomersView,
+      EarningsView: (await import("../web/src/components/views/dashboard/EarningsView")).EarningsView,
+      MessagesView: (await import("../web/src/components/views/dashboard/MessagesView")).MessagesView,
+      SessionsView: (await import("../web/src/components/views/dashboard/SessionsView")).SessionsView,
+      GetForm: await import("../web/src/components/views/dashboard/GetForm"),
     };
   })();
   return viewsLoaded;

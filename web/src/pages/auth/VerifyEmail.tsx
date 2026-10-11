@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router";
-import { VerifyEmailFrame, VerifyEmailView } from "@/components/views/auth/VerifyEmailView";
+import { VerifyEmailFrame, VerifyEmailView } from "@web/components/views/auth/VerifyEmailView";
 import { PageTitle } from "../../lib/head";
 import { useSession } from "../../lib/session";
 import { PageError, PageLoading } from "../../lib/states";

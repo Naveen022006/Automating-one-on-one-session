@@ -1,4 +1,4 @@
-import { ForgotPasswordView } from "@/components/views/auth/ForgotPasswordView";
+import { ForgotPasswordView } from "@web/components/views/auth/ForgotPasswordView";
 import { PageTitle } from "../../lib/head";
 
 export function Component() {

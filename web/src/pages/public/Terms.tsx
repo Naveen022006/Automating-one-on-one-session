@@ -1,4 +1,4 @@
-import { TermsView } from "@/components/views/public/TermsView";
+import { TermsView } from "@web/components/views/public/TermsView";
 import { PageTitle } from "../../lib/head";
 
 export function Component() {

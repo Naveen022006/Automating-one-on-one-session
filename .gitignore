@@ -2,7 +2,8 @@ node_modules
 .next
 generated
 
-# React SPA build outputs (npm run build:web): web/dist is the Vite output, public/assets its hashed files served by Next.
+# React app build outputs (npm run build:web, also written by npm run dev): web/dist is the Vite output (the HTML shell
+# template included), public/assets its hashed files served by Next.
 /web/dist/
 /public/assets/
 

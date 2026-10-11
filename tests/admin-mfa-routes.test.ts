@@ -39,7 +39,6 @@ let session: typeof import("../lib/admin/session");
 let mfa: typeof import("../lib/admin/mfa");
 let totp: typeof import("../lib/admin/totp");
 let rateLimit: typeof import("../lib/rate-limit");
-let securityPage: () => Promise<unknown>;
 
 /**
  * A password-only session row for an admin (no mfaVerifiedAt), like one created before they enrolled. Inserted directly
@@ -49,39 +48,6 @@ async function passwordOnlySession(adminId: string): Promise<string> {
   const token = randomToken();
   await prisma.adminSession.create({ data: { tokenHash: hashToken(token), adminId, expiresAt: new Date(Date.now() + 3_600_000) } });
   return token;
-}
-
-/** The URL a `redirect()` thrown by a server component points to, or null if the callback did not redirect. */
-async function redirectOf(fn: () => Promise<unknown>): Promise<string | null> {
-  try {
-    await fn();
-    return null;
-  } catch (e) {
-    const digest = (e as { digest?: string }).digest;
-    if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")) return digest.split(";")[2];
-    throw e;
-  }
-}
-
-/**
- * Every string reachable through a React element tree's props (titles, text, rows), without rendering client components.
- * The Security page now returns `<SecurityView data={...} />`: the shared view component (hook-free, named `...View`) is called
- * so the text it prints is part of the tree, and plain data objects (the JSON the view is rendered from) are walked too.
- */
-function textOf(node: unknown, seen = new Set<unknown>(), out: string[] = []): string[] {
-  if (typeof node === "string") out.push(node);
-  else if (Array.isArray(node)) for (const n of node) textOf(n, seen, out);
-  else if (node && typeof node === "object" && !seen.has(node)) {
-    seen.add(node);
-    const el = node as { $$typeof?: unknown; type?: unknown; props?: Record<string, unknown> };
-    if (el.$$typeof) {
-      if (typeof el.type === "function" && el.type.name.endsWith("View")) textOf((el.type as (props: unknown) => unknown)(el.props), seen, out);
-      if (el.props) for (const v of Object.values(el.props)) textOf(v, seen, out);
-    } else {
-      for (const v of Object.values(node)) textOf(v, seen, out);
-    }
-  }
-  return out;
 }
 
 async function enrol(adminId: string): Promise<{ secret: string; recovery: string[] }> {
@@ -130,7 +96,6 @@ before(async () => {
     sent.push(e); // captured, never sent
     return { providerMessageId: null };
   });
-  securityPage = (await import("../app/admin/(console)/security/page")).default as unknown as () => Promise<unknown>;
   routes = {
     fee: await import("../app/api/admin/influencers/[id]/fee/route"),
     payoutAccount: await import("../app/api/admin/influencers/[id]/payout-account/route"),
@@ -553,60 +518,6 @@ test("per-admin hourly caps hold across many IP addresses: 30 attempts at the co
     assert.equal(results[30].status, 429);
     assert.match(results[30].error, /Too many attempts on this account/);
   } finally {
-    currentCookie = "";
-  }
-});
-
-test("page guards: signed-out, must-enrol and password-only sessions are each sent where they belong", { skip }, async () => {
-  process.env.ADMIN_REQUIRE_2FA = "true";
-  try {
-    currentCookie = "";
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts")), "/admin/login?next=%2Fadmin%2Fpayouts");
-
-    // "enroll": 2FA is required and Y has none -> Security is the only page open.
-    currentCookie = await session.createAdminSession(Y);
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts")), "/admin/security");
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin")), "/admin/security");
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/security")), null);
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts", { mfaGate: false })), null, "mfaGate:false skips the redirect");
-
-    // "verify": X has 2FA, this session is password-only -> back to sign in with a code, from every page.
-    currentCookie = await passwordOnlySession(X);
-    for (const p of ["/admin", "/admin/payouts", "/admin/security"]) {
-      assert.equal(await redirectOf(() => session.requireAdminPage(p)), `/admin/login?next=${encodeURIComponent(p)}`, p);
-    }
-    assert.equal(await redirectOf(() => session.requireAdminPage("/admin/payouts", { mfaGate: false })), null);
-
-    // verified session: everywhere.
-    currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
-    for (const p of ["/admin", "/admin/payouts", "/admin/security"]) assert.equal(await redirectOf(() => session.requireAdminPage(p)), null, p);
-  } finally {
-    delete process.env.ADMIN_REQUIRE_2FA;
-    currentCookie = "";
-  }
-});
-
-test("the administrator list is hidden from sessions that have not passed what they must", { skip }, async () => {
-  process.env.ADMIN_REQUIRE_2FA = "true";
-  try {
-    // A cookie of an admin who has not enrolled (2FA required) sees the page, but not who the other admins are.
-    currentCookie = await session.createAdminSession(Y);
-    const hidden = textOf(await securityPage()).join("\n");
-    for (const other of [emailX, emailQ, emailZ]) assert.ok(!hidden.includes(other), `${other} is not shown`);
-    assert.ok(!/Administrators \(\d+\)/.test(hidden));
-    assert.match(hidden, /shown after you have set up two-factor/);
-
-    // A password-only session of an admin who HAS 2FA does not even get the page.
-    currentCookie = await passwordOnlySession(X);
-    assert.equal(await redirectOf(() => securityPage()), "/admin/login?next=%2Fadmin%2Fsecurity");
-
-    // A verified session of an enrolled admin sees the list.
-    currentCookie = await session.createAdminSession(X, {}, { mfaVerified: true });
-    const shown = textOf(await securityPage()).join("\n");
-    assert.match(shown, /Administrators \(\d+\)/);
-    for (const other of [emailX, emailY, emailQ, emailZ]) assert.ok(shown.includes(other), `${other} is listed`);
-  } finally {
-    delete process.env.ADMIN_REQUIRE_2FA;
     currentCookie = "";
   }
 });

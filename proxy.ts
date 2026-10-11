@@ -4,7 +4,7 @@ import { isCsrfExempt, isSameOriginRequest } from "@/lib/auth/csrf";
 import { rateLimitHeaders, type RateLimitResult } from "@/lib/rate-limit/core";
 import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule, tooManyRequests } from "@/lib/rate-limit";
 import { loggablePath } from "@/lib/rate-limit/redact";
-import { matchEnabledSpaRoute, parseSpaGroups } from "@/lib/spa/routes";
+import { matchPageRequest } from "@/lib/spa/routes";
 
 /**
  * Next.js 16 proxy (formerly middleware; runs on the Node.js runtime). The single request boundary for:
@@ -14,17 +14,14 @@ import { matchEnabledSpaRoute, parseSpaGroups } from "@/lib/spa/routes";
  *     RateLimit-* headers on every API response.
  *  2. CSRF: state-changing API requests must come from our own origin (provider webhooks are exempt; they are
  *     authenticated by signature).
- *  3. Page security: a per-request CSP nonce (strict-dynamic) and the login redirect for /dashboard and
- *     /onboarding. The redirect only checks that a session cookie exists; pages validate it against the database.
- *  4. The React SPA switch (doc/10-react-migration-plan.md): a page whose SPA group is listed in SPA_GROUPS is not
- *     rendered by Next; the request is rewritten to the internal shell route (app/spa-shell), which returns the
- *     Vite-built index.html with this request's nonce. With SPA_GROUPS empty nothing changes: every page is the old
- *     Next page. The group a path belongs to comes from lib/spa/routes.ts.
+ *  3. Page security: a per-request CSP nonce (strict-dynamic) and the login redirect for /dashboard, /onboarding and
+ *     /admin. The redirect only checks that a cookie exists; the API validates the session against the database.
+ *  4. The React SPA (doc/12-front-end.md): every page path is rewritten to the internal shell route (app/spa-shell), which
+ *     returns the Vite-built index.html with this request's nonce. Next renders no page of its own. Which paths are pages
+ *     comes from lib/spa/routes.ts.
  */
 
 const DEV = process.env.NODE_ENV !== "production";
-// Read once at start-up (like every other environment value); changing it needs a restart, which is also the rollback.
-const SPA_ENABLED = parseSpaGroups(process.env.SPA_GROUPS);
 // Meta Embedded Signup (an influencer connecting their own WhatsApp number) loads the Facebook SDK and a dialog.
 const META_EMBEDDED = Boolean(process.env.META_APP_ID && process.env.META_ES_CONFIG_ID);
 
@@ -47,7 +44,7 @@ function sessionKey(token: string): string {
 /**
  * Rolling 30-day session: pushes the browser-side expiry of an existing session cookie forward on a GET. The value is
  * unchanged (the server-side expiry is slid in lib/auth/session.ts) and an invalid cookie is still rejected by whoever
- * validates it. Pages did this on every visit; the SPA makes few full page loads, so GET /api/* does it too, otherwise
+ * validates it. Page loads do this too (handlePage), but the SPA makes few of them, so GET /api/* does it as well, otherwise
  * the browser could drop the cookie while the session is still alive on the server.
  */
 function refreshSessionCookie(req: NextRequest, res: NextResponse, cookie: string | undefined): void {
@@ -136,8 +133,8 @@ function handlePage(req: NextRequest): NextResponse {
   // carry a forged x-nonce) gets a plain 404 and never reaches it.
   if (pathname === "/spa-shell" || pathname.startsWith("/spa-shell/")) return new NextResponse("Not found", { status: 404 });
 
-  // The admin console is a separate plane with its own cookie. Pages re-validate it against the database; this
-  // only saves a render for visitors who obviously have no admin session.
+  // The admin console is a separate plane with its own cookie. The admin API re-validates it against the database; this
+  // only saves a page load for visitors who obviously have no admin session.
   if ((pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login") {
     const hasAdmin = ADMIN_COOKIES.some((n) => req.cookies.get(n)?.value);
     if (!hasAdmin) {
@@ -158,17 +155,14 @@ function handlePage(req: NextRequest): NextResponse {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   const csp = contentSecurityPolicy(nonce);
   const requestHeaders = new Headers(req.headers);
+  // Overwritten here, so a client cannot choose the nonce the shell route will use (the route also refuses a request without it).
   requestHeaders.set("x-nonce", nonce);
-  // Server layouts do not receive the pathname; the admin console layout needs it to send an admin who must enrol
-  // two-factor to /admin/security (and only there). Overwritten here, so a client cannot choose it.
-  requestHeaders.set("x-pathname", pathname);
   requestHeaders.set("Content-Security-Policy", csp);
 
-  // SPA: serve the Vite-built shell instead of the Next page, when this path's group is switched on (SPA_GROUPS).
-  // (A Next <Link> on a still-Next page may prefetch or navigate to a path that is now an SPA page, with the RSC header.
-  // The proxy cannot see that header, Next strips its flight headers from the request it passes here; the shell route
+  // Every page path is served by the Vite-built shell. (A request with Next's RSC or prefetch headers, for example from a
+  // stale tab, cannot be told apart here: Next strips its flight headers from the request the proxy sees. The shell route
   // answers such requests cheaply, see app/spa-shell/[[...path]]/route.ts.)
-  const spa = matchEnabledSpaRoute(req.method, pathname, SPA_ENABLED);
+  const spa = matchPageRequest(req.method, pathname);
 
   let res: NextResponse;
   if (spa) {
@@ -184,15 +178,15 @@ function handlePage(req: NextRequest): NextResponse {
   }
   res.headers.set("Content-Security-Policy", csp);
 
-  // Rolling 30-day session: every page visit pushes the browser-side expiry forward (the server-side expiry is
-  // slid in lib/auth/session.ts). The value is unchanged; an invalid cookie is still rejected by the page.
+  // Rolling 30-day session: every page load pushes the browser-side expiry forward (the server-side expiry is
+  // slid in lib/auth/session.ts). The value is unchanged; an invalid cookie is still rejected by whoever validates it.
   refreshSessionCookie(req, res, cookie);
   return res;
 }
 
 /**
  * A path that is not valid percent-encoding (`/%E0%A4%A`), or that decodes to a NUL byte (`/api/public/profiles/%00`), is never a
- * URL of this app. Left alone, Next answers 500 for the first on every dynamic route (pages, `/api/pay/:token`, `/api/manage/:token`,
+ * URL of this app. Left alone, Next answers 500 for the first on every dynamic route (`/api/pay/:token`, `/api/manage/:token`,
  * `/api/public/profiles/:slug`...), and the second reaches Postgres, which refuses a NUL in text and also ends in a 500. A 400 here
  * is cheap, and keeps these probes out of the error monitoring.
  */
@@ -217,8 +211,8 @@ export const config = {
   matcher: [
     // Everything except static assets and image optimisation. Prefetches still get the API/page handling.
     // `assets/<name>.<ext>` is the SPA's hashed build output (public/assets): real files that skip the proxy entirely. Only
-    // paths that look like a FILE are excluded: `/assets/book` is still the booking page of a profile with the slug "assets"
-    // (app/[influencer]/book), and must keep the proxy, its CSP and nonce.
+    // paths that look like a FILE are excluded: `/assets/book` is not a file (it is the booking-page shape of the reserved
+    // slug "assets"), so it keeps the proxy, its CSP and its nonce.
     "/((?!_next/static|_next/image|favicon.ico|icon.svg|robots.txt|sitemap.xml|opengraph-image|assets/[^/]+\\.[A-Za-z0-9]+$).*)",
   ],
 };

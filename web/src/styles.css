@@ -5,5 +5,5 @@
  */
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/newsreader";
-@import "@/app/globals.css";
+@import "./styles/globals.css";
 @import "./spa.css";

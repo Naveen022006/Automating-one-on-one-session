@@ -6,7 +6,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx scripts/dev.ts",
+    "dev:hmr": "tsx scripts/dev.ts --hmr",
     "dev:web": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts && node scripts/spa-postbuild.mjs",
     "build": "npm run build:web && next build",

@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { PayView } from "@/components/views/booking/PayView";
+import { PayView } from "@web/components/views/booking/PayView";
 import type { PayView as PayViewData } from "@/lib/views/booking-pay";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";
@@ -8,7 +8,7 @@ import { queryKeys } from "../../lib/query";
 import { QueryGate } from "../../lib/states";
 
 /**
- * `/pay/:token`. The route param is already percent-decoded by React Router (the old page decoded it by hand); the
+ * `/pay/:token`. The route param is already percent-decoded by React Router (nothing to decode by hand); the
  * request encodes it again. Every state of the booking, an invalid link included, is a 200 answer with a `state`.
  */
 export function Component() {

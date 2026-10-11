@@ -18,9 +18,9 @@ import {
 import { WHATSAPP_BADGE, evaluateReadiness, readinessInput, type ReadinessItem } from "@/lib/readiness";
 
 /**
- * The admin console's Influencers list and Influencer detail pages. One function each, two callers each: the old Next
- * pages (app/admin/(console)/influencers/...) and GET /api/admin/influencers[/:id] for the SPA. The caller has already
- * passed the admin gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin console's Influencers list and Influencer detail pages. One function each, served by
+ * GET /api/admin/influencers[/:id]. The caller has already
+ * passed the admin gate (`requireAdminMfa()`).
  *
  * Both are built field by field from what the pages render. Never in here: password hashes, session or token columns,
  * encrypted payout columns, a full account or UPI number (the payout account is the MASKED view; full details only ever
@@ -172,7 +172,7 @@ export async function loadAdminInfluencerView(id: string, adminEmail: string): P
     },
     readinessItems: readiness.items.map((c) => ({ key: c.key, label: c.label, state: c.state, required: c.required })),
     connections: {
-      // The Google account's email is shown only while the connection works; "Reconnect needed" carries no email (as on the old page).
+      // The Google account's email is shown only while the connection works; "Reconnect needed" carries no email.
       google: {
         state: !i.googleToken ? "none" : i.googleToken.status === "ACTIVE" ? "active" : "reconnect",
         email: i.googleToken?.status === "ACTIVE" ? (i.googleToken.googleEmail ?? null) : null,

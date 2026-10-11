@@ -7,43 +7,59 @@ All seven phases in `doc/` are implemented: booking and slots, Razorpay payments
 messaging, reminders and retries, groups and dashboard, and Phase 7 (accounts, integrations, landing page, redesigned
 UI, rate limiting). See `doc/07-product-ui-auth-and-integrations.md` section 11 for what Phase 7 contains.
 
-## Run locally
-1. Start Postgres and Redis, copy `.env.example` to `.env` and set at least `DATABASE_URL`, `REDIS_URL`, `APP_URL`,
-   `APP_SECRET` and `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32` for the last two).
+## Run it locally
+Needs Node 22.12 or newer (Vite 8), a Postgres and a Redis.
+1. Copy `.env.example` to `.env` and set at least `DATABASE_URL`, `REDIS_URL`, `APP_URL` (`http://localhost:3000`), `APP_SECRET` and
+   `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32` for the last two).
 2. `npm install`, then `npx prisma generate`
 3. `npx prisma migrate dev` then `npm run db:seed`
-4. `npm run dev` and open http://localhost:3000 (landing) or http://localhost:3000/demo (demo booking page)
+4. **`npm run dev`** and open http://localhost:3000 (landing) or http://localhost:3000/demo (demo booking page). One command, one
+   origin: it builds the React app (`web/`) with Vite in watch mode and starts `next dev` on port 3000, so the API, the webhooks
+   and the pages are all on `APP_URL`, which is what the Razorpay webhook tunnel and the Google redirect URI point at. Edit anything
+   under `web/src`, wait for the `[web] built in ...` line (about a second) and reload the page. The launcher stops both processes
+   on Ctrl+C or when the console window is closed. `PORT=3100 npm run dev` (or `-- --port 3100`) uses another port; then set
+   `APP_URL` to match. `NEXT_PUBLIC_*`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE` are read by the build: restart after changing them.
 5. Log in at `/login` as `demo@example.com` / `demo-sessions-2026` (seeded, development only), or register a new
    account at `/register`. With `EMAIL_PROVIDER=log`, verification and reset links are printed in the server console.
 6. `npm run worker` in a second terminal: hold expiry, `create-meeting`, `send-message` and reminders, plus cleanup every
-   10 minutes of expired sessions, tokens and rate-limit buckets.
-7. `npm run typecheck` and `npm test` (database tests need a migrated Postgres at `DATABASE_URL`; the rest are pure).
-   For local messaging without provider accounts set `MESSAGING_DRY_RUN=true`.
+   10 minutes of expired sessions, tokens and rate-limit buckets. (`npm run dev` never starts a worker.)
+7. `npm run typecheck` (both TypeScript projects) and `npm test` (database tests need a migrated Postgres at `DATABASE_URL`; the
+   rest are pure; see `CLAUDE.md` for the flags and the connection-pool advice). For local messaging without provider accounts set
+   `MESSAGING_DRY_RUN=true`.
 
-CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests, `next build` and an
-advisory `npm audit` against Postgres and Redis service containers, and builds the Docker images with a start-up smoke test.
+**Hot module reload (`npm run dev:hmr`).** Starts the same two processes plus Vite's dev server on port **5173**, and that port
+becomes the browser origin: open http://localhost:5173. Pages update without a rebuild wait. Caveats, all because the origin is not
+port 3000: (1) the launcher starts Next with `APP_URL=http://localhost:5173` (it overrides `.env` for that process; e-mailed links and redirects
+use it, and the Origin check of POSTs accepts the page's own origin as well as `APP_URL`, so sign-in works on either port); (2) the Google redirect URI and the Razorpay webhook tunnel in
+`.env` still point at port 3000, so the return from Google lands on http://localhost:3000, which serves the last build of the app
+(the session cookie is shared between ports of `localhost`, it just is not hot there); (3) `--vite-port 5174` moves Vite, and
+`npm run dev:web` is the Vite half alone (`SPA_API_TARGET` names the Next it proxies `/api` and the metadata routes to) for when you
+start Next yourself, for example two copies of the repository on different ports.
 
-## Front end (React SPA)
-The UI is being moved from Next-rendered pages to a standalone React app (Vite + React Router + TanStack Query) in `web/`;
-Next keeps the JSON API, webhooks, metadata routes and the worker. Plan: `doc/10-react-migration-plan.md`; what differs from
-it and how far the work is: `doc/10-react-migration-deviations.md`. Until a page group is switched on, **nothing changes**:
-`SPA_GROUPS` (in `.env`) is empty and every page is the old Next page. Building the SPA needs Node 22.12 or newer (Vite 8).
+**Production-like check** (the CSP, the HTML shell, the hashed assets, the template check). Two terminals, because `npm start` does not
+return. Terminal 1: `npm run build`, then `npm start` (Next on port 3000 serves the API, the built assets and the shell) with
+`APP_URL=http://localhost:3000 ALLOW_INSECURE_LOCAL_RUN=true` set (production mode refuses an `http://` `APP_URL` otherwise) and
+`READINESS_REQUIRED=payout` so the seeded demo page is live. Terminal 2: `node scripts/spa-smoke.mjs http://localhost:3000` (`--no-db` when
+the server has no database). The development server applies a looser CSP, so CSP behaviour is only verified here.
 
-- **Develop with two processes.** Terminal 1: `npm run dev` (Next, :3000, the API). Terminal 2: `npm run dev:web` (Vite, :5173,
-  hot reload; it proxies `/api` and the metadata routes to Next, `SPA_API_TARGET` if Next is on another port). Open
-  http://localhost:5173 and set `APP_URL=http://localhost:5173` in `.env`, so links in e-mails and redirects point at the Vite
-  origin (the Origin/CSRF check already accepts the origin a request arrives on). A page that has not been ported shows "Not
-  migrated yet" with a link to the old Next version. Log in on the old Next page (:3000/login) or on the SPA's own login once
-  ported: browsers share cookies between ports of the same host, so the session works on both.
-- **Production-like check** (CSP, the HTML shell, assets): `npm run build`, then `SPA_GROUPS=all npm start`, then
-  `node scripts/spa-smoke.mjs http://localhost:3000`. The Vite dev server applies no CSP, so CSP behaviour is only
-  verified in this mode. Add `--no-db` when the server has no database, `--old` when `SPA_GROUPS` is empty.
-- **Switching a group on/off**: `SPA_GROUPS=all`, or a list of `public,auth,booking,dashboard,admin`; restart to apply. Removing
-  a group is the rollback. See `doc/08-deployment.md` section 3.2 (build outputs, cache headers, start-up check, Vercel).
-- **Where things are**: route table `lib/spa/routes.ts` (shared by the proxy, the HTML head and the router); JSON endpoints for
-  pages `lib/views/*` and `app/api/...`; SPA code `web/src/` (`router.tsx`, `pages/<group>/`, `lib/`); `npm run typecheck`
-  checks both TypeScript projects. `NEXT_PUBLIC_*`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE` are also build inputs of the browser
-  bundle; no other environment variable can reach it (the build fails if a secret value does).
+CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests, `npm run build` and an advisory
+`npm audit` against Postgres and Redis service containers, and builds the Docker images with a start-up and smoke test.
+
+## Front end (React app)
+The whole UI is a standalone React app in `web/` (Vite + React Router + TanStack Query). Next.js keeps the JSON API, the webhooks, the
+metadata routes (`robots`, `sitemap`, the icon and the share image) and the worker; it renders no page of its own. `doc/12-front-end.md`
+describes the structure for a newcomer; `doc/10-react-migration-plan.md` and `doc/10-react-migration-deviations.md` are the history of
+the move from Next-rendered pages. One origin serves everything:
+
+- `proxy.ts` sends every page path (the table is `lib/spa/routes.ts`) to the internal route `app/spa-shell`, which returns the
+  Vite-built `web/dist/index.html` with this request's CSP nonce, the page's title, robots and canonical tags, and a real 404 status for
+  an unknown profile. The hashed JavaScript, CSS and fonts are plain files in `public/assets`.
+- Page data comes from JSON endpoints: `app/api/...`, backed by view functions in `lib/views/*` that build each answer field by field.
+- Code, all under `web/src`: `router.tsx`, `pages/<group>/` (a page fetches and renders a view), `components/` (`views/`, `app/`, `admin/`,
+  `ui/`), `lib/`, `styles/`. No `next/*` import exists in `web/`, and a Vite plugin (`web/vite-server-guard.ts`) fails the build if browser code
+  imports server code. `NEXT_PUBLIC_*`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE` are build inputs of the bundle; no other environment variable
+  can reach it (the build fails if a secret value does). See `doc/08-deployment.md` section 3.2 for build outputs, cache headers, the
+  start-up check and Vercel.
 
 ## Accounts
 Influencers have accounts (email + password, verified email, password reset). Customers stay guests and manage their
@@ -117,8 +133,8 @@ or hanging Google call (15 s timeout per request) delays those steps by that lon
 error is captured and reported afterwards, never thrown in the middle.
 
 ## Design system
-Tokens: `app/styles/tokens.css`. Components: `components/ui/`. Every component and state is shown at `/design`
-(development only, or `ENABLE_DESIGN_PAGE=true`).
+Tokens: `web/src/styles/tokens.css`. Components: `web/src/components/ui/`. Every component and state is shown at `/design`
+(development only, or `ENABLE_DESIGN_PAGE=true`, which is a build input: set it for `npm run build` and for the server).
 
 ## Admin console
 A separate plane for the platform owner at `/admin` (own accounts, own cookie, 12-hour sessions, never reachable
@@ -318,7 +334,7 @@ least 3 minutes old, checked every 2 minutes), so a booking turns PAID a few min
 connection in the database and ask the provider about each one. Pointed at the mock, which rejects every token it did not issue,
 they would mark every other influencer's connection broken and take their booking pages offline within minutes. The worker also
 takes whatever is queued on its Redis, and any other worker on that Redis (yours, for instance) would take the demo's jobs and
-send the mock's tokens to the real Google and Meta. So `npm run dev:mock` starts only the mock and `next dev`, which is enough
+send the mock's tokens to the real Google and Meta. So `npm run dev:mock` starts only the mock, `next dev` and the watch build of the React app (like `npm run dev`), which is enough
 for walk-through steps 1 to 5 (connecting, booking). For the steps that need the worker (the Meet link, the confirmation
 messages, hold expiry, payment recovery):
 
@@ -334,10 +350,10 @@ With `--with-worker` the launcher refuses to start anything unless `DATABASE_URL
 
 **Run it.**
 ```
-npm run dev:mock                                   # mock server (4010) and next dev (3000); no worker
+npm run dev:mock                                   # mock server (4010), next dev (3000) and the app build; no worker
 npm run dev:mock -- --with-worker                  # also the worker; refused unless the database and Redis are local and no other worker runs
 npm run dev:mock -- --app-url http://localhost:3171   # another app port (next dev runs on it)
-npm run dev:mock -- --app-url http://localhost:5173 --next-port 3000   # with the SPA dev server (npm run dev:web) in front
+npm run dev:mock -- --app-url http://localhost:5173 --next-port 3000   # with Vite's dev server (npm run dev:web) in front
 npm run dev:mock -- --reset --port 4110            # forget all fake state, another mock port
 npm run mock:providers                              # the mock alone; -- --print-env prints the fake variables for a manual terminal
 ```

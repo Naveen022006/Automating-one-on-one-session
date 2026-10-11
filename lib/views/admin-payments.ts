@@ -1,8 +1,8 @@
 import { listPayments, MISMATCH_BOOKING_STATUSES, paymentViewCounts, parsePage, type PaymentFilter } from "@/lib/admin/data";
 
 /**
- * The admin Payments page's data, for the old Next page and GET /api/admin/payments. The caller has already passed the admin
- * gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin Payments page's data, for GET /api/admin/payments. The caller has already passed the admin
+ * gate (`requireAdminMfa()`).
  */
 
 /** The filter tabs; "all" is the default. Any other `?view=` is treated as "all". */

@@ -1,4 +1,4 @@
-// Pure tests of the small shared helpers the view endpoints and old pages rely on (no database).
+// Pure tests of the small shared helpers the view endpoints and the SPA pages rely on (no database).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { safeNextPath as viaHttp } from "../lib/http";

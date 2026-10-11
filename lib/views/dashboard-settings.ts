@@ -1,17 +1,15 @@
-import type { GoogleStatusView } from "@/components/app/GoogleConnect";
-import type { ProfileData } from "@/components/app/SettingsForms";
-import type { WhatsAppView } from "@/components/app/WhatsAppConnect";
 import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
 import { requiredConnections } from "@/lib/readiness";
+import type { GoogleStatusView, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
 import { getConnectionView, type WhatsAppConnectionView } from "@/lib/whatsapp-connection";
 import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 
 /**
  * The Settings page, and the pieces the onboarding wizard shares with it (profile, Google panel, WhatsApp panel).
- * Shared by the old Next page (app/dashboard/settings/page.tsx), GET /api/dashboard/settings and loadOnboardingView.
+ * Shared by GET /api/dashboard/settings and loadOnboardingView.
  *
  * This is the most sensitive influencer screen, so the rule of doc/10 section 2.8 is applied literally: every object is
  * built field by field from what the panels render. The stored rows hold encrypted Google refresh tokens and WhatsApp

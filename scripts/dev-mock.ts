@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -6,6 +6,8 @@ import { parseEnv } from "node:util";
 import { isLocalAppUrl } from "../lib/provider-endpoints";
 import { mockEnvOverlay } from "./mock-providers/fixtures";
 import { DEV_MOCK_HELP, NO_WORKER_NOTE, SHARED_STORES_BANNER, isLocalStoreUrl, planWorker, shouldReadHeartbeat, storeHost, type HeartbeatReading } from "./dev-mock-worker";
+import { killTree, onShutdown, pipeLines, startNode } from "./dev-process";
+import { startSpaWatch, type SpaWatch } from "./dev-spa";
 import { createMockServer, startupProblem } from "./mock-providers/server";
 import { defaultStateFile } from "./mock-providers/state";
 
@@ -13,7 +15,8 @@ import { defaultStateFile } from "./mock-providers/state";
  * npm run dev:mock [-- --app-url http://localhost:3000] [--next-port 3000] [--port 4010] [--reset] [--with-worker [--allow-shared-stores]]
  *
  * One command to try the Google and Meta flow without accounts: starts the mock server (127.0.0.1 only) and `next dev`, both
- * pointed at it (doc/11-provider-simulator.md, 5.3). The fake credentials and MOCK_PROVIDERS_URL are handed to the child
+ * pointed at it (doc/11-provider-simulator.md, 5.3), and, like `npm run dev`, Vite's watch build of the React app (web/), because
+ * Next serves the app from the files that build writes. The fake credentials and MOCK_PROVIDERS_URL are handed to the child
  * processes' environment ONLY: nothing is written to .env, and an existing .env is read but never changed.
  * Refuses to run in production, on a serverless platform, or for an app URL that is not a local address.
  *
@@ -42,27 +45,6 @@ function readDotEnv(): Record<string, string> {
   } catch {
     return {};
   }
-}
-
-/** Stops a child and everything it started (next dev starts workers). */
-function killTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.pid === undefined) return;
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  else child.kill("SIGTERM");
-}
-
-/** Prints a child's output line by line with a prefix, whatever way it is chunked. */
-function pipeLines(stream: NodeJS.ReadableStream, prefix: string, out: NodeJS.WriteStream): void {
-  let rest = "";
-  stream.setEncoding("utf8");
-  stream.on("data", (chunk: string) => {
-    const lines = (rest + chunk).split(/\r?\n/);
-    rest = lines.pop() ?? "";
-    for (const line of lines) out.write(`${prefix} ${line}\n`);
-  });
-  stream.on("end", () => {
-    if (rest) out.write(`${prefix} ${rest}\n`);
-  });
 }
 
 /** The heartbeat the worker on this Redis writes, read with the app's own reader (lib/health.ts). Read only. */
@@ -130,17 +112,31 @@ async function main() {
   const childEnv = { ...process.env, ...overlay };
 
   const children: { name: string; child: ChildProcess }[] = [];
+  let spa: SpaWatch | undefined;
   let stopping = false;
   const stop = (code: number) => {
     if (stopping) return;
     stopping = true;
     console.log("\n[dev:mock] stopping...");
     for (const { child } of children) killTree(child);
-    void mock.close().finally(() => process.exit(code));
+    void Promise.allSettled([spa?.close(), mock.close()]).finally(() => process.exit(code));
+    setTimeout(() => process.exit(code), 3000).unref();
   };
+  // Ctrl+C, a closed console window (SIGHUP; also SIGBREAK on Windows) and a plain kill all stop the children first, with the
+  // synchronous taskkill, so no next dev or worker is left running behind a closed window.
+  onShutdown(
+    () => stop(0),
+    () => {
+      for (const { child } of children) killTree(child);
+    },
+  );
+
+  // The React app's files first, so the first page request already finds the shell (scripts/dev-spa.ts).
+  spa = await startSpaWatch(root, (line) => console.log(`[web] ${line}`));
+  if (!spa.firstBuildOk) warn("the first build of the React app failed (see [web] above); pages answer with an error until a build succeeds.");
 
   const start = (name: string, args: string[]) => {
-    const child = spawn(process.execPath, args, { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = startNode(args, { cwd: root, env: childEnv });
     pipeLines(child.stdout, `[${name}]`, process.stdout);
     pipeLines(child.stderr, `[${name}]`, process.stderr);
     child.on("exit", (code) => {
@@ -171,19 +167,6 @@ async function main() {
       "",
     ].join("\n"),
   );
-
-  // Ctrl+C, a closed console window (SIGHUP; also SIGBREAK on Windows) and a plain kill all stop the children first, with the
-  // synchronous taskkill, so no next dev or worker is left running behind a closed window.
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
-    try {
-      process.on(signal, () => stop(0));
-    } catch {
-      /* a signal this platform does not have */
-    }
-  }
-  process.on("exit", () => {
-    for (const { child } of children) killTree(child);
-  });
 }
 
 main().catch((e) => fail(e instanceof Error ? e.message : String(e)));

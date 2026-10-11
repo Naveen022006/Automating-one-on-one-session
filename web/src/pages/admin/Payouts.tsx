@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { PayoutsView } from "@/components/views/admin/PayoutsView";
+import { PayoutsView } from "@web/components/views/admin/PayoutsView";
 import type { AdminPayoutsView } from "@/lib/views/admin-payouts";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

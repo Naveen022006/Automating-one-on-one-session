@@ -2,7 +2,7 @@
 // a memory router (the URL and its query string) and a QueryClient holding the session answer, so a wrong prop, a lost `?next=`
 // or a page that waits when it should not FAILS here. tests/spa-public-auth.test.ts covers the views themselves.
 //
-// The form components (components/auth/AuthForms.tsx) are replaced by fakes that print their props, because what the pages
+// The form components (web/src/components/auth/AuthForms.tsx) are replaced by fakes that print their props, because what the pages
 // hand to a form (the `next` of the login form, the token of the reset form, `loggedIn` of the verify button) is not visible in
 // the real markup. `mock.module` only affects modules imported afterwards, which is why this lives in its own file and the pages
 // are imported inside `before`. No browser, no database, no network.
@@ -56,7 +56,7 @@ before(async () => {
   rq = await import("@tanstack/react-query");
   api = await import("../web/src/lib/api");
   keys = (await import("../web/src/lib/query")).queryKeys;
-  mock.module("@/components/auth/AuthForms", {
+  mock.module("@web/components/auth/AuthForms", {
     namedExports: {
       LoginForm: fakeForm("LoginForm"),
       RegisterForm: fakeForm("RegisterForm"),

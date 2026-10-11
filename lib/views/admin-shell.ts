@@ -3,9 +3,9 @@ import type { AdminContext } from "@/lib/admin/session";
 import { getHealthReport } from "@/lib/health";
 
 /**
- * Everything the admin console frame needs (sidebar badges and the account menu). One function, two callers: the old
- * Next layout (app/admin/(console)/layout.tsx) and GET /api/admin/shell for the SPA. The caller has already passed the
- * admin gate (`requireAdminPage` / `requireAdminMfa({ allowEnrollment: true })`).
+ * Everything the admin console frame needs (sidebar badges and the account menu). Served by
+ * GET /api/admin/shell. The caller has already passed the
+ * admin gate (`requireAdminMfa({ allowEnrollment: true })`).
  */
 export interface AdminShellView {
   admin: { name: string; email: string };

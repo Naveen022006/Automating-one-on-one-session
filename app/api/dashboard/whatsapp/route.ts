@@ -18,7 +18,7 @@ import {
 // by hand, one that is not registered yet). Embedded Signup otherwise registers the number with a PIN we generate.
 const pin = z.string().trim().regex(/^\d{6}$/, "The two-step verification PIN is 6 digits.").optional();
 
-// The messages are what an influencer reads under the field (components/app/WhatsAppConnect.tsx shows the first one), so they say what to
+// The messages are what an influencer reads under the field (web/src/components/app/WhatsAppConnect.tsx shows the first one), so they say what to
 // enter, not what zod checked ("Too small: expected string to have >=5 characters").
 const wabaId = z.string().trim().min(5, "Enter the WhatsApp Business Account ID from Meta (a long number).").max(40, "That account ID is too long. Copy it again from WhatsApp Manager.");
 const phoneNumberId = z.string().trim().min(5, "Enter the Phone number ID from Meta (a long number).").max(40, "That phone number ID is too long. Copy it again from WhatsApp Manager.");

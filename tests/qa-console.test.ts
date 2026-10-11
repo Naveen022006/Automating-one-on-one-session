@@ -10,9 +10,10 @@ import * as ReactNs from "react";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { razorpayErrorText } from "../lib/payments";
-import { Dialog, Drawer, ToastProvider, useToast } from "../components/ui/overlays";
-import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../components/ui/MobileNav";
+import { Dialog, Drawer, ToastProvider, useToast } from "../web/src/components/ui/overlays";
+import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../web/src/components/ui/MobileNav";
 import nextConfig from "../next.config";
+import { fakeNavigate } from "./helpers/fake-navigate";
 
 const root = (p: string) => path.resolve(__dirname, "..", p);
 const read = (p: string) => readFileSync(root(p), "utf8");
@@ -21,7 +22,7 @@ const count = (html: string, needle: string) => html.split(needle).length - 1;
 // ---------------------------------------------------------------------------------------------------------------------------
 // C10: the page must not scroll sideways on a phone.
 test("C10: the .shell grid tracks can shrink below their content (minmax(0, 1fr)), on desktop and on a phone", () => {
-  const css = read("app/styles/layouts.css");
+  const css = read("web/src/styles/layouts.css");
   const columns = [...css.matchAll(/\.shell\s*\{[^}]*?grid-template-columns:\s*([^;]+);/g)].map((m) => m[1].trim());
   assert.equal(columns.length, 2, "one declaration for the sidebar layout and one for the phone layout");
   for (const c of columns) {
@@ -31,14 +32,14 @@ test("C10: the .shell grid tracks can shrink below their content (minmax(0, 1fr)
 });
 
 test("C21: every table of the dashboard has a name for screen readers", () => {
-  assert.match(read("components/views/dashboard/CustomersView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Customers<\/caption>/);
-  assert.match(read("components/views/dashboard/MessagesView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Messages<\/caption>/);
-  assert.match(read("components/app/SessionsBoard.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Bookings<\/caption>/);
-  assert.match(read("components/app/AvailabilityEditor.tsx"), /<table className="table">\s*<caption className="sr-only">Weekly hours<\/caption>/);
+  assert.match(read("web/src/components/views/dashboard/CustomersView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Customers<\/caption>/);
+  assert.match(read("web/src/components/views/dashboard/MessagesView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Messages<\/caption>/);
+  assert.match(read("web/src/components/app/SessionsBoard.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Bookings<\/caption>/);
+  assert.match(read("web/src/components/app/AvailabilityEditor.tsx"), /<table className="table">\s*<caption className="sr-only">Weekly hours<\/caption>/);
 });
 
 test("C20: an anchor inside the dashboard or console scrolls to below the sticky top bar, not under it", () => {
-  const css = read("app/styles/layouts.css");
+  const css = read("web/src/styles/layouts.css");
   assert.match(css, /\.topbar \{[^}]*position: sticky;[^}]*min-height: 64px;/s, "the bar is sticky and 64px tall");
   assert.match(css, /\.app-main \[id\] \{\s*scroll-margin-top: calc\(64px \+ var\(--space-6\)\);\s*\}/, "so every #target inside the page keeps clear of it");
 });
@@ -78,8 +79,8 @@ test("C11: a section and its sub-pages are active, a look-alike prefix is not, a
 
 test("C11: both shells hand every section that is not in the bar to More (nothing is dropped)", () => {
   for (const [file, primaryPaths, total] of [
-    ["components/app/AppShell.tsx", ["/dashboard", "/dashboard/sessions", "/dashboard/services", "/dashboard/availability"], 9],
-    ["components/admin/AdminShell.tsx", ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"], 9],
+    ["web/src/components/app/AppShell.tsx", ["/dashboard", "/dashboard/sessions", "/dashboard/services", "/dashboard/availability"], 9],
+    ["web/src/components/admin/AdminShell.tsx", ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"], 9],
   ] as const) {
     const src = read(file);
     assert.match(src, /more=\{NAV\.filter\(\(n\) => !MOBILE_PRIMARY\.includes\(n\.href\)\)\}/, `${file}: More is the complement of the bar`);
@@ -115,7 +116,7 @@ test("N4: Escape hands focus back to More only when focus was in the bar", () =>
 });
 
 test("N4: the bar wires those decisions to focus-out and to the Escape listener", () => {
-  const src = read("components/ui/MobileNav.tsx");
+  const src = read("web/src/components/ui/MobileNav.tsx");
   assert.match(src, /onBlur=\{\(e\) => \{\s*if \(open && focusLeavesBar\(e\.currentTarget, e\.relatedTarget\)\) setOpen\(false\);/);
   assert.match(src, /const hadFocus = escapeReturnsFocus\(rootRef\.current, document\.activeElement\);\s*setOpen\(false\);\s*if \(hadFocus\) buttonRef\.current\?\.focus\(\);/, "the focus is looked at before the list unmounts");
 });
@@ -193,7 +194,7 @@ test("C6: razorpayErrorText shows the description of Razorpay's error body, the 
 // ---------------------------------------------------------------------------------------------------------------------------
 // C4: the device list is reloaded after a password change.
 test("C4: PasswordForm tells DeviceSessions to reload, and DeviceSessions listens for it and also reloads when a device is already gone", () => {
-  const src = read("components/app/SettingsForms.tsx");
+  const src = read("web/src/components/app/SettingsForms.tsx");
   assert.match(src, /export const SESSIONS_CHANGED_EVENT = "sa:sessions-changed"/);
   assert.equal(count(src, "window.dispatchEvent(new Event(SESSIONS_CHANGED_EVENT))"), 1, "dispatched once, after a successful password change");
   assert.equal(count(src, "window.addEventListener(SESSIONS_CHANGED_EVENT"), 1);
@@ -204,7 +205,7 @@ test("C4: PasswordForm tells DeviceSessions to reload, and DeviceSessions listen
 // ---------------------------------------------------------------------------------------------------------------------------
 // C3: the onboarding hint must not promise more than is true.
 test("C3: the last onboarding step does not say the page goes live when the email is confirmed", () => {
-  const src = read("components/app/OnboardingWizard.tsx");
+  const src = read("web/src/components/app/OnboardingWizard.tsx");
   assert.doesNotMatch(src, /goes live for customers as soon as you confirm your email/);
   assert.match(src, /Customers cannot see your page until you confirm your email\./);
 });
@@ -213,8 +214,8 @@ test("C3: the last onboarding step does not say the page goes live when the emai
 // C9: the influencer search announces its result and keeps its box.
 let InfluencersView: ComponentType<{ data: unknown; q?: string; busy?: boolean }>;
 before(async () => {
-  mock.module("@/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: () => createElement("div", { "data-fake": "InfluencerSearchForm" }) } });
-  InfluencersView = (await import("../components/views/admin/InfluencersView")).InfluencersView as typeof InfluencersView;
+  mock.module("@web/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: () => createElement("div", { "data-fake": "InfluencerSearchForm" }) } });
+  InfluencersView = (await import("../web/src/components/views/admin/InfluencersView")).InfluencersView as typeof InfluencersView;
 });
 const row = (n: number) => ({
   id: `id${n}`,
@@ -251,15 +252,15 @@ test("N3: while the previous result is still shown, the status line says the nex
   assert.doesNotMatch(busy, /<p role="status"[^>]*>[^<]*accounts/, "the old total is not announced next to the new search text");
   assert.match(renderToStaticMarkup(createElement(InfluencersView, { data, q: "ann", busy: false })), /2 accounts for “ann”/, "and the result is announced once it has arrived");
   // Every list page with this status line (the ones that set `busy` from isPlaceholderData) does the same.
-  const searches = ["components/views/admin/InfluencersView.tsx", "components/views/dashboard/CustomersView.tsx"];
+  const searches = ["web/src/components/views/admin/InfluencersView.tsx", "web/src/components/views/dashboard/CustomersView.tsx"];
   const lists = [
-    "components/views/admin/AuditView.tsx",
-    "components/views/admin/BookingsView.tsx",
-    "components/views/admin/PaymentsView.tsx",
-    "components/views/admin/PayoutsView.tsx",
-    "components/views/dashboard/EarningsView.tsx",
-    "components/views/dashboard/MessagesView.tsx",
-    "components/views/dashboard/SessionsView.tsx",
+    "web/src/components/views/admin/AuditView.tsx",
+    "web/src/components/views/admin/BookingsView.tsx",
+    "web/src/components/views/admin/PaymentsView.tsx",
+    "web/src/components/views/admin/PayoutsView.tsx",
+    "web/src/components/views/dashboard/EarningsView.tsx",
+    "web/src/components/views/dashboard/MessagesView.tsx",
+    "web/src/components/views/dashboard/SessionsView.tsx",
   ];
   for (const f of searches) assert.match(read(f), /<p role="status" className="sr-only">\{busy \? "Searching…" : found\}<\/p>/, f);
   for (const f of lists) assert.match(read(f), /<p role="status" className="sr-only">\{busy \? "Loading…" : found\}<\/p>/, f);
@@ -355,7 +356,7 @@ test("C13: outcomeTarget keeps the #fragment of returnTo, and Settings asks to c
   assert.deepEqual(outcomeTarget("/onboarding?step=3#x", "denied"), { pathname: "/onboarding", search: "?step=3&google=denied", hash: "#x" });
   assert.deepEqual(outcomeTarget("/dashboard/settings#", "failed"), { pathname: "/dashboard/settings", search: "?google=failed" }, "an empty fragment is dropped");
   assert.deepEqual(outcomeTarget("/dashboard/settings", "connected"), { pathname: "/dashboard/settings", search: "?google=connected" }, "no fragment: the shape the older callers see");
-  assert.match(read("components/views/dashboard/SettingsView.tsx"), /returnTo="\/dashboard\/settings#google"/);
+  assert.match(read("web/src/components/views/dashboard/SettingsView.tsx"), /returnTo="\/dashboard\/settings#google"/);
   for (const file of ["app/api/google/callback/route.ts", "app/api/google/connect/route.ts"]) {
     assert.match(read(file), /url\.hash = hash \?\? ""/, `${file} sets the fragment on the redirect`);
   }
@@ -431,11 +432,11 @@ test("C19: the 'Could not submit' notice names templates the way the card does, 
   for (const key of Object.keys(TEMPLATE_SPECS)) assert.ok(TEMPLATE_LABELS[key], `every template key has a label (${key})`);
   const src = read("lib/whatsapp-connection.ts");
   assert.equal(count(src, "Could not submit: ${sync.failed.map((f) => templateLabel(f.name)).join"), 2, "both places that build the notice use the labels");
-  assert.doesNotMatch(read("components/app/WhatsAppConnect.tsx"), /const TEMPLATE_LABEL\b/, "one label map, shared");
+  assert.doesNotMatch(read("web/src/components/app/WhatsAppConnect.tsx"), /const TEMPLATE_LABEL\b/, "one label map, shared");
 });
 
 test("C18/C8: the card reloads after a refused refresh, and a number that is not connected is 'Recommended', not 'Required'", () => {
-  const src = read("components/app/WhatsAppConnect.tsx");
+  const src = read("web/src/components/app/WhatsAppConnect.tsx");
   const refresh = src.slice(src.indexOf("async function refresh()"), src.indexOf("// The ways to connect"));
   assert.match(refresh, /if \(!r\.ok\) \{[\s\S]*router\.refresh\(\);[\s\S]*return;[\s\S]*\}/, "a failure also asks the page to reload its data");
   assert.doesNotMatch(src, /Required to message by WhatsApp/);
@@ -445,7 +446,7 @@ test("C18/C8: the card reloads after a refused refresh, and a number that is not
 // ---------------------------------------------------------------------------------------------------------------------------
 // N8: showing a toast must not re-render every component that can show one.
 test("N8: useToast reads a context whose value never changes; only the viewports read the list that does", () => {
-  const src = read("components/ui/overlays.tsx");
+  const src = read("web/src/components/ui/overlays.tsx");
   assert.match(src, /const ToastPushContext = createContext<PushToast>\(/);
   assert.match(src, /const ToastListContext = createContext<ToastList>\(/);
   assert.match(src, /<ToastPushContext\.Provider value=\{push\}>/, "the value is the useCallback([]) function itself, not an object holding the list");
@@ -492,14 +493,14 @@ test("C17: Meta's documented rejection reasons become plain sentences with what 
   assert.equal(templateReasonText("CONFLICT", ours), ours);
 
   // The card uses it for every row.
-  assert.match(read("components/app/WhatsAppConnect.tsx"), /const why = templateReasonText\(t\.status, t\.reason\);[\s\S]*\{why && <div className="subtle">\{why\}<\/div>\}/);
-  assert.doesNotMatch(read("components/app/WhatsAppConnect.tsx"), /\{t\.reason && /, "the raw reason is no longer printed");
+  assert.match(read("web/src/components/app/WhatsAppConnect.tsx"), /const why = templateReasonText\(t\.status, t\.reason\);[\s\S]*\{why && <div className="subtle">\{why\}<\/div>\}/);
+  assert.doesNotMatch(read("web/src/components/app/WhatsAppConnect.tsx"), /\{t\.reason && /, "the raw reason is no longer printed");
 });
 
 test("C17: the card prints the sentence under a rejected template", async () => {
-  mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
+  mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/dashboard/settings") });
   try {
-    const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?c17=${Math.random()}`);
+    const { WhatsAppConnect } = await import(`../web/src/components/app/WhatsAppConnect?c17=${Math.random()}`);
     const connection = {
       displayPhone: "+91 98765 43210",
       verifiedName: "Pat",
@@ -586,8 +587,8 @@ test("C7: a page that still shows data after a failed refetch says so, offers Re
 // ---------------------------------------------------------------------------------------------------------------------------
 // N7: the WhatsApp card says what the go-live checklist says (READINESS_REQUIRED can include whatsapp).
 test("N7: the not-connected WhatsApp card says Required when the checklist requires it, Recommended otherwise", async () => {
-  mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
-  const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?n7=${Math.random()}`);
+  mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/dashboard/settings") });
+  const { WhatsAppConnect } = await import(`../web/src/components/app/WhatsAppConnect?n7=${Math.random()}`);
   const card = (required?: boolean) => renderToStaticMarkup(createElement(WhatsAppConnect, { connection: null, embedded: null, ...(required === undefined ? {} : { required }) }));
   const optional = card();
   assert.match(optional, /Not connected <span class="pill">Recommended<\/span>/);
@@ -603,8 +604,8 @@ test("N7: the not-connected WhatsApp card says Required when the checklist requi
   assert.equal(requiredConnections({ NODE_ENV: "test", READINESS_REQUIRED: "google,whatsapp,payout" }).includes("whatsapp"), true);
   assert.equal(requiredConnections({ NODE_ENV: "test" }).includes("whatsapp"), false, "not required by default");
   assert.match(read("lib/views/dashboard-settings.ts"), /whatsappRequired: requiredConnections\(\)\.includes\("whatsapp"\)/);
-  assert.match(read("components/views/dashboard/SettingsView.tsx"), /required=\{data\.whatsappRequired\}/);
-  const wizard = read("components/app/OnboardingWizard.tsx");
+  assert.match(read("web/src/components/views/dashboard/SettingsView.tsx"), /required=\{data\.whatsappRequired\}/);
+  const wizard = read("web/src/components/app/OnboardingWizard.tsx");
   assert.match(wizard, /const whatsappRequired = d\.checklist\.some\(\(c\) => c\.key === "whatsapp" && c\.required\);/);
   assert.match(wizard, /<WhatsAppConnect connection=\{d\.whatsapp\} embedded=\{d\.embedded\} required=\{whatsappRequired\} \/>/);
   mock.reset();

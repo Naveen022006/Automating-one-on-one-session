@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { SessionsView } from "@/components/views/dashboard/SessionsView";
+import { SessionsView } from "@web/components/views/dashboard/SessionsView";
 import type { DashboardSessionsView } from "@/lib/views/dashboard-sessions";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

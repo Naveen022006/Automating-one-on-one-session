@@ -26,7 +26,6 @@ before(async () => {
   mkdirSync(path.join(dir, "web", "dist"), { recursive: true });
   writeFileSync(path.join(dir, "web", "dist", "index.html"), TEMPLATE);
   process.chdir(dir);
-  process.env.SPA_GROUPS = "all";
   delete process.env.ENABLE_DESIGN_PAGE;
   const route = await import("../app/spa-shell/[[...path]]/route");
   GET = route.GET;
@@ -61,7 +60,7 @@ test("a static page: 200 HTML, the request's nonce in every tag, head tags, no-s
   assert.ok(html.includes('<link rel="canonical" href="'));
   assert.equal(html.split(`nonce="${NONCE}"`).length - 1, 2, "both template tags carry the nonce");
   assert.ok(!html.includes("__CSP_NONCE__") && !html.includes("<!--spa-head-->") && !html.includes("<!--spa-support-->"));
-  assert.match(html, /<meta name="spa-groups" content="public,auth,booking,dashboard,admin">/);
+  assert.ok(!html.includes("spa-groups"), "the shell no longer carries a page-group switch");
 });
 
 test("the landing page carries the Organization JSON-LD with the nonce", async () => {
@@ -111,7 +110,7 @@ test("/design is a 404 in production unless ENABLE_DESIGN_PAGE=true, and a norma
   }
 });
 
-test("a Next client prefetch or RSC navigation to an SPA path gets an empty 204, so Next falls back to a normal page load", async () => {
+test("a Next client prefetch or RSC navigation (a stale tab) gets an empty 204, so Next falls back to a normal page load", async () => {
   const variants: Record<string, string>[] = [{ "x-nonce": NONCE, rsc: "1" }, { "x-nonce": NONCE, "next-router-prefetch": "1" }, { "x-nonce": NONCE, rsc: "1", "next-router-prefetch": "1" }];
   for (const headers of variants) {
     const res = await call("/terms", headers);

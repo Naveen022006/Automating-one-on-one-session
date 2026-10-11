@@ -1,5 +1,5 @@
 import { useParams, useSearchParams } from "react-router";
-import { BookView } from "@/components/views/booking/BookView";
+import { BookView } from "@web/components/views/booking/BookView";
 import type { PublicProfile } from "@/lib/public-profile";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

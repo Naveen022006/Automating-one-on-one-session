@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { MessagesView } from "@/components/views/dashboard/MessagesView";
+import { MessagesView } from "@web/components/views/dashboard/MessagesView";
 import type { DashboardMessagesView } from "@/lib/views/dashboard-messages";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

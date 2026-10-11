@@ -1,8 +1,8 @@
 import { listBookings, parsePage } from "@/lib/admin/data";
 
 /**
- * The admin Bookings page's data, for the old Next page and GET /api/admin/bookings. The caller has already passed the admin
- * gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin Bookings page's data, for GET /api/admin/bookings. The caller has already passed the admin
+ * gate (`requireAdminMfa()`).
  */
 
 /** The filter tabs; "all" is the default. Any other `?status=` is treated as "all". */

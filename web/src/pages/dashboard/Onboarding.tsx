@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useNavigationType, useSearchParams } from "react-router";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { OnboardingView } from "@/components/views/dashboard/OnboardingView";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { OnboardingView } from "@web/components/views/dashboard/OnboardingView";
 import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";
@@ -12,7 +12,7 @@ import { QueryGate } from "../../lib/states";
 
 /**
  * The frame around the skeleton and around a failed load, while there is no data. It looks like FocusedLayout but has NO
- * `id="main"` on purpose: FocusOnNavigate (frozen, web/src/lib/a11y.tsx) focuses `#main` after a route change and, when
+ * `id="main"` on purpose: FocusOnNavigate (web/src/lib/a11y.tsx) focuses `#main` after a route change and, when
  * there is none yet, waits for one to appear. A temporary `#main` here would take the focus and then be removed when the
  * data arrives (focus would fall to <body>); without it the focus goes to the wizard's own `main#main` once that renders.
  */

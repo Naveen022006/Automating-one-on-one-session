@@ -2,8 +2,8 @@ import { listSessions, type SessionRow, type SessionView } from "@/lib/dashboard
 import { parsePageParam } from "./dashboard-params";
 
 /**
- * The Sessions page's data. One function, two callers: the old Next page (app/dashboard/sessions/page.tsx) and
- * GET /api/dashboard/sessions for the SPA. Always scoped to the influencer id from the login session.
+ * The Sessions page's data. Served by
+ * GET /api/dashboard/sessions. Always scoped to the influencer id from the login session.
  */
 
 /** The tabs, in display order. The first is the default for a missing or unknown `?view=`. */
@@ -19,7 +19,7 @@ export interface DashboardSessionsView {
   total: number;
   page: number;
   pageCount: number;
-  /** The rows SessionsBoard renders; it is handed exactly this shape by the old page as well. */
+  /** The rows SessionsBoard renders; it is handed exactly this shape. */
   sessions: SessionRow[];
 }
 

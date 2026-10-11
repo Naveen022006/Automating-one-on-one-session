@@ -1,6 +1,6 @@
 /**
  * Query-string rules shared by the dashboard list pages (Sessions, Messages, Earnings) and their JSON endpoints, so an odd URL
- * means the same thing to the old Next page and to the SPA. Pure.
+ * means the same thing on every screen that links to it. Pure.
  */
 
 /** `?page=` as a whole number from 1 to 9999; anything else (missing, 0, negative, 2.5, "abc", 1e9) is page 1. */

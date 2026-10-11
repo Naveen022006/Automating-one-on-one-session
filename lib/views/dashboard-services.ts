@@ -1,12 +1,11 @@
-import type { ServiceAdmin } from "@/components/app/ServicesManager";
 import { prisma } from "@/lib/db";
 import { parseQuestions } from "@/lib/intake";
+import type { ServiceAdmin } from "@/lib/views/dashboard-types";
 
 /**
- * The Services page and the onboarding wizard's first-service step. One function, three callers: the old Next page
- * (app/dashboard/services/page.tsx), GET /api/dashboard/services for the SPA, and loadOnboardingView, so they cannot
- * disagree. The DTO is the editor's own prop type (`ServiceAdmin`), so a field the editor starts to need is a compile
- * error here instead of an `undefined` in production.
+ * The Services page and the onboarding wizard's first-service step. One function, two callers: GET /api/dashboard/services
+ * and loadOnboardingView, so they cannot disagree. The DTO is the editor's own prop type (`ServiceAdmin`), so a field the
+ * editor starts to need is a compile error here instead of an `undefined` in production.
  */
 export type ServiceView = ServiceAdmin;
 

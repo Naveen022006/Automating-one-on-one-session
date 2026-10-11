@@ -1,4 +1,4 @@
-import { PrivacyView } from "@/components/views/public/PrivacyView";
+import { PrivacyView } from "@web/components/views/public/PrivacyView";
 import { PageTitle } from "../../lib/head";
 
 export function Component() {

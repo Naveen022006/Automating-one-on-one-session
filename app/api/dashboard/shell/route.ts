@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 /**
  * The dashboard frame in one request (guard and layout data together, so one page load costs one database round trip
  * and not two). 401 when signed out. It answers for accounts that have not finished onboarding too (`user.onboarded`
- * is false): sending them to /onboarding is the SPA guard's job, exactly as requirePageAuth did on the server.
+ * is false): sending them to /onboarding is the SPA guard's job, as the server-rendered pages used to.
  */
 export async function GET() {
   const auth = await requireApiAuth();

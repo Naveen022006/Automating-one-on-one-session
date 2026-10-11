@@ -3,15 +3,17 @@ import path from "node:path";
 import type { Plugin } from "vite";
 
 /**
- * The server-module guard (doc/10-react-migration-plan.md, section 1.4). The SPA imports the project's shared
- * components, and those live next to server code. One careless `import { prisma } from "@/lib/db"` in a file the browser
- * bundle reaches would put database drivers, secrets handling and Node APIs into JavaScript that is public. This plugin
- * makes that a BUILD ERROR (and a dev-server error), naming the importing file.
+ * The server-module guard (doc/12-front-end.md). The SPA lives in web/ but shares a few pure modules with the server (the
+ * route table, formatting, the intake-question rules), and those sit in lib/ next to server code. One careless
+ * `import { prisma } from "@/lib/db"` in a file the browser bundle reaches would put database drivers, secrets handling and
+ * Node APIs into JavaScript that is public. This plugin makes that a BUILD ERROR (and a dev-server error), naming the
+ * importing file.
  *
  * The rule is an allowlist for `lib/`: only the small set of pure modules below may be imported by browser code. Add to
  * it only after checking the module imports nothing server-side (no Prisma, no `process.env` beyond the four names the
  * Vite config defines, no Node built-ins) AND is safe to ship to every visitor. Type-only imports
- * (`import type ... from "@/lib/dashboard-data"`) are erased before resolution and are always fine.
+ * (`import type ... from "@/lib/views/dashboard-sessions"`) are erased before resolution and are always fine. Nothing under
+ * app/ (route handlers, metadata routes) may be imported at all, and neither may the framework: the SPA does not use Next.
  *
  * The decision logic is in plain functions (`specifierProblem`, `repoPathProblem`) so tests/spa-guard.test.ts can check
  * it without running Vite.
@@ -27,7 +29,7 @@ export const LIB_ALLOWLIST: readonly string[] = [
   "lib/spa/routes.ts",
   "lib/jsonify.ts",
   "lib/safe-next-path.ts",
-  // The WhatsApp connection panel (components/app/WhatsAppConnect.tsx) shows these; all three import nothing and read no
+  // The WhatsApp connection panel (web/src/components/app/WhatsAppConnect.tsx) shows these; all three import nothing and read no
   // environment (the env-reading graphVersion/graphBase live in the server-only lib/whatsapp-graph-config.ts).
   "lib/message-templates.ts",
   "lib/whatsapp-copy.ts",
@@ -41,15 +43,10 @@ export const LIB_ALLOWLIST: readonly string[] = [
 const NODE_BUILTINS = new Set(builtinModules.filter((m) => !m.startsWith("node:")));
 /** Packages that are server-only by nature. */
 const FORBIDDEN_PACKAGES = [/^@prisma\//, /^prisma$/, /^pg($|\/)/, /^ioredis($|\/)/, /^bullmq($|\/)/, /^dotenv($|\/)/];
-/** `next/link` and `next/navigation` are aliased to the SPA shims before this plugin sees them; anything else from Next is server code. */
-const NEXT_ALLOWED = new Set(["next/link", "next/navigation"]);
-
 /** A problem with an import specifier as written, or null. */
 export function specifierProblem(specifier: string): string | null {
   if (specifier.startsWith("node:") || NODE_BUILTINS.has(specifier)) return "a Node.js built-in module (browser code cannot use Node APIs)";
-  if (specifier === "next" || specifier.startsWith("next/")) {
-    return NEXT_ALLOWED.has(specifier) ? null : "a server-side Next.js API (only next/link and next/navigation exist in the SPA, as shims)";
-  }
+  if (specifier === "next" || specifier.startsWith("next/")) return "Next.js (server code; the SPA has its own link and navigation in web/src/lib)";
   if (FORBIDDEN_PACKAGES.some((re) => re.test(specifier))) return "a server-only package (database, queue or secret handling)";
   return null;
 }
@@ -61,11 +58,10 @@ export function specifierProblem(specifier: string): string | null {
 export function repoPathProblem(rel: string): string | null {
   const clean = rel.split("?")[0];
   if (clean.startsWith("generated/")) return "the generated Prisma client (server only)";
-  if (clean.startsWith("app/api/") || clean.startsWith("app/spa-shell/")) return "a route handler (server only)";
+  if (clean.startsWith("app/")) return "a Next.js route handler or metadata route (server only)";
   if (clean.startsWith("worker/")) return "the background worker (server only)";
   if (clean.startsWith("prisma/") || clean.startsWith("scripts/") || clean.startsWith("tests/")) return "a server-side or tooling file";
   if (clean === "proxy.ts" || clean === "instrumentation.ts") return "server-side Next.js entry code";
-  if (/^app\/(?:.*\/)?(page|layout|route|not-found|error|global-error)\.tsx?$/.test(clean)) return "a Next page/layout file (server code; import the shared view component instead)";
   if (clean.startsWith("lib/") && !LIB_ALLOWLIST.includes(clean)) {
     return `lib module not on the browser allowlist (${LIB_ALLOWLIST.join(", ")}); import only types from it ("import type"), or move the pure logic to an allowlisted module`;
   }

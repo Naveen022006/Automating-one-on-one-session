@@ -17,7 +17,7 @@ import { jsonView } from "@/lib/views/http";
 // token): the token in the URL path carries the booking id, so there is no ownership lookup to spoof. It
 // calls the same cancelBooking / rescheduleBooking domain functions the influencer dashboard uses.
 
-// The booking the manage page shows, for the SPA (the same `loadManageView` the old Next page uses): 403 for a link that
+// The booking the manage page shows, for the SPA (`loadManageView`): 403 for a link that
 // is invalid or expired, 404 for a valid link whose booking is gone or erased, 200 with the booking otherwise.
 export async function GET(_req: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;

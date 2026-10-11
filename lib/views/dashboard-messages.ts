@@ -2,7 +2,7 @@ import { listMessages } from "@/lib/dashboard-data";
 import { parsePageParam } from "./dashboard-params";
 
 /**
- * The Messages page's data, for the old Next page and GET /api/dashboard/messages. Scoped to the influencer id from the
+ * The Messages page's data, for GET /api/dashboard/messages. Scoped to the influencer id from the
  * login session.
  */
 

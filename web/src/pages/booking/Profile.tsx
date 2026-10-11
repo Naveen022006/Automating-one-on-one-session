@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { ProfileView } from "@/components/views/booking/ProfileView";
+import { ProfileView } from "@web/components/views/booking/ProfileView";
 import type { PublicProfile } from "@/lib/public-profile";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

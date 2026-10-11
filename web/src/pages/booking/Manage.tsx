@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { ManageView } from "@/components/views/booking/ManageView";
+import { ManageView } from "@web/components/views/booking/ManageView";
 import type { ManageView as ManageViewData } from "@/lib/views/booking-manage";
 import { isApiError, useApiQuery, type ApiError } from "../../lib/api";
 import { PageTitle } from "../../lib/head";
@@ -20,7 +20,7 @@ function stateOf(error: ApiError | null): ManageData | undefined {
  * `/manage/:token`: the customer's self-service page (reschedule, cancel). The token in the URL is the only credential.
  * The Referrer-Policy header the shell sends only applies to a full page load, and the booked state of the pay page links
  * here with a soft navigation, so the page sets the policy itself: React hoists the `<meta>` into the head and removes it
- * again when the customer leaves (the old Next page's `referrer: "no-referrer"` metadata applied to soft navigations too).
+ * again when the customer leaves (the shell's header only covers a full page load, and the pay page links here with a soft navigation).
  * Without it, every request from this page to our own server would carry the token in its Referer.
  */
 export function Component() {

@@ -1,16 +1,15 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { escapeHtml } from "./head";
-import { SPA_GROUPS, type SpaGroup } from "./routes";
 
 /**
- * The HTML shell template (doc/10-react-migration-plan.md, section 1.6). `vite build` writes web/dist/index.html with
- * three kinds of placeholders that only the server can fill, once per request:
+ * The HTML shell template (doc/12-front-end.md). `vite build` writes web/dist/index.html with three kinds of placeholders
+ * that only the server can fill, once per request:
  *
  *   __CSP_NONCE__       every script/link/style tag Vite emitted carries nonce="__CSP_NONCE__" (Vite's `html.cspNonce`)
  *                       and so does <meta property="csp-nonce">, which Vite's runtime reads for the tags it adds later.
  *                       It is replaced by the request's nonce from proxy.ts, the same value as in the CSP header.
- *   <!--spa-head-->     the per-route head tags (lib/spa/head.ts) and <meta name="spa-groups">.
+ *   <!--spa-head-->     the per-route head tags (lib/spa/head.ts).
  *   <!--spa-support-->  inside <noscript>: " Questions: <support email>".
  *
  * A template without the first two would serve a blank page under the strict CSP (scripts without a nonce are
@@ -46,12 +45,15 @@ export function assertShellTemplate(template: string): void {
 let cached: string | undefined;
 
 /**
- * The template, read from disk once and kept. Throws ShellTemplateError (file missing, or placeholders missing); the
- * route logs one clear line and answers 500. `readFile` is injectable for tests.
+ * The template, read from disk. In production (`keep`, the default) it is read once and kept: the file cannot change under a
+ * running server. In development `npm run dev` rebuilds it on every change in web/src (new hashed file names), so it is read
+ * again for every request. Throws ShellTemplateError (file missing, or placeholders missing); the route logs one clear line
+ * and answers 500. `readFile`, `cwd` and `keep` are injectable for tests.
  */
 export function loadShellTemplate(
   readFile: (file: string) => string = (file) => readFileSync(file, "utf8"),
   cwd: string = process.cwd(),
+  keep: boolean = process.env.NODE_ENV === "production",
 ): string {
   if (cached !== undefined) return cached;
   // turbopackIgnore: read at run time on purpose; the file is added to the trace explicitly by outputFileTracingIncludes
@@ -64,7 +66,7 @@ export function loadShellTemplate(
     throw new ShellTemplateError(`${SHELL_TEMPLATE_RELATIVE_PATH} is missing: run \`npm run build\` (Vite writes it) and make sure the image or deployment bundle contains it`);
   }
   assertShellTemplate(text);
-  cached = text;
+  if (keep) cached = text;
   return text;
 }
 
@@ -78,8 +80,6 @@ export interface ShellInputs {
   nonce: string;
   /** Output of renderHead(). */
   headHtml: string;
-  /** Groups the browser may navigate inside (a client-side link to any other group is a full page load). */
-  groups: ReadonlySet<SpaGroup>;
   supportEmail: string;
 }
 
@@ -89,12 +89,10 @@ const NONCE_SHAPE = /^[A-Za-z0-9+/=_-]{8,200}$/;
 export function renderShell(template: string, inputs: ShellInputs): string {
   assertShellTemplate(template);
   if (!NONCE_SHAPE.test(inputs.nonce)) throw new ShellTemplateError("the CSP nonce has an unexpected shape");
-  const groups = SPA_GROUPS.filter((g) => inputs.groups.has(g)).join(",");
-  const head = `${inputs.headHtml}\n    <meta name="spa-groups" content="${escapeHtml(groups)}">`;
   // Replacer functions, not strings: "$&" or "$'" in a title (influencer-controlled) must not be interpreted.
   return template
     .split(NONCE_PLACEHOLDER)
     .join(escapeHtml(inputs.nonce))
-    .replace(HEAD_PLACEHOLDER, () => head)
+    .replace(HEAD_PLACEHOLDER, () => inputs.headHtml)
     .replace(SUPPORT_PLACEHOLDER, () => ` Questions: ${escapeHtml(inputs.supportEmail)}`);
 }

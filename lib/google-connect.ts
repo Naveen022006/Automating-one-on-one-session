@@ -3,7 +3,7 @@
  * tested without a request or a database.
  */
 
-/** Shown on the page the influencer started from, through ?google=<outcome>. Texts live in components/app/GoogleConnect.tsx. */
+/** Shown on the page the influencer started from, through ?google=<outcome>. Texts live in web/src/components/app/GoogleConnect.tsx. */
 export type GoogleOutcome =
   | "connected"
   | "connected-no-gmail"

@@ -16,6 +16,3 @@ export function parseFlag(value: string | undefined, fallback: boolean): boolean
 export function admin2faRequired(env: NodeJS.ProcessEnv = process.env): boolean {
   return parseFlag(env.ADMIN_REQUIRE_2FA, env.NODE_ENV === "production");
 }
-
-/** The only admin page an administrator without required 2FA may open (it hosts the enrollment). */
-export const ADMIN_SECURITY_PATH = "/admin/security";

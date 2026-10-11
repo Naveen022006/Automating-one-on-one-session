@@ -31,7 +31,7 @@ RUN npm ci
 FROM deps AS build
 ARG NEXT_PUBLIC_BRAND_NAME
 ARG NEXT_PUBLIC_SUPPORT_EMAIL
-# Also inputs of the React SPA bundle (web/vite.config.ts reads exactly these four names, nothing else). Build stage only:
+# Also inputs of the React app's bundle (web/vite.config.ts reads exactly these four names, nothing else). Build stage only:
 # the runner stage below starts from a clean base, so these are not in the final image's environment.
 ARG APP_LOCALE=en-IN
 ARG ENABLE_DESIGN_PAGE=false
@@ -67,9 +67,9 @@ COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 # The SPA's hashed files (public/assets, written by scripts/spa-postbuild.mjs). Next serves public/ as static files.
 COPY --from=build --chown=node:node /app/public ./public
-# The SPA's HTML shell, read at run time by the /spa-shell route. next.config.ts (outputFileTracingIncludes) puts it in the
+# The React app's HTML shell, read at run time by the /spa-shell route. next.config.ts (outputFileTracingIncludes) puts it in the
 # standalone trace as well; copying it explicitly keeps the image correct even if tracing ever changes, and the web process
-# refuses to start without it when SPA_GROUPS enables a group (lib/env.ts).
+# refuses to start without it (lib/env.ts).
 COPY --from=build --chown=node:node /app/web/dist/index.html ./web/dist/index.html
 USER node
 EXPOSE 3000

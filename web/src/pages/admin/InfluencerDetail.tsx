@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { InfluencerDetailView } from "@/components/views/admin/InfluencerDetailView";
+import { InfluencerDetailView } from "@web/components/views/admin/InfluencerDetailView";
 import type { AdminInfluencerView } from "@/lib/views/admin-influencer";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

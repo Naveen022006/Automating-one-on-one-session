@@ -8,7 +8,7 @@ import { esc, renderPlainPage } from "./ui";
  * WhatsAppConnect component loads when the server offers it) and the sign-up window it opens. The component, its state machine and
  * the server-side connect path are the real ones; only the script and the window are fake.
  *
- * HONEST LIMIT: the popup sends the message shape THIS APP expects (components/app/WhatsAppConnect.tsx). Meta's real dialog, its
+ * HONEST LIMIT: the popup sends the message shape THIS APP expects (web/src/components/app/WhatsAppConnect.tsx). Meta's real dialog, its
  * steps and its real message format and timing have NOT been verified. The SDK delivers the popup's answer as a synthetic window
  * message with origin https://www.facebook.com, which passes the component's origin check by construction.
  */
@@ -121,7 +121,7 @@ function errorPage(c: Ctx, title: string, text: string): void {
 }
 
 const BANNER =
-  "MOCK of Meta's WhatsApp Embedded Signup. It sends the message shape this app expects (components/app/WhatsAppConnect.tsx). Meta's real dialog, steps and message format have NOT been verified.";
+  "MOCK of Meta's WhatsApp Embedded Signup. It sends the message shape this app expects (web/src/components/app/WhatsAppConnect.tsx). Meta's real dialog, steps and message format have NOT been verified.";
 
 function phoneState(p: { registered: boolean; pin: string | null }): string {
   return p.registered ? (p.pin ? "registered, has a PIN you may not know" : "registered, no PIN") : "fresh: not registered, no PIN";

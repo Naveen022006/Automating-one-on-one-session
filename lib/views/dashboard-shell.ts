@@ -2,9 +2,8 @@ import type { AuthContext } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 
 /**
- * Everything the dashboard frame (sidebar, account menu, badge) needs. One function, two callers: the old Next layout
- * (app/dashboard/layout.tsx) and GET /api/dashboard/shell for the SPA, so the two cannot disagree. The caller has
- * already authenticated (`requirePageAuth` / `requireApiAuth`).
+ * Everything the dashboard frame (sidebar, account menu, badge) needs. Served by
+ * GET /api/dashboard/shell. The caller has already authenticated (`requireApiAuth`).
  */
 export interface DashboardShellView {
   user: { name: string; email: string; slug: string; photoUrl: string | null; emailVerified: boolean; onboarded: boolean };

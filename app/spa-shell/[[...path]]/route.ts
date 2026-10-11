@@ -2,13 +2,13 @@ import { NextResponse, type NextRequest } from "next/server";
 import { BRAND_NAME, SUPPORT_EMAIL, appUrl } from "@/lib/brand";
 import { loadPublicProfile } from "@/lib/public-profile";
 import { renderHead, resolveHead, robotsDirective } from "@/lib/spa/head";
-import { matchSpaRoute, parseSpaGroups } from "@/lib/spa/routes";
+import { matchSpaRoute } from "@/lib/spa/routes";
 import { ShellTemplateError, loadShellTemplate, renderShell } from "@/lib/spa/shell";
 
 /**
- * The HTML shell of the React SPA (doc/10-react-migration-plan.md, section 1.6).
+ * The HTML shell of the React SPA (doc/12-front-end.md).
  *
- * NOT a public URL. proxy.ts rewrites an enabled SPA page to `/spa-shell/<original path>`, handing this handler the
+ * NOT a public URL. proxy.ts rewrites every page path to `/spa-shell/<original path>`, handing this handler the
  * per-request CSP nonce in the `x-nonce` request header, and answers 404 itself to any direct request for
  * `/spa-shell...`. This handler repeats the check (no `x-nonce` => 404), so even if the proxy matcher were changed
  * the shell would never be rendered without a nonce, i.e. never as an unusable blank page and never with a
@@ -31,11 +31,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const nonce = req.headers.get("x-nonce");
   if (!nonce) return plain(404, "Not found");
 
-  // A <Link> on a page that is still served by Next (SPA_GROUPS enables only some groups) may prefetch or navigate to a path
-  // that is now an SPA page, with the RSC header. Next strips its flight headers from the request the PROXY sees, so the
-  // proxy cannot tell; this handler can. Answer with an empty 204 (no profile lookup, no template): a non-RSC answer makes
-  // Next's client fall back to a normal full page load, which then requests this URL again WITHOUT the header and gets the
-  // real shell.
+  // A request that carries Next's RSC / prefetch headers (a stale tab from before the Next pages were removed, or a crawler
+  // replaying one) is not a page load. Next strips its flight headers from the request the PROXY sees, so the proxy cannot
+  // tell; this handler can. Answer with an empty 204 (no profile lookup, no template): a non-RSC answer makes Next's client
+  // fall back to a normal full page load, which then requests this URL again WITHOUT the header and gets the real shell.
   if (req.headers.get("rsc") !== null || req.headers.get("next-router-prefetch") !== null) {
     return new NextResponse(null, { status: 204, headers: { "cache-control": "no-store" } });
   }
@@ -71,7 +70,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const html = renderShell(template, {
     nonce,
     headHtml: renderHead(head, BRAND_NAME, nonce),
-    groups: parseSpaGroups(process.env.SPA_GROUPS),
     supportEmail: SUPPORT_EMAIL,
   });
 
