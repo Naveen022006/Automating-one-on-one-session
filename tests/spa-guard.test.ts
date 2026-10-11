@@ -1,7 +1,7 @@
 // The server-module guard (web/vite-server-guard.ts): the rules, and an end-to-end Vite build that proves the plugin is
 // actually wired in and stops a build when browser code imports server code. No database.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -24,8 +24,22 @@ test("specifiers: Node built-ins, server-side Next APIs and server-only packages
 test("resolved repository files: only the allowlisted lib modules, never routes, the worker, the generated client or scripts", () => {
   for (const ok of LIB_ALLOWLIST) assert.equal(repoPathProblem(ok), null, ok);
   assert.deepEqual([...LIB_ALLOWLIST].sort(), [
-    "lib/auth/slug.ts", "lib/brand.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts", "lib/spa/routes.ts",
+    "lib/auth/slug.ts", "lib/brand.ts", "lib/facebook-sdk.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/message-templates.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts",
+    "lib/spa/routes.ts", "lib/whatsapp-copy.ts", "lib/whatsapp-graph-version.ts",
   ]);
+  // The rule in web/vite-server-guard.ts: an allowlisted module reads no environment beyond the names the Vite config
+  // replaces at build time (no bare `process.env`, e.g. as a default parameter). The one exception is `appUrl()` in
+  // lib/brand.ts (APP_URL), a server-only function the browser bundle drops.
+  const defined = new Set(["NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL", "APP_LOCALE"]);
+  for (const file of LIB_ALLOWLIST) {
+    const source = readFileSync(path.resolve(__dirname, "..", file), "utf8");
+    const reads = [...source.matchAll(/process\.env(\.[A-Za-z_][A-Za-z0-9_]*)?/g)];
+    for (const m of reads) {
+      const name = m[1]?.slice(1);
+      const allowed = name !== undefined && (defined.has(name) || (file === "lib/brand.ts" && name === "APP_URL"));
+      assert.ok(allowed, `${file} reads ${m[0]}: move the environment access out of the module the browser imports`);
+    }
+  }
   for (const bad of [
     "lib/db.ts", "lib/crypto.ts", "lib/env.ts", "lib/auth/session.ts", "lib/admin/session.ts", "lib/payments.ts", "lib/spa/head.ts", "lib/spa/shell.ts", "lib/views/http.ts",
     "generated/prisma/client.ts", "app/api/auth/session/route.ts", "app/spa-shell/[[...path]]/route.ts", "worker/index.ts", "prisma/seed.ts", "scripts/spa-postbuild.mjs",

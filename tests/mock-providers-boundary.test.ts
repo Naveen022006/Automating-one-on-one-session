@@ -28,14 +28,25 @@ const rel = (file: string) => relative(root, file).split("\\").join("/");
 /** The production code: everything that can ship in the web image, the worker image or the browser bundle. */
 const PRODUCTION = [
   ...["lib", "app", "components", "worker", "web/src"].flatMap((d) => walk(join(root, d))),
-  ...["proxy.ts", "instrumentation.ts"].map((f) => join(root, f)).filter(existsSync),
+  ...["proxy.ts", "instrumentation.ts", "next.config.ts", "web/vite.config.ts", "web/vite-server-guard.ts"].map((f) => join(root, f)).filter(existsSync),
 ].map((f) => ({ path: rel(f), text: readFileSync(f, "utf8") }));
 
 const filesMatching = (pattern: RegExp) => PRODUCTION.filter((f) => pattern.test(f.text)).map((f) => f.path).sort();
 
 test("the production code has files to scan (the scan is not vacuous)", () => {
   assert.ok(PRODUCTION.length > 200, `${PRODUCTION.length} files`);
-  for (const p of ["lib/provider-endpoints.ts", "lib/env.ts", "lib/google.ts", "proxy.ts"]) assert.ok(PRODUCTION.some((f) => f.path === p), p);
+  for (const p of ["lib/provider-endpoints.ts", "lib/env.ts", "lib/google.ts", "proxy.ts", "next.config.ts", "web/vite.config.ts"]) assert.ok(PRODUCTION.some((f) => f.path === p), p);
+});
+
+test("there is exactly one graphBase: a second one (for example next to graphVersion) would send Graph calls past the mock", () => {
+  const definitions = PRODUCTION.filter((f) => /export\s+(async\s+)?function\s+graphBase\b|export\s+const\s+graphBase\b/.test(f.text)).map((f) => f.path);
+  assert.deepEqual(definitions, ["lib/provider-endpoints.ts"]);
+  for (const f of PRODUCTION) assert.ok(!/["'`]https?:\/\/graph\.facebook\.com/.test(f.text) || f.path === "lib/provider-endpoints.ts", `${f.path} builds a Graph URL by hand`);
+  // The browser-safe constant stays constant-only, and the env-reading version lives next to it, server side.
+  const constant = PRODUCTION.find((f) => f.path === "lib/whatsapp-graph-version.ts");
+  assert.ok(constant && !/process\.env/.test(constant.text) && !/\bimport\b/.test(constant.text.replace(/\/\*[\s\S]*?\*\//g, "")), "lib/whatsapp-graph-version.ts must stay free of imports and of environment access");
+  const endpoints = PRODUCTION.find((f) => f.path === "lib/provider-endpoints.ts");
+  assert.match(endpoints!.text, /from "\.\/whatsapp-graph-config"/);
 });
 
 test("MOCK_PROVIDERS_URL is mentioned only in lib/provider-endpoints.ts (the guard) and lib/env.ts (the start-up check)", () => {

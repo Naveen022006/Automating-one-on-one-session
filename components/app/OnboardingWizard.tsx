@@ -25,7 +25,7 @@ export interface OnboardingData {
   google: GoogleStatusView;
   googleOutcome: string | null;
   whatsapp: WhatsAppView | null;
-  embedded: { appId: string; configId: string } | null;
+  embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null;
   payout: PayoutAccountData | null;
   /** What still stands between this page and going live, and what is merely recommended. */
   checklist: { key: string; label: string; done: boolean; required: boolean }[];

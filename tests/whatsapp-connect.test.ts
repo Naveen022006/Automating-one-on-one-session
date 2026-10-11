@@ -11,7 +11,8 @@ import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
 import { RESET_PIN_LABEL } from "../lib/whatsapp-copy";
 import { graphBase } from "../lib/provider-endpoints";
-import { DEFAULT_GRAPH_VERSION, graphVersion } from "../lib/whatsapp-graph-version";
+import { graphVersion } from "../lib/whatsapp-graph-config";
+import { DEFAULT_GRAPH_VERSION } from "../lib/whatsapp-graph-version";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {
   REQUIRED_SCOPES,

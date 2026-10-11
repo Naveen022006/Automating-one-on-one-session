@@ -1,5 +1,20 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { ServicesView } from "@/components/views/dashboard/ServicesView";
+import type { DashboardServicesView } from "@/lib/views/dashboard-services";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/31-dashboard-setup replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** /dashboard/services. The guard and the frame come from the router (RequireInfluencer, DashboardLayout). */
+export function Component() {
+  const query = useApiQuery<Jsonify<DashboardServicesView>>(queryKeys.dashboard("services"), "/api/dashboard/services");
+  return (
+    <>
+      <PageTitle title="Services" template="dashboard" />
+      <QueryGate query={query} embedded>
+        {(data) => <ServicesView data={data} />}
+      </QueryGate>
+    </>
+  );
+}

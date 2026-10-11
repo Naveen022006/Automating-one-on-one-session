@@ -1,4 +1,4 @@
-import { graphVersion } from "./whatsapp-graph-version";
+import { graphVersion } from "./whatsapp-graph-config";
 
 /**
  * The base URL of every Google and Meta call, in one place (doc/11-provider-simulator.md).

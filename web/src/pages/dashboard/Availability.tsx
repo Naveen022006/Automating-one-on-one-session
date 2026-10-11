@@ -1,5 +1,20 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { AvailabilityView } from "@/components/views/dashboard/AvailabilityView";
+import type { DashboardAvailabilityView } from "@/lib/views/dashboard-availability";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/31-dashboard-setup replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** /dashboard/availability. The guard and the frame come from the router (RequireInfluencer, DashboardLayout). */
+export function Component() {
+  const query = useApiQuery<Jsonify<DashboardAvailabilityView>>(queryKeys.dashboard("availability"), "/api/dashboard/availability");
+  return (
+    <>
+      <PageTitle title="Availability" template="dashboard" />
+      <QueryGate query={query} embedded>
+        {(data) => <AvailabilityView data={data} />}
+      </QueryGate>
+    </>
+  );
+}

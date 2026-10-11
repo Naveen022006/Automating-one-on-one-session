@@ -1,5 +1,80 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, type ReactNode } from "react";
+import { useNavigationType, useSearchParams } from "react-router";
+import { Wordmark } from "@/components/site/SiteChrome";
+import { OnboardingView } from "@/components/views/dashboard/OnboardingView";
+import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/31-dashboard-setup replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * The frame around the skeleton and around a failed load, while there is no data. It looks like FocusedLayout but has NO
+ * `id="main"` on purpose: FocusOnNavigate (frozen, web/src/lib/a11y.tsx) focuses `#main` after a route change and, when
+ * there is none yet, waits for one to appear. A temporary `#main` here would take the focus and then be removed when the
+ * data arrives (focus would fall to <body>); without it the focus goes to the wizard's own `main#main` once that renders.
+ */
+function LoadingFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="focused">
+      <header className="focused__header">
+        <div className="container">
+          <Wordmark />
+        </div>
+      </header>
+      <div className="focused__main">
+        <div className="focused__card">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * /onboarding?step&google. The guard is RequireSession (any signed-in influencer); there is no dashboard frame, the wizard
+ * brings its own header and main#main. The step and Google's outcome stay in the URL and are NOT part of the query key:
+ * the wizard owns its step after the first render (and rewrites ?step= itself), and a step change must not swap the
+ * wizard for a skeleton. Adding a service or hours inside the wizard calls router.refresh(), which refetches this query and
+ * updates the "Continue" button without unmounting the wizard.
+ *
+ * In Next every `router.replace('/onboarding?step=n')` fetched fresh server data, so the page also refetches here whenever
+ * ?step= changes after the first render (for example a verify-email banner goes away after confirming in another tab).
+ * QueryGate keeps showing the wizard while that refetch runs.
+ */
+export function Component() {
+  const [search] = useSearchParams();
+  const step = Number(search.get("step")) || 0;
+  const query = useApiQuery<Jsonify<DashboardOnboardingView>>(queryKeys.dashboard("onboarding"), "/api/dashboard/onboarding");
+  const queryClient = useQueryClient();
+
+  const shownStep = useRef(step);
+  useEffect(() => {
+    if (shownStep.current === step) return; // the first render (and StrictMode's second effect run) loads through the query itself
+    shownStep.current = step;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard("onboarding") });
+  }, [step, queryClient]);
+
+  // FocusOnNavigate gives up after 3 s, and the data of this page can take longer than that: when the wizard first appears after
+  // an in-app navigation (a guard sent an unfinished account here) and nothing has focus, put the focus on its landmark. Not on
+  // a first load or back/forward (POP), as in FocusOnNavigate.
+  const navigationType = useNavigationType();
+  const hasData = query.data !== undefined;
+  const waitedForData = useRef(!hasData);
+  useEffect(() => {
+    if (!hasData || !waitedForData.current) return;
+    waitedForData.current = false;
+    const main = document.getElementById("main");
+    if (navigationType === "POP" || !main || (document.activeElement && document.activeElement !== document.body)) return;
+    if (!main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+    main.focus({ preventScroll: true });
+  }, [hasData, navigationType]);
+
+  const gate = <QueryGate query={query}>{(data) => <OnboardingView data={data} step={step} outcome={search.get("google")} />}</QueryGate>;
+  return (
+    <>
+      <PageTitle title="Set up your booking page" />
+      {hasData ? gate : <LoadingFrame>{gate}</LoadingFrame>}
+    </>
+  );
+}

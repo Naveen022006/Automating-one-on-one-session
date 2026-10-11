@@ -1,6 +1,6 @@
 /**
- * Which Facebook SDK script the WhatsApp sign-up (Embedded Signup) card loads. Kept free of imports and of `process.env` so
- * the card in the browser can use it (lib/whatsapp-graph-version.ts is the same kind of module).
+ * Which Facebook SDK script the WhatsApp sign-up (Embedded Signup) card loads. Kept free of imports and of any environment
+ * access so the card in the browser can use it (lib/whatsapp-graph-version.ts is the same kind of module).
  *
  * Meta's SDK, unless the server handed over the local mock's SDK (lib/whatsapp-connect.ts embeddedSignupConfig adds `sdkUrl`
  * only while the guarded local-mock override is active, see lib/provider-endpoints.ts). The browser accepts that only
