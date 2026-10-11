@@ -1,4 +1,4 @@
-# React SPA migration: QA of the signed-in half (influencer dashboard and admin console)
+undefinedundefinedundefinedfixed (b3c9f2d) |undefinedundefinedundefinedfixed (b3c9f2d) |undefinedundefinedundefinedfixed (b3c9f2d) |undefinedundefinedundefinedfixed (b3c9f2d) |undefinedundefinedundefinedfixed (b3c9f2d) |undefinedundefinedundefinedfixed (b3c9f2d) |# React SPA migration: QA of the signed-in half (influencer dashboard and admin console)
 
 Branch `fix/qa-console`. Scope: the influencer dashboard (including the Google Calendar and WhatsApp connection screens,
 exercised against the local provider simulator) and the admin console, all run together for the first time in PRODUCTION
@@ -25,6 +25,9 @@ low = rough edge, cosmetic or defence in depth.
 | C5 | low | `/api/slots/days` and `/api/slots` (`loadBookableService`) | An influencer who hides a service (switch "Bookable" off) can no longer move that service's existing bookings: the reschedule picker shows a calendar with every day disabled and no explanation (the API answers 404 "Service not found"). | open |
 | C6 | low | refund error toast | A Razorpay refund failure is shown as the raw response body: `Razorpay did not accept the refund: Razorpay refund failed (404): {  "message":"no Route matched with those values"}`. | open |
 | C7 | info | every post-mutation refresh | When the refetch after a mutation fails (500 from a pool timeout, which happened during this run), the screen keeps the old data without any signal while the success toast already said "Saved" (design decision D21 keeps stale data on a failed refetch). Seen with "Copy to weekdays" in the onboarding wizard: the server had the five weekdays, the screen showed one. | not fixed (design) |
+| C9 | low | admin Influencers search | The search box and the whole list were replaced by a skeleton while the next search loaded (no keepPreviousData, unlike every other list page), focus was lost, and nothing announced the result. | fixed (b3c9f2d) |
+| C10 | high | every dashboard and console page at 375 px | The page scrolled sideways: `.shell` used `grid-template-columns: 1fr`, a track that grows to the min-content width of its widest child, and Payments has six nowrap tabs (Payments, Payouts, Bookings measured 832 to 866 px wide, Availability 552, Settings 440). Repro: any of those pages at 375 px, `document.documentElement.scrollWidth`. | fixed (b3c9f2d) |
+| C11 | medium | bottom navigation on a phone | The bar had five slots for nine sections: an influencer on a phone could not open Customers, Earnings, Payouts or Messages, and an administrator could not open Bookings, System health or Audit log (the only way was typing the URL). | fixed (b3c9f2d, layout of the More list: next commit) |
 | C8 | low | WhatsApp card, not connected (Settings and onboarding step 5) | The badge "Required to message by WhatsApp" next to "Not connected" reads as "required", while the page says "Recommended, not required: without it they are messaged by SMS". | open |
 
 ## Environment notes (not defects)

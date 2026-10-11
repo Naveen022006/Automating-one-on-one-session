@@ -604,8 +604,11 @@
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
   }
-  .mobile-more a {
+  /* `.mobile-nav .mobile-more a`: the bar's own `.mobile-nav a` rule (a column of icon over label) would otherwise win. */
+  .mobile-nav .mobile-more a {
     display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
     align-items: center;
     gap: var(--space-3);
     min-height: 44px;
@@ -616,10 +619,10 @@
     font-weight: 500;
     text-decoration: none;
   }
-  .mobile-more a:hover {
+  .mobile-nav .mobile-more a:hover {
     background: var(--surface-muted);
   }
-  .mobile-more a[aria-current="page"] {
+  .mobile-nav .mobile-more a[aria-current="page"] {
     background: var(--accent-soft);
     color: var(--accent);
     font-weight: 600;
