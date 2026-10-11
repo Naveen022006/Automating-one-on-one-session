@@ -188,7 +188,7 @@ export function BookingFlow({
 
   // After a step change, move focus to the new step's heading: the button that was pressed is gone, and without this the keyboard
   // focus falls back to the top of the document (and a screen reader reads nothing about the new step). Only when the step really
-  // changed since the last one seen (components/ui/focus.ts): never on the page load, also not in StrictMode's second effect pass.
+  // changed since the last one seen (web/src/components/ui/focus.ts): never on the page load, also not in StrictMode's second effect pass.
   const lastStep = useRef(step);
   useEffect(() => {
     const id = headingToFocus(lastStep.current, step, requested !== null);

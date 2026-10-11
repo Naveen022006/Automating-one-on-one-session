@@ -1,5 +1,5 @@
 // `/assets/<name>.<ext>` (the SPA's hashed build files) skips the proxy and is cached as immutable; `/assets/book` is NOT a file:
-// it is the booking page of a profile whose slug is "assets" (app/[influencer]/book), possibly a private owner preview, so it must
+// it is the booking page of a profile whose slug is "assets" (the SPA route /:slug/book), possibly a private owner preview, so it must
 // keep the proxy (CSP, nonce) and Next's normal headers and never be cached as immutable. The two rules are checked with the same
 // routines Next uses to compile them (the proxy matcher and the `headers()` sources). No database.
 import assert from "node:assert/strict";

@@ -2,6 +2,8 @@
 
 Branch: `feature/provider-simulator`, cut from `main` (5a2d9ec at the time of writing). One implementer.
 Status: the spec only. Nothing in the repository has been changed. All file:line references are to `main` at 5a2d9ec.
+Since then the UI moved: `components/**` is `web/src/components/**`, the client files of `app/` are in `web/src/pages/`, and the old Next
+pages named below are deleted (doc/12-front-end.md); the references stay as written because they describe that commit.
 
 ---
 

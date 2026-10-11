@@ -113,6 +113,6 @@ node scripts/spa-smoke.mjs http://localhost:3000        # add --no-db when the s
 ```
 
 Adding a page: add a row to `lib/spa/routes.ts`, create `web/src/pages/<area>/<Page>.tsx` (the router will not compile without it), a view
-in `components/views/`, a view function in `lib/views/` and its endpoint, and a test per endpoint (gate, ownership, key set, no secrets).
+in `web/src/components/views/`, a view function in `lib/views/` and its endpoint, and a test per endpoint (gate, ownership, key set, no secrets).
 Tests that render views use `react-dom/server`, `tests/helpers/fake-navigate.ts` for the router hooks, and read the real page files to pin the
 wiring (view import, title equal to the route table, endpoint gate); see `tests/spa-*.test.ts`.

@@ -49,8 +49,8 @@ Support small group sessions and give influencers control.
   `POST /api/dashboard/bookings/[id]` (dashboard-token gated; the booking must belong to the influencer).
 - The same operations are exposed to the customer through a **separate** signed link. A booking confirmation
   email includes a self-service link (`/manage/<token>`) signed with a DISTINCT purpose
-  (`customer-self-service`), so it can never be replayed as a dashboard token. `app/manage/[token]` verifies the
-  token (invalid/expired → friendly 403), shows the booking, and offers Reschedule (new slot via `/api/slots`)
+  (`customer-self-service`), so it can never be replayed as a dashboard token. The `/manage/<token>` page (`web/src/pages/booking/Manage.tsx`, data from
+  `GET /api/manage/<token>`) verifies the token (invalid/expired → friendly 403), shows the booking, and offers Reschedule (new slot via `/api/slots`)
   and Cancel; its API routes verify the self-service token and call the same domain functions.
 - The domain functions live in `lib/manage.ts`:
   - `resendBookingLink` — re-send the confirmation (email + queued message); no new event.

@@ -1,6 +1,6 @@
 // QA-2 / QA-11 / M4 / M7: keyboard focus after a failed submit and after a step change of the booking flow.
 // Effects do not run in a static render and there is no DOM in these tests, so the RULES are tested where they live, as pure functions
-// (components/ui/focus.ts) that BookingFlow and the register form call, plus what a server render of BookingFlow shows (the focus
+// (web/src/components/ui/focus.ts) that BookingFlow and the register form call, plus what a server render of BookingFlow shows (the focus
 // targets exist). No database, no browser.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

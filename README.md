@@ -55,8 +55,8 @@ the move from Next-rendered pages. One origin serves everything:
   Vite-built `web/dist/index.html` with this request's CSP nonce, the page's title, robots and canonical tags, and a real 404 status for
   an unknown profile. The hashed JavaScript, CSS and fonts are plain files in `public/assets`.
 - Page data comes from JSON endpoints: `app/api/...`, backed by view functions in `lib/views/*` that build each answer field by field.
-- Code: `web/src/router.tsx`, `pages/<group>/` (a page fetches and renders a view), `components/` (`views/`, `app/`, `admin/`, `ui/`),
-  `lib/`, `styles/`. No `next/*` import exists in `web/`, and a Vite plugin (`web/vite-server-guard.ts`) fails the build if browser code
+- Code, all under `web/src`: `router.tsx`, `pages/<group>/` (a page fetches and renders a view), `components/` (`views/`, `app/`, `admin/`,
+  `ui/`), `lib/`, `styles/`. No `next/*` import exists in `web/`, and a Vite plugin (`web/vite-server-guard.ts`) fails the build if browser code
   imports server code. `NEXT_PUBLIC_*`, `APP_LOCALE` and `ENABLE_DESIGN_PAGE` are build inputs of the bundle; no other environment variable
   can reach it (the build fails if a secret value does). See `doc/08-deployment.md` section 3.2 for build outputs, cache headers, the
   start-up check and Vercel.

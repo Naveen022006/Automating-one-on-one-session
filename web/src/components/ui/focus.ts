@@ -1,6 +1,6 @@
 /**
  * Keyboard-focus decisions of the booking and account forms, as pure functions (no DOM, no React) so the rules can be tested.
- * Used by pages/booking/BookingFlow.tsx and components/auth/AuthForms.tsx.
+ * Used by web/src/pages/booking/BookingFlow.tsx and web/src/components/auth/AuthForms.tsx.
  */
 
 /** The marker the field components put on an input whose value was refused (see describedBy in primitives.tsx). */

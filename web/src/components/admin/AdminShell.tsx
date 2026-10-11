@@ -30,7 +30,7 @@ const NAV = [
   { href: "/admin/settings", label: "Settings", icon: IconSettings },
 ];
 
-// The bottom bar of a phone has four slots plus "More", which holds the other sections (components/ui/MobileNav.tsx).
+// The bottom bar of a phone has four slots plus "More", which holds the other sections (web/src/components/ui/MobileNav.tsx).
 const MOBILE_PRIMARY = ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"];
 
 function isActive(pathname: string, href: string, exact?: boolean) {

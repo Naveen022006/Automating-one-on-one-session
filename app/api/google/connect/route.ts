@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
 
   // ?switch=1 is the "Switch account" button: it replaces the connection, but Calendar events that already exist stay on
   // the old account. With such upcoming bookings it is refused unless ?confirm=1 says the influencer was warned (the
-  // dialog in components/app/GoogleConnect.tsx sends it); this check is the real gate, the dialog is only the explanation.
+  // dialog in web/src/components/app/GoogleConnect.tsx sends it); this check is the real gate, the dialog is only the explanation.
   const switching = req.nextUrl.searchParams.get("switch") === "1";
   if (switching && switchNeedsConfirmation({ liveEvents: await countLiveCalendarEvents(auth.influencerId), confirmed: req.nextUrl.searchParams.get("confirm") === "1" })) {
     return backTo(req, returnTo, "confirm-switch");

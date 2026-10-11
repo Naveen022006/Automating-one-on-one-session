@@ -1,9 +1,9 @@
 // Integration test of M4, GET /api/admin/security, the endpoint behind the SPA's Security page (needs DATABASE_URL,
 // TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise).
 //
-// It is also the home of the page-based assertions that tests/admin-mfa-routes.test.ts ("the administrator list is hidden
-// from sessions that have not passed what they must") makes by rendering app/admin/(console)/security/page.tsx, ported to
-// the endpoint, so the cleanup branch can delete the page import from that file:
+// It is also the home of the assertions that tests/admin-mfa-routes.test.ts used to make by rendering the Security page ("the
+// administrator list is hidden from sessions that have not passed what they must"); they were ported to the endpoint and the page
+// test was deleted (doc/10-react-migration-deviations.md, D90):
 //   - an administrator who still has to enrol (ADMIN_REQUIRE_2FA): 200, the page's data, but `admins: null`;
 //   - a password-only session of an administrator who HAS two-factor: 403 `mfaAction: "verify"` and nothing else;
 //   - a verified session: the list of administrators.

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -62,7 +63,12 @@ export async function startSpaWatch(root: string, log: (line: string) => void): 
         log(`built in ${event.duration} ms, checked and published in ${Date.now() - started} ms: reload the page`);
         if (!settled) firstBuildOk = true;
       } else {
-        log("the build finished, but the post-build checks FAILED, so nothing was published:");
+        // Vite has already rewritten web/dist, index.html included, and Next reads that file for every page in development. Left
+        // alone it would point at hashed files that were never copied to public/assets (a blank page). So it is removed: pages
+        // answer 500 ("web/dist/index.html is missing") until a build passes, and nothing this build produced is ever served.
+        // public/assets still holds the previous build's files (they are not referenced by anything now).
+        rmSync(path.join(root, "web", "dist", "index.html"), { force: true });
+        log("the build finished, but the post-build checks FAILED. Nothing was published (public/assets is unchanged) and the page template was removed, so pages answer 500 until a build passes:");
         for (const line of post.lines) log(`  ${line}`);
       }
       if (!settled) settle();
