@@ -10,6 +10,23 @@ function env(name: string): string {
 
 export const razorpayKeyId = () => env("RAZORPAY_KEY_ID");
 
+/**
+ * The sentence in a Razorpay error body, for messages people read (a toast, a log line). Razorpay answers a rejected call
+ * with `{"error":{"code":"BAD_REQUEST_ERROR","description":"The refund amount ...","source":...}}` (and its gateway with
+ * `{"message":"..."}`); showing that JSON as it came, cut off after 300 characters, is what the dashboard's refund error and
+ * the console's "Reconcile" error did. Anything that is not such a body is returned as plain text (whitespace collapsed).
+ */
+export function razorpayErrorText(body: string, max = 300): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { description?: unknown }; message?: unknown } | null;
+    const sentence = parsed?.error?.description ?? parsed?.message;
+    if (typeof sentence === "string" && sentence.trim()) return sentence.replace(/\s+/g, " ").trim().slice(0, max);
+  } catch {
+    /* not JSON: use the text */
+  }
+  return body.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 export interface RazorpayOrder {
   id: string;
   amount: number;
@@ -37,7 +54,7 @@ export async function createOrder(input: {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Razorpay order creation failed (${res.status}): ${body.slice(0, 300)}`);
+    throw new Error(`Razorpay order creation failed (${res.status}): ${razorpayErrorText(body)}`);
   }
   return (await res.json()) as RazorpayOrder;
 }
@@ -86,7 +103,7 @@ export async function createRefund(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new RazorpayHttpError(res.status, `Razorpay refund failed (${res.status}): ${body.slice(0, 300)}`);
+    throw new RazorpayHttpError(res.status, `Razorpay refund failed (${res.status}): ${razorpayErrorText(body)}`);
   }
   return (await res.json()) as RazorpayRefund;
 }
@@ -100,7 +117,7 @@ export async function listRefunds(providerPaymentId: string, fetchFn: typeof fet
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new RazorpayHttpError(res.status, `Razorpay refund lookup failed (${res.status}): ${body.slice(0, 300)}`);
+    throw new RazorpayHttpError(res.status, `Razorpay refund lookup failed (${res.status}): ${razorpayErrorText(body)}`);
   }
   const data = (await res.json()) as { items?: RazorpayRefund[] };
   return data.items ?? [];
@@ -128,7 +145,7 @@ export async function fetchPayment(providerPaymentId: string, fetchFn: typeof fe
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new RazorpayHttpError(res.status, `Razorpay payment lookup failed (${res.status}): ${body.slice(0, 200)}`);
+    throw new RazorpayHttpError(res.status, `Razorpay payment lookup failed (${res.status}): ${razorpayErrorText(body, 200)}`);
   }
   return (await res.json()) as RazorpayPayment;
 }
@@ -148,7 +165,7 @@ export async function fetchOrderPayments(orderId: string, fetchFn: typeof fetch 
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new RazorpayHttpError(res.status, `Razorpay order payments lookup failed (${res.status}): ${body.slice(0, 200)}`);
+    throw new RazorpayHttpError(res.status, `Razorpay order payments lookup failed (${res.status}): ${razorpayErrorText(body, 200)}`);
   }
   const data = (await res.json()) as { items?: RazorpayPayment[] };
   return Array.isArray(data.items) ? data.items : [];

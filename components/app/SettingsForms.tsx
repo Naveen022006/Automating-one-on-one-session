@@ -157,6 +157,9 @@ export function NotificationPrefs({ notifyByEmail }: { notifyByEmail: boolean })
   );
 }
 
+/** Dispatched on `window` by PasswordForm after the server ended the other sessions; DeviceSessions reloads its list on it. */
+export const SESSIONS_CHANGED_EVENT = "sa:sessions-changed";
+
 export function PasswordForm() {
   const api = useApi();
   const toast = useToast();
@@ -177,6 +180,8 @@ export function PasswordForm() {
     setCurrent("");
     setNext("");
     toast("Password changed. Other devices were signed out.");
+    // The server ended every other session: the "Signed-in devices" list below must not keep showing them.
+    window.dispatchEvent(new Event(SESSIONS_CHANGED_EVENT));
   }
   return (
     <form className="stack" onSubmit={save}>
@@ -226,6 +231,10 @@ export function DeviceSessions() {
   }
   useEffect(() => {
     void load();
+    // PasswordForm announces that it ended the other sessions; read the list again.
+    const reload = () => void load();
+    window.addEventListener(SESSIONS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(SESSIONS_CHANGED_EVENT, reload);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -251,7 +260,11 @@ export function DeviceSessions() {
                   variant="ghost"
                   onClick={async () => {
                     const r = await api("/api/auth/sessions", { method: "DELETE", body: { sessionId: s.id } });
-                    if (!r.ok) return toast(r.data.error ?? "Could not sign out that device.", "error");
+                    if (!r.ok) {
+                      // A device that is already gone (signed out from elsewhere, or by a password change) is not listed any more.
+                      void load();
+                      return toast(r.status === 404 ? "That device was already signed out." : (r.data.error ?? "Could not sign out that device."), r.status === 404 ? "success" : "error");
+                    }
                     toast("Device signed out.");
                     void load();
                   }}

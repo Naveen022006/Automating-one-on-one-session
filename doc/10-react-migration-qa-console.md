@@ -18,7 +18,14 @@ low = rough edge, cosmetic or defence in depth.
 
 | Id | Sev | Where | Finding | Status |
 |---|---|---|---|---|
-| (filled in below as the work goes on) | | | | |
+| C1 | low | `GET /api/dashboard/google`, `/payout-account`, `/whatsapp`, `/bookings/:id`, `/api/auth/sessions` | These five pre-existing GET endpoints answer with NO `Cache-Control` (the new view endpoints send `private, no-store`); their 401/404 bodies and the earnings CSV (`no-store` only) are inconsistent too. Repro: `curl -i` each with a session cookie. | open |
+| C2 | medium | dashboard, any action taken inside the booking drawer or a dialog | `ToastProvider`'s `.toasts` container lives outside the modal `<dialog>`: while the Sessions drawer or a confirm dialog is open it is covered by the top layer and inert (not exposed to assistive technology either). At 375 px the drawer is full width, so "Link sent again.", "Booking moved." and every error toast are invisible and not announced. Repro: 375 px, open a booking, Resend link. | open |
+| C3 | low | `components/app/OnboardingWizard.tsx` step 7 | "The page goes live for customers as soon as you confirm your email." is wrong when another required step (Google Calendar) is still open, and contradicts the checklist printed right above it. | open |
+| C4 | low | Settings, Signed-in devices | After "Change password" (toast: "Other devices were signed out.") the device list is not reloaded: the revoked device is still listed and its "Sign out" button answers "Session not found". | open |
+| C5 | low | `/api/slots/days` and `/api/slots` (`loadBookableService`) | An influencer who hides a service (switch "Bookable" off) can no longer move that service's existing bookings: the reschedule picker shows a calendar with every day disabled and no explanation (the API answers 404 "Service not found"). | open |
+| C6 | low | refund error toast | A Razorpay refund failure is shown as the raw response body: `Razorpay did not accept the refund: Razorpay refund failed (404): {  "message":"no Route matched with those values"}`. | open |
+| C7 | info | every post-mutation refresh | When the refetch after a mutation fails (500 from a pool timeout, which happened during this run), the screen keeps the old data without any signal while the success toast already said "Saved" (design decision D21 keeps stale data on a failed refetch). Seen with "Copy to weekdays" in the onboarding wizard: the server had the five weekdays, the screen showed one. | not fixed (design) |
+| C8 | low | WhatsApp card, not connected (Settings and onboarding step 5) | The badge "Required to message by WhatsApp" next to "Not connected" reads as "required", while the page says "Recommended, not required: without it they are messaged by SMS". | open |
 
 ## Environment notes (not defects)
 

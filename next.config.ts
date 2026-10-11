@@ -15,6 +15,8 @@ const securityHeaders = [
   ...(isProd ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }] : []),
 ];
 
+const privateApiHeaders = [{ key: "Cache-Control", value: "private, no-store" }];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   // The Docker image (Dockerfile) builds a self-contained server in .next/standalone. It is opt-in, so `next build` /
@@ -35,6 +37,13 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
+      // Everything under these API prefixes belongs to one signed-in person (an influencer, an administrator, a login), whatever
+      // the handler is and whatever it answers (data, a 401, a 404, a CSV): no browser cache, shared cache or CDN may keep it.
+      // The handlers added in the SPA migration set this themselves (lib/views/http.ts); this covers the older ones that did
+      // not (google, payout-account, whatsapp, bookings/:id, auth/sessions) and the error answers.
+      { source: "/api/dashboard/:path*", headers: privateApiHeaders },
+      { source: "/api/admin/:path*", headers: privateApiHeaders },
+      { source: "/api/auth/:path*", headers: privateApiHeaders },
       // Vite names every file in /assets by content hash, so a URL never changes meaning and can be cached for good. Only
       // paths that look like a file (`<name>.<ext>`): `/assets/book` is a page (the booking page of a profile with the slug
       // "assets") and must never be cached as immutable, it can be a private owner preview.

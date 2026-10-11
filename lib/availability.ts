@@ -24,14 +24,16 @@ export interface BookableService {
 
 /**
  * An active service on a live (public) booking page, with what slot generation needs. The owner (when logged in)
- * can also load their own services before the page is live, for the preview and for rescheduling.
+ * can also load their own services before the page is live, for the preview and for rescheduling, and also a service they
+ * have hidden since: the bookings that already exist on it stay valid and can still be moved (the reschedule check does not
+ * need the service to be active), so the dashboard's time picker has to be able to read its slots. A NEW booking still needs an
+ * active service on a live page (the hold route checks that itself), so nobody else can see or use a hidden service's times.
  */
 export async function loadBookableService(serviceId: string, viewerInfluencerId?: string | null): Promise<BookableService | null> {
   const service = await prisma.service.findFirst({
     where: {
       id: serviceId,
-      active: true,
-      OR: [{ influencer: publicInfluencerWhere }, ...(viewerInfluencerId ? [{ influencerId: viewerInfluencerId }] : [])],
+      OR: [{ active: true, influencer: publicInfluencerWhere }, ...(viewerInfluencerId ? [{ influencerId: viewerInfluencerId }] : [])],
     },
     include: { influencer: { include: { rules: true } } },
   });

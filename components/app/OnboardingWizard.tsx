@@ -154,7 +154,7 @@ function Wizard(d: OnboardingData) {
                   <a className="btn" href={d.publicUrl} target="_blank" rel="noopener noreferrer">
                     <IconExternal size={16} /> Preview booking page
                   </a>
-                  {!d.emailVerified && <Alert tone="info">The page goes live for customers as soon as you confirm your email.</Alert>}
+                  {!d.emailVerified && <Alert tone="info">Customers cannot see your page until you confirm your email.</Alert>}
                 </div>
               </Card>
             </Section>
