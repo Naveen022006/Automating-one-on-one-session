@@ -27,7 +27,7 @@
 | Component | Role | State | Scales by |
 |---|---|---|---|
 | **web** | Pages, REST API, Razorpay/WhatsApp webhooks. Enqueues jobs. | None (sessions are rows in Postgres) | More instances |
-| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min, WhatsApp template status check every 30 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
+| **worker** | `create-meeting`, `send-message`, reminders (BullMQ), hold expiry every 30 s, housekeeping every ~10 min (expired sessions and tokens, activity rows older than 365 days, expired customer portal tokens), reminder repair every 10 min and 60 s after start (section 12), WhatsApp template status check every 30 min | None | Replicas are safe (jobs have deterministic ids; hold expiry and sweeps are idempotent) |
 | **Postgres** | System of record: bookings, payments, tokens (encrypted), audit log. Also the fallback store for rate limits | **Yes. Back it up.** | Vertical; keep connection counts in mind (section 4, `DATABASE_POOL_MAX`) |
 | **Redis** | BullMQ queues (delayed reminder jobs live here) and the primary rate-limit store | Job state. Treat as important, not as a cache | Single instance with persistence |
 
@@ -231,7 +231,8 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### Product settings, monitoring and misc
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `READINESS_REQUIRED` | no | `google,payout` | Which connections an influencer needs before their page takes bookings |
+| `READINESS_REQUIRED` | no | `google,payout` | Comma list of `google,gmail,whatsapp,payout,approval`: what an influencer needs before their page takes bookings. `approval` adds the platform-review gate: a page goes live only after an administrator approves it (Admin > Influencers). **Before adding `approval` to a deployment that already has live pages, check for pending approvals**: open Admin > Influencers and look at the Awaiting approval tab and at any live page that is not approved. Turning the gate on takes every unapproved page offline (a stranger gets a 404, the owner sees "Platform review" on the checklist). The migration approved every page that was onboarded then, and finishing onboarding while the gate is off approves automatically, so normally only pages created in between wait; approve those first (or run the one-time statement in `doc/13-marketplace-essentials.md`, WP-A item 3). Remove `approval` again to put everything back; a suspension is separate and always applies |
+| `CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR` | no | `300` | Most "find your bookings" e-mails (`/bookings`) the whole platform sends per hour, whoever asks. A guard against mail-bombing and sender-reputation damage; over the cap the form still answers as usual and sends nothing. `0` stops all portal e-mail, and so does a variable that is set but empty (`Number("")` is 0): leave it unset for the default. Per-address (3 per hour) and per-IP (5 per hour) limits apply as well (`lib/rate-limit/policies.ts`) |
 | `READINESS_BYPASS` | no | `false` | **Dev**: skips the go-live checks. Refused in production |
 | `ERROR_WEBHOOK_URL` | recommended | none | Every reported error is POSTed here (Slack/Discord compatible). Unset = a start-up warning |
 | `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time (also compiled into the SPA bundle) |
@@ -363,6 +364,17 @@ matter most need no running app at all: steps 3 and 4.
 6. Compare row counts of `bookings`, `payments`, `payouts` and the newest `created_at` with production.
 7. Record backup time, restore duration, anything that surprised you. Then `docker rm -f drill-web`, delete the restored
    instance, the throwaway Redis and `~/secrets/drill.env`.
+
+### Data retention of the marketplace features
+
+| Data | Kept | Deleted by |
+|---|---|---|
+| Influencer account activity (`influencer_activity_logs`, shown under Settings > Account activity and on the admin Influencer page) | 365 days (`ACTIVITY_RETENTION_DAYS` in `lib/activity-retention.ts`, a constant, not a setting) | The worker's housekeeping, `sweepExpiredAuthRows` (every ~10 min). Without a running worker the table only grows |
+| Customer portal access tokens (`customer_access_tokens`) | Valid for one hour, stored only as a SHA-256 hash; an expired row is refused at once and removed by the sweep. All of an address's tokens are deleted when an erasure leaves nothing kept | The same housekeeping (`sweepExpiredCustomerAccess`) |
+| Admin audit log, including `admin.export`, `payment.refund_*`, `booking.cancel*`, `influencer.suspended|reinstated|approved`, `customer.erased` | Not deleted (append-only) | Nothing |
+
+A customer's erasure request (`/bookings`) erases their personal fields on every booking they made with that address, but keeps payment rows
+for accounting and keeps upcoming paid sessions until they are cancelled. Backups (this section) still hold what was erased until they expire.
 
 ## 9. Secrets and encryption-key rotation
 
@@ -531,6 +543,14 @@ Send logs somewhere searchable and alert on **absence and failure**. Suggested a
 `GET /api/ready` logs are throttled (one line per minute per failing check), so a probe every few seconds will not flood
 the log.
 
+**Reminder repair.** Delayed reminder jobs exist only in Redis. Every 10 minutes, and once 60 seconds after the worker starts,
+`worker/reminder-reconcile.ts` re-creates the missing reminder jobs of `SCHEDULED` bookings starting within 25 hours (at most 2000 per run,
+resuming where a capped run stopped; it gives up after 3 Redis failures in a row and the next tick retries). It is idempotent, so replicas are
+harmless, and it is off without `REDIS_URL` (the worker logs `reminder repair is off`). After a Redis outage or data loss no manual step is
+needed; a log line `[worker] reminder repair running every 10 min` confirms it is on. A reminder that fires late is skipped instead of sent
+(`staleReminderReason`: not after the session started, and the 24-hour one not with less than 12 hours left); the skip is a log line,
+not a message row.
+
 ## 13. Incident runbook
 
 First: `curl -s https://<host>/api/ready` tells you which dependency is failing. Customer-facing impact and recovery per
@@ -659,3 +679,12 @@ Read this before deploying this version to an installation that is already runni
 4. **Runtime**: Node 22+ (`engines`, `.nvmrc`), `tsx` is now a production dependency, and `package.json` carries `overrides`
    for two Prisma tooling dependencies (section 14). No database migration is part of this change.
 5. **Health checks**: point the load balancer at `/api/ready` and the process supervisor at `/api/health` (section 3.1).
+6. **Marketplace features (migrations `20261105000000` to `20261108000000`).** All additive, so the usual order applies (migrate, then web,
+   then worker) and the previous images keep working against the new schema while the rollout happens: `google_tokens.google_sub` (a nullable
+   column), the moderation columns on `influencers` (`suspended_at`, `suspended_reason`, `suspended_by_email`, `approved_at`,
+   `approved_by_email`; the migration also sets `approved_at` / `approved_by_email = 'system:grandfathered'` on every influencer that was
+   already onboarded, so nothing goes offline when the approval gate is later turned on), and the new tables `influencer_activity_logs` and
+   `customer_access_tokens`. No new required environment variable: `CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR` is optional and `approval` in
+   `READINESS_REQUIRED` is opt-in (see the table in section 4). Deploy the worker as part of the release: the activity and token sweeps and
+   the reminder repair run there. Customers get a new public page, `/bookings`, linked from the footer; it is rate limited and answers the same
+   to every address, so it needs no extra configuration beyond a working `EMAIL_PROVIDER`.

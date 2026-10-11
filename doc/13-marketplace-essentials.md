@@ -66,15 +66,15 @@ Shared-file requests: none required. Optional polish for the integration owner: 
 
 ## WP-B Admin money operations
 
-_Not started._
+Built and merged. Its deviations from the plan, review fixes and decisions are recorded in `doc/13-deviations.md` (section WP-B).
 
 ## WP-C Influencer activity log
 
-_Not started._
+Built and merged. Its deviations from the plan, review fixes and decisions are recorded in `doc/13-deviations.md` (section WP-C).
 
 ## WP-D Customer portal
 
-_Not started._
+Built and merged. Its deviations from the plan, review fixes and decisions are recorded in `doc/13-deviations.md` (section WP-D).
 
 ## WP-E Reminder repair
 

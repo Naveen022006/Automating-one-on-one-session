@@ -23,6 +23,7 @@ npm run typecheck        # tsc for the root project AND for web/tsconfig.json
 npm test                 # tsx --test --experimental-test-module-mocks tests/*.test.ts (see "Tests" for the safe way)
 npm run worker           # BullMQ worker + hold expiry (expire-holds is an alias)
 npm run db:seed          # demo influencer "demo" with a 1:1 and a group service; npx prisma migrate dev | db:deploy
+npm run db:seed:features # demo rows for moderation, portal, reports (after db:seed); -- --remove deletes only them
 npm run admin:create -- --email you@x.com --name "You" [--reset | --reset-2fa]   # administrators (no public registration)
 npm run dev:logins       # random test logins for demo + two admins -> dev-logins.local.md (gitignored; refuses non-local APP_URL)
 npm run data:cleanup-test [-- --apply --confirm=DELETE-TEST-DATA]   # dry run by default: removes test admins/influencers (and their rows) left by tests and QA; see README
@@ -96,6 +97,41 @@ two-factor with recovery codes and lockout (`ADMIN_REQUIRE_2FA` defaults on in p
 and four-eyes approval (`PAYOUT_FOUR_EYES`: the creator cannot approve), reconciliation, system health. The MFA gate has three
 outcomes (`ok`, `enroll`, `verify`) in `mfaGateStatus`; `GET /api/admin/session` reports it to the SPA.
 
+**Moderation (`lib/admin/moderation.ts`).** Suspend, reinstate and approve an influencer; the change and its audit row are one
+transaction, each a conditional update (a repeat is a 409). "Live" has ONE definition, `buildPublicInfluencerWhere` in
+`lib/readiness.ts` (mirrored by `evaluateReadiness` / `isLiveBlocker`, kept in step by a test): onboarded, verified e-mail,
+`suspendedAt = null`, `approvedAt` set when `READINESS_REQUIRED` contains `approval` (off by default), plus the required connections.
+The public page, slots, holds and sitemap all use it, so never re-implement it. A suspension also stops `startCheckout` (it share-locks
+the influencer row), approving a booking request and `createPayout`; approving or paying an EXISTING payout needs the explicit
+`acknowledgeSuspended` override with a reason (audited). It does not cancel or refund anything, and customers can still cancel but not
+reschedule. Finishing onboarding while the gate is off sets `approved_by_email = 'system:gate-off'`.
+
+**Activity log (`lib/activity.ts`, `lib/activity-actions.ts`).** `recordActivity` is BEST EFFORT, unlike `recordAudit`: call it after the
+action succeeded and outside its transaction; it never throws, never changes the response, and stops waiting after 2 s. What may be
+stored is fixed per action in `ACTIVITY_DETAIL_KEYS` (never customer data, secrets or full account numbers); a new action needs an entry in
+`ACTIVITY_ACTIONS`, `ACTIVITY_DETAIL_KEYS` and `summariseActivity`. Low-value repeats merge into one row with a count
+(`COALESCED_ACTIONS`, 15 min, same IP); security and money entries never merge. Rows older than 365 days are deleted by
+`sweepExpiredAuthRows` (worker housekeeping). The admin audit log (`recordAudit`) stays awaited before money moves.
+
+**Admin money operations (`lib/admin/{exports,refund,cancel,reports}.ts`).** Exports build each column from an explicit `select`,
+neutralise formulas (`csvCell`), cap at 20,000 rows (a 400, never truncation), and write the `admin.export` audit row BEFORE returning
+the file. `adminRefundPayment` never takes an amount from the client: it refunds what is left of the payment (the page's
+`expectedRemainingMinor` is only a check), awaits the `payment.refund_requested` audit row before calling Razorpay, and goes through
+`refundPayment` (`blockPendingPayout`, `expectedRemainingMinor` options) so the claim and Razorpay's deterministic receipt settle races.
+`adminCancelBooking` reuses `cancelBooking` with `byPlatform: true`. Reports are read-only aggregate SQL (nine queries, one at a time) that
+must agree with `lib/payouts.ts`; Gross is dated by `payments.created_at` (the schema has no capture time).
+
+**Customer portal (`lib/customer-portal.ts`, `lib/receipts.ts`, `/bookings`).** Customers have no accounts: a random token e-mailed to
+the booking address, valid one hour, stored as SHA-256 in `customer_access_tokens`, opens that address's bookings, a JSON export and
+erasure (`eraseCustomerData`, with `isKeptBooking` as the one "kept" rule). It is NOT the signed manage/pay token of `lib/signing.ts`.
+`requestPortalLink` runs detached and answers the same 202 for every address (the per-address limit and
+`CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR` are silent). Receipts are pure (`buildReceipt`) and are not tax invoices. Expired tokens are swept
+by `sweepExpiredCustomerAccess`.
+
+**Reminder repair (`worker/reminder-reconcile.ts`, `lib/reminders.ts`).** Every 10 minutes and 60 s after worker start, re-creates missing
+reminder jobs for `SCHEDULED` bookings in the next 25 h (`reconcileReminders`, `ensureReminder` in `lib/queue.ts`); a late reminder job is
+skipped by `staleReminderReason` and writes no `Message` row, which the repair relies on.
+
 **Provider simulator (doc/11).** `scripts/mock-providers` fakes Google (OAuth, Calendar/Meet, Gmail) and Meta (Graph, templates,
 Embedded Signup). `MOCK_PROVIDERS_URL` is honoured only in development with a local `APP_URL` (`lib/provider-endpoints.ts` decides
 every host); production refuses to start with it. It proves the app's side only.
@@ -134,7 +170,7 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
 - Jobs are idempotent with deterministic ids and read current state when they run (`doc/05`).
 - Security properties to keep: Origin/CSRF check, CSP nonce, rate limits, DTO field lists, escaping of anything written into the
   shell head (`escapeHtml`), token handling (logs never contain tokens; `loggablePath` redacts), the Vite guard, `Referrer-Policy:
-  no-referrer` on token pages, `Cache-Control: private, no-store` on `/api/dashboard|admin|auth|bookings`.
+  no-referrer` on token pages, `Cache-Control: private, no-store` on `/api/dashboard|admin|auth|bookings|customer`.
 - Windows + Git Bash: `.gitattributes` keeps Dockerfiles LF; other files are CRLF in the working tree (autocrlf). `git mv` for moves.
 - Turbopack (`next dev`, `next build`) cannot use a `node_modules` junction that points outside the project ("Symlink node_modules could
   not be resolved"): a worktree needs a real copy of `node_modules` (`robocopy`), then `npx prisma generate`.
@@ -154,3 +190,5 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
 
 `README.md` (run, integrations, admin, readiness, payment recovery), `doc/08-deployment.md` (Docker, env table, rollouts, key
 rotation, backups), `doc/12-front-end.md` (the web app), `doc/07-...` (accounts, UI, integrations), `doc/11-provider-simulator.md`.
+The six marketplace features (moderation, admin money operations, activity log, customer portal, reminder repair, reports) are
+recorded, with their deviations, in `doc/13-product-build-plan.md`, `doc/13-marketplace-essentials.md` and `doc/13-deviations.md`.

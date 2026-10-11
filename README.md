@@ -146,7 +146,8 @@ npm run admin:create -- --email you@company.com --name "Your Name"
 
 It prints a generated password once (or set `ADMIN_PASSWORD`); add `--reset` to change an existing admin's password.
 The console shows platform totals, every influencer with their connection status, every payment (with filters for
-"needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity.
+"needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity. Further sections below cover
+moderation, CSV exports, admin refunds and cancellations, booking search, each influencer's account activity and the finance Reports page.
 
 ### Test logins for a development machine
 After `npm run db:seed`, `npm run dev:logins` creates a login for the demo influencer and two administrators with random
@@ -415,7 +416,7 @@ dashboard checklist, the public page and the booking/slot APIs (`lib/readiness.t
 - **Recommended, not blocking:** their own WhatsApp number and sending email from their Gmail. Without them customers get SMS
   and the platform's email address.
 
-Change what blocks with `READINESS_REQUIRED` (comma list of `google,gmail,whatsapp,payout`). Until a page is live only its
+Change what blocks with `READINESS_REQUIRED` (comma list of `google,gmail,whatsapp,payout,approval`; `approval` is the platform-review gate, off by default, see "Suspending, reinstating and approving influencers"). Until a page is live only its
 owner can open it, as a preview that lists what is missing; everyone else gets a 404 and holds are refused. The influencer
 overview shows a go-live checklist, the onboarding wizard has WhatsApp and payout steps, and the admin console shows
 Live / Not live (and what each influencer is waiting for). A dead Google grant takes a page offline until they reconnect.
@@ -470,6 +471,159 @@ Redis is configured but not answering (after one retry) and raises the same aler
 **Admin > System health** (`/admin/health`, with a count badge in the sidebar and on the overview): worker status and last heartbeat ("Worker is
 not running" in red when stale), every monitored condition with its count, queue counts, the recently recovered payments (from the audit
 log) and the failed jobs with their reasons. Failed jobs are kept (`removeOnFail: false`) until someone removes them.
+
+## Suspending, reinstating and approving influencers
+The platform is the merchant of record, so an administrator can take a booking page offline. In **Admin > Influencers > (influencer)**
+the status panel has three actions (`lib/admin/moderation.ts`, `POST /api/admin/influencers/:id/status`, MFA-gated). Each change and its
+audit row (`influencer.suspended`, `influencer.reinstated`, `influencer.approved`) are written in ONE transaction, each is a conditional
+update (a second click or a second administrator gets a 409, never a second audit row), and the influencer is e-mailed after the commit,
+best effort.
+
+- **Suspend** (needs a reason of 5 to 500 characters, shown to the influencer, never who did it). `buildPublicInfluencerWhere` (`lib/readiness.ts`) adds
+  `suspendedAt = null`, so the public page, the slot and hold endpoints and the sitemap treat the page as not live (a stranger gets a 404,
+  the owner a preview naming the suspension). Checkout refuses new payments, even for a hold made before the suspension (`startCheckout`
+  locks the influencer row first, so a suspension in flight either commits first or waits). The pay page of such a booking shows no Pay
+  button. The influencer cannot approve a booking request into a payable hold (declining stays allowed). Creating a payout is refused.
+- **What suspension deliberately leaves alone.** Nothing is cancelled or refunded automatically: existing paid bookings stay `SCHEDULED`,
+  and a payment already started at Razorpay is still captured and applied by the webhook. Customers can still **cancel** from their manage
+  link but cannot **reschedule** (the slot endpoints offer nothing for a suspended host; the page says so). The influencer can still sign
+  in. To unwind upcoming sessions, cancel them from Admin > Bookings (below).
+- **Payouts for a suspended influencer** need an explicit acknowledgement. Approving or marking an existing payout paid is refused with
+  `409 { code: "influencer-suspended" }` unless the administrator confirms ("pay anyway") and gives a reason of 5 to 300 characters; the
+  confirmation and reason are written into the `payout.approved` / `payout.paid` audit entry. Cancelling a payout stays allowed.
+- **Reinstate** puts the page back (it is live again only if everything else is still satisfied).
+- **Approval gate.** Add `approval` to `READINESS_REQUIRED` (for example `READINESS_REQUIRED=google,payout,approval`) and a page goes live
+  only after an administrator approves it; until then the influencer's checklist shows "Platform review". The gate is **off by default**.
+  While it is off, finishing onboarding approves the page automatically (`approved_by_email = 'system:gate-off'`) and an administrator can
+  approve any page in advance, so turning the gate on later does not take a live page offline; only pages that finish onboarding afterwards
+  wait. A page is listed under **Awaiting approval** only when it has finished onboarding. The approval e-mail is sent only while the gate
+  is on and never to a suspended account. `READINESS_BYPASS=true` (development) switches the gate off like the connections, but never
+  bypasses a suspension.
+- **One-time safeguard before turning the gate on in a deployment that already has live pages.** The migration approved every page that was
+  onboarded at migration time (`system:grandfathered`). Pages that finished onboarding since, with the gate off, were approved by the
+  rule above, but check there is no unapproved live page first, and approve it or run the statement in
+  `doc/13-marketplace-essentials.md` (WP-A, item 3) once. There is no bulk-approve endpoint on purpose.
+
+## Admin exports, refunds, cancellations and booking search
+- **CSV exports** (`lib/admin/exports.ts`, `GET /api/admin/exports/payments|bookings|payouts|audit?from=YYYY-MM-DD&to=YYYY-MM-DD`). The
+  Payments, Bookings, Payouts and Audit pages each have a download control. A file holds the rows **created** in the range (both days
+  included, UTC; default the 1st of the month to today; at most 366 days). The columns are chosen one by one (no phone numbers, intake
+  answers, Meet links, tokens or full bank numbers; an erased customer reads "(erased)"). **Formula protection:** a cell that starts with
+  `=`, `+`, `-`, `@`, a tab, a line break or a full-width form of those gets a leading apostrophe (`csvCell` in `lib/dashboard.ts`), and the
+  file starts with a UTF-8 byte-order mark so Excel reads non-Latin names. **Row cap:** more than 20,000 rows is refused with a 400
+  ("Choose a shorter range"), never cut short. **Audit:** the `admin.export` entry (kind, range, row count) is written BEFORE the file is
+  returned; if it cannot be written, no data leaves. MFA-gated, rate limited (`admin-export`, 30 per hour per IP).
+- **Refund a captured payment** (Admin > Payments, `POST /api/admin/payments/:id/refund`, `lib/admin/refund.ts`). In plain words: the
+  refund is always **what is left of the payment**, worked out on the server (the page's amount travels only as a check; if it differs the
+  request is refused with `409 amount-changed`). It needs a reason and a confirmation. Only captured payments can be refunded, and not one
+  that is already refunded in full or has a refund in progress. While the booking is a paid or scheduled session that has **not started**,
+  cancel the booking first (the exception is a real duplicate payment: the booking has another captured payment and this one is flagged).
+  A payment inside a **pending payout** cannot be refunded; cancel that payout first. The audit entry `payment.refund_requested` is written
+  and awaited before Razorpay is called, the outcome follows (`payment.refunded`, `payment.refund_submitted`, `payment.refund_pending`,
+  `payment.refund_failed`, `payment.refund_refused`, `payment.refund_unconfirmed`), and the refund itself goes through the same
+  claim-then-Razorpay code as every other refund (`lib/refunds.ts`), so two clicks or two administrators cannot refund twice. Nothing is
+  refunded automatically.
+- **Cancel a booking for a customer** (Admin > Bookings, `POST /api/admin/bookings/:id/cancel`, `lib/admin/cancel.ts`). Allowed for a
+  paid or scheduled booking whose session has not started, and for a failed one. It runs the same `cancelBooking` the influencer uses
+  (Calendar event, reminders, the customer's cancellation notice, and the refund decision: the payment is flagged for refund, or refunded
+  at once when `AUTO_REFUND_ON_CANCEL=true`), with a reason (5 to 500 characters), and tells the influencer it was the platform. The customer is
+  told the platform will refund; the administrator then refunds the flagged payment from Payments. Audited as `booking.cancel_requested`
+  (before) and `booking.cancelled_by_admin` (after). Both actions are rate limited (`admin-money`, 60 per hour per IP).
+- **Booking search** (Admin > Bookings, `?q=`): up to 120 characters, matches the booking id exactly (when it has the shape of one) or part
+  of the customer's e-mail or name, not case sensitive.
+
+## Influencer account activity
+A security and dispute trail of what happened on an influencer account, shown to the influencer under **Settings > Account activity** and
+to an administrator on the influencer's page (`GET /api/dashboard/activity`, `GET /api/admin/influencers/:id/activity`; 25 rows a page,
+newest first, at most 400 pages, optional `?action=` filter). Columns: When, What, Device ("Chrome on Windows"), IP.
+
+- **Recorded** (`ACTIVITY_ACTIONS` in `lib/activity-actions.ts`): account creation, sign-ins and failed sign-ins, e-mail verification,
+  password change and reset, sign-out everywhere and of one device, password confirmation, profile and page-address changes, service
+  created or changed (price and visibility), availability changes, booking cancel and reschedule, booking request approve and decline,
+  refunds, customer data erased, payout-details changes, Google and WhatsApp connect and disconnect, onboarding completed, earnings
+  exported.
+- **Never recorded:** a customer's name, e-mail or phone, a password, a token, a UPI id or a full account number (only the last four digits
+  of a bank account). Each action has an allowlist of detail keys (`ACTIVITY_DETAIL_KEYS`) enforced in code; the sentence is built on the
+  server from it, and the raw user agent is never sent to the browser. Not logged at all: forgot-password and resend-verification requests,
+  and a failed re-authentication or password change.
+- **Best effort.** `recordActivity` (`lib/activity.ts`) is called after the action succeeded, outside its transaction, and never throws or
+  changes the response: a failed or slow write (capped at 2 s) leaves one warning line in the log and the action carries on. (The admin
+  audit log keeps the stricter rule: it is awaited before money moves.)
+- **Coalescing.** Repeats of `auth.login_failed`, `auth.reauthenticated`, `profile.updated`, `availability.changed` and `earnings.exported`
+  from the same influencer, actor and IP within 15 minutes are one row whose count rises ("3 times"), so a loop of requests cannot bury the
+  entries that matter. Security and money entries (passwords, payout details, sign-ins, refunds, price changes, erasures, cancellations)
+  are never merged.
+- **Retention: 365 days** (`ACTIVITY_RETENTION_DAYS`, a constant, not a setting). The worker's housekeeping (`sweepExpiredAuthRows`, every
+  ~10 minutes) deletes older rows.
+
+## Customer portal and receipts
+Customers have no accounts, so a lost confirmation e-mail used to mean a lost manage link. **`/bookings`** ("Find your booking" in the site
+footer) fixes that:
+
+1. The customer enters the e-mail address they booked with (`POST /api/customer/access`). The page always answers the same thing ("if we
+   have bookings under this address we sent a link") with the same status (202) and the same response time, whether or not the address
+   has bookings.
+2. If it has non-erased bookings, the platform's own mail provider (never a host's Gmail) sends a link `/bookings/<token>`. The token is
+   random, valid for **one hour**, stored only as its SHA-256 (`customer_access_tokens`) and the page carries `Referrer-Policy:
+   no-referrer`. It is a different mechanism from the signed `/manage/<token>` links. Expired rows are deleted by the worker's
+   housekeeping.
+3. `/bookings/:token` lists the address's paid bookings across all hosts, newest first (at most 200), with the status in words, the manage
+   link of upcoming sessions, and a receipt. The customer can:
+   - **download everything held** under the address as one JSON file (bookings, their answers, payments, messages; no tokens, Meet links or
+     Razorpay order ids);
+   - **erase their data** through the same function as the host's Erase button (`eraseCustomerData`, `lib/privacy.ts`): name, e-mail,
+     phone, time zone and answers are erased; payment rows stay for accounting; upcoming live sessions and pending approval requests are
+     kept until they are cancelled (the dialog says how many of each). The customer is e-mailed a confirmation, and one system audit entry
+     (`customer.erased`, without the address) is written, only when something changed.
+4. **Rate limits** (`lib/rate-limit/policies.ts`): asking for a link 5 per hour per IP; at most 3 e-mails per hour per address (a
+   hashed key, and only addresses with bookings use it up); a **global cap** on all portal e-mail per hour, `CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR`
+   (default 300, `0` stops all portal mail). Over a limit the answer is the same silent 202. Export 10 per hour and erase 5 per hour per IP;
+   viewing the page 60 per 10 minutes per IP. Trade-off: someone can use up a real customer's 3 e-mails for an hour, which delays their link
+   but cannot reveal anything.
+5. **Receipts** (`lib/receipts.ts`, `ReceiptCard`) show on the portal and on the manage page of a paid booking: booking reference, the
+   customer's own name, host, service, session time, date paid, amount, any refunded amount, status (Paid / Partly refunded / Refunded) and
+   the Razorpay payment id. **It is a receipt, not a tax invoice**: it carries no tax registration number, tax breakdown or invoice
+   number (GST invoices are deferred, see `doc/13-product-build-plan.md` section 5). The "paid on" date is when checkout began. "Print
+   receipt" uses the browser's print dialog (`web/src/styles/print.css` leaves only the receipt on paper; "Save as PDF" makes a PDF).
+
+## Admin finance reports
+**Admin > Reports** (`/admin/reports`, `GET /api/admin/reports?from=&to=`, MFA-gated, `lib/admin/reports.ts`): read-only, nine aggregate
+SQL queries, each currency on its own (never added together). The range defaults to the 1st of this month up to today (UTC) and may be up
+to 366 days; an invalid range is a 400. Figures for the period:
+- **Gross**: payments captured (including those since refunded), **dated by the day checkout began** (the order was created), UTC. The
+  schema stores no capture time, so a payment captured later by the recovery job stays on the day it began.
+- **Refunds**: refunds recorded in the period that are pending or processed. **Net of refunds** = Gross - Refunds.
+- **Platform fees** and **Paid out**: the stored fee and net amount of payouts marked paid in the period (as computed when the payout was
+  created; nothing is recomputed).
+- A **By month** table (the 12 months ending with the month of the end date).
+
+Balances "right now" (all-time, whatever the range):
+- **Held for influencers**: captured money, not flagged for refund and not in a sent payout, on a paid, scheduled or completed booking (or in
+  a payout still to be sent), less refunds, before the fee. **In pending payouts**: the net, after the fee, of payouts not yet sent.
+- **Owed to customers**: payments flagged for refund, not in a sent payout, not yet refunded.
+- **To recover**: refunds made after an influencer's payout was marked paid (the same as "Refunded since" on Payouts, summed).
+- Shown only when not zero: **Not payable** (captured money on a booking that can never be paid out), **Flagged, already paid out**, and
+  **Refunds that did not complete**.
+
+## Reminder repair
+Delayed reminder jobs live only in Redis, so a Redis that lost its data (or an enqueue that failed during an outage) leaves a paid,
+upcoming booking with no reminder. `worker/reminder-reconcile.ts` runs `reconcileReminders` (`lib/reminders.ts`) **every 10 minutes and once
+60 seconds after the worker starts** (off without `REDIS_URL`; single flight; safe on several workers). It looks at `SCHEDULED` bookings
+starting within the next 25 hours, in pages of 250 and at most 2000 per run (a run that hits the cap resumes where it stopped), and
+re-creates a missing or wrong-time reminder job. It leaves alone a reminder already delivered, one whose fire time was already past when the
+booking was made or rescheduled, and a job a worker is running. After 3 Redis failures in a row it gives up and the next tick retries.
+**Stale reminders are skipped:** a late job does not send "starts in 15 minutes" once the session has started, nor "tomorrow" with less than
+12 hours left (`staleReminderReason`); the skip is logged and writes no message row. Rescheduling re-arms both reminders.
+
+## Demo data for the marketplace features
+`npm run db:seed:features` (after `npm run db:seed`) creates rows the features need to be seen working: an onboarded, **unapproved**
+influencer `/review-demo` (verified payout details, no usable login) for the approval demo, and on `/demo` five bookings for
+`customer.seedfeat@example.com` (three past, one upcoming 20 days ahead, one cancelled with a payment flagged for refund), a paid payout
+and a refund made after it (shows "To recover"). Run it again safely (nothing is duplicated); `npm run db:seed:features -- --remove`
+deletes everything it created and nothing else. Every row is recognisable (ids `seedfeat_*`, provider ids `*_SEEDFEAT_*`); it refuses to
+run unless `APP_URL` is local and `NODE_ENV` is not production, the customer's phone is not dialable and Meet links are placeholders. For the
+approval demo run the server with `READINESS_REQUIRED=payout,approval READINESS_BYPASS=false`. `npm run data:cleanup-test` (see "Cleaning
+dummy data" above) is a different tool: it removes test rows left by tests and QA and does not remove the `seedfeat_*` rows.
 
 ## Deployment
 Full guide: **`doc/08-deployment.md`** (architecture, hosting, every environment variable, release steps, webhook URLs,
