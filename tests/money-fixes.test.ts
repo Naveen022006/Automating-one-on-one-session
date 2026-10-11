@@ -161,7 +161,7 @@ test("Z1 refundPayment refuses a payment in a PENDING payout for EVERY caller (t
   razorpayCalls.length = 0;
   // The influencer's own route: ownership scoped, no extra option.
   await assert.rejects(refundsLib.refundPayment(payment.id, { influencerId: inf.id, reason: "from Sessions" }), (e: unknown) =>
-    e instanceof refundsLib.RefundNotAllowedError && e.message === "This payment is part of a payout being prepared. Try again once that payout is paid or cancelled.");
+    e instanceof refundsLib.RefundNotAllowedError && /part of a payout the platform is preparing/.test(e.message));
   // No option at all (the auto refund on cancel).
   await assert.rejects(refundsLib.refundPayment(payment.id, { reason: "auto" }), refundsLib.RefundNotAllowedError);
   assert.equal(razorpayCalls.length, 0, "nothing reached Razorpay");
@@ -425,4 +425,155 @@ test("Y2 a deadlock or serialization failure inside a payout transaction is a 40
   }
   await assert.rejects(payoutsLib.cancelPayout(payout.id, null, { afterPayoutLocked: async () => { throw new Error("boom"); } }), /boom/);
   assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: payout.id } })).status, "PENDING", "every failed attempt rolled back");
+});
+
+/* ---------- round 3: M1 / M2 / M3 / M4 / M6 ---------- */
+
+type Sent = { alerts: { kind: string; title?: string; detail: string }[]; notes: (string | null | undefined)[] };
+const stubs = (log: Sent) => {
+  const noop = async () => {};
+  return {
+    google: {} as never,
+    enqueueSendMessage: noop,
+    cancelReminders: noop,
+    enqueueReminders: noop,
+    rearmMessage: noop,
+    sendBookingEmail: (async (_i: string, _k: string, o?: { refundNote?: string | null }) => void log.notes.push(o?.refundNote)) as never,
+    alert: (async (_i: string, a: { kind: string; title?: string; detail: string }) => void log.alerts.push(a)) as never,
+  };
+};
+/** A PENDING payout made by hand around the given payments (they are not payable by the rules yet, or their booking was cancelled since). */
+async function handPayout(influencerId: string, paymentIds: string[]) {
+  const payout = await prisma.payout.create({ data: { influencerId, currency: "INR", grossMinor: 100_000 * paymentIds.length, refundsMinor: 0, feeBps: 0, feeMinor: 0, netMinor: 100_000 * paymentIds.length, paymentCount: paymentIds.length, destination: "UPI ****1234", createdByEmail: adminA } });
+  await prisma.payment.updateMany({ where: { id: { in: paymentIds } }, data: { payoutId: payout.id } });
+  return payout;
+}
+
+for (const auto of [false, true]) {
+  test(`M1 host cancel after the session, automatic refunds ${auto ? "ON" : "OFF"}: a payment in a pending payout is not sent to the host to refund; the payout is flagged and cannot be paid`, { skip }, async () => {
+    const inf = await influencer();
+    // A session in the past that was never marked COMPLETED: the host can still cancel it.
+    const { payment, booking } = await inf.payable(`m1${auto}`, { bookingStatus: "SCHEDULED", startOffsetMs: -3 * DAY });
+    const payout = await handPayout(inf.id, [payment.id]);
+    const saved = process.env.AUTO_REFUND_ON_CANCEL;
+    process.env.AUTO_REFUND_ON_CANCEL = auto ? "true" : "false";
+    const log: Sent = { alerts: [], notes: [] };
+    razorpayCalls.length = 0;
+    try {
+      const result = await manageLib.cancelBooking(booking.id, { actor: "influencer" }, stubs(log));
+      assert.equal(result.refund.issued, "no");
+      assert.equal(result.refund.eligible, true);
+    } finally {
+      if (saved === undefined) delete process.env.AUTO_REFUND_ON_CANCEL;
+      else process.env.AUTO_REFUND_ON_CANCEL = saved;
+    }
+    // The host is told what is true; nobody tells it to refund something it cannot refund.
+    assert.equal(log.alerts.length, 1);
+    assert.equal(log.alerts[0].title, "A refund is waiting for a payout");
+    assert.ok(!/Issue the refund/.test(log.alerts[0].detail) && /the platform will process the refund once that payout is settled/.test(log.alerts[0].detail));
+    assert.match(log.notes[0] ?? "", /The platform will process it to your original payment method as soon as the host's pending payout is settled/);
+    assert.ok(!/host has been notified/.test(log.notes[0] ?? ""));
+    assert.equal(razorpayCalls.length, 0);
+    // The admin-facing signal: still flagged (Payments lists it), the payout page flags the payout, approve / pay are refused.
+    const row = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    assert.deepEqual([row.needsRefund, row.refundStatus, row.payoutId], [true, null, payout.id]);
+    assert.equal((await payoutsLib.flaggedPaymentCounts([payout.id])).get(payout.id), 1);
+    await assert.rejects(payoutsLib.markPayoutPaid(payout.id, "UTR123456", adminB, NO_FOUR_EYES), refuseWith("flagged-payment"));
+    // The host's own refund attempt is refused with a sentence that does not send it round in circles.
+    await assert.rejects(refundsLib.refundPayment(payment.id, { influencerId: inf.id }), (e: unknown) =>
+      e instanceof refundsLib.RefundBlockedByPayoutError && /platform is preparing/.test(e.message) && /you do not need to retry/.test(e.message) && !/Try again/.test(e.message));
+  });
+}
+
+test("M6 a booking with two payments, one held by a pending payout and one refunded: the customer is not told 'issued' alone", { skip }, async () => {
+  const inf = await influencer();
+  const main = await inf.payable("m6main", { bookingStatus: "SCHEDULED", startOffsetMs: -3 * DAY });
+  const dup = await prisma.payment.create({
+    data: { bookingId: main.booking.id, providerOrderId: `order_zf_${run}_m6dup`, providerPaymentId: `pay_zf_${run}_m6dup`, amountMinor: 100_000, currency: "INR", status: "CAPTURED" },
+  });
+  await handPayout(inf.id, [main.payment.id]);
+  const saved = process.env.AUTO_REFUND_ON_CANCEL;
+  process.env.AUTO_REFUND_ON_CANCEL = "true";
+  const log: Sent = { alerts: [], notes: [] };
+  razorpayCalls.length = 0;
+  try {
+    const result = await manageLib.cancelBooking(main.booking.id, { actor: "influencer" }, { ...stubs(log), refundPayment: async (id: string) => refundsLib.refundPayment(id, { reason: "auto" }) } as never);
+    assert.equal(result.refund.issued, "yes", "the duplicate was refunded");
+  } finally {
+    if (saved === undefined) delete process.env.AUTO_REFUND_ON_CANCEL;
+    else process.env.AUTO_REFUND_ON_CANCEL = saved;
+  }
+  assert.equal(razorpayCalls.length, 1, "only the free payment went to Razorpay");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: dup.id } })).status, "REFUNDED");
+  assert.match(log.notes[0] ?? "", /^Part of your refund has been sent to your original payment method\. The rest is due as well\. The platform will process it/);
+  assert.ok(!/^Your refund has been issued/.test(log.notes[0] ?? ""));
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: main.payment.id } })).needsRefund, true);
+});
+
+test("M2 cancelling a payout returns the flagged payments it released (and none when nothing is flagged)", { skip }, async () => {
+  const inf = await influencer();
+  const clean = await inf.payable("m2clean", { bookingStatus: "COMPLETED" });
+  const flagged = await inf.payable("m2flag", { bookingStatus: "COMPLETED", payment: { needsRefund: true } });
+  const cancelledBooking = await inf.payable("m2cancelled", { bookingStatus: "CANCELLED" });
+  const payout = await handPayout(inf.id, [clean.payment.id, flagged.payment.id, cancelledBooking.payment.id]);
+  assert.equal((await payoutsLib.flaggedPaymentCounts([payout.id])).get(payout.id), 2);
+  const out = await payoutsLib.cancelPayout(payout.id, "test");
+  assert.deepEqual([...out.flaggedPaymentIds].sort(), [flagged.payment.id, cancelledBooking.payment.id].sort());
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: flagged.payment.id } })).payoutId, null, "released");
+  // A payout of unflagged payments reports none.
+  const other = await influencer();
+  await other.payable("m2ok");
+  const fine = await payoutsLib.createPayout(other.id, "INR", adminA);
+  assert.deepEqual((await payoutsLib.cancelPayout(fine.id, null)).flaggedPaymentIds, []);
+  assert.equal((await payoutsLib.flaggedPaymentCounts([])).size, 0);
+});
+
+test("M2 the flagged-payment refusal tells the administrator what to do", { skip }, async () => {
+  const inf = await influencer();
+  const f = await inf.payable("m2msg", { bookingStatus: "COMPLETED" });
+  const payout = await payoutsLib.createPayout(inf.id, "INR", adminA);
+  await prisma.payment.update({ where: { id: f.payment.id }, data: { needsRefund: true } });
+  await assert.rejects(payoutsLib.markPayoutPaid(payout.id, "UTR123456", adminB, NO_FOUR_EYES), (e: unknown) =>
+    e instanceof payoutsLib.PayoutError && e.code === "flagged-payment" && /Cancel this payout, refund the flagged payment from Payments \(Needs refund tab\), then create the payout again/.test(e.message));
+});
+
+test("M3 a cancel that lands between createPayout's read and its claim keeps the payment out: 409 and nothing locked", { skip }, async () => {
+  const inf = await influencer();
+  const p = await inf.payable("m3");
+  await assert.rejects(
+    payoutsLib.createPayout(inf.id, "INR", adminA, new Date(), {
+      afterRead: async () => {
+        // What a cancel does: the booking is cancelled and the payment flagged.
+        await prisma.booking.update({ where: { id: p.booking.id }, data: { status: "CANCELLED" } });
+        await prisma.payment.update({ where: { id: p.payment.id }, data: { needsRefund: true } });
+      },
+    }),
+    (e: unknown) => e instanceof payoutsLib.PayoutError && e.status === 409,
+  );
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: p.payment.id } })).payoutId, null);
+  assert.equal(await prisma.payout.count({ where: { influencerId: inf.id } }), 0, "rolled back");
+  // Each half alone is enough: only the booking status ...
+  const q = await inf.payable("m3b");
+  await assert.rejects(
+    payoutsLib.createPayout(inf.id, "INR", adminA, new Date(), { afterRead: async () => void (await prisma.booking.update({ where: { id: q.booking.id }, data: { status: "CANCELLED" } })) }),
+    (e: unknown) => e instanceof payoutsLib.PayoutError && e.status === 409,
+  );
+  // ... or only the flag.
+  await prisma.booking.update({ where: { id: q.booking.id }, data: { status: "COMPLETED" } });
+  await assert.rejects(
+    payoutsLib.createPayout(inf.id, "INR", adminA, new Date(), { afterRead: async () => void (await prisma.payment.update({ where: { id: q.payment.id }, data: { needsRefund: true } })) }),
+    (e: unknown) => e instanceof payoutsLib.PayoutError && e.status === 409,
+  );
+});
+
+test("M4 the host's booking detail never shows the platform-cancel marker (the rest of the reason stays)", { skip }, async () => {
+  const inf = await influencer();
+  const p = await inf.payable("m4", { bookingStatus: "SCHEDULED", startOffsetMs: 6 * DAY, payment: { reconciledAt: null } });
+  await manageLib.cancelBooking(p.booking.id, { actor: "influencer", byPlatform: true, reason: "Cancelled by the platform: Influencer suspended" }, stubs({ alerts: [], notes: [] }));
+  assert.ok(((await prisma.payment.findUniqueOrThrow({ where: { id: p.payment.id } })).failureReason ?? "").startsWith(refundsLib.PLATFORM_CANCEL_PREFIX), "stored with the marker");
+  const { getBookingDetail } = await import("../lib/dashboard-data");
+  const detail = await getBookingDetail(inf.id, p.booking.id);
+  const reason = detail!.payments[0].failureReason ?? "";
+  assert.ok(!reason.includes("[platform-cancel]") && !reason.startsWith(refundsLib.PLATFORM_CANCEL_PREFIX), reason);
+  assert.match(reason, /^booking .*Cancelled by the platform: Influencer suspended/);
 });

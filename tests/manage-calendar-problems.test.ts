@@ -78,7 +78,7 @@ async function load(f: Fixture, tokens: ReturnType<typeof tokenState>) {
       findUnique: async () => ({ ...f.booking, session: f.session, payments: [{ id: "pay1" }] }),
       update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(f.booking, data),
     },
-    payment: { updateMany: async () => ({ count: 1 }) },
+    payment: { updateMany: async () => ({ count: 1 }), findMany: async () => [] /* none of its payments is in a pending payout */ },
     blockedDate: { findMany: async () => [] },
     $transaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
   };
