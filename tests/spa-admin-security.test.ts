@@ -24,6 +24,13 @@ const emailY = `sec-y-${run}@example.com`; // does not (yet)
 const emailQ = `sec-q-${run}@example.com`; // has two-factor
 const emailZ = `sec-z-${run}@example.com`; // has two-factor
 
+// Settings the developer's .env may carry that change what the endpoint answers (the two-factor requirement, four-eyes
+// approval and its threshold). They are removed for the run, so a test passes alone (--test-name-pattern) and with any .env,
+// and put back afterwards.
+const ENV_KEYS = ["ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR"] as const;
+const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+let envSaved = false;
+
 const jar = new Map<string, string>();
 let getSecurity: () => Promise<Response>;
 let sessionLib: typeof import("../lib/admin/session");
@@ -52,6 +59,11 @@ const keys = (o: unknown) => Object.keys(o as object).sort();
 
 before(async () => {
   if (skip) return;
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+  envSaved = true;
   process.env.RATE_LIMIT_STORE = "memory";
   mock.module("next/headers", {
     namedExports: {
@@ -82,14 +94,31 @@ before(async () => {
 });
 
 after(async () => {
-  if (!skip && X) {
-    await prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY, emailQ, emailZ] } } });
-    await prisma.adminUser.deleteMany({ where: { id: { in: [X, Y, Q, Z] } } });
+  // Every step on its own, so one failure (a pool timeout on a slow network) cannot leave the rest behind, and the connection
+  // pool is always closed. Administrators are found by their timestamped emails, so a `before` that stopped halfway is cleaned up too.
+  try {
+    if (!skip) {
+      const emails = [emailX, emailY, emailQ, emailZ];
+      for (const [what, fn] of [
+        ["audit rows", () => prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: emails } } })],
+        ["administrators", () => prisma.adminUser.deleteMany({ where: { email: { in: emails } } })],
+      ] as const) {
+        try {
+          await fn();
+        } catch (e) {
+          console.error(`[spa-admin-security] cleanup step failed (${what}):`, e instanceof Error ? e.message : e);
+        }
+      }
+    }
+  } finally {
+    if (envSaved) {
+      for (const k of ENV_KEYS) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    }
+    await prisma.$disconnect().catch(() => undefined);
   }
-  delete process.env.ADMIN_REQUIRE_2FA;
-  delete process.env.PAYOUT_FOUR_EYES;
-  delete process.env.PAYOUT_FOUR_EYES_MIN_MINOR;
-  await prisma.$disconnect();
 });
 
 test("M4 GET /api/admin/security: 401 signed out", { skip }, async () => {
