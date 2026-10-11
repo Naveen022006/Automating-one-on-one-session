@@ -71,7 +71,6 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                   <th scope="col" className="num">Amount</th>
                   <th scope="col">Reconciled</th>
                   <th scope="col">Razorpay</th>
-                  <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -94,6 +93,20 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                             {p.refundAmountMinor ? ` · ${formatMoney(p.refundAmountMinor, p.currency)}` : ""}
                           </div>
                         )}
+                        {p.refund.allowed ? (
+                          <div style={{ marginTop: 6 }}>
+                            <RefundAction
+                              paymentId={p.id}
+                              remainingMinor={p.refund.remainingMinor}
+                              currency={p.currency}
+                              customerName={p.booking.customerName}
+                              influencerName={p.influencer.name}
+                              inPayout={p.inPayout}
+                            />
+                          </div>
+                        ) : p.needsRefund && p.status === "CAPTURED" && p.refund.reason ? (
+                          <div className="subtle">{p.refund.reason}</div>
+                        ) : null}
                       </td>
                       <td data-label="Booking">
                         <StatusPill kind="booking" status={p.booking.status} />
@@ -116,20 +129,6 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                       </td>
                       <td data-label="Razorpay" className="subtle" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
                         {p.razorpayId}
-                      </td>
-                      <td data-label="Actions">
-                        {p.refund.allowed ? (
-                          <RefundAction
-                            paymentId={p.id}
-                            remainingMinor={p.refund.remainingMinor}
-                            currency={p.currency}
-                            customerName={p.booking.customerName}
-                            influencerName={p.influencer.name}
-                            inPayout={p.inPayout}
-                          />
-                        ) : p.needsRefund && p.status === "CAPTURED" && p.refund.reason ? (
-                          <span className="subtle">{p.refund.reason}</span>
-                        ) : null}
                       </td>
                     </tr>
                   );
