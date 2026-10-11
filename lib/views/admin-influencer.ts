@@ -1,4 +1,12 @@
-import { activeAdminCount, getInfluencerDetail, listInfluencers, type InfluencerRow } from "@/lib/admin/data";
+import {
+  activeAdminCount,
+  getInfluencerDetail,
+  influencerModerationCounts,
+  listInfluencers,
+  type AccountStatus,
+  type InfluencerRow,
+  type InfluencerStatusFilter,
+} from "@/lib/admin/data";
 import { prisma } from "@/lib/db";
 import { getPayoutAccountView, type PayoutAccountView } from "@/lib/payout-account";
 import {
@@ -43,6 +51,7 @@ export interface AdminInfluencerRowView {
   live: boolean;
   /** Why it is not live (empty when live). */
   blockers: string[];
+  accountStatus: AccountStatus;
   emailVerified: boolean;
   google: InfluencerRow["google"];
   whatsapp: WhatsAppBadgeView;
@@ -57,10 +66,14 @@ export interface AdminInfluencersView {
   total: number;
   page: number;
   pageCount: number;
+  /** The tab in effect: all | live | not-live | suspended | awaiting-approval (an unknown value was read as "all"). */
+  status: InfluencerStatusFilter;
+  /** Totals for the two moderation tabs, whatever the search text. */
+  counts: { suspended: number; awaitingApproval: number };
 }
 
-export async function loadAdminInfluencersView(page: number, q?: string): Promise<AdminInfluencersView> {
-  const data = await listInfluencers(page, q);
+export async function loadAdminInfluencersView(page: number, q?: string, status: InfluencerStatusFilter = "all"): Promise<AdminInfluencersView> {
+  const [data, counts] = await Promise.all([listInfluencers(page, q, status), influencerModerationCounts()]);
   return {
     rows: data.rows.map((r) => ({
       id: r.id,
@@ -68,6 +81,7 @@ export async function loadAdminInfluencersView(page: number, q?: string): Promis
       email: r.email,
       live: r.live,
       blockers: [...r.blockers],
+      accountStatus: r.accountStatus,
       emailVerified: r.emailVerified,
       google: r.google,
       whatsapp: { text: WHATSAPP_BADGE[r.whatsapp].label, tone: WHATSAPP_BADGE[r.whatsapp].tone },
@@ -79,6 +93,8 @@ export async function loadAdminInfluencersView(page: number, q?: string): Promis
     total: data.total,
     page: data.page,
     pageCount: data.pageCount,
+    status,
+    counts,
   };
 }
 

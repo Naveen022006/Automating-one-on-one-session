@@ -490,7 +490,7 @@ test("P2: an erased booking is `not-found` in every state, and no manage link is
 // ---- P3: GET /api/manage/:token ----
 
 const MANAGE_KEYS = [
-  "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "influencerName", "meetLink",
+  "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "hostSuspended", "influencerName", "meetLink",
   "receipt", "refundPolicyText", "serviceId", "serviceTitle", "serviceType", "startTime", "status", "token",
 ];
 
@@ -571,6 +571,7 @@ test("P3: a paid booking is `ok` with exactly the fields the manage page needs",
     meetLink: "https://meet.google.com/abc-defg-hij",
     canManage: true,
     canReschedule: true,
+    hostSuspended: false,
     refundPolicyText: describeRefundPolicy("FULL"),
     cancelRefundText: "If you cancel now, you will be refunded in full to your original payment method.",
   });

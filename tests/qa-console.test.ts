@@ -218,11 +218,13 @@ before(async () => {
   mock.module("@web/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: () => createElement("div", { "data-fake": "InfluencerSearchForm" }) } });
   InfluencersView = (await import("../web/src/components/views/admin/InfluencersView")).InfluencersView as typeof InfluencersView;
 });
+const list = { status: "all", counts: { suspended: 0, awaitingApproval: 0 } };
 const row = (n: number) => ({
   id: `id${n}`,
   name: `Name ${n}`,
   email: `n${n}@example.com`,
   live: false,
+  accountStatus: "active",
   emailVerified: true,
   blockers: ["Connect Google Calendar"],
   google: "none",
@@ -233,21 +235,21 @@ const row = (n: number) => ({
   grossMinor: 0,
 });
 test("C9: the Influencers list renders a live status line (count, search text, page) and marks itself busy while the next search loads", () => {
-  const data = { rows: [row(1), row(2)], total: 2, page: 1, pageCount: 1 };
+  const data = { rows: [row(1), row(2)], total: 2, page: 1, pageCount: 1, ...list };
   const html = renderToStaticMarkup(createElement(InfluencersView, { data, q: "ann" }));
   assert.match(html, /<p role="status" class="sr-only">2 accounts for “ann”, page 1 of 1\.<\/p>/);
   assert.doesNotMatch(html, /aria-busy/);
   assert.match(renderToStaticMarkup(createElement(InfluencersView, { data, busy: true })), /class="table-wrap" aria-busy="true"/);
-  const none = renderToStaticMarkup(createElement(InfluencersView, { data: { rows: [], total: 0, page: 1, pageCount: 1 }, q: "zz" }));
+  const none = renderToStaticMarkup(createElement(InfluencersView, { data: { rows: [], total: 0, page: 1, pageCount: 1, ...list }, q: "zz" }));
   assert.match(none, /No accounts for “zz”, page 1 of 1\./);
-  assert.match(renderToStaticMarkup(createElement(InfluencersView, { data: { rows: [row(1)], total: 1, page: 1, pageCount: 1 } })), /1 account, page 1 of 1\./);
+  assert.match(renderToStaticMarkup(createElement(InfluencersView, { data: { rows: [row(1)], total: 1, page: 1, pageCount: 1, ...list } })), /1 account, page 1 of 1\./);
   const page = read("web/src/pages/admin/Influencers.tsx");
   assert.match(page, /placeholderData: keepPreviousData/);
   assert.match(page, /busy=\{query\.isPlaceholderData\}/);
 });
 
 test("N3: while the previous result is still shown, the status line says the next one is loading instead of announcing the old total", () => {
-  const data = { rows: [row(1), row(2)], total: 2, page: 1, pageCount: 1 };
+  const data = { rows: [row(1), row(2)], total: 2, page: 1, pageCount: 1, ...list };
   const busy = renderToStaticMarkup(createElement(InfluencersView, { data, q: "ann", busy: true }));
   assert.match(busy, /<p role="status" class="sr-only">Searching…<\/p>/);
   assert.doesNotMatch(busy, /<p role="status"[^>]*>[^<]*accounts/, "the old total is not announced next to the new search text");

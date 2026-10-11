@@ -25,10 +25,13 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
     async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM bookings WHERE id = ${bookingId} FOR UPDATE`;
       if (locked.length === 0) throw new BookingNotFoundError("Booking not found");
+      // Share-lock the host's row before reading it: a suspension (an UPDATE of this row) either commits first, and is seen below, or
+      // waits until this checkout has finished. Without it a suspension could land between the check and the order.
+      await tx.$queryRaw`SELECT i.id FROM influencers i JOIN services s ON s.influencer_id = i.id JOIN sessions se ON se.service_id = s.id JOIN bookings b ON b.session_id = se.id WHERE b.id = ${bookingId} FOR SHARE OF i`;
 
       const booking = await tx.booking.findUniqueOrThrow({
         where: { id: bookingId },
-        include: { session: { include: { service: true } } },
+        include: { session: { include: { service: { include: { influencer: { select: { suspendedAt: true } } } } } } },
       });
       const now = new Date();
       const payable =
@@ -36,6 +39,9 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
         booking.holdExpiresAt !== null &&
         booking.holdExpiresAt > now;
       if (!payable) throw new NotPayableError("This hold has expired or the booking is already processed");
+      // A suspended influencer takes no new payments, not even for a hold made before the suspension. Nothing is created or
+      // reused below this line. (A Razorpay order opened earlier still completes through the webhook, which is unchanged.)
+      if (booking.session.service.influencer.suspendedAt) throw new NotPayableError("This booking can no longer be paid. You have not been charged.");
 
       const service = booking.session.service;
       const customer = { name: booking.customerName, email: booking.customerEmail, contact: booking.whatsappE164 };

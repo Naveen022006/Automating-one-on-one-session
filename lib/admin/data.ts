@@ -1,7 +1,7 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { isEntityId } from "@/lib/http";
-import { CONNECTION_KEYS, evaluateReadiness, readinessInput, type ReadinessInput } from "@/lib/readiness";
+import { CONNECTION_KEYS, approvalRequired, buildPublicInfluencerWhere, evaluateReadiness, isLiveBlocker, readinessInput, type ReadinessInput } from "@/lib/readiness";
 
 export const PAGE_SIZE = 25;
 
@@ -85,6 +85,8 @@ export interface InfluencerRow {
   live: boolean;
   /** Why it is not live (empty when live). */
   blockers: string[];
+  /** Platform moderation: suspended wins; "awaiting-approval" only while the approval gate is on and a finished page is unapproved. */
+  accountStatus: AccountStatus;
   emailVerified: boolean;
   google: "connected" | "reconnect" | "none";
   payout: "none" | "pending" | "verified" | "rejected";
@@ -95,9 +97,52 @@ export interface InfluencerRow {
   createdAt: Date;
 }
 
-export async function listInfluencers(page: number, q?: string): Promise<Paged<InfluencerRow>> {
+export type AccountStatus = "active" | "suspended" | "awaiting-approval";
+
+export const INFLUENCER_STATUS_FILTERS = ["all", "live", "not-live", "suspended", "awaiting-approval"] as const;
+export type InfluencerStatusFilter = (typeof INFLUENCER_STATUS_FILTERS)[number];
+
+/** An unknown or missing filter means "all". */
+export function parseInfluencerStatusFilter(value: string | null | undefined): InfluencerStatusFilter {
+  return (INFLUENCER_STATUS_FILTERS as readonly string[]).includes(value ?? "") ? (value as InfluencerStatusFilter) : "all";
+}
+
+/** Suspension wins over everything. A page is "awaiting approval" only when the gate is on, the page is finished and nobody approved it. */
+export function accountStatusOf(row: { suspendedAt: Date | null; approvedAt: Date | null; onboardedAt: Date | null }, approvalOn: boolean): AccountStatus {
+  if (row.suspendedAt) return "suspended";
+  if (approvalOn && row.approvedAt === null && row.onboardedAt !== null) return "awaiting-approval";
+  return "active";
+}
+
+/** The Prisma form of `accountStatusOf` / "live", so the tabs and the counts agree with the rows. */
+export function influencerStatusWhere(status: InfluencerStatusFilter, env: NodeJS.ProcessEnv = process.env): Prisma.InfluencerWhereInput {
+  switch (status) {
+    case "suspended":
+      return { suspendedAt: { not: null } };
+    case "awaiting-approval":
+      // approvalRequired() is false with the gate off, and then nothing is ever awaiting approval.
+      return approvalRequired(env) ? { suspendedAt: null, approvedAt: null, onboardedAt: { not: null } } : { id: { in: [] } };
+    case "live":
+      return buildPublicInfluencerWhere(env);
+    case "not-live":
+      return { NOT: buildPublicInfluencerWhere(env) };
+    default:
+      return {};
+  }
+}
+
+/** Totals for the two moderation tabs (not narrowed by the search text). */
+export async function influencerModerationCounts(): Promise<{ suspended: number; awaitingApproval: number }> {
+  const [suspended, awaitingApproval] = await Promise.all([
+    prisma.influencer.count({ where: influencerStatusWhere("suspended") }),
+    prisma.influencer.count({ where: influencerStatusWhere("awaiting-approval") }),
+  ]);
+  return { suspended, awaitingApproval };
+}
+
+export async function listInfluencers(page: number, q?: string, status: InfluencerStatusFilter = "all"): Promise<Paged<InfluencerRow>> {
   const term = q?.trim();
-  const where: Prisma.InfluencerWhereInput = term
+  const search: Prisma.InfluencerWhereInput = term
     ? {
         OR: [
           { name: { contains: term, mode: "insensitive" } },
@@ -106,6 +151,8 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
         ],
       }
     : {};
+  const where: Prisma.InfluencerWhereInput = status === "all" ? search : { AND: [search, influencerStatusWhere(status)] };
+  const approvalOn = approvalRequired();
   const [total, rows] = await Promise.all([
     prisma.influencer.count({ where }),
     prisma.influencer.findMany({
@@ -120,6 +167,9 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
         email: true,
         onboardedAt: true,
         createdAt: true,
+        suspendedAt: true,
+        suspendedReason: true,
+        approvedAt: true,
         user: { select: { emailVerifiedAt: true } },
         googleToken: { select: { status: true, scope: true } },
         payoutAccount: { select: { status: true } },
@@ -148,10 +198,11 @@ export async function listInfluencers(page: number, q?: string): Promise<Paged<I
     rows.map((r) => {
       const input = readinessInput(r, r.user?.emailVerifiedAt != null || !r.user);
       const readiness = evaluateReadiness(input);
-      const connectionBlockers = readiness.blockers.filter((b) => b.key === "email" || (CONNECTION_KEYS as readonly string[]).includes(b.key));
+      const connectionBlockers = readiness.blockers.filter((b) => isLiveBlocker(b.key));
       const live = r.onboardedAt !== null && connectionBlockers.length === 0;
       return {
       live,
+      accountStatus: accountStatusOf(r, approvalOn),
       blockers: r.onboardedAt === null ? ["Finish onboarding", ...connectionBlockers.map((b) => b.label)] : connectionBlockers.map((b) => b.label),
       id: r.id,
       slug: r.slug,

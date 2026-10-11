@@ -75,6 +75,12 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
           The held time was released. <AppLink href={`/${data.hostSlug}/book`}>Request the session again</AppLink>.
         </Notice>
       );
+    case "unavailable":
+      return (
+        <Notice title="This booking cannot be paid right now" tone="warning">
+          {data.hostName} is not taking payments at the moment, so we cannot take your payment. You have not been charged. Please try again later or contact the host.
+        </Notice>
+      );
     case "payable":
       return (
         <FocusedLayout>

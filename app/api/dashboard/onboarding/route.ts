@@ -3,6 +3,7 @@ import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError } from "@/lib/http";
+import { approvalRequired } from "@/lib/readiness";
 import { loadOnboardingView } from "@/lib/views/dashboard-onboarding";
 import { jsonView } from "@/lib/views/http";
 
@@ -28,7 +29,15 @@ export async function POST(req: Request) {
   ]);
   if (services === 0) return jsonError("Add at least one service first.", 400);
   if (rules === 0) return jsonError("Add your weekly availability first.", 400);
-  await prisma.influencer.update({ where: { id: auth.influencerId }, data: { onboardedAt: new Date() } });
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.influencer.update({ where: { id: auth.influencerId }, data: { onboardedAt: now } });
+    // While the approval gate is off a finished page counts as approved, so turning the gate on later never takes a live page
+    // offline (only pages that finish onboarding after that wait for an administrator). Never overwrites an earlier approval.
+    if (!approvalRequired()) {
+      await tx.influencer.updateMany({ where: { id: auth.influencerId, approvedAt: null }, data: { approvedAt: now, approvedByEmail: "system:gate-off" } });
+    }
+  });
   if (!auth.onboarded) await recordActivity({ influencerId: auth.influencerId, action: "onboarding.completed", req });
   return NextResponse.json({ ok: true, redirect: "/dashboard" });
 }

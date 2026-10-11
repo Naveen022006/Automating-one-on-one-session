@@ -53,6 +53,7 @@ before(async () => {
   mock.module("@web/components/admin/AdminForms", { namedExports: { AdminLoginForm: fake("AdminLoginForm"), AdminPasswordForm: fake("AdminPasswordForm") } });
   mock.module("@web/components/admin/TwoFactorPanel", { namedExports: { TwoFactorPanel: fake("TwoFactorPanel") } });
   mock.module("@web/components/admin/PayoutPanel", { namedExports: { PayoutPanel: fake("PayoutPanel") } });
+  mock.module("@web/components/admin/InfluencerStatusPanel", { namedExports: { InfluencerStatusPanel: fake("InfluencerStatusPanel") } });
   mock.module("@web/components/admin/PayoutActions", {
     namedExports: {
       CreatePayoutButton: fake("CreatePayoutButton"),
@@ -121,6 +122,8 @@ const influencers = (rows: Jsonify<AdminInfluencersView>["rows"], over: Partial<
   total: rows.length,
   page: 1,
   pageCount: 1,
+  status: "all",
+  counts: { suspended: 0, awaitingApproval: 0 },
   ...over,
 });
 
@@ -130,6 +133,7 @@ const row: Jsonify<AdminInfluencersView>["rows"][number] = {
   email: "asha@example.com",
   live: false,
   blockers: ["Connect Google Calendar"],
+  accountStatus: "active",
   emailVerified: false,
   google: "reconnect",
   whatsapp: { text: "Templates in review", tone: "warning" },
@@ -180,7 +184,7 @@ test("every page sets the route table's title and the right landmarks (the frame
 
   const cases: [string, ComponentType, string, string, readonly unknown[], unknown][] = [
     ["Overview · Admin", pages.overview, "/admin", "/admin", keys.admin("overview"), overview()],
-    ["Influencers · Admin", pages.influencers, "/admin/influencers", "/admin/influencers", keys.admin("influencers", { page: "", q: "" }), influencers([row])],
+    ["Influencers · Admin", pages.influencers, "/admin/influencers", "/admin/influencers", keys.admin("influencers", { page: "", q: "", status: "" }), influencers([row])],
     ["Influencer · Admin", pages.influencer, "/admin/influencers/:id", "/admin/influencers/inf_1", keys.admin("influencer", { id: "inf_1" }), detail()],
     ["Security · Admin", pages.security, "/admin/security", "/admin/security", keys.admin("security"), security()],
   ];
@@ -206,7 +210,7 @@ test("login page: ?next reaches the form exactly as written (the API validates i
 });
 
 test("influencers page: page and q reach the API, q is cut to 80 characters, the view gets q for the search box and the page links", async () => {
-  const key = keys.admin("influencers", { page: "2", q: "asha" });
+  const key = keys.admin("influencers", { page: "2", q: "asha", status: "" });
   const data = influencers([row], { total: 60, page: 2, pageCount: 3 });
   const { html, client } = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers?page=2&q=asha", { key, value: { data } });
   assert.deepEqual(await requestedUrls(client), ["/api/admin/influencers?page=2&q=asha"]);
@@ -216,16 +220,29 @@ test("influencers page: page and q reach the API, q is cut to 80 characters, the
   assert.ok(html.includes('href="/admin/influencers/inf_1"'));
   assert.ok(html.includes("/admin/influencers?page=1&amp;q=asha") && html.includes("/admin/influencers?page=3&amp;q=asha"), "pagination keeps q");
 
-  const bare = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers", { key: keys.admin("influencers", { page: "", q: "" }), value: { data: influencers([row]) } });
+  const bare = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers", { key: keys.admin("influencers", { page: "", q: "", status: "" }), value: { data: influencers([row]) } });
   assert.deepEqual(await requestedUrls(bare.client), ["/api/admin/influencers"], "no page, no q: no query string");
   assert.deepEqual(propsOf(bare.html, "InfluencerSearchForm"), {});
 
+  // The status tab is part of the request (and of the cache key), next to page and q; an unknown value is left for the server to read as "all".
+  const tab = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers?status=suspended&q=asha", {
+    key: keys.admin("influencers", { page: "", q: "asha", status: "suspended" }),
+    value: { data: influencers([row], { status: "suspended", counts: { suspended: 1, awaitingApproval: 0 } }) },
+  });
+  assert.deepEqual(await requestedUrls(tab.client), ["/api/admin/influencers?q=asha&status=suspended"], "?status= reaches the API");
+  assert.deepEqual(propsOf(tab.html, "InfluencerSearchForm"), { q: "asha", status: "suspended" }, "a search keeps the open tab");
+  const statusOnly = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers?status=awaiting-approval", {
+    key: keys.admin("influencers", { page: "", q: "", status: "awaiting-approval" }),
+    value: { data: influencers([], { status: "awaiting-approval", counts: { suspended: 0, awaitingApproval: 0 } }) },
+  });
+  assert.deepEqual(await requestedUrls(statusOnly.client), ["/api/admin/influencers?status=awaiting-approval"]);
+
   const long = "x".repeat(120);
   const cut = "x".repeat(80);
-  const trimmed = await renderPage(pages.influencers, "/admin/influencers", `/admin/influencers?q=${long}`, { key: keys.admin("influencers", { page: "", q: cut }), value: { data: influencers([]) } });
+  const trimmed = await renderPage(pages.influencers, "/admin/influencers", `/admin/influencers?q=${long}`, { key: keys.admin("influencers", { page: "", q: cut, status: "" }), value: { data: influencers([]) } });
   assert.deepEqual(await requestedUrls(trimmed.client), [`/api/admin/influencers?q=${cut}`]);
   assert.ok(trimmed.html.includes("No influencers found") && trimmed.html.includes("Try a different search."));
-  const empty = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers", { key: keys.admin("influencers", { page: "", q: "" }), value: { data: influencers([]) } });
+  const empty = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers", { key: keys.admin("influencers", { page: "", q: "", status: "" }), value: { data: influencers([]) } });
   assert.ok(empty.html.includes("Accounts appear here as people register."));
 });
 
@@ -237,6 +254,7 @@ test("influencer page: the id is the route parameter, the payout panel gets the 
     influencerId: "inf_1",
     account: { method: "BANK", accountHolderName: "Asha Rao", bankName: "HDFC Bank", ifsc: "HDFC0001234", accountNumber: "XXXXXXXX9012", upiId: null, status: "VERIFIED", rejectionReason: null },
   });
+  assert.deepEqual(propsOf(html, "InfluencerStatusPanel"), { influencerId: "inf_1" }, "the moderation panel loads its own data");
   assert.deepEqual(propsOf(html, "FeeForm"), { influencerId: "inf_1", feeBps: 1000, defaultBps: 0 });
   assert.deepEqual(propsOf(html, "CreatePayoutButton"), { influencerId: "inf_1", currency: "INR", label: "Create INR payout" });
   assert.deepEqual(propsOf(html, "PayoutRowActions"), { payoutId: "po_1", status: "PENDING", approval });

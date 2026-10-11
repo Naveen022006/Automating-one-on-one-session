@@ -7,8 +7,10 @@ import { prisma } from "../lib/db";
 import { GMAIL_SEND_SCOPE } from "../lib/google";
 import { BLOCKED_TEMPLATE_STATUSES, KNOWN_TEMPLATES, TEMPLATE_STATUS_LABELS, templateState } from "../lib/message-templates";
 import {
+  approvalRequired,
   buildPublicInfluencerWhere,
   evaluateReadiness,
+  isLiveBlocker,
   loadReadiness,
   readinessInput,
   requiredConnections,
@@ -28,6 +30,8 @@ const none: ReadinessInput = {
   gmailSend: false,
   whatsapp: "none",
   payout: "none",
+  suspended: null,
+  approved: true,
 };
 const env = (e: Record<string, string>) => e as unknown as NodeJS.ProcessEnv;
 
@@ -102,6 +106,9 @@ test("the stored template statuses map to the right WhatsApp state", () => {
   const all = (status: string, over: Record<string, string> = {}) =>
     Object.fromEntries(KNOWN_TEMPLATES.map((k) => [k, { status: over[k] ?? status, language: "en" }]));
   const row = (templates: unknown, status = "ACTIVE") => ({
+    suspendedAt: null,
+    suspendedReason: null,
+    approvedAt: null,
     googleToken: null,
     payoutAccount: null,
     whatsappConnection: { status, templates },
@@ -153,10 +160,85 @@ test("the basics are always required, with or without connections", () => {
 
 test("the database filter requires exactly the connections the checklist requires", () => {
   const and = (e: Record<string, string>) => (buildPublicInfluencerWhere(env(e)).AND as object[]).length;
-  assert.equal(and({}), 4, "onboarded + email + google + payout");
-  assert.equal(and({ READINESS_REQUIRED: "google,gmail,whatsapp,payout" }), 6);
-  assert.equal(and({ READINESS_REQUIRED: "" }), 2);
-  assert.equal(and({ READINESS_BYPASS: "true" }), 2);
+  assert.equal(and({}), 5, "onboarded + email + not suspended + google + payout");
+  assert.equal(and({ READINESS_REQUIRED: "google,gmail,whatsapp,payout" }), 7);
+  assert.equal(and({ READINESS_REQUIRED: "" }), 3);
+  assert.equal(and({ READINESS_BYPASS: "true" }), 3, "the bypass skips connections, never the suspension filter");
+  assert.equal(and({ READINESS_REQUIRED: "google,payout,approval" }), 6, "the approval gate adds approvedAt");
+  assert.equal(and({ READINESS_REQUIRED: "google,payout,approval", READINESS_BYPASS: "true" }), 3, "the bypass skips the approval gate in development");
+});
+
+test("buildPublicInfluencerWhere always excludes suspended accounts and asks for approval only when the gate is on", () => {
+  const has = (e: Record<string, string>, clause: object) => (buildPublicInfluencerWhere(env(e)).AND as object[]).some((c) => JSON.stringify(c) === JSON.stringify(clause));
+  assert.equal(has({}, { suspendedAt: null }), true);
+  assert.equal(has({ READINESS_BYPASS: "true" }, { suspendedAt: null }), true, "never bypassed");
+  assert.equal(has({ READINESS_REQUIRED: "" }, { suspendedAt: null }), true);
+  assert.equal(has({}, { approvedAt: { not: null } }), false, "gate off: approval is not asked for");
+  assert.equal(has({ READINESS_REQUIRED: "payout,approval" }, { approvedAt: { not: null } }), true);
+  assert.equal(has({ READINESS_REQUIRED: "payout,approval", NODE_ENV: "production", READINESS_BYPASS: "true" }, { approvedAt: { not: null } }), true, "the bypass is ignored in production");
+});
+
+test("approvalRequired: off by default, on with the approval keyword, bypassed in development only", () => {
+  assert.equal(approvalRequired(env({})), false);
+  assert.equal(approvalRequired(env({ READINESS_REQUIRED: "google,payout" })), false);
+  assert.equal(approvalRequired(env({ READINESS_REQUIRED: "payout, Approval" })), true);
+  assert.equal(approvalRequired(env({ READINESS_REQUIRED: "approval" })), true, "approval alone: no connections required, still gated");
+  assert.equal(approvalRequired(env({ READINESS_REQUIRED: "approval", READINESS_BYPASS: "true" })), false);
+  assert.equal(approvalRequired(env({ READINESS_REQUIRED: "approval", READINESS_BYPASS: "true", NODE_ENV: "production" })), true);
+  assert.deepEqual(requiredConnections(env({ READINESS_REQUIRED: "payout,approval" })), ["payout"], "approval is not a connection");
+});
+
+test("a suspended account is a live blocker that no setting bypasses; a normal account sees exactly the usual items", () => {
+  const normal = evaluateReadiness(none, [], { approvalRequired: false });
+  assert.equal(normal.items.some((i) => i.key === "account"), false, "no account item when it does not apply");
+  assert.deepEqual(normal.items.map((i) => i.key), ["email", "service", "availability", "google", "gmail", "whatsapp", "payout"]);
+
+  const suspended = evaluateReadiness({ ...none, suspended: { reason: "Chargeback investigation" } }, [], { approvalRequired: false });
+  assert.equal(suspended.ready, false);
+  assert.deepEqual(suspended.blockers.map((b) => b.key), ["account"]);
+  const item = suspended.items.find((i) => i.key === "account")!;
+  assert.equal(item.label, "Account in good standing");
+  assert.equal(item.state, "attention");
+  assert.equal(item.required, true);
+  assert.equal(item.href, "/contact");
+  assert.match(item.detail, /^Suspended by the platform: Chargeback investigation\. Contact \S+@\S+ to resolve it\.$/);
+  // A reason that already ends with a full stop (or spaces) does not give "..".
+  for (const reason of ["Chargeback.", "Chargeback. ", "Chargeback..."]) {
+    const detail = evaluateReadiness({ ...none, suspended: { reason } }, [], { approvalRequired: false }).items.find((i) => i.key === "account")!.detail;
+    assert.match(detail, /^Suspended by the platform: Chargeback\. Contact /, reason);
+    assert.ok(!detail.includes(".."), reason);
+  }
+  // Suspension wins over a missing approval: one item, the more serious one.
+  const both = evaluateReadiness({ ...none, approved: false, suspended: { reason: "Abuse reports" } }, [], { approvalRequired: true });
+  assert.equal(both.items.filter((i) => i.key === "account").length, 1);
+  assert.equal(both.items.find((i) => i.key === "account")!.state, "attention");
+});
+
+test("the approval gate adds a Platform review blocker only when it is on and the page is not approved", () => {
+  const gateOn = evaluateReadiness({ ...none, approved: false }, [], { approvalRequired: true });
+  assert.equal(gateOn.ready, false);
+  const item = gateOn.items.find((i) => i.key === "account")!;
+  assert.deepEqual({ label: item.label, state: item.state, required: item.required, href: item.href }, { label: "Platform review", state: "todo", required: true, href: "/dashboard" });
+  assert.equal(item.detail, "We review new booking pages before they go live. You will get an e-mail.");
+  assert.equal(evaluateReadiness({ ...none, approved: true }, [], { approvalRequired: true }).ready, true, "approved: live");
+  const gateOff = evaluateReadiness({ ...none, approved: false }, [], { approvalRequired: false });
+  assert.equal(gateOff.ready, true, "gate off: an unapproved page is not blocked");
+  assert.equal(gateOff.items.some((i) => i.key === "account"), false);
+});
+
+test("isLiveBlocker: the email, the account and every connection keep a page offline; services and hours do not", () => {
+  for (const key of ["email", "account", "google", "gmail", "whatsapp", "payout"] as const) assert.equal(isLiveBlocker(key), true, key);
+  for (const key of ["service", "availability"] as const) assert.equal(isLiveBlocker(key), false, key);
+});
+
+test("readinessInput maps the suspension and the approval", () => {
+  const base = { googleToken: null, payoutAccount: null, whatsappConnection: null, _count: { rules: 1, services: 1 } };
+  const at = new Date();
+  const off = readinessInput({ ...base, suspendedAt: null, suspendedReason: null, approvedAt: null }, true);
+  assert.deepEqual([off.suspended, off.approved], [null, false]);
+  const on = readinessInput({ ...base, suspendedAt: at, suspendedReason: "Abuse reports", approvedAt: at }, true);
+  assert.deepEqual([on.suspended, on.approved], [{ reason: "Abuse reports" }, true]);
+  assert.deepEqual(readinessInput({ ...base, suspendedAt: at, suspendedReason: null, approvedAt: null }, true).suspended, { reason: "No reason was recorded" });
 });
 
 /* ---------- Against the database: the filter and the checklist agree ---------- */
@@ -221,10 +303,47 @@ test("a page goes live in the database exactly when the checklist says so", { sk
   assert.equal(await isLive({}), true);
 });
 
+test("a suspension and the approval gate flip a page offline and online in the database exactly as the checklist says", { skip }, async () => {
+  // Needs a live page first: google + payout from the test above are still in place.
+  assert.equal(await isLive({}), true);
+  const accountBlocker = async () => (await loadReadiness(id, true)).blockers.find((b) => b.key === "account");
+
+  await prisma.influencer.update({ where: { id }, data: { suspendedAt: new Date(), suspendedReason: "Chargeback investigation", suspendedByEmail: "admin@example.com" } });
+  assert.equal(await isLive({}), false, "suspended: offline");
+  assert.equal(await isLive({ READINESS_BYPASS: "true" }), false, "the development bypass never lifts a suspension");
+  assert.match((await accountBlocker())?.detail ?? "", /Chargeback investigation/);
+
+  await prisma.influencer.update({ where: { id }, data: { suspendedAt: null, suspendedReason: null, suspendedByEmail: null } });
+  assert.equal(await isLive({}), true, "reinstated: live again");
+  assert.equal(await accountBlocker(), undefined);
+
+  // The approval gate: not approved -> offline; approved -> live; gate off -> approval is irrelevant.
+  const gate = { READINESS_REQUIRED: "google,payout,approval" };
+  assert.equal(await isLive(gate), false, "the gate is on and nobody approved this page");
+  assert.equal(await isLive({}), true, "gate off: unaffected");
+  const savedRequired = process.env.READINESS_REQUIRED;
+  process.env.READINESS_REQUIRED = gate.READINESS_REQUIRED;
+  try {
+    assert.equal((await accountBlocker())?.label, "Platform review");
+    await prisma.influencer.update({ where: { id }, data: { approvedAt: new Date(), approvedByEmail: "admin@example.com" } });
+    assert.equal(await isLive(gate), true);
+    assert.equal(await accountBlocker(), undefined);
+    assert.equal(await isLive({ ...gate, READINESS_BYPASS: "true" }), true);
+  } finally {
+    if (savedRequired === undefined) delete process.env.READINESS_REQUIRED;
+    else process.env.READINESS_REQUIRED = savedRequired;
+  }
+  const row = (await listInfluencers(1, `rd-${run}`)).rows.find((r) => r.id === id);
+  assert.equal(row?.accountStatus, "active");
+});
+
 test("readinessInput maps the stored rows", { skip }, async () => {
   const row = await prisma.influencer.findUniqueOrThrow({
     where: { id },
     select: {
+      suspendedAt: true,
+      suspendedReason: true,
+      approvedAt: true,
       googleToken: { select: { status: true, scope: true } },
       payoutAccount: { select: { status: true } },
       whatsappConnection: { select: { status: true, templates: true } },
@@ -248,6 +367,9 @@ test("the admin console shows the same WhatsApp state as the influencer's checkl
       await prisma.influencer.findUniqueOrThrow({
         where: { id },
         select: {
+          suspendedAt: true,
+          suspendedReason: true,
+          approvedAt: true,
           googleToken: { select: { status: true, scope: true } },
           payoutAccount: { select: { status: true } },
           whatsappConnection: { select: { status: true, templates: true } },

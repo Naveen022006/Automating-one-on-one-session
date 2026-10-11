@@ -266,14 +266,17 @@ test("M2 GET /api/admin/influencers: paged, searchable, hand-picked rows", { ski
   const found = await ask(() => endpoint.influencers(`?q=${encodeURIComponent(influencerName)}`), adminCookie(token));
   assert.equal(found.status, 200);
   assert.equal(found.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual(keys(found.body), ["page", "pageCount", "rows", "total"]);
+  assert.deepEqual(keys(found.body), ["counts", "page", "pageCount", "rows", "status", "total"]);
+  assert.equal(found.body.status, "all");
+  assert.deepEqual(keys(found.body.counts), ["awaitingApproval", "suspended"]);
   assert.equal(found.body.total, 1);
   assert.equal(found.body.page, 1);
   const rows = found.body.rows as Record<string, unknown>[];
   assert.equal(rows.length, 1);
   const row = rows[0];
-  assert.deepEqual(keys(row), ["blockers", "bookings", "email", "emailVerified", "google", "grossMinor", "id", "live", "name", "payout", "services", "whatsapp"]);
+  assert.deepEqual(keys(row), ["accountStatus", "blockers", "bookings", "email", "emailVerified", "google", "grossMinor", "id", "live", "name", "payout", "services", "whatsapp"]);
   assert.equal(row.id, influencerId);
+  assert.equal(row.accountStatus, "active");
   assert.equal(row.name, influencerName);
   assert.equal(row.services, 2);
   assert.equal(row.bookings, 2);
@@ -293,7 +296,11 @@ test("M2 GET /api/admin/influencers: paged, searchable, hand-picked rows", { ski
   assert.equal((await ask(() => endpoint.influencers(`?q=${encodeURIComponent(`CORE-${run}`)}`), adminCookie(token))).body.total, 1);
   const none = await ask(() => endpoint.influencers(`?q=zzz-nobody-${run}`), adminCookie(token));
   assert.equal(none.status, 200);
-  assert.deepEqual(none.body, { rows: [], total: 0, page: 1, pageCount: 1 });
+  // The whole body: `counts` is the real, global number behind the two moderation tabs, so only its shape is pinned.
+  const { counts: noneCounts, ...noneRest } = none.body;
+  assert.deepEqual(noneRest, { rows: [], total: 0, page: 1, pageCount: 1, status: "all" });
+  assert.deepEqual(keys(noneCounts), ["awaitingApproval", "suspended"]);
+  for (const n of Object.values(noneCounts as Record<string, unknown>)) assert.ok(Number.isInteger(n) && (n as number) >= 0);
   // A bad `page` falls back to 1, an over-long `q` is cut to 80 characters instead of failing.
   assert.equal((await ask(() => endpoint.influencers(`?page=-3&q=${encodeURIComponent(influencerName)}`), adminCookie(token))).body.page, 1);
   assert.equal((await ask(() => endpoint.influencers(`?page=abc`), adminCookie(token))).body.page, 1);

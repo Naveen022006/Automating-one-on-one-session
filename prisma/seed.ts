@@ -14,7 +14,7 @@ async function main() {
   const tz = "Asia/Kolkata";
   const influencer = await prisma.influencer.upsert({
     where: { slug: "demo" },
-    update: { onboardedAt: new Date() },
+    update: { onboardedAt: new Date(), approvedAt: new Date(), approvedByEmail: "system:seed" },
     create: {
       slug: "demo",
       name: "Demo Creator",
@@ -22,6 +22,9 @@ async function main() {
       timezone: tz,
       bio: "Career coach for early-stage engineers. I help you plan your next move, prepare for interviews and negotiate offers.",
       onboardedAt: new Date(),
+      // The demo page is live whatever READINESS_REQUIRED says (the approval gate included).
+      approvedAt: new Date(),
+      approvedByEmail: "system:seed",
     },
   });
   await prisma.availabilityRule.deleteMany({ where: { influencerId: influencer.id } });

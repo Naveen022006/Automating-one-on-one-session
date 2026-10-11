@@ -2,7 +2,7 @@ import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { getOverview, type AttentionItem, type SessionRow } from "@/lib/dashboard-data";
 import type { CurrencyEarnings } from "@/lib/dashboard";
-import { CONNECTION_KEYS, loadReadiness, type Readiness } from "@/lib/readiness";
+import { isLiveBlocker, loadReadiness, type Readiness } from "@/lib/readiness";
 
 /**
  * The dashboard Overview's data. Served by
@@ -30,7 +30,7 @@ export interface DashboardOverviewView {
 
 export async function loadOverviewView(auth: AuthContext): Promise<DashboardOverviewView> {
   const [overview, readiness] = await Promise.all([getOverview(auth.influencerId, auth.emailVerified), loadReadiness(auth.influencerId, auth.emailVerified)]);
-  const live = readiness.blockers.every((b) => b.key !== "email" && !(CONNECTION_KEYS as readonly string[]).includes(b.key));
+  const live = readiness.blockers.every((b) => !isLiveBlocker(b.key));
   return {
     firstName: auth.influencerName.split(" ")[0],
     readiness,

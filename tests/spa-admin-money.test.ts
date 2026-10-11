@@ -502,7 +502,7 @@ test("M6 GET /api/admin/payouts: the tabs and their counts, the destination mask
   const paidTab = await onTab("?status=PAID", 1);
   const paid = paidTab.mine[0];
   assert.deepEqual(keys(paid), PAYOUT_ROW_KEYS);
-  assert.deepEqual(keys(paid.influencer), ["id", "name"]);
+  assert.deepEqual(keys(paid.influencer), ["id", "name", "suspended"]);
   assert.deepEqual(keys(paid.approval), ["approved", "approvedByEmail", "canApprove", "canMarkPaid", "createdByViewer", "required"]);
   assert.equal(paid.destination, "UPI ****1234", "the destination is the masked label stored with the payout");
   assert.equal(paid.reference, `UTR${run}`);
@@ -886,7 +886,8 @@ function loadViews(): Promise<Views> {
       namedExports: {
         ReconcileButton: (p: { ids: string[] }) => (p.ids.length === 0 ? null : createElement("button", { "data-reconcile": p.ids.join(",") })), // like the real one: nothing to reconcile, no button
         UnreconcileButton: (p: { paymentId: string }) => createElement("button", { "data-unreconcile": p.paymentId }),
-        PayoutRowActions: (p: { payoutId: string; status: string; approval: unknown }) => createElement("div", { "data-actions": JSON.stringify({ id: p.payoutId, status: p.status, approval: p.approval }) }),
+        PayoutRowActions: (p: { payoutId: string; status: string; approval: unknown; influencerSuspended?: boolean }) =>
+          createElement("div", { "data-actions": JSON.stringify({ id: p.payoutId, status: p.status, approval: p.approval, influencerSuspended: p.influencerSuspended }) }),
         PayoutStatusBadges: (p: { status: string; approval: unknown }) => createElement("span", { "data-badges": JSON.stringify({ status: p.status, approval: p.approval }) }),
       },
     });
@@ -967,7 +968,7 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
   const { PayoutsView } = await loadViews();
   const approval = { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false };
   const row = (over: Record<string, unknown> = {}) => ({
-    id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer" }, destination: "UPI ****1234", grossAfterRefundsMinor: 90000,
+    id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer", suspended: false }, destination: "UPI ****1234", grossAfterRefundsMinor: 90000,
     feeMinor: 9000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, approval, ...over,
   });
   const data = (over: Record<string, unknown> = {}) =>
@@ -975,7 +976,7 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
 
   const html = renderToStaticMarkup(createElement(PayoutsView, { data: data() }));
   assert.equal(statusLine(html), "To send: 2 payouts, page 1 of 1.");
-  assert.deepEqual(printed(html, "actions")[0], { id: "po1", status: "PENDING", approval }, "the buttons get what the server decided");
+  assert.deepEqual(printed(html, "actions")[0], { id: "po1", status: "PENDING", approval, influencerSuspended: false }, "the buttons get what the server decided");
   assert.deepEqual(printed(html, "badges")[0], { status: "PENDING", approval });
   assert.ok(html.includes("UTR UTR123456") && html.includes("Refunded since: ") && html.includes("300.00") && html.includes("to recover"));
   assert.ok(html.includes("(10%)") && html.includes("UPI ****1234"));
