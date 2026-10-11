@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { z } from "zod";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
@@ -15,7 +16,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const { id } = await ctx.params;
-  const parsed = bodySchema.safeParse((await req.json().catch(() => null)) ?? {});
+  const parsed = bodySchema.safeParse((await readJson(req)) ?? {});
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }

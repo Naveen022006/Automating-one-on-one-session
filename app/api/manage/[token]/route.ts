@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { z } from "zod";
 import {
   BookingNotManageableError,
@@ -36,7 +37,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     return NextResponse.json({ error: "This management link is invalid or has expired" }, { status: 403 });
   }
 
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+  const parsed = bodySchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }

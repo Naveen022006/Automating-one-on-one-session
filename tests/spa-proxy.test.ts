@@ -31,6 +31,12 @@ test("QA-9: a path with a broken percent escape or a NUL byte is a 400 for pages
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.equal(res.headers.get("x-middleware-next"), null, `${path} must not be passed on`);
   }
+  // M3: a NUL byte in the QUERY STRING is the same Postgres error (`?serviceId=%00`, `?q=%00`).
+  for (const path of ["/api/slots?serviceId=%00&date=2026-10-12", "/api/slots/days?serviceId=a%00b&from=2026-10-01&to=2026-10-31", "/api/dashboard/customers?q=%00", "/demo/book?service=%00"]) {
+    assert.equal((await proxy(req(path))).status, 400, path);
+  }
+  assert.notEqual((await proxy(req("/api/slots?serviceId=abc&date=2026-10-12"))).status, 400);
+  assert.notEqual((await proxy(req("/api/dashboard/customers?q=%2500"))).status, 400, "%2500 is the text %00, not a NUL byte");
   // Valid escapes, also of unusual characters, are untouched.
   for (const path of ["/d%C3%A9mo", "/api/pay/a%2Fb", "/api/public/profiles/demo%20", "/a%20b"]) assert.notEqual((await proxy(req(path))).status, 400, path);
 });

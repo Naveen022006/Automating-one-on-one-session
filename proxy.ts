@@ -204,8 +204,11 @@ function isMalformedPath(pathname: string): boolean {
   }
 }
 
+/** `%00` anywhere in a query string (`?serviceId=%00`, `?q=%00`) decodes to a NUL byte: the same Postgres error, the same 400. */
+const NUL_IN_QUERY = /%00/i;
+
 export async function proxy(req: NextRequest): Promise<NextResponse> {
-  if (isMalformedPath(req.nextUrl.pathname)) return new NextResponse("Bad request", { status: 400, headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
+  if (isMalformedPath(req.nextUrl.pathname) || NUL_IN_QUERY.test(req.nextUrl.search)) return new NextResponse("Bad request", { status: 400, headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
   if (req.nextUrl.pathname.startsWith("/api/")) return handleApi(req);
   return handlePage(req);
 }

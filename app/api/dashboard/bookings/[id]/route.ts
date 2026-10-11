@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { z } from "zod";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { getBookingDetail } from "@/lib/dashboard-data";
@@ -39,7 +40,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof NextResponse) return auth;
   const influencerId = auth.influencerId;
   const { id } = await params;
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+  const parsed = bodySchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }

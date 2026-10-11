@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
+import { ID_PATTERN, readJson } from "@/lib/http";
 import { z } from "zod";
 import { BookingNotFoundError, NotPayableError, startCheckout } from "@/lib/checkout";
 
-const bodySchema = z.object({ bookingId: z.string().min(1) });
+const bodySchema = z.object({ bookingId: z.string().regex(ID_PATTERN) });
 
 export async function POST(req: Request) {
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+  const parsed = bodySchema.safeParse(await readJson(req));
   if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
   try {

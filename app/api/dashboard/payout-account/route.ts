@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { sendAccountEmail } from "@/lib/email";
 import { payoutDetailsSavedMessage } from "@/lib/email/templates";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
@@ -20,7 +21,7 @@ export async function PUT(req: Request) {
   const auth = await requireRecentAuth();
   if (auth instanceof NextResponse) return auth;
 
-  const raw = await req.json().catch(() => null);
+  const raw = await readJson(req);
   const parsed = payoutInputSchema.safeParse(raw ?? {});
   if (!parsed.success) {
     return NextResponse.json(
