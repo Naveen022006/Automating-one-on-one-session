@@ -1,8 +1,8 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { NotFoundView } from "@/components/views/system/NotFoundView";
-import { Alert, Button, Skeleton } from "@/components/ui/primitives";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { NotFoundView } from "@web/components/views/system/NotFoundView";
+import { Alert, Button, Skeleton } from "@web/components/ui/primitives";
 import type { ApiError } from "./api";
 import { PLACEHOLDER_ATTR } from "./focus-main";
 import { REFRESH_FAILED_TEXT, REFRESH_RETRYING_TEXT, refreshNotice, type RefreshNotice } from "./refresh-notice";

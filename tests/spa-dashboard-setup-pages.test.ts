@@ -67,7 +67,7 @@ before(async () => {
   api = await import("../web/src/lib/api");
   keys = (await import("../web/src/lib/query")).queryKeys;
   for (const page of Object.keys(VIEW) as PageName[]) {
-    mock.module(`@/components/views/dashboard/${VIEW[page]}`, { namedExports: { [VIEW[page]]: fakeView(VIEW[page], page === "onboarding" ? "main" : "div") } });
+    mock.module(`@web/components/views/dashboard/${VIEW[page]}`, { namedExports: { [VIEW[page]]: fakeView(VIEW[page], page === "onboarding" ? "main" : "div") } });
   }
   const load = async (file: string) => (await import(`../web/src/pages/dashboard/${file}`)).Component as ComponentType;
   pages = {

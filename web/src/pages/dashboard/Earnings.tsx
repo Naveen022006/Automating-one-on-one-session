@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { EarningsView } from "@/components/views/dashboard/EarningsView";
+import { EarningsView } from "@web/components/views/dashboard/EarningsView";
 import type { DashboardEarningsView } from "@/lib/views/dashboard-earnings";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

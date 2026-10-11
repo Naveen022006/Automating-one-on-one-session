@@ -2,9 +2,9 @@
  * Server-safe design-system primitives (no hooks). Client-only components live next to this file.
  * Styling comes from app/styles/components.css; every value traces back to app/styles/tokens.css.
  */
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import type { ReactNode } from "react";
-import { IconAlert, IconAlertCircle, IconCheckCircle, IconInfo } from "@/components/icons";
+import { IconAlert, IconAlertCircle, IconCheckCircle, IconInfo } from "@web/components/icons";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -79,9 +79,9 @@ export function ButtonLink({
     );
   }
   return (
-    <Link href={href} className={cls} {...rest}>
+    <AppLink href={href} className={cls} {...rest}>
       {children}
-    </Link>
+    </AppLink>
   );
 }
 
@@ -350,7 +350,7 @@ export function Breadcrumb({ items }: { items: { label: string; href?: string }[
       <ol className="breadcrumb">
         {items.map((it, i) => (
           <li key={`${it.label}-${i}`}>
-            {it.href && i < items.length - 1 ? <Link href={it.href}>{it.label}</Link> : <span aria-current="page">{it.label}</span>}
+            {it.href && i < items.length - 1 ? <AppLink href={it.href}>{it.label}</AppLink> : <span aria-current="page">{it.label}</span>}
           </li>
         ))}
       </ol>
@@ -398,10 +398,10 @@ export function LinkTabs({ items }: { items: { label: string; href: string; curr
   return (
     <nav className="tabs" aria-label="Filter">
       {items.map((t) => (
-        <Link key={t.href} href={t.href} className="tab" aria-current={t.current ? "page" : undefined}>
+        <AppLink key={t.href} href={t.href} className="tab" aria-current={t.current ? "page" : undefined}>
           {t.label}
           {t.count !== undefined && <span className="tab__count">{t.count}</span>}
-        </Link>
+        </AppLink>
       ))}
     </nav>
   );

@@ -1,8 +1,6 @@
-"use client";
-
 import { useEffect } from "react";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { Button, ButtonLink } from "@/components/ui/primitives";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { Button, ButtonLink } from "@web/components/ui/primitives";
 
 /**
  * The "something went wrong" screen. Rendered by the old Next `app/error.tsx` and by the SPA's route `errorElement`

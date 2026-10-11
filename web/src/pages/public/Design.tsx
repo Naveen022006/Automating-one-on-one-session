@@ -1,4 +1,4 @@
-import { DesignShowcase } from "@/app/design/DesignShowcase";
+import { DesignShowcase } from "@web/pages/public/DesignShowcase";
 import { PageTitle } from "../../lib/head";
 import { NotFound } from "../NotFound";
 

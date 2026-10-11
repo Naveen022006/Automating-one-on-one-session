@@ -1,6 +1,6 @@
-import { IconDownload, IconSparkline } from "@/components/icons";
-import { PageHead } from "@/components/app/AppShell";
-import { Alert, Button, Card, EmptyState, Field, Input, Stat } from "@/components/ui/primitives";
+import { IconDownload, IconSparkline } from "@web/components/icons";
+import { PageHead } from "@web/components/app/AppShell";
+import { Alert, Button, Card, EmptyState, Field, Input, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardEarningsView } from "@/lib/views/dashboard-earnings";

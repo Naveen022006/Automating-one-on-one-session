@@ -1,6 +1,6 @@
-import Link from "next/link";
-import { PageHead } from "@/components/app/AppShell";
-import { Alert, Card, Stat } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { PageHead } from "@web/components/app/AppShell";
+import { Alert, Card, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminOverviewView } from "@/lib/views/admin-overview";
@@ -25,22 +25,22 @@ export function OverviewView({ data }: { data: Jsonify<AdminOverviewView> }) {
         tone={unhealthy.some((c) => c.status === "critical") ? "danger" : "warning"}
         title={`${unhealthy.length} system health ${unhealthy.length === 1 ? "issue" : "issues"}`}
       >
-        {unhealthy.map((c) => c.label).join(", ")}. <Link href="/admin/health">Open System health</Link>.
+        {unhealthy.map((c) => c.label).join(", ")}. <AppLink href="/admin/health">Open System health</AppLink>.
       </Alert>
     ),
     o.attention.mismatched > 0 && (
       <Alert key="mm" tone="danger" title={`${o.attention.mismatched} captured payment(s) with no paid booking`}>
-        Money was received but the booking never became paid. <Link href="/admin/payments?view=mismatch">Review them</Link>.
+        Money was received but the booking never became paid. <AppLink href="/admin/payments?view=mismatch">Review them</AppLink>.
       </Alert>
     ),
     o.attention.needsRefund > 0 && (
       <Alert key="nr" tone="warning" title={`${o.attention.needsRefund} payment(s) flagged for refund`}>
-        <Link href="/admin/payments?view=needs-refund">Review refunds</Link>.
+        <AppLink href="/admin/payments?view=needs-refund">Review refunds</AppLink>.
       </Alert>
     ),
     o.attention.googleReconnect > 0 && (
       <Alert key="g" tone="warning" title={`${o.attention.googleReconnect} influencer(s) must reconnect Google`}>
-        Their paid bookings wait without a Meet link until they reconnect. <Link href="/admin/influencers">See influencers</Link>.
+        Their paid bookings wait without a Meet link until they reconnect. <AppLink href="/admin/influencers">See influencers</AppLink>.
       </Alert>
     ),
     o.attention.failedMessages7d > 0 && (
@@ -75,7 +75,7 @@ export function OverviewView({ data }: { data: Jsonify<AdminOverviewView> }) {
         </Card>
       </div>
 
-      <Card title="Recent admin activity" actions={<Link href="/admin/audit">View all</Link>}>
+      <Card title="Recent admin activity" actions={<AppLink href="/admin/audit">View all</AppLink>}>
         {recentAudit.length === 0 ? (
           <p className="muted">No activity yet.</p>
         ) : (

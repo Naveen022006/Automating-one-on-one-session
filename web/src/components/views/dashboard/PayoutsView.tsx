@@ -1,7 +1,7 @@
-import { PageHead } from "@/components/app/AppShell";
-import { PayoutForm } from "@/components/app/PayoutForm";
-import { IconWallet } from "@/components/icons";
-import { Alert, Badge, Card, EmptyState, Stat } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { PayoutForm } from "@web/components/app/PayoutForm";
+import { IconWallet } from "@web/components/icons";
+import { Alert, Badge, Card, EmptyState, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardPayoutsView } from "@/lib/views/dashboard-payouts";

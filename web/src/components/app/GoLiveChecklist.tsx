@@ -1,5 +1,5 @@
-import { IconAlertCircle, IconArrowRight, IconCheckCircle } from "@/components/icons";
-import { Badge, ButtonLink, Card } from "@/components/ui/primitives";
+import { IconAlertCircle, IconArrowRight, IconCheckCircle } from "@web/components/icons";
+import { Badge, ButtonLink, Card } from "@web/components/ui/primitives";
 import type { Readiness } from "@/lib/readiness";
 
 /**

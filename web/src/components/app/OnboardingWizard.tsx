@@ -1,38 +1,19 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { IconCheckCircle, IconAlertCircle, IconExternal } from "@/components/icons";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { CopyField, ToastProvider, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Card, Stepper } from "@/components/ui/primitives";
+import { IconCheckCircle, IconAlertCircle, IconExternal } from "@web/components/icons";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { CopyField, ToastProvider, useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, Card, Stepper } from "@web/components/ui/primitives";
+import type { OnboardingData } from "@/lib/views/dashboard-types";
 import { ApiProvider, useApi } from "./ApiProvider";
-import { BlockedDays, WeeklyHours, type BlockedRow, type RuleRow } from "./AvailabilityEditor";
-import { GoogleConnect, type GoogleStatusView } from "./GoogleConnect";
-import { PayoutForm, type PayoutAccountData } from "./PayoutForm";
-import { ServicesManager, type ServiceAdmin } from "./ServicesManager";
-import { ProfileForm, VerifyBanner, type ProfileData } from "./SettingsForms";
-import { WhatsAppConnect, type WhatsAppView } from "./WhatsAppConnect";
+import { BlockedDays, WeeklyHours } from "./AvailabilityEditor";
+import { GoogleConnect } from "./GoogleConnect";
+import { PayoutForm } from "./PayoutForm";
+import { ServicesManager } from "./ServicesManager";
+import { ProfileForm, VerifyBanner } from "./SettingsForms";
+import { WhatsAppConnect } from "./WhatsAppConnect";
 
 const STEPS = ["Profile", "First service", "Availability", "Google and Gmail", "WhatsApp", "Payouts", "Preview and share"];
-
-export interface OnboardingData {
-  step: number;
-  profile: ProfileData;
-  services: ServiceAdmin[];
-  rules: RuleRow[];
-  blocked: BlockedRow[];
-  google: GoogleStatusView;
-  googleOutcome: string | null;
-  whatsapp: WhatsAppView | null;
-  embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null;
-  payout: PayoutAccountData | null;
-  /** What still stands between this page and going live, and what is merely recommended. */
-  checklist: { key: string; label: string; done: boolean; required: boolean }[];
-  publicUrl: string;
-  email: string;
-  emailVerified: boolean;
-}
 
 export function OnboardingWizard(props: OnboardingData) {
   return (

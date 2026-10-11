@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { PayNow } from "@/app/pay/[token]/PayNow";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { Alert } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { PayNow } from "@web/pages/booking/PayNow";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { Alert } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { PayView as PayViewData } from "@/lib/views/booking-pay";
 
@@ -37,7 +37,7 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
     case "booked":
       return (
         <Notice title="You're already booked" tone="success">
-          {data.serviceTitle} with {data.hostName}, {data.whenText}. {data.manageUrl ? <Link href={data.manageUrl}>Manage your booking</Link> : null}
+          {data.serviceTitle} with {data.hostName}, {data.whenText}. {data.manageUrl ? <AppLink href={data.manageUrl}>Manage your booking</AppLink> : null}
         </Notice>
       );
     case "requested":
@@ -49,7 +49,7 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
     case "declined":
       return (
         <Notice title="This request was not accepted" tone="danger">
-          {data.hostName} could not accept this request. You have not been charged. <Link href={`/${data.hostSlug}/book`}>Choose another time</Link>.
+          {data.hostName} could not accept this request. You have not been charged. <AppLink href={`/${data.hostSlug}/book`}>Choose another time</AppLink>.
         </Notice>
       );
     case "cancelled":
@@ -60,7 +60,7 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
             : data.refund === "on-its-way"
               ? "This booking was cancelled. A refund is on its way to your original payment method."
               : "This booking was cancelled. Under its cancellation policy no refund is due; the cancellation email has the details."}{" "}
-          <Link href={`/${data.hostSlug}/book`}>Book another time</Link>.
+          <AppLink href={`/${data.hostSlug}/book`}>Book another time</AppLink>.
         </Notice>
       );
     case "not-completed":
@@ -72,7 +72,7 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
     case "expired":
       return (
         <Notice title="The time to pay has passed" tone="danger">
-          The held time was released. <Link href={`/${data.hostSlug}/book`}>Request the session again</Link>.
+          The held time was released. <AppLink href={`/${data.hostSlug}/book`}>Request the session again</AppLink>.
         </Notice>
       );
     case "payable":

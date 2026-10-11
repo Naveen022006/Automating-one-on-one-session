@@ -865,11 +865,11 @@ test("buildAdminHealthView: a stale heartbeat is a critical worker with its age,
 });
 
 type Views = {
-  PaymentsView: typeof import("../components/views/admin/PaymentsView").PaymentsView;
-  PayoutsView: typeof import("../components/views/admin/PayoutsView").PayoutsView;
-  BookingsView: typeof import("../components/views/admin/BookingsView").BookingsView;
-  AuditView: typeof import("../components/views/admin/AuditView").AuditView;
-  HealthView: typeof import("../components/views/admin/HealthView").HealthView;
+  PaymentsView: typeof import("../web/src/components/views/admin/PaymentsView").PaymentsView;
+  PayoutsView: typeof import("../web/src/components/views/admin/PayoutsView").PayoutsView;
+  BookingsView: typeof import("../web/src/components/views/admin/BookingsView").BookingsView;
+  AuditView: typeof import("../web/src/components/views/admin/AuditView").AuditView;
+  HealthView: typeof import("../web/src/components/views/admin/HealthView").HealthView;
 };
 let viewsLoaded: Promise<Views> | undefined;
 
@@ -888,7 +888,7 @@ function loadViews(): Promise<Views> {
         useSearchParams: () => new URLSearchParams(),
       },
     });
-    mock.module("@/components/admin/PayoutActions", {
+    mock.module("@web/components/admin/PayoutActions", {
       namedExports: {
         ReconcileButton: (p: { ids: string[] }) => (p.ids.length === 0 ? null : createElement("button", { "data-reconcile": p.ids.join(",") })), // like the real one: nothing to reconcile, no button
         UnreconcileButton: (p: { paymentId: string }) => createElement("button", { "data-unreconcile": p.paymentId }),
@@ -897,11 +897,11 @@ function loadViews(): Promise<Views> {
       },
     });
     return {
-      PaymentsView: (await import("../components/views/admin/PaymentsView")).PaymentsView,
-      PayoutsView: (await import("../components/views/admin/PayoutsView")).PayoutsView,
-      BookingsView: (await import("../components/views/admin/BookingsView")).BookingsView,
-      AuditView: (await import("../components/views/admin/AuditView")).AuditView,
-      HealthView: (await import("../components/views/admin/HealthView")).HealthView,
+      PaymentsView: (await import("../web/src/components/views/admin/PaymentsView")).PaymentsView,
+      PayoutsView: (await import("../web/src/components/views/admin/PayoutsView")).PayoutsView,
+      BookingsView: (await import("../web/src/components/views/admin/BookingsView")).BookingsView,
+      AuditView: (await import("../web/src/components/views/admin/AuditView")).AuditView,
+      HealthView: (await import("../web/src/components/views/admin/HealthView")).HealthView,
     };
   })();
   return viewsLoaded;
@@ -1073,7 +1073,7 @@ const PAGES: { id: SpaRouteId; old: string; spa: string; view: string; fn: strin
 
 test("every page: the old Next page and the SPA page render the same view from the same view function, behind the same gate as the endpoint", () => {
   for (const p of PAGES) {
-    const viewImport = `@/components/views/admin/${p.view}`;
+    const viewImport = `@web/components/views/admin/${p.view}`;
     const fnImport = `@/${p.fn.replace(/\.ts$/, "")}`;
     const old = read(p.old);
     const spa = read(p.spa);

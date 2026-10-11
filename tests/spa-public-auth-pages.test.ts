@@ -56,7 +56,7 @@ before(async () => {
   rq = await import("@tanstack/react-query");
   api = await import("../web/src/lib/api");
   keys = (await import("../web/src/lib/query")).queryKeys;
-  mock.module("@/components/auth/AuthForms", {
+  mock.module("@web/components/auth/AuthForms", {
     namedExports: {
       LoginForm: fakeForm("LoginForm"),
       RegisterForm: fakeForm("RegisterForm"),

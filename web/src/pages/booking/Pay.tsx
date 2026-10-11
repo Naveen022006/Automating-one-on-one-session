@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { PayView } from "@/components/views/booking/PayView";
+import { PayView } from "@web/components/views/booking/PayView";
 import type { PayView as PayViewData } from "@/lib/views/booking-pay";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

@@ -1,7 +1,5 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { AppLink } from "@web/lib/link";
+import { usePathname } from "@web/lib/navigate";
 import type { ReactNode } from "react";
 import {
   IconCalendar,
@@ -14,11 +12,11 @@ import {
   IconSparkline,
   IconUsers,
   IconWallet,
-} from "@/components/icons";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { MobileNav } from "@/components/ui/MobileNav";
-import { Menu, ToastProvider } from "@/components/ui/overlays";
-import { Badge } from "@/components/ui/primitives";
+} from "@web/components/icons";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { MobileNav } from "@web/components/ui/MobileNav";
+import { Menu, ToastProvider } from "@web/components/ui/overlays";
+import { Badge } from "@web/components/ui/primitives";
 
 const NAV = [
   { href: "/admin", label: "Overview", icon: IconLayout, exact: true },
@@ -67,7 +65,7 @@ export function AdminShell({
           </p>
           <nav className="sidebar__nav" aria-label="Sections">
             {NAV.map((n) => (
-              <Link key={n.href} href={n.href} className="nav-link" aria-current={isActive(pathname, n.href, n.exact) ? "page" : undefined}>
+              <AppLink key={n.href} href={n.href} className="nav-link" aria-current={isActive(pathname, n.href, n.exact) ? "page" : undefined}>
                 <n.icon />
                 {n.label}
                 {n.href === "/admin/payments" && attentionCount > 0 && (
@@ -80,7 +78,7 @@ export function AdminShell({
                     {healthCount}
                   </span>
                 )}
-              </Link>
+              </AppLink>
             ))}
           </nav>
         </aside>

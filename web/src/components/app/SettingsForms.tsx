@@ -1,21 +1,11 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useEffect, useState } from "react";
-import { IconLogOut } from "@/components/icons";
-import { ConfirmDialog, Switch, useToast } from "@/components/ui/overlays";
-import { Alert, Avatar, Button, Field, Input, Select, Textarea, describedBy } from "@/components/ui/primitives";
-import { timezoneOptions } from "@/components/ui/scheduling";
+import { IconLogOut } from "@web/components/icons";
+import { ConfirmDialog, Switch, useToast } from "@web/components/ui/overlays";
+import { Alert, Avatar, Button, Field, Input, Select, Textarea, describedBy } from "@web/components/ui/primitives";
+import { timezoneOptions } from "@web/components/ui/scheduling";
+import type { ProfileData } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export interface ProfileData {
-  name: string;
-  bio: string | null;
-  photoUrl: string | null;
-  timezone: string;
-  slug: string;
-  notifyByEmail: boolean;
-}
 
 export function ProfileForm({ profile, onSaved, submitLabel = "Save profile" }: { profile: ProfileData; onSaved?: () => void; submitLabel?: string }) {
   const api = useApi();

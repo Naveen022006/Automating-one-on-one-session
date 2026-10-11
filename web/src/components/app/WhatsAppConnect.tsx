@@ -1,25 +1,14 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useEffect, useRef, useState } from "react";
-import { IconCheckCircle, IconMessage } from "@/components/icons";
-import { ConfirmDialog, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
+import { IconCheckCircle, IconMessage } from "@web/components/icons";
+import { ConfirmDialog, useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@web/components/ui/primitives";
 import { chooseFacebookSdkUrl } from "@/lib/facebook-sdk";
 import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateLabel, templateReasonText, templateState } from "@/lib/message-templates";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
+import type { WhatsAppView } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export interface WhatsAppView {
-  displayPhone: string | null;
-  verifiedName: string | null;
-  source: string;
-  status: "ACTIVE" | "ERROR";
-  lastError: string | null;
-  templates: { name: string; status: string; reason: string | null }[];
-  ready: boolean;
-}
 
 function TemplateBadge({ status }: { status: string }) {
   const known = TEMPLATE_STATUS_LABELS[status];

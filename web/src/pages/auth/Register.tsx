@@ -1,4 +1,4 @@
-import { RegisterView } from "@/components/views/auth/RegisterView";
+import { RegisterView } from "@web/components/views/auth/RegisterView";
 import { PageTitle } from "../../lib/head";
 
 /**

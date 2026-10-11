@@ -1,7 +1,7 @@
 {
-  // The React SPA's TypeScript project (doc/10-react-migration-plan.md, F2). Same strictness as the root project.
-  // `npm run typecheck` runs both. The root project excludes web/ (it would otherwise type-check the shared
-  // components against Next's real `next/link`); this one maps them to the SPA shims, exactly as Vite does.
+  // The React SPA's TypeScript project (doc/12-front-end.md). Same strictness as the root project; `npm run typecheck` runs both.
+  // The root project (server, tests) also reads the files of web/ that the tests import, with its own settings; this one is the
+  // browser's view of the world (DOM libraries, Vite's client types).
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["dom", "dom.iterable", "esnext"],
@@ -22,9 +22,7 @@
     "types": ["node", "vite/client"],
     "paths": {
       "@/*": ["../*"],
-      "@web/*": ["./src/*"],
-      "next/link": ["./src/shims/next-link.tsx"],
-      "next/navigation": ["./src/shims/next-navigation-types.d.ts"]
+      "@web/*": ["./src/*"]
     }
   },
   "include": ["src/**/*", "vite.config.ts", "vite-server-guard.ts"]

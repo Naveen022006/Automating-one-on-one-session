@@ -1,6 +1,6 @@
-import { ManageBooking } from "@/app/manage/[token]/ManageBooking";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { Alert } from "@/components/ui/primitives";
+import { ManageBooking } from "@web/pages/booking/ManageBooking";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { Alert } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { ManageView as ManageViewData } from "@/lib/views/booking-manage";
 

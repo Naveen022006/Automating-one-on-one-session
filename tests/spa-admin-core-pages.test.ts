@@ -50,10 +50,10 @@ before(async () => {
   rq = await import("@tanstack/react-query");
   api = await import("../web/src/lib/api");
   keys = (await import("../web/src/lib/query")).queryKeys;
-  mock.module("@/components/admin/AdminForms", { namedExports: { AdminLoginForm: fake("AdminLoginForm"), AdminPasswordForm: fake("AdminPasswordForm") } });
-  mock.module("@/components/admin/TwoFactorPanel", { namedExports: { TwoFactorPanel: fake("TwoFactorPanel") } });
-  mock.module("@/components/admin/PayoutPanel", { namedExports: { PayoutPanel: fake("PayoutPanel") } });
-  mock.module("@/components/admin/PayoutActions", {
+  mock.module("@web/components/admin/AdminForms", { namedExports: { AdminLoginForm: fake("AdminLoginForm"), AdminPasswordForm: fake("AdminPasswordForm") } });
+  mock.module("@web/components/admin/TwoFactorPanel", { namedExports: { TwoFactorPanel: fake("TwoFactorPanel") } });
+  mock.module("@web/components/admin/PayoutPanel", { namedExports: { PayoutPanel: fake("PayoutPanel") } });
+  mock.module("@web/components/admin/PayoutActions", {
     namedExports: {
       CreatePayoutButton: fake("CreatePayoutButton"),
       FeeForm: fake("FeeForm"),
@@ -61,7 +61,7 @@ before(async () => {
       PayoutStatusBadges: fake("PayoutStatusBadges"),
     },
   });
-  mock.module("@/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: fake("InfluencerSearchForm") } });
+  mock.module("@web/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: fake("InfluencerSearchForm") } });
   const load = async (file: string) => (await import(`../web/src/pages/admin/${file}`)).Component as ComponentType;
   pages = {
     login: await load("Login"),

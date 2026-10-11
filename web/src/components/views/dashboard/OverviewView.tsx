@@ -1,10 +1,10 @@
-import Link from "next/link";
-import { IconAlert, IconArrowRight } from "@/components/icons";
-import { PageHead } from "@/components/app/AppShell";
-import { GoLiveChecklist } from "@/components/app/GoLiveChecklist";
-import { SessionsBoard } from "@/components/app/SessionsBoard";
-import { CopyField } from "@/components/ui/overlays";
-import { ButtonLink, Card, Stat } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { IconAlert, IconArrowRight } from "@web/components/icons";
+import { PageHead } from "@web/components/app/AppShell";
+import { GoLiveChecklist } from "@web/components/app/GoLiveChecklist";
+import { SessionsBoard } from "@web/components/app/SessionsBoard";
+import { CopyField } from "@web/components/ui/overlays";
+import { ButtonLink, Card, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardOverviewView } from "@/lib/views/dashboard-overview";
@@ -68,9 +68,9 @@ export function OverviewView({ data }: { data: Jsonify<DashboardOverviewView> })
           <h2 id="upcoming" className="section-title">
             Next 7 days
           </h2>
-          <Link href="/dashboard/sessions" className="text-sm">
+          <AppLink href="/dashboard/sessions" className="text-sm">
             All sessions
-          </Link>
+          </AppLink>
         </div>
         <SessionsBoard
           sessions={overview.upcoming}

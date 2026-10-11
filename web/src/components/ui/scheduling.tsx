@@ -1,11 +1,9 @@
-"use client";
-
 /**
  * Calendar-style date picker and grouped time-slot picker for the booking and self-service flows. Dates are plain
  * "YYYY-MM-DD" strings in the customer's timezone; times are rendered with Intl in that timezone.
  */
 import { useMemo, useRef } from "react";
-import { IconChevronLeft, IconChevronRight } from "@/components/icons";
+import { IconChevronLeft, IconChevronRight } from "@web/components/icons";
 import { Button, Skeleton } from "./primitives";
 
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

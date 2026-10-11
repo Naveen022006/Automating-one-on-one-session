@@ -1,6 +1,6 @@
-import Link from "next/link";
-import { ForgotForm } from "@/components/auth/AuthForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { AppLink } from "@web/lib/link";
+import { ForgotForm } from "@web/components/auth/AuthForms";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
 
 export function ForgotPasswordView() {
   return (
@@ -12,7 +12,7 @@ export function ForgotPasswordView() {
         </div>
         <ForgotForm />
         <p className="muted text-sm">
-          Remembered it? <Link href="/login">Back to log in</Link>
+          Remembered it? <AppLink href="/login">Back to log in</AppLink>
         </p>
       </div>
     </FocusedLayout>

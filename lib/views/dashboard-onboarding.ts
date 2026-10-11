@@ -1,7 +1,3 @@
-import type { GoogleStatusView } from "@/components/app/GoogleConnect";
-import type { OnboardingData } from "@/components/app/OnboardingWizard";
-import type { WhatsAppView } from "@/components/app/WhatsAppConnect";
-import type { ProfileData } from "@/components/app/SettingsForms";
 import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { loadReadiness } from "@/lib/readiness";
@@ -9,6 +5,7 @@ import { listBlockedViews, listRuleViews } from "@/lib/views/dashboard-availabil
 import { loadPayoutAccountData } from "@/lib/views/dashboard-payouts";
 import { listServiceViews } from "@/lib/views/dashboard-services";
 import { loadEmbeddedSignupView, loadGoogleStatusView, loadProfileView, loadWhatsAppView, type EmbeddedSignupView } from "@/lib/views/dashboard-settings";
+import type { GoogleStatusView, OnboardingData, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
 
 /**
  * Everything the onboarding wizard needs, except what lives in the URL: the step (`?step=`) and the Google outcome

@@ -1,5 +1,5 @@
-import { SiteFooter, SiteHeader } from "@/components/site/SiteChrome";
-import { Alert, Breadcrumb } from "@/components/ui/primitives";
+import { SiteFooter, SiteHeader } from "@web/components/site/SiteChrome";
+import { Alert, Breadcrumb } from "@web/components/ui/primitives";
 
 /** Shared shell for legal pages. Every page is clearly marked as a draft until the owner and a lawyer approve it. */
 export function LegalPage({ title, updated, children }: { title: string; updated: string; children: React.ReactNode }) {

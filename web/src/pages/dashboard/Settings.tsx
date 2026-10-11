@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router";
-import { SettingsView } from "@/components/views/dashboard/SettingsView";
+import { SettingsView } from "@web/components/views/dashboard/SettingsView";
 import type { DashboardSettingsView } from "@/lib/views/dashboard-settings";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

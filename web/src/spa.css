@@ -1,9 +1,9 @@
 /*
- * What `next/font` and the Next app shell used to provide, and the few rules only the SPA needs.
+ * The few rules that belong to the SPA itself rather than to the design system in styles/.
  */
 
-/* app/styles/tokens.css reads these two variables; next/font used to set them on <html> (see app/layout.tsx). The
-   family names are the ones @fontsource-variable registers. */
+/* styles/tokens.css reads these two variables. The family names are the ones @fontsource-variable registers (the fonts are
+   imported in styles.css and served from /assets, so the CSP's font-src 'self' holds). */
 :root {
   --font-inter: "Inter Variable";
   --font-newsreader: "Newsreader Variable";

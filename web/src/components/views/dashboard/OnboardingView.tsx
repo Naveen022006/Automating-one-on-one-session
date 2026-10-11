@@ -1,4 +1,4 @@
-import { OnboardingWizard } from "@/components/app/OnboardingWizard";
+import { OnboardingWizard } from "@web/components/app/OnboardingWizard";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
 

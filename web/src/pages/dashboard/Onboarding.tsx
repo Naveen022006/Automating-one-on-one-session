@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useNavigationType, useSearchParams } from "react-router";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { OnboardingView } from "@/components/views/dashboard/OnboardingView";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { OnboardingView } from "@web/components/views/dashboard/OnboardingView";
 import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

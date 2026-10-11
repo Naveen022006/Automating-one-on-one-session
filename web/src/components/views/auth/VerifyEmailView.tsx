@@ -1,8 +1,8 @@
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import type { ReactNode } from "react";
-import { ResendVerification, VerifyEmail } from "@/components/auth/AuthForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { Alert } from "@/components/ui/primitives";
+import { ResendVerification, VerifyEmail } from "@web/components/auth/AuthForms";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { Alert } from "@web/components/ui/primitives";
 
 /**
  * The focused frame with the page's heading. The SPA page also wraps its loading and error states in it, so the heading is
@@ -34,7 +34,7 @@ export function VerifyEmailView({ token, user }: { token?: string; user: { email
         </Alert>
       ) : (
         <Alert tone="info">
-          Open the link from your email. <Link href="/login">Log in</Link>
+          Open the link from your email. <AppLink href="/login">Log in</AppLink>
         </Alert>
       )}
     </VerifyEmailFrame>

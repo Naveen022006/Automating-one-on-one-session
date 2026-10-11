@@ -1,11 +1,9 @@
-import type { GoogleStatusView } from "@/components/app/GoogleConnect";
-import type { ProfileData } from "@/components/app/SettingsForms";
-import type { WhatsAppView } from "@/components/app/WhatsAppConnect";
 import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
 import { requiredConnections } from "@/lib/readiness";
+import type { GoogleStatusView, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
 import { getConnectionView, type WhatsAppConnectionView } from "@/lib/whatsapp-connection";
 import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 

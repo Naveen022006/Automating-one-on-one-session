@@ -1,6 +1,6 @@
-import Link from "next/link";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { ButtonLink } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { ButtonLink } from "@web/components/ui/primitives";
 
 /**
  * The "404" screen. Rendered by the old Next `app/not-found.tsx` and by the SPA's NotFound page, so both look and read
@@ -22,7 +22,7 @@ export function NotFoundView({ embedded = false }: { embedded?: boolean }) {
         <ButtonLink href="/" variant="primary">
           Go to the home page
         </ButtonLink>
-        <Link href="/contact">Contact us</Link>
+        <AppLink href="/contact">Contact us</AppLink>
       </div>
     </div>
   );

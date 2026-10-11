@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { PageHead } from "@/components/app/AppShell";
-import { IconCalendar } from "@/components/icons";
-import { EmptyState, LinkTabs, Pagination, StatusPill } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { PageHead } from "@web/components/app/AppShell";
+import { IconCalendar } from "@web/components/icons";
+import { EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminBookingsView, BookingStatusFilter } from "@/lib/views/admin-bookings";
@@ -59,7 +59,7 @@ export function BookingsView({ data, busy }: { data: Jsonify<AdminBookingsView>;
                       {b.serviceTitle}
                       <div className="subtle">{new Date(b.startTime).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
                     </td>
-                    <td data-label="Influencer"><Link href={`/admin/influencers/${b.influencer.id}`}>{b.influencer.name}</Link></td>
+                    <td data-label="Influencer"><AppLink href={`/admin/influencers/${b.influencer.id}`}>{b.influencer.name}</AppLink></td>
                     <td data-label="Customer">{b.customerName}</td>
                     <td data-label="Status">
                       <StatusPill kind="booking" status={b.status} />

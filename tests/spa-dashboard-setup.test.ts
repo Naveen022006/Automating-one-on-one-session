@@ -370,7 +370,7 @@ test("loadEmbeddedSignupView: null unless the Meta app is configured; then exact
 const when = "2030-02-01T12:00:00.000Z";
 
 test("PayoutsView renders from JSON: money, the fee text, masked details, the history with its reference; an empty state without data", async () => {
-  const { PayoutsView } = await import("../components/views/dashboard/PayoutsView");
+  const { PayoutsView } = await import("../web/src/components/views/dashboard/PayoutsView");
   const data: DashboardPayoutsView = {
     account: { method: "BANK", accountHolderName: "Pat Doe", bankName: "HDFC Bank", ifsc: "HDFC0001234", accountNumber: "XXXXXXXX3333", upiId: null, status: "PENDING_REVIEW", rejectionReason: null },
     summary: {
@@ -391,8 +391,8 @@ test("PayoutsView renders from JSON: money, the fee text, masked details, the hi
 });
 
 test("ServicesView and AvailabilityView render from JSON, including hidden services, questions, ordered hours and days off", async () => {
-  const { ServicesView } = await import("../components/views/dashboard/ServicesView");
-  const { AvailabilityView } = await import("../components/views/dashboard/AvailabilityView");
+  const { ServicesView } = await import("../web/src/components/views/dashboard/ServicesView");
+  const { AvailabilityView } = await import("../web/src/components/views/dashboard/AvailabilityView");
   const service = (over: Partial<DashboardServicesView["services"][number]>): DashboardServicesView["services"][number] => ({
     id: "s1", title: "Career chat", description: null, durationMin: 45, priceMinor: 49900, currency: "INR", type: "ONE_TO_ONE", capacity: 1, active: true, refundPolicy: "FULL",
     intakeQuestions: [{ id: "q1", label: "What do you want to cover?", type: "text", required: true }], minNoticeHours: 0, maxAdvanceDays: 60, prepNotes: null, requiresApproval: false, ...over,
@@ -410,7 +410,7 @@ test("ServicesView and AvailabilityView render from JSON, including hidden servi
 });
 
 test("SettingsView renders every panel from JSON: anchors for #google and #whatsapp, the outcome banner, the address field, the verify banner", async () => {
-  const { SettingsView } = await import("../components/views/dashboard/SettingsView");
+  const { SettingsView } = await import("../web/src/components/views/dashboard/SettingsView");
   const data: DashboardSettingsView = {
     profile: { name: "Pat Doe", bio: "Hello", photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
     google: { state: "connected", email: "pat@gmail.com", connectedAt: when, gmailSend: true, liveEvents: 0, gmailFailing: false },
@@ -434,7 +434,7 @@ test("SettingsView renders every panel from JSON: anchors for #google and #whats
 });
 
 test("OnboardingView renders the step from the URL with Google's outcome, and every step is reachable", async () => {
-  const { OnboardingView } = await import("../components/views/dashboard/OnboardingView");
+  const { OnboardingView } = await import("../web/src/components/views/dashboard/OnboardingView");
   const data: DashboardOnboardingView = {
     profile: { name: "Pat Doe", bio: null, photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
     services: [],
@@ -476,7 +476,7 @@ const PAGES: { id: SpaRouteId; old: string; spa: string; view: string; load: str
 
 test("every page: the old Next page and the SPA page render the same view, the old page and the endpoint call the same view function", () => {
   for (const p of PAGES) {
-    const viewImport = `@/components/views/dashboard/${p.view}`;
+    const viewImport = `@web/components/views/dashboard/${p.view}`;
     assert.ok(read(p.old).includes(`"${viewImport}"`), `${p.old} must render ${p.view}`);
     assert.ok(read(p.spa).includes(`"${viewImport}"`), `${p.spa} must render ${p.view}`);
     assert.ok(read(p.old).includes(`await ${p.load}(`) && read(p.old).includes("jsonify("), `${p.old} must pass jsonify(await ${p.load}(...)) so it renders from exactly the JSON the SPA gets`);

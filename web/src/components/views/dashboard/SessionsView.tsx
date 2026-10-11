@@ -1,6 +1,6 @@
-import { PageHead } from "@/components/app/AppShell";
-import { SessionsBoard } from "@/components/app/SessionsBoard";
-import { LinkTabs, Pagination } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { SessionsBoard } from "@web/components/app/SessionsBoard";
+import { LinkTabs, Pagination } from "@web/components/ui/primitives";
 import type { SessionView } from "@/lib/dashboard-data";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardSessionsView } from "@/lib/views/dashboard-sessions";

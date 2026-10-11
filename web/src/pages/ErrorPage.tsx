@@ -1,5 +1,5 @@
 import { isRouteErrorResponse, useRouteError } from "react-router";
-import { ErrorView } from "@/components/views/system/ErrorView";
+import { ErrorView } from "@web/components/views/system/ErrorView";
 import { PageTitle } from "../lib/head";
 import { NotFound } from "./NotFound";
 

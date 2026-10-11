@@ -1,4 +1,4 @@
-import { AvailabilityView } from "@/components/views/dashboard/AvailabilityView";
+import { AvailabilityView } from "@web/components/views/dashboard/AvailabilityView";
 import type { DashboardAvailabilityView } from "@/lib/views/dashboard-availability";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

@@ -1,4 +1,4 @@
-import { PayoutsView } from "@/components/views/dashboard/PayoutsView";
+import { PayoutsView } from "@web/components/views/dashboard/PayoutsView";
 import type { DashboardPayoutsView } from "@/lib/views/dashboard-payouts";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

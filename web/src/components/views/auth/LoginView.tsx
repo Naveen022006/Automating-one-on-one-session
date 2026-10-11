@@ -1,6 +1,6 @@
-import Link from "next/link";
-import { LoginForm } from "@/components/auth/AuthForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { AppLink } from "@web/lib/link";
+import { LoginForm } from "@web/components/auth/AuthForms";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
 
 /**
  * The login screen. `next` and `reset` are the raw `?next=` and `?reset=` query values (the form sends `next` to the API,
@@ -16,7 +16,7 @@ export function LoginView({ next, reset }: { next?: string; reset?: string }) {
         </div>
         <LoginForm next={next} notice={reset ? "Your password was changed. Please log in." : undefined} />
         <p className="muted text-sm">
-          New here? <Link href="/register">Create an account</Link>
+          New here? <AppLink href="/register">Create an account</AppLink>
         </p>
       </div>
     </FocusedLayout>

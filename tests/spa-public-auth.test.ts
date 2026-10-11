@@ -8,16 +8,16 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { repoPathProblem, specifierProblem } from "../web/vite-server-guard";
-import { ForgotPasswordView } from "../components/views/auth/ForgotPasswordView";
-import { LoginView } from "../components/views/auth/LoginView";
-import { RegisterView } from "../components/views/auth/RegisterView";
-import { ResetPasswordView } from "../components/views/auth/ResetPasswordView";
-import { VerifyEmailView } from "../components/views/auth/VerifyEmailView";
-import { ContactView } from "../components/views/public/ContactView";
-import { LandingView } from "../components/views/public/LandingView";
-import { PrivacyView } from "../components/views/public/PrivacyView";
-import { RefundPolicyView } from "../components/views/public/RefundPolicyView";
-import { TermsView } from "../components/views/public/TermsView";
+import { ForgotPasswordView } from "../web/src/components/views/auth/ForgotPasswordView";
+import { LoginView } from "../web/src/components/views/auth/LoginView";
+import { RegisterView } from "../web/src/components/views/auth/RegisterView";
+import { ResetPasswordView } from "../web/src/components/views/auth/ResetPasswordView";
+import { VerifyEmailView } from "../web/src/components/views/auth/VerifyEmailView";
+import { ContactView } from "../web/src/components/views/public/ContactView";
+import { LandingView } from "../web/src/components/views/public/LandingView";
+import { PrivacyView } from "../web/src/components/views/public/PrivacyView";
+import { RefundPolicyView } from "../web/src/components/views/public/RefundPolicyView";
+import { TermsView } from "../web/src/components/views/public/TermsView";
 import { BRAND_NAME, SUPPORT_EMAIL } from "../lib/brand";
 import { formatTitle, spaRouteById, type SpaRouteId } from "../lib/spa/routes";
 
@@ -47,7 +47,7 @@ const viewFiles = (dir: "public" | "auth") =>
 
 test("every page: the old Next page and the SPA page render the same view", () => {
   for (const p of PAGES) {
-    const viewImport = `@/components/views/${p.view}`;
+    const viewImport = `@web/components/views/${p.view}`;
     assert.ok(read(p.old).includes(`"${viewImport}"`), `${p.old} must render ${p.view}`);
     assert.ok(read(p.spa).includes(`"${viewImport}"`), `${p.spa} must render ${p.view}`);
     // The old page keeps only what Next needs (metadata, auth redirect, JSON-LD); the SPA page has no server code either.

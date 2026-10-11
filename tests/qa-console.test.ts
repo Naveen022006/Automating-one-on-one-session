@@ -10,8 +10,8 @@ import * as ReactNs from "react";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { razorpayErrorText } from "../lib/payments";
-import { Dialog, Drawer, ToastProvider, useToast } from "../components/ui/overlays";
-import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../components/ui/MobileNav";
+import { Dialog, Drawer, ToastProvider, useToast } from "../web/src/components/ui/overlays";
+import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../web/src/components/ui/MobileNav";
 import nextConfig from "../next.config";
 
 const root = (p: string) => path.resolve(__dirname, "..", p);
@@ -213,8 +213,8 @@ test("C3: the last onboarding step does not say the page goes live when the emai
 // C9: the influencer search announces its result and keeps its box.
 let InfluencersView: ComponentType<{ data: unknown; q?: string; busy?: boolean }>;
 before(async () => {
-  mock.module("@/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: () => createElement("div", { "data-fake": "InfluencerSearchForm" }) } });
-  InfluencersView = (await import("../components/views/admin/InfluencersView")).InfluencersView as typeof InfluencersView;
+  mock.module("@web/components/views/admin/InfluencerSearchForm", { namedExports: { InfluencerSearchForm: () => createElement("div", { "data-fake": "InfluencerSearchForm" }) } });
+  InfluencersView = (await import("../web/src/components/views/admin/InfluencersView")).InfluencersView as typeof InfluencersView;
 });
 const row = (n: number) => ({
   id: `id${n}`,
@@ -499,7 +499,7 @@ test("C17: Meta's documented rejection reasons become plain sentences with what 
 test("C17: the card prints the sentence under a rejected template", async () => {
   mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
   try {
-    const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?c17=${Math.random()}`);
+    const { WhatsAppConnect } = await import(`../web/src/components/app/WhatsAppConnect?c17=${Math.random()}`);
     const connection = {
       displayPhone: "+91 98765 43210",
       verifiedName: "Pat",
@@ -587,7 +587,7 @@ test("C7: a page that still shows data after a failed refetch says so, offers Re
 // N7: the WhatsApp card says what the go-live checklist says (READINESS_REQUIRED can include whatsapp).
 test("N7: the not-connected WhatsApp card says Required when the checklist requires it, Recommended otherwise", async () => {
   mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
-  const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?n7=${Math.random()}`);
+  const { WhatsAppConnect } = await import(`../web/src/components/app/WhatsAppConnect?n7=${Math.random()}`);
   const card = (required?: boolean) => renderToStaticMarkup(createElement(WhatsAppConnect, { connection: null, embedded: null, ...(required === undefined ? {} : { required }) }));
   const optional = card();
   assert.match(optional, /Not connected <span class="pill">Recommended<\/span>/);

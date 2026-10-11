@@ -1,7 +1,7 @@
-import { IconCheck } from "@/components/icons";
-import { BookingFragment, DashboardFragment, RemindersFragment, WhatsAppFragment } from "@/components/site/ProductFragments";
-import { SiteFooter, SiteHeader } from "@/components/site/SiteChrome";
-import { ButtonLink } from "@/components/ui/primitives";
+import { IconCheck } from "@web/components/icons";
+import { BookingFragment, DashboardFragment, RemindersFragment, WhatsAppFragment } from "@web/components/site/ProductFragments";
+import { SiteFooter, SiteHeader } from "@web/components/site/SiteChrome";
+import { ButtonLink } from "@web/components/ui/primitives";
 
 const FEATURES = [
   {

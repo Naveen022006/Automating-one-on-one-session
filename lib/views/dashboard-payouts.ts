@@ -1,10 +1,9 @@
-import type { PayoutAccountData } from "@/components/app/PayoutForm";
 import { getPayoutAccountView, type PayoutAccountView } from "@/lib/payout-account";
 import { formatFeePercent, influencerPayoutSummary } from "@/lib/payouts";
+import type { PayoutAccountData } from "@/lib/views/dashboard-types";
 
 /**
- * The Payouts page and the onboarding wizard's payout step. Shared by the old Next page, GET /api/dashboard/payouts and
- * loadOnboardingView.
+ * The Payouts page and the onboarding wizard's payout step. Shared by GET /api/dashboard/payouts and loadOnboardingView.
  *
  * The account is the MASKED view only (`accountNumber` / `upiId` are "XXXXXX1234" / "ab***@okaxis"; the encrypted full
  * values are never selected into a view), and exactly the fields `PayoutForm` takes: no `updatedAt`, which nothing renders.

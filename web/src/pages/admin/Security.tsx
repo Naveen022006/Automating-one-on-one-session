@@ -1,4 +1,4 @@
-import { SecurityView } from "@/components/views/admin/SecurityView";
+import { SecurityView } from "@web/components/views/admin/SecurityView";
 import type { AdminSecurityView } from "@/lib/views/admin-security";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

@@ -41,11 +41,8 @@ export default defineConfig(({ mode, command }) => {
       alias: [
         { find: /^@web\//, replacement: `${posix(here)}/src/` },
         { find: /^@\//, replacement: `${posix(repoRoot)}/` },
-        // Shared components import these two; in the SPA they are the router-backed shims (deleted in the cleanup branch).
-        { find: /^next\/link$/, replacement: `${posix(here)}/src/shims/next-link.tsx` },
-        { find: /^next\/navigation$/, replacement: `${posix(here)}/src/shims/next-navigation.ts` },
       ],
-      // The shared components and the SPA must run on ONE copy of React (hooks break with two).
+      // The components and the pages must run on ONE copy of React (hooks break with two).
       dedupe: ["react", "react-dom"],
     },
     define: {

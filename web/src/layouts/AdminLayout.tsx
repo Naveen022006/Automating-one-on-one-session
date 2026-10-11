@@ -1,5 +1,5 @@
 import { Outlet } from "react-router";
-import { AdminShell } from "@/components/admin/AdminShell";
+import { AdminShell } from "@web/components/admin/AdminShell";
 import { PageError, PageLoading } from "../lib/states";
 import { useAdminShell } from "../lib/session";
 

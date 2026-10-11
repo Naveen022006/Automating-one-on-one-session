@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { PageHead } from "@/components/app/AppShell";
-import { Badge, Card, EmptyState, Pagination } from "@/components/ui/primitives";
-import { IconUsers } from "@/components/icons";
+import { AppLink } from "@web/lib/link";
+import { PageHead } from "@web/components/app/AppShell";
+import { Badge, Card, EmptyState, Pagination } from "@web/components/ui/primitives";
+import { IconUsers } from "@web/components/icons";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminInfluencersView } from "@/lib/views/admin-influencer";
@@ -48,7 +48,7 @@ export function InfluencersView({ data, q, busy }: { data: Jsonify<AdminInfluenc
               {data.rows.map((r) => (
                 <tr key={r.id}>
                   <td data-label="Influencer">
-                    <Link href={`/admin/influencers/${r.id}`}>{r.name}</Link>
+                    <AppLink href={`/admin/influencers/${r.id}`}>{r.name}</AppLink>
                     <div className="subtle">{r.email}</div>
                     {!r.live && r.blockers.length > 0 && <div className="subtle">Waiting for: {r.blockers.join(", ")}</div>}
                   </td>

@@ -1,4 +1,4 @@
-import { LegalPage } from "@/components/site/LegalPage";
+import { LegalPage } from "@web/components/site/LegalPage";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
 
 /** The Privacy Policy text. The only copy: the old Next page and the SPA page both render this view. */

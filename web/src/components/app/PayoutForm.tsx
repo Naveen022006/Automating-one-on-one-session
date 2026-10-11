@@ -1,21 +1,9 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Field, Input, Radio, describedBy } from "@/components/ui/primitives";
+import { useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, Field, Input, Radio, describedBy } from "@web/components/ui/primitives";
+import type { PayoutAccountData } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export interface PayoutAccountData {
-  method: "BANK" | "UPI";
-  accountHolderName: string;
-  bankName: string | null;
-  ifsc: string | null;
-  accountNumber: string | null;
-  upiId: string | null;
-  status: "PENDING_REVIEW" | "VERIFIED" | "REJECTED";
-  rejectionReason: string | null;
-}
 
 export function PayoutStatusBadge({ status }: { status: PayoutAccountData["status"] }) {
   return status === "VERIFIED" ? (

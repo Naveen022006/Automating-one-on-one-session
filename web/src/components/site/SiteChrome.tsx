@@ -1,17 +1,17 @@
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
-import { ButtonLink } from "@/components/ui/primitives";
+import { ButtonLink } from "@web/components/ui/primitives";
 
 export function Wordmark({ href = "/" }: { href?: string }) {
   return (
-    <Link href={href} className="wordmark" aria-label={`${BRAND_NAME} home`}>
+    <AppLink href={href} className="wordmark" aria-label={`${BRAND_NAME} home`}>
       <span className="wordmark__mark" aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
           <path d="M4 8h16M4 16h10" />
         </svg>
       </span>
       {BRAND_NAME}
-    </Link>
+    </AppLink>
   );
 }
 
@@ -21,9 +21,9 @@ export function SiteHeader({ loggedIn }: { loggedIn?: boolean }) {
       <div className="container site-header__inner">
         <Wordmark />
         <nav className="site-nav" aria-label="Main">
-          <Link href="/#how-it-works">How it works</Link>
-          <Link href="/#features">Features</Link>
-          <Link href="/#faq">FAQ</Link>
+          <AppLink href="/#how-it-works">How it works</AppLink>
+          <AppLink href="/#features">Features</AppLink>
+          <AppLink href="/#faq">FAQ</AppLink>
         </nav>
         <div className="site-header__actions">
           {loggedIn ? (
@@ -61,24 +61,24 @@ export function SiteFooter() {
           <div>
             <h2>Product</h2>
             <ul>
-              <li><Link href="/#how-it-works">How it works</Link></li>
-              <li><Link href="/#features">Features</Link></li>
-              <li><Link href="/demo">Demo booking page</Link></li>
-              <li><Link href="/register">Create an account</Link></li>
+              <li><AppLink href="/#how-it-works">How it works</AppLink></li>
+              <li><AppLink href="/#features">Features</AppLink></li>
+              <li><AppLink href="/demo">Demo booking page</AppLink></li>
+              <li><AppLink href="/register">Create an account</AppLink></li>
             </ul>
           </div>
           <div>
             <h2>Legal</h2>
             <ul>
-              <li><Link href="/terms">Terms of Service</Link></li>
-              <li><Link href="/privacy">Privacy Policy</Link></li>
-              <li><Link href="/refund-policy">Refunds and cancellations</Link></li>
+              <li><AppLink href="/terms">Terms of Service</AppLink></li>
+              <li><AppLink href="/privacy">Privacy Policy</AppLink></li>
+              <li><AppLink href="/refund-policy">Refunds and cancellations</AppLink></li>
             </ul>
           </div>
           <div>
             <h2>Contact</h2>
             <ul>
-              <li><Link href="/contact">Contact us</Link></li>
+              <li><AppLink href="/contact">Contact us</AppLink></li>
               <li><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a></li>
             </ul>
           </div>
@@ -107,7 +107,7 @@ export function FocusedLayout({ children, footer }: { children: React.ReactNode;
       <footer className="focused__footer">
         {footer ?? (
           <span>
-            <Link href="/terms">Terms</Link> · <Link href="/privacy">Privacy</Link> · <Link href="/contact">Help</Link>
+            <AppLink href="/terms">Terms</AppLink> · <AppLink href="/privacy">Privacy</AppLink> · <AppLink href="/contact">Help</AppLink>
           </span>
         )}
       </footer>

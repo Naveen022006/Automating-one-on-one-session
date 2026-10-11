@@ -1,4 +1,4 @@
-import { SettingsView } from "@/components/views/admin/SettingsView";
+import { SettingsView } from "@web/components/views/admin/SettingsView";
 import { PageLoading, QueryGate } from "../../lib/states";
 import { PageTitle } from "../../lib/head";
 import { useAdminSession } from "../../lib/session";

@@ -1,7 +1,5 @@
-"use client";
-
-import { GetForm } from "@/components/views/dashboard/GetForm";
-import { Button, Input } from "@/components/ui/primitives";
+import { GetForm } from "@web/components/views/dashboard/GetForm";
+import { Button, Input } from "@web/components/ui/primitives";
 
 /**
  * The influencer search box. A plain GET form (it works without JavaScript, with the same field name as before), but with

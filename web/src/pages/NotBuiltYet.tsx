@@ -1,5 +1,5 @@
 import { useLocation } from "react-router";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
 import { matchSpaRoute, type SpaRouteDef } from "@/lib/spa/routes";
 import { PageTitle } from "../lib/head";
 import { NotFound } from "./NotFound";

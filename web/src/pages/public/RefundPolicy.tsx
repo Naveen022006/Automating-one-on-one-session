@@ -1,4 +1,4 @@
-import { RefundPolicyView } from "@/components/views/public/RefundPolicyView";
+import { RefundPolicyView } from "@web/components/views/public/RefundPolicyView";
 import { PageTitle } from "../../lib/head";
 
 export function Component() {

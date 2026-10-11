@@ -1,8 +1,8 @@
-import { PageHead } from "@/components/app/AppShell";
-import { GoogleConnect } from "@/components/app/GoogleConnect";
-import { WhatsAppConnect } from "@/components/app/WhatsAppConnect";
-import { DeviceSessions, NotificationPrefs, PasswordForm, ProfileForm, SlugForm, VerifyBanner } from "@/components/app/SettingsForms";
-import { Card } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { GoogleConnect } from "@web/components/app/GoogleConnect";
+import { WhatsAppConnect } from "@web/components/app/WhatsAppConnect";
+import { DeviceSessions, NotificationPrefs, PasswordForm, ProfileForm, SlugForm, VerifyBanner } from "@web/components/app/SettingsForms";
+import { Card } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardSettingsView } from "@/lib/views/dashboard-settings";
 

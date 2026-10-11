@@ -1,4 +1,4 @@
-import { ServicesView } from "@/components/views/dashboard/ServicesView";
+import { ServicesView } from "@web/components/views/dashboard/ServicesView";
 import type { DashboardServicesView } from "@/lib/views/dashboard-services";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

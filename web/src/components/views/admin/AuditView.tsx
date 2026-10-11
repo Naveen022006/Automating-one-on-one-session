@@ -1,6 +1,6 @@
-import { PageHead } from "@/components/app/AppShell";
-import { IconShield } from "@/components/icons";
-import { EmptyState, Pagination } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { IconShield } from "@web/components/icons";
+import { EmptyState, Pagination } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminAuditView } from "@/lib/views/admin-audit";
 

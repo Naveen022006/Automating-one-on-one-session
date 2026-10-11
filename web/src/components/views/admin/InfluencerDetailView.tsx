@@ -1,7 +1,7 @@
-import { PageHead } from "@/components/app/AppShell";
-import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@/components/ui/primitives";
-import { PayoutPanel } from "@/components/admin/PayoutPanel";
-import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@/components/admin/PayoutActions";
+import { PageHead } from "@web/components/app/AppShell";
+import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@web/components/ui/primitives";
+import { PayoutPanel } from "@web/components/admin/PayoutPanel";
+import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@web/components/admin/PayoutActions";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminInfluencerView } from "@/lib/views/admin-influencer";

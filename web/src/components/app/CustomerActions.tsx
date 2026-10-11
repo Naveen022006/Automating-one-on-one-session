@@ -1,10 +1,8 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { IconTrash } from "@/components/icons";
-import { ConfirmDialog, useToast } from "@/components/ui/overlays";
-import { Button } from "@/components/ui/primitives";
+import { IconTrash } from "@web/components/icons";
+import { ConfirmDialog, useToast } from "@web/components/ui/overlays";
+import { Button } from "@web/components/ui/primitives";
 import { useApi } from "./ApiProvider";
 
 /** "Erase data" for one customer (privacy request). Irreversible, so it is confirmed and needs a recent password. */

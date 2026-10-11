@@ -1,5 +1,5 @@
-import { PageHead } from "@/components/app/AppShell";
-import { ServicesManager } from "@/components/app/ServicesManager";
+import { PageHead } from "@web/components/app/AppShell";
+import { ServicesManager } from "@web/components/app/ServicesManager";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardServicesView } from "@/lib/views/dashboard-services";
 

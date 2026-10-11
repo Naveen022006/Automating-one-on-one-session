@@ -1,6 +1,4 @@
-"use client";
-
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IconAlertCircle,
@@ -12,7 +10,7 @@ import {
   IconGlobe,
   IconUsers,
   IconVideo,
-} from "@/components/icons";
+} from "@web/components/icons";
 import {
   Calendar,
   TimeSlotPicker,
@@ -23,9 +21,9 @@ import {
   daysInMonth,
   ymd,
   type SlotOption,
-} from "@/components/ui/scheduling";
-import { focusFirstInvalid, headingToFocus } from "@/components/ui/focus";
-import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@/components/ui/primitives";
+} from "@web/components/ui/scheduling";
+import { focusFirstInvalid, headingToFocus } from "@web/components/ui/focus";
+import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@web/components/ui/primitives";
 import type { IntakeQuestion } from "@/lib/intake";
 
 interface ServiceView {
@@ -697,7 +695,7 @@ export function BookingFlow({
               </Card>
               <p className="subtle">
                 <IconCheckCircle size={14} style={{ display: "inline", verticalAlign: "-2px" }} /> You can close this page.{" "}
-                <Link href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</Link>
+                <AppLink href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</AppLink>
               </p>
             </section>
           )}
@@ -763,7 +761,7 @@ export function BookingFlow({
               </Card>
               <p className="subtle">
                 <IconCheckCircle size={14} style={{ display: "inline", verticalAlign: "-2px" }} /> You can close this page.{" "}
-                <Link href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</Link>
+                <AppLink href={`/${host.slug}`}>Back to {host.name}&rsquo;s page</AppLink>
               </p>
             </section>
           )}

@@ -1,30 +1,11 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { IconPencil, IconPlus, IconTrash, IconUsers, IconVideo } from "@/components/icons";
-import { Drawer, Switch, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Textarea, describedBy } from "@/components/ui/primitives";
+import { IconPencil, IconPlus, IconTrash, IconUsers, IconVideo } from "@web/components/icons";
+import { Drawer, Switch, useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Textarea, describedBy } from "@web/components/ui/primitives";
 import { MAX_QUESTIONS, type IntakeQuestion } from "@/lib/intake";
+import type { ServiceAdmin } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export interface ServiceAdmin {
-  id: string;
-  title: string;
-  description: string | null;
-  durationMin: number;
-  priceMinor: number;
-  currency: string;
-  type: "ONE_TO_ONE" | "GROUP";
-  capacity: number;
-  active: boolean;
-  refundPolicy: "FULL" | "NOTICE_24H" | "NONE";
-  intakeQuestions: IntakeQuestion[];
-  minNoticeHours: number;
-  maxAdvanceDays: number;
-  prepNotes: string | null;
-  requiresApproval: boolean;
-}
 
 const NOTICE_OPTIONS = [
   { value: 0, label: "No minimum" },

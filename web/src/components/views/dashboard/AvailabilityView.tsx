@@ -1,5 +1,5 @@
-import { PageHead } from "@/components/app/AppShell";
-import { BlockedDays, WeeklyHours } from "@/components/app/AvailabilityEditor";
+import { PageHead } from "@web/components/app/AppShell";
+import { BlockedDays, WeeklyHours } from "@web/components/app/AvailabilityEditor";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardAvailabilityView } from "@/lib/views/dashboard-availability";
 

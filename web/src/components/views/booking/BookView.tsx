@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { Alert } from "@/components/ui/primitives";
-import { BookingFlow } from "@/app/[influencer]/book/BookingFlow";
+import { AppLink } from "@web/lib/link";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { Alert } from "@web/components/ui/primitives";
+import { BookingFlow } from "@web/pages/booking/BookingFlow";
 import type { Jsonify } from "@/lib/jsonify";
 import type { PublicProfile } from "@/lib/public-profile";
 
@@ -17,9 +17,9 @@ export function BookView({ data: profile, initialServiceId }: { data: Jsonify<Pu
         <div className="container site-header__inner">
           <Wordmark />
           <div className="site-header__actions">
-            <Link href={`/${profile.slug}`} className="text-sm">
+            <AppLink href={`/${profile.slug}`} className="text-sm">
               {profile.name}&rsquo;s page
-            </Link>
+            </AppLink>
           </div>
         </div>
       </header>

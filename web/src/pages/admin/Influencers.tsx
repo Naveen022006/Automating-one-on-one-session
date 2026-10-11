@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { InfluencersView } from "@/components/views/admin/InfluencersView";
+import { InfluencersView } from "@web/components/views/admin/InfluencersView";
 import type { AdminInfluencersView } from "@/lib/views/admin-influencer";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

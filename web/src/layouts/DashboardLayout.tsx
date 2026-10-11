@@ -1,5 +1,5 @@
 import { Outlet } from "react-router";
-import { AppShell } from "@/components/app/AppShell";
+import { AppShell } from "@web/components/app/AppShell";
 import { useDashboardShell } from "../lib/session";
 
 /**

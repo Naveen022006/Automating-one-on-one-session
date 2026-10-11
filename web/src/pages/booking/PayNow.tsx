@@ -1,8 +1,6 @@
-"use client";
-
 import { useEffect, useState } from "react";
-import { IconDownload, IconVideo } from "@/components/icons";
-import { Alert, Button } from "@/components/ui/primitives";
+import { IconDownload, IconVideo } from "@web/components/icons";
+import { Alert, Button } from "@web/components/ui/primitives";
 
 interface CheckoutResult {
   keyId: string;

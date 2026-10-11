@@ -1,4 +1,4 @@
-import { LegalPage } from "@/components/site/LegalPage";
+import { LegalPage } from "@web/components/site/LegalPage";
 import { SUPPORT_EMAIL } from "@/lib/brand";
 
 /** The Refund and Cancellation Policy text. The only copy: the old Next page and the SPA page both render this view. */

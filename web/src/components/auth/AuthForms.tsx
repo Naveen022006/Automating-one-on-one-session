@@ -1,10 +1,8 @@
-"use client";
-
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconAlertCircle, IconCheckCircle } from "@/components/icons";
-import { focusFirstInvalid } from "@/components/ui/focus";
-import { Alert, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
+import { IconAlertCircle, IconCheckCircle } from "@web/components/icons";
+import { focusFirstInvalid } from "@web/components/ui/focus";
+import { Alert, Button, Checkbox, Field, Input, describedBy } from "@web/components/ui/primitives";
 
 type Errors = Record<string, string | undefined>;
 
@@ -77,9 +75,9 @@ export function LoginForm({ next, notice }: { next?: string; notice?: string }) 
         />
       </Field>
       <div className="row row--between">
-        <Link href="/forgot-password" className="text-sm">
+        <AppLink href="/forgot-password" className="text-sm">
           Forgot your password?
-        </Link>
+        </AppLink>
       </div>
       <Button type="submit" variant="primary" size="lg" block loading={busy}>
         Log in
@@ -197,8 +195,8 @@ export function RegisterForm() {
           aria-describedby={errors.acceptTerms ? "reg-terms-error" : undefined}
           label={
             <>
-              I agree to the <Link href="/terms" target="_blank">Terms of Service</Link> and{" "}
-              <Link href="/privacy" target="_blank">Privacy Policy</Link>.
+              I agree to the <AppLink href="/terms" target="_blank">Terms of Service</AppLink> and{" "}
+              <AppLink href="/privacy" target="_blank">Privacy Policy</AppLink>.
             </>
           }
         />
@@ -275,7 +273,7 @@ export function ResetForm({ token }: { token: string }) {
   return (
     <form className="stack" onSubmit={submit}>
       {formError && (
-        <Alert tone="danger" action={<Link href="/forgot-password">Request a new link</Link>}>
+        <Alert tone="danger" action={<AppLink href="/forgot-password">Request a new link</AppLink>}>
           {formError}
         </Alert>
       )}

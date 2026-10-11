@@ -44,9 +44,9 @@ before(async () => {
   rq = await import("@tanstack/react-query");
   api = await import("../web/src/lib/api");
   keys = (await import("../web/src/lib/query")).queryKeys;
-  mock.module("@/app/[influencer]/book/BookingFlow", { namedExports: { BookingFlow: fake("BookingFlow") } });
-  mock.module("@/app/pay/[token]/PayNow", { namedExports: { PayNow: fake("PayNow") } });
-  mock.module("@/app/manage/[token]/ManageBooking", { namedExports: { ManageBooking: fake("ManageBooking") } });
+  mock.module("@web/pages/booking/BookingFlow", { namedExports: { BookingFlow: fake("BookingFlow") } });
+  mock.module("@web/pages/booking/PayNow", { namedExports: { PayNow: fake("PayNow") } });
+  mock.module("@web/pages/booking/ManageBooking", { namedExports: { ManageBooking: fake("ManageBooking") } });
   const load = async (file: string) => (await import(`../web/src/pages/booking/${file}`)).Component as ComponentType;
   pages = { profile: await load("Profile"), book: await load("Book"), pay: await load("Pay"), manage: await load("Manage") };
 });

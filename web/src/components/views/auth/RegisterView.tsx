@@ -1,6 +1,6 @@
-import Link from "next/link";
-import { RegisterForm } from "@/components/auth/AuthForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { AppLink } from "@web/lib/link";
+import { RegisterForm } from "@web/components/auth/AuthForms";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
 
 export function RegisterView() {
   return (
@@ -12,7 +12,7 @@ export function RegisterView() {
         </div>
         <RegisterForm />
         <p className="muted text-sm">
-          Already have an account? <Link href="/login">Log in</Link>
+          Already have an account? <AppLink href="/login">Log in</AppLink>
         </p>
       </div>
     </FocusedLayout>

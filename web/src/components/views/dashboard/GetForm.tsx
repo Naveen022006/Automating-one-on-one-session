@@ -1,6 +1,4 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useEffect, useRef, type FormEvent, type FormHTMLAttributes } from "react";
 
 /** `action?field=value&...` for a submitted form. Only text values count (a file field has none). */

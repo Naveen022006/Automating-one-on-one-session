@@ -1,6 +1,6 @@
-import { IconMail } from "@/components/icons";
-import { SiteFooter, SiteHeader } from "@/components/site/SiteChrome";
-import { Card } from "@/components/ui/primitives";
+import { IconMail } from "@web/components/icons";
+import { SiteFooter, SiteHeader } from "@web/components/site/SiteChrome";
+import { Card } from "@web/components/ui/primitives";
 import { SUPPORT_EMAIL } from "@/lib/brand";
 
 export function ContactView() {

@@ -1,8 +1,8 @@
-import Link from "next/link";
-import { ReconcileButton, UnreconcileButton } from "@/components/admin/PayoutActions";
-import { PageHead } from "@/components/app/AppShell";
-import { IconCard } from "@/components/icons";
-import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { ReconcileButton, UnreconcileButton } from "@web/components/admin/PayoutActions";
+import { PageHead } from "@web/components/app/AppShell";
+import { IconCard } from "@web/components/icons";
+import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminPaymentsView, PaymentViewKey } from "@/lib/views/admin-payments";
@@ -77,7 +77,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                     <tr key={p.id}>
                       <td data-label="Date">{new Date(p.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</td>
                       <td data-label="Influencer / service">
-                        <Link href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</Link>
+                        <AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink>
                         <div className="subtle">{p.service.title}</div>
                       </td>
                       <td data-label="Customer">{p.booking.customerName}</td>

@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { ManageView } from "@/components/views/booking/ManageView";
+import { ManageView } from "@web/components/views/booking/ManageView";
 import type { ManageView as ManageViewData } from "@/lib/views/booking-manage";
 import { isApiError, useApiQuery, type ApiError } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

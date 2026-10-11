@@ -1,5 +1,5 @@
 /* Entry point. Tokens are the single source of design values; everything else consumes them. */
-@import "./styles/tokens.css";
-@import "./styles/base.css";
-@import "./styles/components.css";
-@import "./styles/layouts.css";
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./layouts.css";

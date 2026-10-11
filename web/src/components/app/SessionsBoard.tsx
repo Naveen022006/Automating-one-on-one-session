@@ -1,11 +1,9 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useEffect, useMemo, useState } from "react";
-import { IconCalendarClock, IconCalendarX, IconCopy, IconSend, IconUndo, IconUsers, IconVideo } from "@/components/icons";
-import { ConfirmDialog, Dialog, Drawer, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@/components/ui/primitives";
-import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@/components/ui/scheduling";
+import { IconCalendarClock, IconCalendarX, IconCopy, IconSend, IconUndo, IconUsers, IconVideo } from "@web/components/icons";
+import { ConfirmDialog, Dialog, Drawer, useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@web/components/ui/primitives";
+import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
 import { useApi } from "./ApiProvider";
 

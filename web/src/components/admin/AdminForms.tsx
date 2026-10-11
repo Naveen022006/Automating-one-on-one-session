@@ -1,7 +1,5 @@
-"use client";
-
 import { useState } from "react";
-import { Alert, Button, Field, Input, describedBy } from "@/components/ui/primitives";
+import { Alert, Button, Field, Input, describedBy } from "@web/components/ui/primitives";
 
 type Result = { ok: boolean; data: { error?: string; field?: string; redirect?: string; mfaRequired?: boolean; pendingToken?: string; restart?: boolean } };
 

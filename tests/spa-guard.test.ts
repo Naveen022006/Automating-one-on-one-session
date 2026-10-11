@@ -9,14 +9,15 @@ import { LIB_ALLOWLIST, nodeModulesProblem, repoPathProblem, serverModuleGuard, 
 
 test("specifiers: Node built-ins, server-side Next APIs and server-only packages are refused", () => {
   for (const s of ["node:fs", "node:crypto", "fs", "path", "crypto", "child_process", "fs/promises"]) assert.ok(specifierProblem(s), s);
-  for (const s of ["next/server", "next/headers", "next/font/google", "next/og", "next/cache", "next/dist/server/x", "next"]) assert.ok(specifierProblem(s), s);
+  // Every Next.js module is refused, next/link and next/navigation included: the SPA has its own (web/src/lib/link, web/src/lib/navigate).
+  for (const s of ["next/server", "next/headers", "next/font/google", "next/og", "next/cache", "next/dist/server/x", "next", "next/link", "next/navigation"]) assert.ok(specifierProblem(s), s);
   for (const s of ["@prisma/client", "@prisma/adapter-pg", "prisma", "pg", "pg-pool", "ioredis", "bullmq", "dotenv"]) {
     // "pg-pool" is not on the list by name; it can only arrive through "pg" anyway
     if (s === "pg-pool") continue;
     assert.ok(specifierProblem(s), s);
   }
-  // Allowed: the two Next modules the shims stand in for, and ordinary browser libraries.
-  for (const s of ["next/link", "next/navigation", "react", "react-dom/client", "react-router", "@tanstack/react-query", "luxon", "./x", "@/components/ui/primitives"]) {
+  // Allowed: ordinary browser libraries and the SPA's own modules.
+  for (const s of ["react", "react-dom/client", "react-router", "@tanstack/react-query", "luxon", "./x", "@web/components/ui/primitives"]) {
     assert.equal(specifierProblem(s), null, s);
   }
 });
@@ -44,11 +45,13 @@ test("resolved repository files: only the allowlisted lib modules, never routes,
     "lib/db.ts", "lib/crypto.ts", "lib/env.ts", "lib/auth/session.ts", "lib/admin/session.ts", "lib/payments.ts", "lib/spa/head.ts", "lib/spa/shell.ts", "lib/views/http.ts",
     "generated/prisma/client.ts", "app/api/auth/session/route.ts", "app/spa-shell/[[...path]]/route.ts", "worker/index.ts", "prisma/seed.ts", "scripts/spa-postbuild.mjs",
     "tests/helpers/x.ts", "proxy.ts", "instrumentation.ts", "app/page.tsx", "app/dashboard/layout.tsx", "app/[influencer]/book/page.tsx", "app/error.tsx",
+    // Nothing under app/ is browser code any more: route handlers and the metadata routes are all server code.
+    "app/robots.ts", "app/sitemap.ts", "app/opengraph-image.tsx", "app/icon.svg", "app/globals.css", "app/styles/tokens.css",
   ]) {
     assert.ok(repoPathProblem(bad), bad);
   }
-  // Client files that live in app/ are importable (BookingFlow, PayNow, ManageBooking, DesignShowcase) and so are the styles.
-  for (const ok of ["app/[influencer]/book/BookingFlow.tsx", "app/pay/[token]/PayNow.tsx", "app/globals.css", "app/styles/tokens.css", "components/ui/primitives.tsx", "components/views/system/NotFoundView.tsx", "web/src/main.tsx"]) {
+  // Everything the browser runs lives in web/src (components, pages, styles) and is importable.
+  for (const ok of ["web/src/pages/booking/BookingFlow.tsx", "web/src/pages/booking/PayNow.tsx", "web/src/styles/globals.css", "web/src/styles/tokens.css", "web/src/components/ui/primitives.tsx", "web/src/components/views/system/NotFoundView.tsx", "web/src/main.tsx"]) {
     assert.equal(repoPathProblem(ok), null, ok);
   }
   assert.equal(repoPathProblem("lib/format.ts?used"), null, "a query string is ignored");
@@ -116,6 +119,13 @@ test("the plugin stops the build when browser code imports a server module, nami
     buildFixture({ "src/main.ts": "import { NextResponse } from 'next/server';\nexport const x = NextResponse;" }),
     (e: Error) => /server-module guard/.test(e.message) && /next\/server/.test(e.message),
   );
+  for (const spec of ["next/link", "next/navigation"]) {
+    await assert.rejects(
+      buildFixture({ "src/main.ts": `import * as n from '${spec}';\nexport const x = n;` }),
+      (e: Error) => /server-module guard/.test(e.message) && e.message.includes(spec),
+      spec,
+    );
+  }
   await assert.rejects(
     buildFixture({ "app/api/x/route.ts": "export const GET = () => 1;", "src/main.ts": "import { GET } from '@/app/api/x/route';\nexport const x = GET;" }),
     (e: Error) => /route handler/.test(e.message),

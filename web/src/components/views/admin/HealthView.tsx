@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { PageHead } from "@/components/app/AppShell";
-import { IconCheckCircle, IconSparkline } from "@/components/icons";
-import { Alert, Badge, ButtonLink, Card, EmptyState, type Tone } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { PageHead } from "@web/components/app/AppShell";
+import { IconCheckCircle, IconSparkline } from "@web/components/icons";
+import { Alert, Badge, ButtonLink, Card, EmptyState, type Tone } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminHealthView } from "@/lib/views/admin-health";
@@ -112,7 +112,7 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
             <tbody>
               {report.conditions.map((c) => (
                 <tr key={c.id}>
-                  <td data-label="Condition">{c.href ? <Link href={c.href}>{c.label}</Link> : c.label}</td>
+                  <td data-label="Condition">{c.href ? <AppLink href={c.href}>{c.label}</AppLink> : c.label}</td>
                   <td data-label="Status">
                     <Badge tone={STATUS[c.status].tone}>{STATUS[c.status].label}</Badge>
                   </td>
@@ -167,7 +167,7 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
         <p className="subtle" style={{ marginTop: 12 }}>Reminders sit in Delayed until their send time, so a large Delayed count is normal.</p>
       </Card>
 
-      <Card title="Recently recovered payments" actions={<Link href="/admin/audit">Audit log</Link>}>
+      <Card title="Recently recovered payments" actions={<AppLink href="/admin/audit">Audit log</AppLink>}>
         <p className="muted" style={{ marginTop: 0 }}>
           Payments Razorpay had captured but whose webhook never reached us, found and booked by the recovery job. Seeing any here means webhook delivery needs a look.
         </p>

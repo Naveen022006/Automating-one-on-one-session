@@ -1,5 +1,5 @@
-import { AdminLoginForm } from "@/components/admin/AdminForms";
-import { FocusedLayout } from "@/components/site/SiteChrome";
+import { AdminLoginForm } from "@web/components/admin/AdminForms";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
 
 /** The administrator sign-in screen. `next` is the raw `?next=` of the URL; the login API validates it before redirecting. */
 export function LoginView({ next }: { next?: string }) {

@@ -1,9 +1,7 @@
-"use client";
-
 import { useState } from "react";
-import * as Icons from "@/components/icons";
-import { Wordmark } from "@/components/site/SiteChrome";
-import { ConfirmDialog, CopyField, Dialog, Drawer, Menu, Switch, Tabs, ToastProvider, useToast } from "@/components/ui/overlays";
+import * as Icons from "@web/components/icons";
+import { Wordmark } from "@web/components/site/SiteChrome";
+import { ConfirmDialog, CopyField, Dialog, Drawer, Menu, Switch, Tabs, ToastProvider, useToast } from "@web/components/ui/overlays";
 import {
   Alert,
   Avatar,
@@ -25,8 +23,8 @@ import {
   Textarea,
   Tooltip,
   describedBy,
-} from "@/components/ui/primitives";
-import { Calendar, TimeSlotPicker, monthOf, todayIn } from "@/components/ui/scheduling";
+} from "@web/components/ui/primitives";
+import { Calendar, TimeSlotPicker, monthOf, todayIn } from "@web/components/ui/scheduling";
 
 function Swatch({ name }: { name: string }) {
   return (

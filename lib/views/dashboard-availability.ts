@@ -1,9 +1,9 @@
-import type { BlockedRow, RuleRow } from "@/components/app/AvailabilityEditor";
 import { prisma } from "@/lib/db";
+import type { BlockedRow, RuleRow } from "@/lib/views/dashboard-types";
 
 /**
- * The Availability page and the onboarding wizard's hours step. Shared by the old Next page, GET
- * /api/dashboard/availability and loadOnboardingView. `timezone` is the influencer's own (the editor's default for new
+ * The Availability page and the onboarding wizard's hours step. Shared by GET /api/dashboard/availability and
+ * loadOnboardingView. `timezone` is the influencer's own (the editor's default for new
  * hours); each rule carries the zone it was entered in.
  */
 export interface DashboardAvailabilityView {

@@ -1,8 +1,8 @@
-import Link from "next/link";
-import { PayoutRowActions, PayoutStatusBadges } from "@/components/admin/PayoutActions";
-import { PageHead } from "@/components/app/AppShell";
-import { IconWallet } from "@/components/icons";
-import { Alert, Badge, EmptyState, LinkTabs, Pagination } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { PayoutRowActions, PayoutStatusBadges } from "@web/components/admin/PayoutActions";
+import { PageHead } from "@web/components/app/AppShell";
+import { IconWallet } from "@web/components/icons";
+import { Alert, Badge, EmptyState, LinkTabs, Pagination } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminPayoutsView, PayoutFilter } from "@/lib/views/admin-payouts";
@@ -62,7 +62,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
                 {rows.map((p) => (
                   <tr key={p.id}>
                     <td data-label="Created">{new Date(p.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
-                    <td data-label="Influencer"><Link href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</Link></td>
+                    <td data-label="Influencer"><AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink></td>
                     <td data-label="Send to">{p.destination}</td>
                     <td data-label="Gross" className="num">{formatMoney(p.grossAfterRefundsMinor, p.currency)}</td>
                     <td data-label="Fee" className="num">{formatMoney(p.feeMinor, p.currency)} <span className="subtle">({p.feePercentText})</span></td>

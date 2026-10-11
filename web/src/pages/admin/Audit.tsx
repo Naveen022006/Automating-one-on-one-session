@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { AuditView } from "@/components/views/admin/AuditView";
+import { AuditView } from "@web/components/views/admin/AuditView";
 import type { AdminAuditView } from "@/lib/views/admin-audit";
 import { useApiQuery } from "../../lib/api";
 import { PageTitle } from "../../lib/head";

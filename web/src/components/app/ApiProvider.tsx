@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Client API helper for the logged-in app. Sends JSON, and handles the two auth outcomes centrally:
  *  - 401 `{ reauth: true }` (sensitive action, password older than 8 hours): asks for the password in a dialog,
@@ -7,8 +5,8 @@
  *  - 401 otherwise (session gone): sends the user to /login and back.
  */
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
-import { Dialog } from "@/components/ui/overlays";
-import { Button, Field, Input, describedBy } from "@/components/ui/primitives";
+import { Dialog } from "@web/components/ui/overlays";
+import { Button, Field, Input, describedBy } from "@web/components/ui/primitives";
 
 export interface ApiResult<T = Record<string, unknown>> {
   ok: boolean;

@@ -1,10 +1,9 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { PayoutStatusBadge, type PayoutAccountData } from "@/components/app/PayoutForm";
-import { Dialog, useToast } from "@/components/ui/overlays";
-import { Alert, Button, Field, Textarea } from "@/components/ui/primitives";
+import { PayoutStatusBadge } from "@web/components/app/PayoutForm";
+import type { PayoutAccountData } from "@/lib/views/dashboard-types";
+import { Dialog, useToast } from "@web/components/ui/overlays";
+import { Alert, Button, Field, Textarea } from "@web/components/ui/primitives";
 
 interface Revealed {
   method: "BANK" | "UPI";

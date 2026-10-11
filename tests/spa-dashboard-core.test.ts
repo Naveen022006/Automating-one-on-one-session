@@ -533,11 +533,11 @@ test("every new GET path falls under the generic dashboard rate rule (120 a minu
 });
 
 type Views = {
-  CustomersView: typeof import("../components/views/dashboard/CustomersView").CustomersView;
-  EarningsView: typeof import("../components/views/dashboard/EarningsView").EarningsView;
-  MessagesView: typeof import("../components/views/dashboard/MessagesView").MessagesView;
-  SessionsView: typeof import("../components/views/dashboard/SessionsView").SessionsView;
-  GetForm: typeof import("../components/views/dashboard/GetForm");
+  CustomersView: typeof import("../web/src/components/views/dashboard/CustomersView").CustomersView;
+  EarningsView: typeof import("../web/src/components/views/dashboard/EarningsView").EarningsView;
+  MessagesView: typeof import("../web/src/components/views/dashboard/MessagesView").MessagesView;
+  SessionsView: typeof import("../web/src/components/views/dashboard/SessionsView").SessionsView;
+  GetForm: typeof import("../web/src/components/views/dashboard/GetForm");
 };
 let viewsLoaded: Promise<Views> | undefined;
 
@@ -556,19 +556,19 @@ function loadViews(): Promise<Views> {
         useSearchParams: () => new URLSearchParams(),
       },
     });
-    mock.module("@/components/app/SessionsBoard", {
+    mock.module("@web/components/app/SessionsBoard", {
       namedExports: {
         SessionsBoard: (p: { sessions: unknown[]; emptyTitle: string; initialBookingId?: string | null }) =>
           createElement("div", { "data-board": JSON.stringify({ rows: p.sessions.length, emptyTitle: p.emptyTitle, initialBookingId: p.initialBookingId ?? null }) }),
       },
     });
-    mock.module("@/components/app/CustomerActions", { namedExports: { EraseCustomer: (p: { email: string }) => createElement("button", { "data-erase": p.email }) } });
+    mock.module("@web/components/app/CustomerActions", { namedExports: { EraseCustomer: (p: { email: string }) => createElement("button", { "data-erase": p.email }) } });
     return {
-      CustomersView: (await import("../components/views/dashboard/CustomersView")).CustomersView,
-      EarningsView: (await import("../components/views/dashboard/EarningsView")).EarningsView,
-      MessagesView: (await import("../components/views/dashboard/MessagesView")).MessagesView,
-      SessionsView: (await import("../components/views/dashboard/SessionsView")).SessionsView,
-      GetForm: await import("../components/views/dashboard/GetForm"),
+      CustomersView: (await import("../web/src/components/views/dashboard/CustomersView")).CustomersView,
+      EarningsView: (await import("../web/src/components/views/dashboard/EarningsView")).EarningsView,
+      MessagesView: (await import("../web/src/components/views/dashboard/MessagesView")).MessagesView,
+      SessionsView: (await import("../web/src/components/views/dashboard/SessionsView")).SessionsView,
+      GetForm: await import("../web/src/components/views/dashboard/GetForm"),
     };
   })();
   return viewsLoaded;

@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { IconClock, IconUsers, IconVideo } from "@/components/icons";
-import { SiteFooter, Wordmark } from "@/components/site/SiteChrome";
-import { Alert, Avatar, Badge, ButtonLink, Card, EmptyState } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { IconClock, IconUsers, IconVideo } from "@web/components/icons";
+import { SiteFooter, Wordmark } from "@web/components/site/SiteChrome";
+import { Alert, Avatar, Badge, ButtonLink, Card, EmptyState } from "@web/components/ui/primitives";
 import { formatDuration, formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { PublicProfile } from "@/lib/public-profile";
@@ -74,7 +74,7 @@ export function ProfileView({ data: profile }: { data: Jsonify<PublicProfile> })
           </div>
         )}
         <p className="subtle" style={{ marginTop: 32 }}>
-          Payments by Razorpay. Your Google Meet link arrives on WhatsApp and email. <Link href="/refund-policy">Refund policy</Link>
+          Payments by Razorpay. Your Google Meet link arrives on WhatsApp and email. <AppLink href="/refund-policy">Refund policy</AppLink>
         </p>
       </main>
       <SiteFooter />

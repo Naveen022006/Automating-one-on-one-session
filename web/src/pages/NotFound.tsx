@@ -1,4 +1,4 @@
-import { NotFoundView } from "@/components/views/system/NotFoundView";
+import { NotFoundView } from "@web/components/views/system/NotFoundView";
 import type { SpaTitleTemplate } from "@/lib/spa/routes";
 import { PageTitle } from "../lib/head";
 

@@ -2,8 +2,8 @@
  * Real product UI rendered with the design system and the seeded demo data (prisma/seed.ts), used on the landing
  * page instead of stock illustrations. Static (no data fetching), so the landing page stays fast.
  */
-import { IconCheckCircle, IconClock, IconUsers, IconVideo } from "@/components/icons";
-import { Avatar, Badge, StatusPill } from "@/components/ui/primitives";
+import { IconCheckCircle, IconClock, IconUsers, IconVideo } from "@web/components/icons";
+import { Avatar, Badge, StatusPill } from "@web/components/ui/primitives";
 
 function Frame({ url, children }: { url: string; children: React.ReactNode }) {
   return (

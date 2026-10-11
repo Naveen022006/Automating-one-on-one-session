@@ -1,11 +1,9 @@
-"use client";
-
 /**
  * Client overlays built on the native <dialog> element (focus trapping, Escape to close and inert background come
  * from the browser), plus dropdown menu, toast and switch.
  */
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { IconCheckCircle, IconAlertCircle, IconX } from "@/components/icons";
+import { IconCheckCircle, IconAlertCircle, IconX } from "@web/components/icons";
 import { Button, cx } from "./primitives";
 
 /* ---------- Dialog ---------- */

@@ -1,4 +1,4 @@
-import { LandingView } from "@/components/views/public/LandingView";
+import { LandingView } from "@web/components/views/public/LandingView";
 import { PageTitle } from "../../lib/head";
 import { useSession } from "../../lib/session";
 

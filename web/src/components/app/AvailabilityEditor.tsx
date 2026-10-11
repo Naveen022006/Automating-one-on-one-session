@@ -1,25 +1,11 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useMemo, useState } from "react";
-import { IconChevronLeft, IconChevronRight, IconPlus, IconTrash } from "@/components/icons";
-import { useToast } from "@/components/ui/overlays";
-import { Alert, Button, Card, Field, Input, Select } from "@/components/ui/primitives";
-import { addMonths, daysInMonth, monthOf, timezoneOptions, todayIn, ymd } from "@/components/ui/scheduling";
+import { IconChevronLeft, IconChevronRight, IconPlus, IconTrash } from "@web/components/icons";
+import { useToast } from "@web/components/ui/overlays";
+import { Alert, Button, Card, Field, Input, Select } from "@web/components/ui/primitives";
+import { addMonths, daysInMonth, monthOf, timezoneOptions, todayIn, ymd } from "@web/components/ui/scheduling";
+import type { BlockedRow, RuleRow } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export interface RuleRow {
-  id: string;
-  weekday: number;
-  startTime: string;
-  endTime: string;
-  timezone: string;
-}
-export interface BlockedRow {
-  id: string;
-  date: string;
-  reason: string | null;
-}
 
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const TIMES = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);

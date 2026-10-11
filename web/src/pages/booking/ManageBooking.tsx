@@ -1,11 +1,9 @@
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
-import { IconCalendarClock, IconCalendarX, IconChevronLeft, IconDownload, IconVideo } from "@/components/icons";
-import { FocusedLayout } from "@/components/site/SiteChrome";
-import { ConfirmDialog } from "@/components/ui/overlays";
-import { Alert, Button, Card, StatusPill } from "@/components/ui/primitives";
-import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@/components/ui/scheduling";
+import { IconCalendarClock, IconCalendarX, IconChevronLeft, IconDownload, IconVideo } from "@web/components/icons";
+import { FocusedLayout } from "@web/components/site/SiteChrome";
+import { ConfirmDialog } from "@web/components/ui/overlays";
+import { Alert, Button, Card, StatusPill } from "@web/components/ui/primitives";
+import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import type { ManageBookingData } from "@/lib/views/booking-manage";
 
 function when(iso: string, tz: string) {

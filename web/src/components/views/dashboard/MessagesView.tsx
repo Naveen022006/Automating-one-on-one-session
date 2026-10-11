@@ -1,7 +1,7 @@
-import Link from "next/link";
-import { IconMessage } from "@/components/icons";
-import { PageHead } from "@/components/app/AppShell";
-import { EmptyState, LinkTabs, Pagination, StatusPill } from "@/components/ui/primitives";
+import { AppLink } from "@web/lib/link";
+import { IconMessage } from "@web/components/icons";
+import { PageHead } from "@web/components/app/AppShell";
+import { EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardMessagesView, MessageStatusFilter } from "@/lib/views/dashboard-messages";
 
@@ -69,7 +69,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
                       {m.error && <div className="error-text break">{m.error}</div>}
                     </td>
                     <td data-label="Customer">
-                      <Link href={`/dashboard/sessions?view=${new Date(m.sessionStart) > new Date() ? "upcoming" : "past"}&booking=${m.bookingId}`}>{m.customerName}</Link>
+                      <AppLink href={`/dashboard/sessions?view=${new Date(m.sessionStart) > new Date() ? "upcoming" : "past"}&booking=${m.bookingId}`}>{m.customerName}</AppLink>
                       <div className="subtle">{m.serviceTitle}</div>
                     </td>
                     <td data-label="Channel">{CHANNEL[m.channel] ?? m.channel}</td>

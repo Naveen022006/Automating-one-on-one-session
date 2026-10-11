@@ -1,9 +1,7 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button, Field, Input } from "@/components/ui/primitives";
+import { useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button, Field, Input } from "@web/components/ui/primitives";
 
 type Reply = { ok: boolean; data: { error?: string; secret?: string; uri?: string; recoveryCodes?: string[] } };
 

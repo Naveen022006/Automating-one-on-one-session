@@ -1,6 +1,6 @@
-import { PageHead } from "@/components/app/AppShell";
-import { AdminPasswordForm } from "@/components/admin/AdminForms";
-import { Card } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { AdminPasswordForm } from "@web/components/admin/AdminForms";
+import { Card } from "@web/components/ui/primitives";
 
 /** The admin console's Settings page (change password). `email` is the signed-in administrator's. */
 export function SettingsView({ email }: { email: string }) {

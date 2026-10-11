@@ -1,6 +1,6 @@
-import { PageHead } from "@/components/app/AppShell";
-import { TwoFactorPanel } from "@/components/admin/TwoFactorPanel";
-import { Badge, Card } from "@/components/ui/primitives";
+import { PageHead } from "@web/components/app/AppShell";
+import { TwoFactorPanel } from "@web/components/admin/TwoFactorPanel";
+import { Badge, Card } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminSecurityView } from "@/lib/views/admin-security";
 

@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * The bottom navigation bar of the dashboard and the admin console on a phone (<= 900 px, see layouts.css). The sidebar is
  * hidden there, and a bar of five fixed slots cannot hold nine sections, so the first four sections get a slot each and
@@ -11,9 +9,9 @@
  * bar), when focus moves out of the bar (Tab, Shift+Tab) and on a press outside it. The "More" button is marked current
  * while one of its sections is open.
  */
-import Link from "next/link";
+import { AppLink } from "@web/lib/link";
 import { useEffect, useId, useRef, useState, type ComponentType } from "react";
-import { IconMore } from "@/components/icons";
+import { IconMore } from "@web/components/icons";
 
 export interface MobileNavItem {
   href: string;
@@ -93,10 +91,10 @@ export function MobileNav({ pathname, primary, more }: { pathname: string; prima
       }}
     >
       {primary.map((n) => (
-        <Link key={n.href} href={n.href} aria-current={isNavActive(pathname, n) ? "page" : undefined}>
+        <AppLink key={n.href} href={n.href} aria-current={isNavActive(pathname, n) ? "page" : undefined}>
           <n.icon size={20} />
           {n.label}
-        </Link>
+        </AppLink>
       ))}
       {more.length > 0 && (
         <button
@@ -116,10 +114,10 @@ export function MobileNav({ pathname, primary, more }: { pathname: string; prima
         <ul className="mobile-more" id={listId}>
           {more.map((n) => (
             <li key={n.href}>
-              <Link href={n.href} aria-current={isNavActive(pathname, n) ? "page" : undefined} onClick={() => setOpen(false)}>
+              <AppLink href={n.href} aria-current={isNavActive(pathname, n) ? "page" : undefined} onClick={() => setOpen(false)}>
                 <n.icon size={18} />
                 {n.label}
-              </Link>
+              </AppLink>
             </li>
           ))}
         </ul>

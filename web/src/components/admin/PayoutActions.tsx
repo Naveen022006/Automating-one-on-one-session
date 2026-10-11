@@ -1,9 +1,7 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { Dialog, useToast } from "@/components/ui/overlays";
-import { Badge, Button, Field, Input, Textarea } from "@/components/ui/primitives";
+import { Dialog, useToast } from "@web/components/ui/overlays";
+import { Badge, Button, Field, Input, Textarea } from "@web/components/ui/primitives";
 import type { PayoutApprovalView } from "@/lib/payouts";
 
 async function call(url: string, method: "POST" | "PATCH", body?: unknown) {

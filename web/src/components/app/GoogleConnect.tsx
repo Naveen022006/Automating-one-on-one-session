@@ -1,16 +1,10 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
-import { IconCalendar, IconCheckCircle } from "@/components/icons";
-import { ConfirmDialog, useToast } from "@/components/ui/overlays";
-import { Alert, Badge, Button } from "@/components/ui/primitives";
+import { IconCalendar, IconCheckCircle } from "@web/components/icons";
+import { ConfirmDialog, useToast } from "@web/components/ui/overlays";
+import { Alert, Badge, Button } from "@web/components/ui/primitives";
+import type { GoogleStatusView } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
-
-export type GoogleStatusView =
-  | { state: "not-connected"; requestsGmail?: boolean; liveEvents?: number; previousEmail?: string | null }
-  | { state: "connected"; email: string | null; connectedAt: string; gmailSend: boolean; liveEvents?: number; gmailFailing?: boolean }
-  | { state: "reconnect-needed"; email: string | null; reason: string | null; liveEvents?: number };
 
 const OUTCOME: Record<string, { tone: "success" | "danger" | "warning"; text: string }> = {
   connected: { tone: "success", text: "Google connected. New bookings get a Meet link automatically." },

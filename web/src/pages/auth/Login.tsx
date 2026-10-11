@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router";
-import { LoginView } from "@/components/views/auth/LoginView";
+import { LoginView } from "@web/components/views/auth/LoginView";
 import { PageTitle } from "../../lib/head";
 
 /**

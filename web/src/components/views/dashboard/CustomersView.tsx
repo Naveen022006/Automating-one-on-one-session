@@ -1,7 +1,7 @@
-import { IconSearch, IconUsers } from "@/components/icons";
-import { PageHead } from "@/components/app/AppShell";
-import { EraseCustomer } from "@/components/app/CustomerActions";
-import { Button, EmptyState, Input } from "@/components/ui/primitives";
+import { IconSearch, IconUsers } from "@web/components/icons";
+import { PageHead } from "@web/components/app/AppShell";
+import { EraseCustomer } from "@web/components/app/CustomerActions";
+import { Button, EmptyState, Input } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardCustomersView } from "@/lib/views/dashboard-customers";
