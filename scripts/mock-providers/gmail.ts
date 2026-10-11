@@ -135,7 +135,7 @@ async function sendMessage(c: Ctx): Promise<void> {
   };
   (rt.state.google.sentMail[email] ??= []).push(record);
   rt.save();
-  rt.activity(`Gmail: "${record.subject}" from ${email} to ${record.to}`, `/__mock/gmail#mail-${record.id}`);
+  rt.activity(`Gmail: "${record.subject}" from ${email} to ${record.to}`, `/__mock/gmail?id=${record.id}`);
   c.sendJson(200, { id: record.id, threadId: record.threadId, labelIds: ["SENT"] });
 }
 

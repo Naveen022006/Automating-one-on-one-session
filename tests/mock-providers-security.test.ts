@@ -173,6 +173,84 @@ test("a token the mock did not mint is rejected, and never echoed, logged or pri
   assert.ok(!(await raw(t.mock, "GET", "/__mock/requests")).text.includes(real));
 });
 
+test("hostile text from bookings (names, subjects, bodies) cannot become markup on any owner page; Gmail HTML is only shown sandboxed", async () => {
+  const origin = t.mock.url;
+  const redirect = "http://localhost:3000/api/google/callback";
+  const query = new URLSearchParams({ client_id: "mock-client-id.apps.mock-google.invalid", redirect_uri: redirect, response_type: "code", scope: "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.send", access_type: "offline", state: "s" });
+  const page = await raw(t.mock, "GET", `/google/o/oauth2/v2/auth?${query}`);
+  const decisionId = /name="decisionId" value="([^"]+)"/.exec(page.text)![1];
+  const form = new URLSearchParams({ decisionId, account: "other", other_account: "xss@mock-google.invalid", action: "allow" });
+  form.append("scope", "https://www.googleapis.com/auth/calendar.events");
+  form.append("scope", "https://www.googleapis.com/auth/gmail.send");
+  const decision = await raw(t.mock, "POST", "/google/o/oauth2/v2/auth/decision", { "content-type": "application/x-www-form-urlencoded", origin, "sec-fetch-site": "same-origin" }, form.toString());
+  const code = new URL(String(decision.headers.location)).searchParams.get("code")!;
+  const tokens = await raw(t.mock, "POST", "/google/token", { "content-type": "application/x-www-form-urlencoded" }, new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirect, client_id: "mock-client-id.apps.mock-google.invalid", client_secret: GOOGLE_CLIENT_SECRET }).toString());
+  const auth = { authorization: `Bearer ${tokens.json().access_token}`, "content-type": "application/json" };
+
+  const event = await raw(t.mock, "POST", "/google/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all", auth, JSON.stringify({
+    id: "secevent00002",
+    summary: "<script>alert('summary')</script>",
+    description: "d",
+    start: { dateTime: "2030-01-01T10:00:00Z" },
+    end: { dateTime: "2030-01-01T10:30:00Z" },
+    attendees: [{ email: "a@example.com", displayName: "<img src=x onerror=alert(1)>" }],
+    conferenceData: { createRequest: { requestId: "r" } },
+  }));
+  const meetCode = String(event.json().hangoutLink).split("/meet/")[1];
+
+  const mime = [
+    'From: "Mock Creator" <xss@mock-google.invalid>',
+    "To: victim@example.com",
+    "Subject: <img src=x onerror=alert(2)>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="b1"',
+    "",
+    "--b1",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "",
+    "<b>plain</b> text",
+    "--b1",
+    'Content-Type: text/html; charset="UTF-8"',
+    "",
+    "<script>alert(1)</script><p>hello</p>",
+    "--b1--",
+    "",
+  ].join("\r\n");
+  const sent = await raw(t.mock, "POST", "/google/gmail/v1/users/me/messages/send", auth, JSON.stringify({ raw: Buffer.from(mime).toString("base64url") }));
+  assert.equal(sent.status, 200, sent.text);
+  const mailId = sent.json().id as string;
+
+  const metaToken = (await control(t.mock, "/__mock/meta/mint-token", { app: "platform", scopes: ["whatsapp_business_management", "whatsapp_business_messaging"], wabaIds: ["990000000001001"], expiresInDays: 0 })).json().token as string;
+  const meta = { authorization: `Bearer ${metaToken}`, "content-type": "application/json" };
+  await raw(t.mock, "POST", "/meta/v26.0/990000000002001/register", meta, JSON.stringify({ messaging_product: "whatsapp", pin: "123123" }));
+  const created = await raw(t.mock, "POST", "/meta/v26.0/990000000001001/message_templates", meta, JSON.stringify({ name: "xss_template", language: "en", category: "UTILITY", components: [{ type: "BODY", text: "Hello {{1}} and welcome", example: { body_text: [["x"]] } }] }));
+  await control(t.mock, "/__mock/meta/template", { wabaId: "990000000001001", templateId: created.json().id, action: "approve" });
+  const wa = await raw(t.mock, "POST", "/meta/v26.0/990000000002001/messages", meta, JSON.stringify({ messaging_product: "whatsapp", to: "+919876543210", type: "template", template: { name: "xss_template", language: { code: "en" }, components: [{ type: "body", parameters: [{ type: "text", text: "<img src=x onerror=alert(3)>" }] }] } }));
+  assert.equal(wa.status, 200, wa.text);
+  await raw(t.mock, "POST", "/sms/send", { authorization: "Bearer MOCK-NOT-REAL-sms-key", "content-type": "application/json" }, JSON.stringify({ to: "+919876543210", body: "<script>alert('sms')</script>" }));
+
+  const routes = ["/__mock", "/__mock/google", "/__mock/gmail", `/__mock/gmail?id=${mailId}`, "/__mock/meta", "/__mock/whatsapp", "/__mock/sms", "/__mock/webhooks", "/__mock/requests", "/__mock/faults", `/meet/${meetCode}`];
+  for (const route of routes) {
+    const res = await raw(t.mock, "GET", route);
+    assert.equal(res.status, 200, route);
+    assert.ok(!/<script/i.test(res.text), `${route}: no script element at all`);
+    assert.ok(!/<img/i.test(res.text), `${route}: hostile text did not become an element`);
+    assert.ok(!/onerror=/i.test(res.text.replace(/&lt;[^]*?&gt;/g, "")), `${route}: no live event handler`);
+  }
+  const overview = (await raw(t.mock, "GET", "/__mock")).text;
+  assert.match(overview, /&lt;script&gt;alert\(&#39;summary&#39;\)&lt;\/script&gt;/, "shown as text, escaped");
+  const gmailDetail = (await raw(t.mock, "GET", `/__mock/gmail?id=${mailId}`)).text;
+  assert.match(gmailDetail, /<iframe sandbox srcdoc="/, "the HTML part is inside a sandboxed frame");
+  assert.ok(!/<iframe sandbox[^>]*allow-/.test(gmailDetail), "with no allow-* tokens");
+  assert.match(gmailDetail, /srcdoc="&lt;script&gt;alert\(1\)&lt;\/script&gt;&lt;p&gt;hello&lt;\/p&gt;"/, "the frame's content is an escaped attribute value");
+  assert.match(gmailDetail, /Subject<\/th><td>&lt;img src=x onerror=alert\(2\)&gt;/);
+  assert.match((await raw(t.mock, "GET", "/__mock/whatsapp")).text, /Hello &lt;img src=x onerror=alert\(3\)&gt; and welcome/);
+  assert.match((await raw(t.mock, "GET", "/__mock/sms")).text, /&lt;script&gt;alert\(&#39;sms&#39;\)&lt;\/script&gt;/);
+  const room = await raw(t.mock, "GET", `/meet/${meetCode}`);
+  assert.match(room.text, /MOCK Meet room\. This is not a real meeting/);
+  assert.equal((await raw(t.mock, "GET", "/meet/mock-nope-nope")).status, 404);
+});
+
 test("a webhook target outside the local machine is refused, so the mock can never be made to send anywhere else", async () => {
   const post = (url: string) => raw(t.mock, "POST", "/__mock/webhooks/target", { "content-type": "application/json", "x-mock-control": t.mock.controlToken }, JSON.stringify({ url }));
   assert.equal((await post("https://example.com/hook")).status, 400);
