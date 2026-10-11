@@ -1,3 +1,4 @@
+import { ExportControls } from "@web/components/admin/ExportControls";
 import { PageHead } from "@web/components/app/AppShell";
 import { IconShield } from "@web/components/icons";
 import { EmptyState, Pagination } from "@web/components/ui/primitives";
@@ -15,6 +16,7 @@ export function AuditView({ data, busy }: { data: Jsonify<AdminAuditView>; busy?
   return (
     <div className="stack stack--lg">
       <PageHead title="Audit log" description="Every sensitive thing an administrator did. Entries cannot be edited." />
+      <ExportControls kind="audit" />
       <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.rows.length === 0 ? (

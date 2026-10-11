@@ -1,5 +1,7 @@
 import { AppLink } from "@web/lib/link";
 import { ReconcileButton, UnreconcileButton } from "@web/components/admin/PayoutActions";
+import { ExportControls } from "@web/components/admin/ExportControls";
+import { RefundAction } from "@web/components/admin/RefundAction";
 import { PageHead } from "@web/components/app/AppShell";
 import { IconCard } from "@web/components/icons";
 import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
@@ -47,6 +49,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
         Reconciling asks Razorpay for each payment and checks the id, order, amount and status match. Only reconciled
         payments are included when you create a payout.
       </Alert>
+      <ExportControls kind="payments" />
       <LinkTabs items={VIEWS.map((v) => ({ label: v.label, href: `/admin/payments?view=${v.key}`, current: view === v.key, count: countFor[v.key] }))} />
       <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
@@ -90,6 +93,20 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                             {p.refundAmountMinor ? ` · ${formatMoney(p.refundAmountMinor, p.currency)}` : ""}
                           </div>
                         )}
+                        {p.refund.allowed ? (
+                          <div style={{ marginTop: 6 }}>
+                            <RefundAction
+                              paymentId={p.id}
+                              remainingMinor={p.refund.remainingMinor}
+                              currency={p.currency}
+                              customerName={p.booking.customerName}
+                              influencerName={p.influencer.name}
+                              inPayout={p.inPayout}
+                            />
+                          </div>
+                        ) : p.needsRefund && p.status === "CAPTURED" && p.refund.reason ? (
+                          <div className="subtle">{p.refund.reason}</div>
+                        ) : null}
                       </td>
                       <td data-label="Booking">
                         <StatusPill kind="booking" status={p.booking.status} />

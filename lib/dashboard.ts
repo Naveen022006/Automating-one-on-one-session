@@ -72,10 +72,13 @@ export function aggregateEarnings(payments: EarningsPaymentInput[]): EarningsSum
   return { totalsByCurrency, byService };
 }
 
-/** RFC 4180 CSV cell. Also neutralises spreadsheet formula injection (cells starting with = + - @). */
+/**
+ * RFC 4180 CSV cell. Also neutralises spreadsheet formula injection: a text cell starting with = + - @, a tab, CR or LF, or the full-width
+ * forms of = + - @ (U+FF1D, U+FF0B, U+FF0D, U+FF20, which some spreadsheets fold to the ASCII ones) gets a leading quote.
+ */
 export function csvCell(value: string | number | null | undefined): string {
   let s = value === null || value === undefined ? "" : String(value);
-  if (typeof value !== "number" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  if (typeof value !== "number" && /^[=+\-@\t\r\n＝＋－＠]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

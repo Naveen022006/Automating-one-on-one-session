@@ -1,4 +1,5 @@
-import { listBookings, parsePage } from "@/lib/admin/data";
+import { adminCancelEligibility } from "@/lib/admin/cancel";
+import { BOOKING_SEARCH_MAX, listBookings, parsePage } from "@/lib/admin/data";
 
 /**
  * The admin Bookings page's data, for GET /api/admin/bookings. The caller has already passed the admin
@@ -25,9 +26,13 @@ export interface AdminBookingRow {
   /** Captured or refunded payments added up, in the service's currency; 0 when nothing was paid. */
   paidMinor: number;
   currency: string;
+  /** Whether the Cancel button is offered, worked out on the server (adminCancelEligibility); `reason` says why not. */
+  cancel: { allowed: boolean; reason: string | null };
 }
 
 export interface AdminBookingsView {
+  /** The search text the list was filtered by (trimmed, at most 120 characters), "" for none. */
+  q: string;
   status: BookingStatusFilter;
   page: number;
   pageCount: number;
@@ -35,10 +40,13 @@ export interface AdminBookingsView {
   rows: AdminBookingRow[];
 }
 
-export async function loadAdminBookingsView(params: { status?: string | null; page?: string | null }): Promise<AdminBookingsView> {
+export async function loadAdminBookingsView(params: { status?: string | null; page?: string | null; q?: string | null }): Promise<AdminBookingsView> {
   const status = parseBookingStatus(params.status);
-  const data = await listBookings(parsePage(params.page ?? undefined), status === "all" ? undefined : status);
+  const q = (params.q ?? "").trim().slice(0, BOOKING_SEARCH_MAX);
+  const data = await listBookings(parsePage(params.page ?? undefined), status === "all" ? undefined : status, q || undefined);
+  const now = new Date();
   return {
+    q,
     status,
     page: data.page,
     pageCount: data.pageCount,
@@ -57,6 +65,10 @@ export async function loadAdminBookingsView(params: { status?: string | null; pa
         lastError: b.lastError ? b.lastError.slice(0, 80) : null,
         paidMinor: b.payments.filter((p) => p.status === "CAPTURED" || p.status === "REFUNDED").reduce((n, p) => n + p.amountMinor, 0),
         currency: svc.currency,
+        cancel: (() => {
+          const e = adminCancelEligibility({ status: b.status, startTime: b.session.startTime }, now);
+          return { allowed: e.allowed, reason: e.allowed ? null : e.reason };
+        })(),
       };
     }),
   };

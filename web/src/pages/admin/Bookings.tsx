@@ -13,10 +13,12 @@ export function Component() {
   const [search] = useSearchParams();
   const status = search.get("status");
   const page = search.get("page");
+  const q = search.get("q")?.slice(0, 120) ?? null;
   const params = new URLSearchParams();
   if (status !== null) params.set("status", status);
   if (page !== null) params.set("page", page);
-  const query = useApiQuery<Jsonify<AdminBookingsView>>(queryKeys.admin("bookings", { status, page }), `/api/admin/bookings?${params}`, {
+  if (q) params.set("q", q);
+  const query = useApiQuery<Jsonify<AdminBookingsView>>(queryKeys.admin("bookings", { status, page, q }), `/api/admin/bookings?${params}`, {
     placeholderData: keepPreviousData,
   });
   return (

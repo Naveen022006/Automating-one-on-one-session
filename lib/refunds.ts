@@ -8,6 +8,8 @@ export { NOTICE_MS, describeRefundPolicy, refundDecision, type CancelActor, type
 export class RefundError extends Error {}
 /** The refund is not allowed (wrong state, wrong owner, bad amount, one already in flight). */
 export class RefundNotAllowedError extends Error {}
+/** The admin console's expected amount no longer matches what is left of the payment (nothing was sent to Razorpay). */
+export class RefundAmountChangedError extends Error {}
 /**
  * Razorpay did not confirm the outcome (timeout, 5xx, network). The refund may still go through, so the payment
  * stays locked as "requested" until a webhook or reconciliation reports what actually happened.
@@ -89,7 +91,18 @@ async function reconcile(paymentId: string, providerPaymentId: string, deps: Ref
  */
 export async function refundPayment(
   paymentId: string,
-  opts: { influencerId?: string; amountMinor?: number; reason?: string } = {},
+  opts: {
+    influencerId?: string;
+    amountMinor?: number;
+    reason?: string;
+    /** Admin console only: the claim also fails while the payment is locked in a PENDING payout (that payout's snapshot would be wrong). */
+    blockPendingPayout?: boolean;
+    /**
+     * Admin console only: a CHECK, never the amount. The refund is refused (RefundAmountChangedError) unless what is left of the payment is
+     * exactly this, both when read and when the claim is taken (the claim also requires the refund total it read to be unchanged).
+     */
+    expectedRemainingMinor?: number;
+  } = {},
   overrides: Partial<RefundDeps> = {},
 ): Promise<{ refundId: string; status: string; amountMinor: number; fullyRefunded: boolean }> {
   const deps = { ...defaultDeps, ...overrides };
@@ -124,16 +137,34 @@ export async function refundPayment(
     throw new RefundNotAllowedError("Refund amount must be between 1 and the amount not yet refunded");
   }
 
+  if (opts.expectedRemainingMinor !== undefined && opts.expectedRemainingMinor !== remaining) {
+    throw new RefundAmountChangedError("The amount left to refund changed. Reload the page and check it again.");
+  }
+
   const previousStatus = payment.refundStatus;
   const claimed = await prisma.payment.updateMany({
     where: {
       id: payment.id,
       status: "CAPTURED",
       OR: [{ refundStatus: null }, { refundStatus: { in: ["pending", "processed", "failed"] } }],
+      ...(opts.blockPendingPayout ? { AND: [{ OR: [{ payoutId: null }, { payout: { status: { not: "PENDING" as const } } }] }] } : {}),
+      ...(opts.expectedRemainingMinor !== undefined ? { refundAmountMinor: payment.refundAmountMinor } : {}),
     },
     data: { refundStatus: "requested" },
   });
-  if (claimed.count === 0) throw new RefundNotAllowedError("A refund for this payment is already in progress");
+  if (claimed.count === 0) {
+    if (opts.blockPendingPayout || opts.expectedRemainingMinor !== undefined) {
+      // Say what actually changed (a payout took the payment, or another refund moved the total) instead of "in progress".
+      const now = await prisma.payment.findUnique({ where: { id: payment.id }, select: { refundAmountMinor: true, payout: { select: { status: true } } } });
+      if (opts.blockPendingPayout && now?.payout?.status === "PENDING") {
+        throw new RefundNotAllowedError("This payment is in a pending payout. Cancel that payout first.");
+      }
+      if (opts.expectedRemainingMinor !== undefined && now && now.refundAmountMinor !== payment.refundAmountMinor) {
+        throw new RefundAmountChangedError("The amount left to refund changed. Reload the page and check it again.");
+      }
+    }
+    throw new RefundNotAllowedError("A refund for this payment is already in progress");
+  }
 
   let refund: RazorpayRefund;
   try {

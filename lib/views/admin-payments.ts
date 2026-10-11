@@ -1,4 +1,6 @@
-import { listPayments, MISMATCH_BOOKING_STATUSES, paymentViewCounts, parsePage, type PaymentFilter } from "@/lib/admin/data";
+import { adminRefundEligibility } from "@/lib/admin/refund";
+import { prisma } from "@/lib/db";
+import { listPayments,MISMATCH_BOOKING_STATUSES, paymentViewCounts, parsePage, type PaymentFilter } from "@/lib/admin/data";
 
 /**
  * The admin Payments page's data, for GET /api/admin/payments. The caller has already passed the admin
@@ -30,6 +32,8 @@ export interface AdminPaymentRow {
   razorpayId: string;
   /** Captured, but the booking is in a state that should not coexist with a captured payment (computed on the server). */
   mismatch: boolean;
+  /** Whether the Refund button is offered, worked out on the server (adminRefundEligibility); `reason` says why not, `remainingMinor` is what a refund would return. */
+  refund: { allowed: boolean; reason: string | null; remainingMinor: number };
   booking: { status: string; customerName: string };
   service: { title: string };
   influencer: { id: string; name: string };
@@ -50,6 +54,16 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
   const page = parsePage(params.page ?? undefined);
   const filter: PaymentFilter = { view: view === "all" ? undefined : view };
   const [data, counts] = await Promise.all([listPayments(page, filter), paymentViewCounts()]);
+  // Whether a refund is offered depends on the status of the payout a payment is locked in (a pending one blocks it): one more read, by id.
+  const payoutIds = [...new Set(data.rows.map((p) => p.payoutId).filter((id): id is string => id !== null))];
+  const payouts = payoutIds.length ? await prisma.payout.findMany({ where: { id: { in: payoutIds } }, select: { id: true, status: true } }) : [];
+  const payoutStatus = new Map(payouts.map((p) => [p.id, p.status as string]));
+  // A flagged payment on a live booking is refundable only when the booking has ANOTHER captured payment (a real duplicate).
+  const flaggedBookingIds = [...new Set(data.rows.filter((p) => p.needsRefund && p.booking).map((p) => p.booking.id))];
+  const captured = flaggedBookingIds.length
+    ? await prisma.payment.findMany({ where: { bookingId: { in: flaggedBookingIds }, status: "CAPTURED" }, select: { id: true, bookingId: true } })
+    : [];
+  const now = new Date();
   return {
     view,
     page: data.page,
@@ -78,6 +92,18 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
       inPayout: p.payoutId !== null,
       razorpayId: p.providerPaymentId ?? p.providerOrderId,
       mismatch: p.status === "CAPTURED" && (MISMATCH_BOOKING_STATUSES as readonly string[]).includes(p.booking.status),
+      refund: (() => {
+        const e = adminRefundEligibility(
+          {
+            ...p,
+            hasOtherCapturedPayment: captured.some((c) => c.bookingId === p.booking.id && c.id !== p.id),
+            booking: { status: p.booking.status, startTime: p.booking.session.startTime },
+            payoutStatus: p.payoutId ? (payoutStatus.get(p.payoutId) ?? null) : null,
+          },
+          now,
+        );
+        return { allowed: e.allowed, reason: e.allowed ? null : e.reason, remainingMinor: e.remainingMinor };
+      })(),
       booking: { status: p.booking.status, customerName: p.booking.customerName },
       service: { title: p.booking.session.service.title },
       influencer: { id: p.booking.session.service.influencer.id, name: p.booking.session.service.influencer.name },

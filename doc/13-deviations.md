@@ -117,3 +117,39 @@ Dated 2026-10-11. Only differences from the WP-C section; everything else was do
 11. **Not logged (the plan does not list them)**: `POST /api/auth/forgot-password` and `resend-verification`, failed re-authentication, and failed password change.
 
 12. **Review round (C1 to C7).** Repeated entries of `auth.login_failed`, `auth.reauthenticated`, `profile.updated`, `availability.changed` (same kind of change) and `earnings.exported` from the same influencer, actor and IP within 15 minutes are one row whose `detail.count` rises (no migration; `COALESCED_ACTIONS` in `lib/activity-actions.ts`); security and money entries are never merged. Both activity endpoints take an optional `?action=` (a known action, else ignored); the 400-page cap applies to the filtered list. `booking.rescheduled` / `booking.cancelled` gain `detail.calendar = "not-updated"` (also when Google refuses a reschedule, which still answers 502). An unconfirmed refund reads "Refund requested ... (not confirmed yet)". The user lookup and the insert share one 2 s deadline. The Settings views refresh the card through the window event `sa:activity-changed` (password change, password prompt, e-mail alerts switch; the profile and address forms already call `router.refresh()`), which touches `SettingsForms.tsx` and `ApiProvider.tsx` by one line each.
+
+# WP-B (`mk/b-admin-money-ops`): deviations from `doc/13-product-build-plan.md`
+
+Only differences from section 2, "WP-B Admin money operations"; everything else was done as written.
+
+1. **Booking search matches the id AND the text.** The plan says a `q` that passes `isEntityId` matches the booking id exactly, else it is a
+   "contains". A name such as "asha" also passes `isEntityId`, so a name-only search would have found nothing. `q` is now an exact id match
+   (when it has the shape of one) OR a case-insensitive "contains" on the e-mail or the name (`bookingSearchWhere` in `lib/admin/data.ts`).
+2. **Refund eligibility also returns `remainingMinor` when refused**, so the row DTO (`refund: { allowed, reason, remainingMinor }`) is
+   always the same shape. The pending-payout check reads payout statuses with one extra query by id in `lib/views/admin-payments.ts`
+   (`listPayments` in `lib/admin/data.ts` is not WP-B's).
+3. **Extra audit actions** beyond the plan's, so no `*_requested` entry is left dangling: `payment.refund_refused` (lost the claim race, nothing
+   sent), `payment.refund_error` (unexpected fault after the claim), `booking.cancel_refused` (the booking changed between read and
+   cancel), `booking.cancel_error`. Audit writes AFTER the money call are best-effort (reported, never turned into a 500 that hides the
+   outcome); the write BEFORE it is awaited and stops the action if it fails.
+4. **Export range defaults:** with only `to` given, `from` defaults to the 1st of `to`'s month (the plan only defines both missing). Invalid
+   `from`/`to` text is a 400 (the earnings export treats it as open). Audit `admin.export` uses `targetType: "export"`, `targetId: <kind>`.
+5. **Export download in the browser** is a plain `<a href download>` (works without JavaScript) whose click is intercepted to `fetch` the
+   file, so a refusal ("More than 20,000 rows...") shows as a message instead of a failed download. The Refund action sits in the Payment
+   cell (visible without horizontal scrolling); Cancel has its own Actions column.
+6. **Not changed, noted risk:** `cancelBooking` (`lib/manage.ts`, not WP-B's) has no claim, so two administrators cancelling the same booking
+   in the same instant could both pass and send the customer notice twice. Money is not affected (refunds go through the claim in `refundPayment`).
+7. **Review fixes, with small edits outside WP-B's file list** (all additive; other callers behave as before):
+   - `lib/refunds.ts`: `refundPayment` options `blockPendingPayout` (the claim also requires no PENDING payout; a payout that took the payment
+     in between gives "in a pending payout") and `expectedRemainingMinor` (a check, never the amount: `RefundAmountChangedError`, and the
+     claim requires the refund total it read to be unchanged). Only the admin path passes them.
+   - `lib/payouts.ts`: `createPayout`'s claim now also requires no refund in flight and the same refund total as read, so a refund claimed
+     in between turns the count check into a 409; optional test-only `hooks.afterRead` to interleave.
+   - `lib/manage.ts`: `cancelBooking` option `byPlatform` (no "refund-needed"/"refund-failed" alert to the host; the customer is told the
+     platform will refund). `lib/dashboard.ts`: `csvCell` also neutralises a leading LF and the full-width = + - @ (shared with the earnings export).
+   - A flagged (`needsRefund`) payment on an upcoming live booking is refundable only when the booking has ANOTHER captured payment.
+   - The refund body requires `expectedRemainingMinor`; a mismatch is `409 { code: "amount-changed" }`. An unexpected fault after the claim is
+     `500 { error: "outcome-unknown" }`, audited `payment.refund_unconfirmed`; Razorpay status other than `processed` is audited
+     `payment.refund_submitted`. Exports start with a UTF-8 BOM.
+8. **Tests:** `tests/spa-admin-money.test.ts` pinned key sets updated (`refund`, `cancel`, `q`); new `tests/admin-exports.test.ts`,
+   `tests/admin-refund-cancel.test.ts`, `tests/admin-money-views.test.ts`.

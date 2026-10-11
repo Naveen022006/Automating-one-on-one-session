@@ -373,7 +373,7 @@ test("a disabled administrator's session stops working at once on every endpoint
 
 const PAYMENT_ROW_KEYS = [
   "amountMinor", "booking", "createdAt", "currency", "id", "inPayout", "influencer", "mismatch", "needsRefund", "razorpayId",
-  "reconciled", "refundAmountMinor", "refundStatus", "service", "status",
+  "reconciled", "refund", "refundAmountMinor", "refundStatus", "service", "status",
 ];
 type PaymentRow = { id: string; razorpayId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; inPayout: boolean; reconciled: boolean; influencer: { id: string; name: string }; service: { title: string } };
 /** The kind a seeded payment was created with ("recon", "done"...): the Razorpay id column holds `pay_<run>_<kind>`, or `order_<run>_<kind>` while there is no payment id. */
@@ -555,7 +555,7 @@ test("M6: what a row lets the viewer do is worked out per viewer on the server (
 
 /* ---------- M7 bookings ---------- */
 
-const BOOKING_ROW_KEYS = ["currency", "customerName", "id", "influencer", "lastError", "paidMinor", "serviceTitle", "startTime", "status"];
+const BOOKING_ROW_KEYS = ["cancel", "currency", "customerName", "id", "influencer", "lastError", "paidMinor", "serviceTitle", "startTime", "status"];
 type BookingRow = { id: string; customerName: string; status: string; lastError: string | null; paidMinor: number; currency: string; serviceTitle: string };
 
 test("M7 GET /api/admin/bookings: the status filters, the error text cut to 80 characters, the paid total, exactly the hand-picked fields", { skip }, async () => {
@@ -573,7 +573,7 @@ test("M7 GET /api/admin/bookings: the status filters, the error text cut to 80 c
   };
 
   const all = await onFilter("", 9);
-  assert.deepEqual(keys(all.body), ["page", "pageCount", "rows", "status", "total"]);
+  assert.deepEqual(keys(all.body), ["page", "pageCount", "q", "rows", "status", "total"]);
   assert.equal(all.body.status, "all");
   assert.ok((all.body.total as number) >= 9);
   for (const r of all.rows) assert.deepEqual(keys(r), BOOKING_ROW_KEYS);
@@ -925,6 +925,7 @@ const payment = (over: Record<string, unknown> = {}) => ({
   inPayout: false,
   razorpayId: "pay_ABC",
   mismatch: false,
+  refund: { allowed: false, reason: "Cancel the booking first (Bookings > Cancel).", remainingMinor: 250000 },
   booking: { status: "SCHEDULED", customerName: "Cust One" },
   service: { title: "Strategy call" },
   influencer: { id: "inf1", name: "Ina Fluencer" },
@@ -988,15 +989,15 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
 
 test("BookingsView and AuditView: status lines with the filter and page, tab and pagination links, the error text, busy only when told", async () => {
   const { BookingsView, AuditView } = await loadViews();
-  const booking = { id: "b1", serviceTitle: "Call", startTime: "2026-10-12T10:00:00.000Z", influencer: { id: "inf1", name: "Ina" }, customerName: "Cust", status: "FAILED", lastError: "meet link failed", paidMinor: 150000, currency: "INR" };
-  const html = renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "FAILED" as const, page: 1, pageCount: 2, total: 26, rows: [booking, { ...booking, id: "b2", paidMinor: 0, lastError: null }] }) }));
+  const booking = { id: "b1", serviceTitle: "Call", startTime: "2026-10-12T10:00:00.000Z", influencer: { id: "inf1", name: "Ina" }, customerName: "Cust", status: "FAILED", lastError: "meet link failed", paidMinor: 150000, currency: "INR", cancel: { allowed: false, reason: "Only paid or scheduled bookings can be cancelled." } };
+  const html = renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ q: "", status: "FAILED" as const, page: 1, pageCount: 2, total: 26, rows: [booking, { ...booking, id: "b2", paidMinor: 0, lastError: null }] }) }));
   assert.equal(statusLine(html), "Needs attention: 26 bookings, page 1 of 2.");
   assert.ok(html.includes("26 bookings") && html.includes("meet link failed") && html.includes("1,500.00") && html.includes("—"));
   assert.ok(html.includes('href="/admin/bookings?status=FAILED&amp;page=2"'), "Next keeps the filter");
   assert.ok(html.includes('href="/admin/bookings?status=PAID"') && html.includes(">Paid, no link<"));
-  assert.equal(statusLine(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 1, rows: [booking] }) }))), "All: 1 booking, page 1 of 1.");
-  assert.ok(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }) })).includes("Nothing matches this filter."));
-  assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }), busy: true }))));
+  assert.equal(statusLine(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ q: "", status: "all" as const, page: 1, pageCount: 1, total: 1, rows: [booking] }) }))), "All: 1 booking, page 1 of 1.");
+  assert.ok(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ q: "", status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }) })).includes("Nothing matches this filter."));
+  assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(BookingsView, { data: jsonify({ q: "", status: "all" as const, page: 1, pageCount: 1, total: 0, rows: [] }), busy: true }))));
 
   const entry = { id: "a1", createdAt: "2026-10-01T08:30:00.000Z", adminEmail: "a@example.com", action: "payout.paid", targetType: "payout", targetId: "po1", ip: "203.0.113.7" };
   const audit = renderToStaticMarkup(createElement(AuditView, { data: jsonify({ page: 2, pageCount: 4, rows: [entry, { ...entry, id: "a2", targetType: null, targetId: null, ip: null }] }) }));

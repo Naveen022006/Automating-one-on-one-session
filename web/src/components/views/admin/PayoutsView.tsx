@@ -1,4 +1,5 @@
 import { AppLink } from "@web/lib/link";
+import { ExportControls } from "@web/components/admin/ExportControls";
 import { PayoutRowActions, PayoutStatusBadges } from "@web/components/admin/PayoutActions";
 import { PageHead } from "@web/components/app/AppShell";
 import { IconWallet } from "@web/components/icons";
@@ -35,6 +36,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
           with <code>npm run admin:create</code>, or set <code>PAYOUT_FOUR_EYES=false</code> if one person really handles payouts alone.
         </Alert>
       )}
+      <ExportControls kind="payouts" />
       <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/admin/payouts?status=${f.key}`, current: status === f.key, count: counts[f.key] }))} />
       <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>

@@ -403,7 +403,14 @@ function destinationLabel(a: { method: "BANK" | "UPI"; bankName: string | null; 
  * transaction under a row lock on the influencer, so two administrators clicking at once cannot pay the same
  * payments twice. Refuses unless the influencer's payout details are verified.
  */
-export async function createPayout(influencerId: string, currency: string, adminEmail: string, now = new Date()) {
+export async function createPayout(
+  influencerId: string,
+  currency: string,
+  adminEmail: string,
+  now = new Date(),
+  /** Tests only: runs between reading the payable payments and claiming them, to interleave another administrator's action. */
+  hooks: { afterRead?: () => Promise<void> } = {},
+) {
   return prisma.$transaction(
     async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM influencers WHERE id = ${influencerId} FOR UPDATE`;
@@ -436,7 +443,22 @@ export async function createPayout(influencerId: string, currency: string, admin
         },
       });
       // Conditional on payoutId IS NULL: a payment already taken by another payout is never stolen.
-      const claimed = await tx.payment.updateMany({ where: { id: { in: rows.map((r) => r.id) }, payoutId: null }, data: { payoutId: payout.id } });
+      await hooks.afterRead?.();
+      // Also conditional on what was read: no refund in flight now and the same refund total as in the snapshot above, so a refund claimed
+      // by an administrator between the read and this write turns the count check below into a 409 instead of an overpayment.
+      const claimed = await tx.payment.updateMany({
+        where: {
+          payoutId: null,
+          OR: rows.map((r) => ({
+            id: r.id,
+            AND: [
+              { OR: [{ refundStatus: null }, { refundStatus: { notIn: ["requested", "pending"] } }] },
+              r.refundedMinor > 0 ? { refundAmountMinor: r.refundedMinor } : { OR: [{ refundAmountMinor: null }, { refundAmountMinor: 0 }] },
+            ],
+          })),
+        },
+        data: { payoutId: payout.id },
+      });
       if (claimed.count !== rows.length) throw new PayoutError("Payments changed while creating the payout. Please try again.", 409);
       return payout;
     },
