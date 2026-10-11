@@ -9,6 +9,12 @@ import { EnvValidationError, KNOWN_ENV_VARS, getConfig, initEnv, initEnvOrExit, 
 // Pure tests: the validator takes an env record, so nothing here reads or changes the real environment
 // (except the few tests of the process wiring, which restore process.env).
 
+// Hermetic: the tests of the process wiring assign a known-good production configuration to process.env and assert
+// on exactly those variables. CI (and a developer's shell) exports development-only flags such as MESSAGING_DRY_RUN=true,
+// which are errors in production and made five of those tests fail on every CI run. node:test runs each file in its own
+// process, so clearing the known variables here changes nothing for other files.
+for (const name of KNOWN_ENV_VARS) delete process.env[name];
+
 const KEY = randomBytes(32).toString("base64");
 const APP_SECRET = randomBytes(32).toString("base64");
 
