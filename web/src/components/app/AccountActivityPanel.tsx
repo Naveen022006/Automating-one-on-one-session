@@ -1,6 +1,6 @@
 import type { QueryKey } from "@tanstack/react-query";
 import { keepPreviousData } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconShield } from "@web/components/icons";
 import { Alert, Button, Card, EmptyState, Skeleton } from "@web/components/ui/primitives";
 import { useApiQuery } from "@web/lib/api";
@@ -21,22 +21,35 @@ function when(iso: string): string {
   return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function ActivityLog({ keyFor, urlFor, label }: { keyFor: (page: number) => QueryKey; urlFor: (page: number) => string; label: string }) {
+const loadingLines = (
+  <div className="stack stack--sm" role="status" aria-live="polite" aria-busy="true">
+    <span className="sr-only">Loading account activity</span>
+    <Skeleton width="100%" height={16} />
+    <Skeleton width="90%" height={16} />
+    <Skeleton width="95%" height={16} />
+  </div>
+);
+
+type LogProps = { keyFor: (page: number) => QueryKey; urlFor: (page: number) => string; label: string };
+
+/**
+ * The table, loaded once the page is on screen. The query starts in an effect-driven second render, not during the first one, so a
+ * view that contains this card can still be rendered to static markup without a QueryClient (the Settings and Influencer view tests
+ * do exactly that); in the browser the first paint shows the loading lines for one frame.
+ */
+export function ActivityLog(props: LogProps) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return mounted ? <ActivityLogTable {...props} /> : loadingLines;
+}
+
+function ActivityLogTable({ keyFor, urlFor, label }: LogProps) {
   const [page, setPage] = useState(1);
   const query = useApiQuery<ActivityPageView<string>>(keyFor(page), urlFor(page), { placeholderData: keepPreviousData });
   const data = query.data;
 
   if (data === undefined) {
-    if (query.isPending) {
-      return (
-        <div className="stack stack--sm" role="status" aria-live="polite" aria-busy="true">
-          <span className="sr-only">Loading account activity</span>
-          <Skeleton width="100%" height={16} />
-          <Skeleton width="90%" height={16} />
-          <Skeleton width="95%" height={16} />
-        </div>
-      );
-    }
+    if (query.isPending) return loadingLines;
     return (
       <Alert tone="danger" title="Could not load the activity" action={<Button onClick={() => void query.refetch()}>Try again</Button>}>
         {query.error?.status === 429 ? (query.error.serverMessage ?? "Too many requests. Please wait a moment and try again.") : "Your account is not affected. Try again in a moment."}
