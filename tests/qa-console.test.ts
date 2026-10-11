@@ -29,6 +29,12 @@ test("C10: the .shell grid tracks can shrink below their content (minmax(0, 1fr)
   }
 });
 
+test("C20: an anchor inside the dashboard or console scrolls to below the sticky top bar, not under it", () => {
+  const css = read("app/styles/layouts.css");
+  assert.match(css, /\.topbar \{[^}]*position: sticky;[^}]*min-height: 64px;/s, "the bar is sticky and 64px tall");
+  assert.match(css, /\.app-main \[id\] \{\s*scroll-margin-top: calc\(64px \+ var\(--space-6\)\);\s*\}/, "so every #target inside the page keeps clear of it");
+});
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // C11: every section is reachable from the bottom bar of a phone.
 const icon = (() => null) as unknown as MobileNavItem["icon"];

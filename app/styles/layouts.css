@@ -527,6 +527,11 @@
   max-width: 1160px;
   width: 100%;
 }
+/* A link that points at a part of a page (#google, #whatsapp from the checklist and from the Google round trip) scrolls it to the
+   top of the window, which is where the sticky .topbar (64px) is: the heading it points at was hidden behind the bar. */
+.app-main [id] {
+  scroll-margin-top: calc(64px + var(--space-6));
+}
 .page-head {
   display: flex;
   align-items: flex-end;
