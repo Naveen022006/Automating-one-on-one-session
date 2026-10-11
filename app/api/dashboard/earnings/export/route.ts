@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { requireApiAuth } from "@/lib/auth/session";
 import { toCsv } from "@/lib/dashboard";
 import { prisma } from "@/lib/db";
+import { EARNINGS_ROW_CAP, parseReportDay } from "@/lib/views/dashboard-params";
 
+// The same day rules as the Earnings page: a real calendar day from 2000-01-01 to 2100-12-31, else that end of the range is open.
 function parseDay(value: string | null): Date | null {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const d = new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const day = parseReportDay(value);
+  return day ? new Date(`${day}T00:00:00.000Z`) : null;
 }
 
 // GET /api/dashboard/earnings/export?from=YYYY-MM-DD&to=YYYY-MM-DD -> CSV of captured/refunded payments.
@@ -25,7 +26,7 @@ export async function GET(req: Request) {
       ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}),
     },
     orderBy: { createdAt: "asc" },
-    take: 10_000,
+    take: EARNINGS_ROW_CAP,
     include: { booking: { select: { id: true, customerName: true, redactedAt: true, session: { select: { startTime: true, service: { select: { title: true } } } } } } },
   });
 
@@ -48,7 +49,7 @@ export async function GET(req: Request) {
       ];
     }),
   ];
-  const name = `earnings-${params.get("from") ?? "all"}-to-${params.get("to") ?? "now"}.csv`.replace(/[^a-z0-9._-]/gi, "_");
+  const name = `earnings-${parseReportDay(params.get("from")) ?? "all"}-to-${parseReportDay(params.get("to")) ?? "now"}.csv`;
   return new NextResponse(toCsv(rows), {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

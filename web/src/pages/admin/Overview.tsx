@@ -1,5 +1,20 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { OverviewView } from "@/components/views/admin/OverviewView";
+import type { AdminOverviewView } from "@/lib/views/admin-overview";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/40-admin-core replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** `/admin`: GET /api/admin/overview. */
+export function Component() {
+  const query = useApiQuery<Jsonify<AdminOverviewView>>(queryKeys.admin("overview"), "/api/admin/overview");
+  return (
+    <>
+      <PageTitle title="Overview" template="admin" />
+      <QueryGate query={query} embedded>
+        {(data) => <OverviewView data={data} />}
+      </QueryGate>
+    </>
+  );
+}

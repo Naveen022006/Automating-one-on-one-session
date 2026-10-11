@@ -1,5 +1,11 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { RefundPolicyView } from "@/components/views/public/RefundPolicyView";
+import { PageTitle } from "../../lib/head";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/10-public-auth replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+export function Component() {
+  return (
+    <>
+      <PageTitle title="Refund and Cancellation Policy" />
+      <RefundPolicyView />
+    </>
+  );
+}

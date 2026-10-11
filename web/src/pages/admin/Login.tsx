@@ -1,5 +1,18 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { useSearchParams } from "react-router";
+import { LoginView } from "@/components/views/admin/LoginView";
+import { PageTitle } from "../../lib/head";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/40-admin-core replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * `/admin/login`. The AdminGuestOnly layout route has already sent a fully signed-in administrator on; a password-only
+ * session of an administrator who has 2FA ("verify") lands here and signs in again with a code. The sign-in itself is a
+ * full page load (AdminLoginForm), so the new session starts with an empty query cache.
+ */
+export function Component() {
+  const [params] = useSearchParams();
+  return (
+    <>
+      <PageTitle title="Admin sign in" />
+      <LoginView next={params.get("next") ?? undefined} />
+    </>
+  );
+}
