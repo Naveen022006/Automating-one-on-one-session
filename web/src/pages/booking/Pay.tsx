@@ -1,5 +1,23 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { useParams } from "react-router";
+import { PayView } from "@/components/views/booking/PayView";
+import type { PayView as PayViewData } from "@/lib/views/booking-pay";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/20-booking replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/**
+ * `/pay/:token`. The route param is already percent-decoded by React Router (the old page decoded it by hand); the
+ * request encodes it again. Every state of the booking, an invalid link included, is a 200 answer with a `state`.
+ */
+export function Component() {
+  const { token = "" } = useParams();
+  const query = useApiQuery<Jsonify<PayViewData>>(queryKeys.pay(token), `/api/pay/${encodeURIComponent(token)}`);
+  return (
+    <>
+      <PageTitle title="Complete your booking" />
+      <QueryGate query={query}>{(data) => <PayView data={data} />}</QueryGate>
+    </>
+  );
+}

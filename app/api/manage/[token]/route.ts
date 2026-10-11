@@ -9,10 +9,20 @@ import {
   rescheduleBooking,
 } from "@/lib/manage";
 import { verifySelfServiceToken } from "@/lib/self-service";
+import { loadManageView } from "@/lib/views/booking-manage";
+import { jsonView } from "@/lib/views/http";
 
 // Customer self-service actions on their OWN booking. Gated by the self-service token (NOT the dashboard
 // token): the token in the URL path carries the booking id, so there is no ownership lookup to spoof. It
 // calls the same cancelBooking / rescheduleBooking domain functions the influencer dashboard uses.
+
+// The booking the manage page shows, for the SPA (the same `loadManageView` the old Next page uses): 403 for a link that
+// is invalid or expired, 404 for a valid link whose booking is gone or erased, 200 with the booking otherwise.
+export async function GET(_req: Request, { params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const view = await loadManageView(token);
+  return jsonView(view, { status: view.state === "ok" ? 200 : view.state === "expired" ? 403 : 404 });
+}
 
 const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("cancel") }),
