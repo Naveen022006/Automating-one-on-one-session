@@ -32,3 +32,36 @@ records its own deviations in its section of `doc/13-marketplace-essentials.md`.
    (wiring of routes, placeholders, nav, stub mounts, sweeps, schema).
 8. **No `README.md` / `CLAUDE.md` / `doc/08` / `doc/12` edits** (WP-Z owns them); `doc/13-marketplace-essentials.md` was created with the
    empty WP sections as specified.
+
+# WP-C (`mk/c-activity-log`): deviations from `doc/13-product-build-plan.md`
+
+Dated 2026-10-11. Only differences from the WP-C section; everything else was done as written.
+
+1. **A failed log write is a warning line, not `reportError`.** `recordActivity` leaves one JSON line on `console.warn` (cause only, last line of the
+   database message, never the input) and no error-webhook post. Reason: `reportError` is `console.error` plus a webhook, which pages somebody for a missing
+   log row, and it would break an existing test that must stay unchanged (`tests/google-connect.test.ts`, "N1: a failing revoke", counts `console.error` calls; the mocked
+   influencer `inf1` makes the insert fail). The result is the same: never throws, never changes the response.
+2. **A write is capped at 2 s (`ACTIVITY_WRITE_TIMEOUT_MS`).** The caller stops waiting (the insert carries on in the background), so a saturated
+   pool cannot slow an action down. No extra connection: the app's one pool is used.
+3. **Detail allowlist is enforced in code** (`ACTIVITY_DETAIL_KEYS` + `sanitiseActivityDetail` in `lib/activity-actions.ts`), not only by call-site
+   discipline: keys that are not listed for the action are dropped, values are strings (cut to 120 characters), finite numbers, booleans or null.
+4. **"No `@` in any summary" holds except `google.connected` / `google.disconnected`**, which show the influencer's own Google account (the plan's detail is
+   `{ account: <google e-mail> }`; without it the entry cannot show a takeover to another Google account). No customer e-mail can reach a summary. A UPI ID
+   is not shown at all, not even masked (its mask contains `@`); a bank account shows its last four digits.
+5. **Extra helpers**: `recordActivityForUser(userId, ...)` (register, verify-email and reset-password only know the sign-in id) and
+   `recordFailedLogin(email, req)` (fire-and-forget: it looks the e-mail up in the background, so the 401 takes the same time for unknown and known
+   e-mails; an unknown e-mail records nothing). `describeDevice` lives in the pure `lib/activity-actions.ts` and is re-exported by `lib/activity.ts`.
+6. **Instrumentation beyond the table's letter**: a refund whose Razorpay answer is unclear (`RefundPendingError`, 202) is logged with
+   `status: "unconfirmed"`; a cancel or reschedule that ends in `ManageBlockedError` (the booking changed, the calendar did not) is logged too;
+   `onboarding.completed` is only written the first time (`!auth.onboarded`); `profile.updated.fields` lists the fields the request carried (the Profile form sends
+   all of them), not only those whose value changed; `service.updated` is written for every successful update, with price and visibility only when
+   they changed (a currency change also names the price); `whatsapp.disconnected` is written only when a connection existed.
+7. **Routes whose handler gained a `req: Request` argument** (to read IP and user agent): `POST /api/auth/logout-all`, `DELETE /api/dashboard/whatsapp`,
+   `POST /api/dashboard/onboarding`. `POST /api/auth/login` also selects `influencerId` in its existing user query.
+8. **The activity table starts its query after mount** (`ActivityLog` in `AccountActivityPanel.tsx`), so the existing view tests that render `SettingsView`
+   to static markup without a QueryClient (`tests/spa-dashboard-setup.test.ts`) stay green unchanged. In the browser the loading lines show for one frame.
+9. **`tests/foundation.test.ts` changed in one assertion**: the stub test "returns 0" for `sweepOldActivity` (it ran without a database) is replaced by a
+   `typeof` check; the real sweep is tested with the database in `tests/activity-log.test.ts` (the foundation test's own header asks each WP to do this).
+10. **Page limit**: `?page=` is a whole number from 1 to 400, anything else is page 1 (the same convention as the other list endpoints); `pageCount` is capped at 400.
+    A valid page past the end answers with an empty `rows`.
+11. **Not logged (the plan does not list them)**: `POST /api/auth/forgot-password` and `resend-verification`, failed re-authentication, and failed password change.
