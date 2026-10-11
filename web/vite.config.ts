@@ -5,9 +5,10 @@ import { defineConfig, loadEnv } from "vite";
 import { serverModuleGuard } from "./vite-server-guard.ts";
 
 /**
- * Vite configuration of the React SPA (doc/10-react-migration-plan.md, F3 and sections 1.4 and 1.6).
+ * Vite configuration of the React app (doc/12-front-end.md).
  *
- * Run with an explicit path from the repository root: `vite --config web/vite.config.ts` (npm run dev:web / build:web).
+ * Run with an explicit path from the repository root: `vite --config web/vite.config.ts` (npm run dev:web / build:web), or
+ * through the launchers: `npm run dev` builds it in watch mode (scripts/dev-spa.ts) and `npm run dev:hmr` serves it with hot reload.
  * Output: web/dist/index.html (the shell template, with CSP placeholders) and web/dist/assets/* (hashed files);
  * scripts/spa-postbuild.mjs then checks the output and copies assets/ to public/assets for Next to serve.
  *
