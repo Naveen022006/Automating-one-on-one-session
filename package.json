@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:features": "tsx prisma/seed-features.ts",
     "admin:create": "tsx scripts/create-admin.ts",
     "dev:logins": "tsx scripts/dev-logins.ts",
     "dev:mock": "tsx scripts/dev-mock.ts",

@@ -1,5 +1,7 @@
 import { PageHead } from "@web/components/app/AppShell";
 import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@web/components/ui/primitives";
+import { InfluencerActivityPanel } from "@web/components/admin/InfluencerActivityPanel";
+import { InfluencerStatusPanel } from "@web/components/admin/InfluencerStatusPanel";
 import { PayoutPanel } from "@web/components/admin/PayoutPanel";
 import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@web/components/admin/PayoutActions";
 import { formatMoney } from "@/lib/format";
@@ -18,6 +20,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
     <div className="stack stack--lg">
       <Breadcrumb items={[{ label: "Influencers", href: "/admin/influencers" }, { label: i.name }]} />
       <PageHead title={i.name} description={`${i.email} · /${i.slug} · ${i.timezone}`} />
+      <InfluencerStatusPanel influencerId={i.id} />
 
       <div className="grid grid--2">
         <Card title="Account">
@@ -198,6 +201,8 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
           </div>
         )}
       </Card>
+
+      <InfluencerActivityPanel influencerId={i.id} />
     </div>
   );
 }

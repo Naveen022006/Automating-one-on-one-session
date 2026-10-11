@@ -38,4 +38,5 @@ export const queryKeys = {
   publicProfile: (slug: string) => ["public", "profile", slug] as const,
   pay: (token: string) => ["pay", token] as const,
   manage: (token: string) => ["manage", token] as const,
+  customerPortal: (token: string) => ["customer", "portal", token] as const,
 };

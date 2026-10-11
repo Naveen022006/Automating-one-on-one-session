@@ -178,6 +178,15 @@ test("WHATSAPP_GRAPH_VERSION must look like v26.0, and is a known variable", () 
   }
 });
 
+test("READINESS_REQUIRED lists the connections plus `approval` (the admin approval gate); anything else is an error", () => {
+  for (const ok of ["google,payout", "payout,approval", "google, gmail, whatsapp, payout, approval", "approval", "Payout,APPROVAL"]) {
+    assert.deepEqual(validateEnv({ ...good, READINESS_REQUIRED: ok }).errors, [], ok);
+  }
+  const bad = validateEnv({ ...good, READINESS_REQUIRED: "payout,approve" });
+  assert.ok(bad.errors.some((e) => e.startsWith("READINESS_REQUIRED:") && e.includes("google, gmail, whatsapp, payout, approval")), bad.errors.join(" | "));
+  assert.ok(validateEnv({ ...good, READINESS_REQUIRED: "email" }).errors.some((e) => e.startsWith("READINESS_REQUIRED:")));
+});
+
 test("KNOWN_ENV_VARS covers every variable in .env.example, so none can escape the whitespace check", () => {
   const example = readFileSync(join(process.cwd(), ".env.example"), "utf8");
   const names = [...example.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]);

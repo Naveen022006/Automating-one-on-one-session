@@ -1,0 +1,5 @@
+/*
+ * Print styles. Empty on purpose: the foundation branch only reserves this file so that the customer portal work package
+ * (receipts, doc/13-product-build-plan.md WP-D) can fill it without touching globals.css. Planned content: hide the header,
+ * footer and buttons and show only the expanded receipt.
+ */

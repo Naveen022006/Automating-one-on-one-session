@@ -48,6 +48,8 @@ const nextConfig: NextConfig = {
       // it): never for a shared cache or a browser to keep. The rest of the tree (hold, cancel, reschedule, resend, ics) is
       // per-booking too.
       { source: "/api/bookings/:path*", headers: privateApiHeaders },
+      // The customer portal (find your bookings): an e-mailed access token opens one address's bookings, export and erasure.
+      { source: "/api/customer/:path*", headers: privateApiHeaders },
       // Vite names every file in /assets by content hash, so a URL never changes meaning and can be cached for good. Only
       // paths that look like a file (`<name>.<ext>`): `/assets/book` is a page (the booking page of a profile with the slug
       // "assets") and must never be cached as immutable, it can be a private owner preview.

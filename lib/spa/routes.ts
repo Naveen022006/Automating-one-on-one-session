@@ -62,6 +62,9 @@ export const SPA_ROUTES = [
 
   // --- booking (customer facing). pay/manage are listed before the two `:slug` routes on purpose: a static first
   // segment beats the catch-all, exactly as in Next's own routing.
+  // `customer-bookings` / `customer-portal`: "find your bookings" by e-mail, then the e-mailed access link (a token page).
+  { id: "customer-bookings", path: "/bookings", robots: "noindex", template: "brand", title: "Find your bookings", head: "static" },
+  { id: "customer-portal", path: "/bookings/:token", robots: "noindex,nofollow", template: "brand", title: "Your bookings", noReferrer: true, head: "static" },
   { id: "pay", path: "/pay/:token", robots: "noindex,nofollow", template: "brand", title: "Complete your booking", head: "static" },
   { id: "manage", path: "/manage/:token", robots: "noindex", template: "brand", title: "Manage your booking", noReferrer: true, head: "static" },
   { id: "book", path: "/:slug/book", robots: "index", template: "brand", head: "book" },
@@ -86,6 +89,7 @@ export const SPA_ROUTES = [
   { id: "admin-influencer", path: "/admin/influencers/:id", robots: "noindex,nofollow", template: "admin", title: "Influencer", head: "static" },
   { id: "admin-payments", path: "/admin/payments", robots: "noindex,nofollow", template: "admin", title: "Payments", head: "static" },
   { id: "admin-payouts", path: "/admin/payouts", robots: "noindex,nofollow", template: "admin", title: "Payouts", head: "static" },
+  { id: "admin-reports", path: "/admin/reports", robots: "noindex,nofollow", template: "admin", title: "Reports", head: "static" },
   { id: "admin-bookings", path: "/admin/bookings", robots: "noindex,nofollow", template: "admin", title: "Bookings", head: "static" },
   { id: "admin-health", path: "/admin/health", robots: "noindex,nofollow", template: "admin", title: "System health", head: "static" },
   { id: "admin-audit", path: "/admin/audit", robots: "noindex,nofollow", template: "admin", title: "Audit log", head: "static" },
@@ -173,6 +177,10 @@ export function matchSpaRoute(pathname: string): SpaMatch | null {
   }
   if ((first === "pay" || first === "manage") && parts.length === 2 && parts[1]) {
     return { route: spaRouteById(first), params: { token: parts[1] }, status: 200 };
+  }
+  // `bookings` is a reserved slug (lib/auth/slug.ts), so no profile can shadow the customer portal.
+  if (first === "bookings" && parts.length === 2 && parts[1]) {
+    return { route: spaRouteById("customer-portal"), params: { token: parts[1] }, status: 200 };
   }
   if (parts.length === 1 && SLUG_SEGMENT.test(first)) {
     return { route: spaRouteById("profile"), params: { slug: first }, status: 200 };

@@ -58,6 +58,16 @@ model Influencer {
   platformFeeBps     Int?                @map("platform_fee_bps")
   payouts            Payout[]
 
+  // Platform moderation. Suspended: the page is offline, new holds/checkouts/approvals and new payouts are refused.
+  suspendedAt      DateTime? @map("suspended_at")
+  suspendedReason  String?   @map("suspended_reason")
+  suspendedByEmail String?   @map("suspended_by_email")
+  // Set when an administrator approved the page. Only enforced when READINESS_REQUIRED contains "approval".
+  // Accounts that had finished onboarding when the column was added are grandfathered (approvedByEmail "system:grandfathered").
+  approvedAt       DateTime? @map("approved_at")
+  approvedByEmail  String?   @map("approved_by_email")
+  activity         InfluencerActivity[]
+
   @@map("influencers")
 }
 
@@ -676,4 +686,40 @@ model WhatsAppRegistrationPin {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   @@map("whatsapp_registration_pins")
+}
+
+// What happened on an influencer account (sign-ins, password and payout-detail changes, refunds, price changes, customer
+// erasures). Append-only; rows older than 365 days are swept by the worker. Written best-effort (lib/activity.ts); the
+// `detail` object only ever holds allowlisted, non-personal values.
+model InfluencerActivity {
+  id           String   @id @default(cuid())
+  influencerId String   @map("influencer_id")
+  actor        String   @default("influencer") // "influencer" | "system"
+  action       String
+  targetType   String?  @map("target_type")
+  targetId     String?  @map("target_id")
+  detail       Json?
+  ip           String?
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([influencerId, createdAt])
+  @@index([createdAt])
+  @@map("influencer_activity_logs")
+}
+
+// One hour of access to "your bookings" for whoever proves they read the inbox of `email` (the customer portal). Only the
+// SHA-256 of the token is stored, so a database leak does not leak usable links. Expired rows are swept by the worker.
+model CustomerAccessToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique @map("token_hash")
+  email     String
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([expiresAt])
+  @@map("customer_access_tokens")
 }

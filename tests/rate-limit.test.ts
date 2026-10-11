@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clientIp, normaliseIp } from "../lib/rate-limit/client-ip";
 import { FailoverStore, MemoryStore, consume, evaluate, rateLimitHeaders, windowStartFor, type RateLimitStore } from "../lib/rate-limit/core";
-import { GLOBAL_API_RULE, ROUTE_RULES, matchRouteRule, scaled } from "../lib/rate-limit/policies";
+import { GLOBAL_API_RULE, IDENTITY_RULES, ROUTE_RULES, matchRouteRule, scaled } from "../lib/rate-limit/policies";
 import { PostgresStore, RedisStore } from "../lib/rate-limit/stores";
 
 // Pure tests: no Redis, no Postgres. The real stores are exercised with fakes of their client interfaces.
@@ -189,6 +189,77 @@ test("SPA dashboard and admin view endpoints fall under the generic dashboard / 
   assert.equal(matchRouteRule("POST", "/api/admin/auth/login")?.name, "admin-login");
 });
 
+test("marketplace foundation (doc/13): each new rule matches its path and method, and sits before the broader rule it must not fall into", () => {
+  const cases: [string, string, string][] = [
+    ["GET", "/api/admin/exports/payments", "admin-export"],
+    ["GET", "/api/admin/exports/bookings", "admin-export"],
+    ["GET", "/api/admin/exports/payouts", "admin-export"],
+    ["GET", "/api/admin/exports/audit", "admin-export"],
+    ["GET", "/api/admin/reports", "admin-reports"],
+    ["POST", "/api/admin/influencers/abc/status", "admin-moderation"],
+    ["POST", "/api/admin/payments/abc/refund", "admin-money"],
+    ["PATCH", "/api/admin/payments/abc/refund", "admin-money"],
+    ["POST", "/api/admin/bookings/abc/cancel", "admin-money"],
+    ["POST", "/api/customer/access", "customer-access"],
+    ["GET", "/api/customer/portal/sometoken", "customer-portal"],
+    ["GET", "/api/customer/portal/sometoken/export", "customer-export"],
+    ["POST", "/api/customer/portal/sometoken/erase", "customer-erase"],
+    // HEAD is answered by the GET handler (same query, same data), so it must hit the same rule instead of only the global ceiling.
+    ["HEAD", "/api/customer/portal/sometoken", "customer-portal"],
+    ["HEAD", "/api/customer/portal/sometoken/export", "customer-export"],
+    ["HEAD", "/api/admin/exports/payments", "admin-export"],
+    ["HEAD", "/api/admin/reports", "admin-reports"],
+  ];
+  for (const [method, path, name] of cases) assert.equal(matchRouteRule(method, path)?.name, name, `${method} ${path}`);
+
+  // The limits the plan names (doc/13-product-build-plan.md, 0.6), all keyed by IP.
+  const limits = (m: string, p: string) => {
+    const r = matchRouteRule(m, p)!;
+    return [r.limit, r.windowMs, r.by];
+  };
+  assert.deepEqual(limits("GET", "/api/admin/exports/payments"), [30, 60 * 60_000, "ip"]);
+  assert.deepEqual(limits("GET", "/api/admin/reports"), [30, 10 * 60_000, "ip"]);
+  assert.deepEqual(limits("POST", "/api/admin/influencers/abc/status"), [60, 60 * 60_000, "ip"]);
+  assert.deepEqual(limits("POST", "/api/admin/payments/abc/refund"), [60, 60 * 60_000, "ip"], "admin-money keeps its limit");
+  assert.deepEqual(limits("POST", "/api/customer/access"), [5, 60 * 60_000, "ip"]);
+  assert.deepEqual(limits("POST", "/api/customer/portal/t/erase"), [5, 60 * 60_000, "ip"]);
+  assert.deepEqual(limits("GET", "/api/customer/portal/t/export"), [10, 60 * 60_000, "ip"]);
+  assert.deepEqual(limits("GET", "/api/customer/portal/t"), [60, 10 * 60_000, "ip"]);
+  assert.deepEqual(IDENTITY_RULES.customerAccessEmail, { name: "customer-access-email", limit: 3, windowMs: 60 * 60_000 });
+
+  // Nothing else changes meaning: the other methods and neighbouring paths keep their old rules.
+  assert.equal(matchRouteRule("GET", "/api/admin/influencers/abc/status")?.name, "admin", "reading the status is an ordinary admin read");
+  assert.equal(matchRouteRule("GET", "/api/admin/exports/other")?.name, "admin", "only the four export kinds are the export rule");
+  assert.equal(matchRouteRule("POST", "/api/admin/exports/payments")?.name, "admin");
+  assert.equal(matchRouteRule("POST", "/api/admin/reports")?.name, "admin");
+  assert.equal(matchRouteRule("GET", "/api/admin/payments/abc/refund")?.name, "admin", "money rules are writes only");
+  assert.equal(matchRouteRule("GET", "/api/admin/bookings/abc/cancel")?.name, "admin");
+  assert.equal(matchRouteRule("POST", "/api/admin/bookings/abc/cancel/x")?.name, "admin", "the money rule is anchored");
+  assert.equal(matchRouteRule("GET", "/api/admin/bookings")?.name, "admin");
+  assert.equal(matchRouteRule("GET", "/api/customer/access"), null);
+  assert.equal(matchRouteRule("POST", "/api/customer/portal/t"), null);
+  assert.equal(matchRouteRule("GET", "/api/customer/portal/t/other"), null);
+  assert.equal(matchRouteRule("POST", "/api/customer/portal/t/export"), null, "export is a GET");
+  assert.equal(matchRouteRule("GET", "/api/customer/portal/t/erase"), null, "erase is a POST");
+
+  // The old rules those new paths could have been mistaken for.
+  assert.equal(matchRouteRule("GET", "/api/bookings/x")?.name, "booking-status");
+  assert.equal(matchRouteRule("POST", "/api/bookings/x/cancel")?.name, "booking-actions");
+  assert.equal(matchRouteRule("POST", "/api/admin/payments/x/unreconcile")?.name, "admin-money");
+  assert.equal(matchRouteRule("POST", "/api/admin/influencers/x/payouts")?.name, "admin-money");
+  assert.equal(matchRouteRule("POST", "/api/admin/influencers/x/fee")?.name, "admin-money");
+  assert.equal(matchRouteRule("POST", "/api/admin/payouts/abc")?.name, "admin-money");
+  assert.equal(matchRouteRule("POST", "/api/admin/payments/reconcile")?.name, "admin-reconcile");
+  assert.equal(matchRouteRule("POST", "/api/admin/influencers/x/payout-account")?.name, "admin-payout-account");
+
+  // First match wins: every new rule is listed before `admin`, and the narrow customer rules before the portal view.
+  const names = ROUTE_RULES.map((r) => r.name);
+  for (const n of ["admin-moderation", "admin-export", "admin-reports", "admin-money"]) assert.ok(names.indexOf(n) < names.indexOf("admin"), n);
+  assert.ok(names.indexOf("customer-erase") < names.indexOf("customer-portal"));
+  assert.ok(names.indexOf("customer-export") < names.indexOf("customer-portal"));
+  assert.equal(new Set(names).size, names.length, "rule names are unique (they are the counter keys)");
+});
+
 test("client IPs are normalised; IPv6 is grouped by /64", () => {
   assert.equal(normaliseIp("203.0.113.7"), "203.0.113.7");
   assert.equal(normaliseIp("::ffff:203.0.113.7"), "203.0.113.7");
@@ -218,8 +289,12 @@ test("client IP comes only from headers a client cannot forge", () => {
   }
 });
 
-test("rate-limit log lines never contain a pay or manage token", async () => {
+test("rate-limit log lines never contain a pay, manage or customer portal token", async () => {
   const { loggablePath } = await import("../lib/rate-limit/redact");
+  assert.equal(loggablePath("/api/customer/portal/abc.def-123"), "/api/customer/portal/:token");
+  assert.equal(loggablePath("/api/customer/portal/abc.def-123/export"), "/api/customer/portal/:token/export");
+  assert.equal(loggablePath("/api/customer/portal/abc.def-123/erase"), "/api/customer/portal/:token/erase");
+  assert.equal(loggablePath("/api/customer/access"), "/api/customer/access", "the e-mail request has no token in its path");
   assert.equal(loggablePath("/api/pay/abc.def-123"), "/api/pay/:token");
   assert.equal(loggablePath("/api/manage/abc.def-123"), "/api/manage/:token");
   assert.equal(loggablePath("/api/manage/abc.def-123/slots"), "/api/manage/:token/slots");

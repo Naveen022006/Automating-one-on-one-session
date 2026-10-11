@@ -49,6 +49,8 @@ test("every page path is rewritten to the internal shell route, with the request
     ["/login", "/spa-shell/login"], ["/register", "/spa-shell/register"], ["/forgot-password", "/spa-shell/forgot-password"],
     ["/dashboard/sessions", "/spa-shell/dashboard/sessions"], ["/onboarding", "/spa-shell/onboarding"], ["/dashboard/nope", "/spa-shell/dashboard/nope"],
     ["/admin/login", "/spa-shell/admin/login"], ["/admin/payments", "/spa-shell/admin/payments"], ["/admin/nope", "/spa-shell/admin/nope"],
+    // Customer portal and finance report (doc/13): pages like any other.
+    ["/bookings", "/spa-shell/bookings"], ["/bookings/tok", "/spa-shell/bookings/tok"], ["/admin/reports", "/spa-shell/admin/reports"],
   ]) {
     const res = await proxy(req(path, cookies));
     assert.ok(isRewriteTo(res, target), `${path} -> ${res.headers.get("x-middleware-rewrite")}`);
@@ -113,6 +115,10 @@ test("the redirects that stay on the server still run first", async () => {
   const admin = await proxy(req("/admin/payments?view=mismatch"));
   assert.equal(admin.status, 307);
   assert.equal(new URL(admin.headers.get("location")!).pathname, "/admin/login");
+  const reports = await proxy(req("/admin/reports"));
+  assert.equal(reports.status, 307);
+  assert.equal(new URL(reports.headers.get("location")!).pathname + new URL(reports.headers.get("location")!).search, "/admin/login?next=%2Fadmin%2Freports");
+  assert.ok(isRewriteTo(await proxy(req("/bookings")), "/spa-shell/bookings"), "the customer pages need no cookie");
   assert.equal(new URL(admin.headers.get("location")!).search, "?next=%2Fadmin%2Fpayments%3Fview%3Dmismatch");
   assert.ok(isRewriteTo(await proxy(req("/admin/login")), "/spa-shell/admin/login"), "the admin login page itself is not redirected");
   // With the cookie present the request goes on to the shell (the API validates the session against the database).
@@ -122,6 +128,8 @@ test("the redirects that stay on the server still run first", async () => {
 
 test("token pages get Referrer-Policy: no-referrer from the proxy; other shell pages do not", async () => {
   assert.equal((await proxy(req("/manage/tok"))).headers.get("referrer-policy"), "no-referrer");
+  assert.equal((await proxy(req("/bookings/tok"))).headers.get("referrer-policy"), "no-referrer", "the customer portal link is a token page");
+  assert.equal((await proxy(req("/bookings"))).headers.get("referrer-policy"), null, "the e-mail form carries no token");
   assert.equal((await proxy(req("/terms"))).headers.get("referrer-policy"), null);
   assert.equal((await proxy(req("/pay/tok"))).headers.get("referrer-policy"), null, "pay carries no secret in a way that needs it (plan 3)");
 });

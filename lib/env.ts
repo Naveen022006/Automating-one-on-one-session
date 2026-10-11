@@ -151,8 +151,8 @@ const envSchema = z.object({
   READINESS_REQUIRED: z
     .string()
     .refine(
-      (v) => v.split(",").every((t) => ["google", "gmail", "whatsapp", "payout", ""].includes(t.trim().toLowerCase())),
-      "may only list: google, gmail, whatsapp, payout",
+      (v) => v.split(",").every((t) => ["google", "gmail", "whatsapp", "payout", "approval", ""].includes(t.trim().toLowerCase())),
+      "may only list: google, gmail, whatsapp, payout, approval",
     )
     .optional(),
 });

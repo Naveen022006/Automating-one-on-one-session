@@ -28,7 +28,7 @@ test("every route in the table matches its own path, with the right id and statu
     assert.equal(m?.status, 200);
     if (route.head === "static") assert.ok(route.title, `${route.id}: a static head needs a title`);
   }
-  assert.equal(SPA_ROUTES.length, 36, "the plan lists 36 screens (section 4); update this number deliberately");
+  assert.equal(SPA_ROUTES.length, 39, "36 screens of the migration plan + customer-bookings, customer-portal and admin-reports (doc/13); update this number deliberately");
 });
 
 test("path parameters are returned raw", () => {
@@ -60,6 +60,15 @@ test("a static first segment beats the /:slug catch-all, as in Next's own routin
   assert.equal(idOf("/register"), "register");
   assert.equal(idOf("/pay/book"), "pay");
   assert.equal(idOf("/manage/book"), "manage");
+  assert.equal(idOf("/bookings"), "customer-bookings");
+  assert.equal(idOf("/bookings/abc"), "customer-portal");
+  assert.deepEqual(matchSpaRoute("/bookings/abc%20def")?.params, { token: "abc%20def" });
+  assert.equal(idOf("/bookings/"), "customer-bookings", "a trailing slash is ignored");
+  assert.equal(idOf("/bookings-coach"), "profile", "only the exact word is reserved: a profile may start with it");
+  assert.equal(idOf("/bookings-coach/book"), "book");
+  assert.equal(idOf("/bookings/a/b"), "not-found");
+  assert.equal(idOf("/admin/reports"), "admin-reports");
+  assert.equal(idOf("/admin/reports/x"), "admin-not-found");
   assert.equal(idOf("/demo/book"), "book");
   assert.equal(idOf("/demo"), "profile");
   assert.equal(idOf("/terms/"), "terms", "a trailing slash is ignored");
@@ -129,12 +138,14 @@ test("privacy flags: private screens are noindex, token screens send no Referer,
   const by = (id: string) => SPA_ROUTES.find((r) => r.id === id)!;
   for (const id of ["landing", "terms", "privacy", "refund-policy", "contact", "register"]) assert.equal(by(id).robots, "index", id);
   const signedIn = (x: { path: string }) => x.path === "/onboarding" || x.path.startsWith("/dashboard") || x.path.startsWith("/admin");
-  for (const r of SPA_ROUTES.filter((x) => signedIn(x) || ["login", "forgot-password", "reset-password", "verify-email", "pay", "manage", "design"].includes(x.id))) {
+  for (const r of SPA_ROUTES.filter((x) => signedIn(x) || ["login", "forgot-password", "reset-password", "verify-email", "pay", "manage", "design", "customer-bookings", "customer-portal"].includes(x.id))) {
     assert.notEqual(r.robots, "index", r.id);
   }
-  for (const r of SPA_ROUTES.filter((x) => x.path.startsWith("/admin") || x.id === "pay")) assert.equal(r.robots, "noindex,nofollow", r.id);
-  for (const id of ["manage", "verify-email", "reset-password"]) assert.equal((by(id) as { noReferrer?: boolean }).noReferrer, true, id);
+  for (const r of SPA_ROUTES.filter((x) => x.path.startsWith("/admin") || x.id === "pay" || x.id === "customer-portal")) assert.equal(r.robots, "noindex,nofollow", r.id);
+  assert.equal(by("customer-bookings").robots, "noindex");
+  for (const id of ["manage", "verify-email", "reset-password", "customer-portal"]) assert.equal((by(id) as { noReferrer?: boolean }).noReferrer, true, id);
   assert.equal((by("pay") as { noReferrer?: boolean }).noReferrer, undefined);
+  assert.equal((by("customer-bookings") as { noReferrer?: boolean }).noReferrer, undefined, "the e-mail form carries no token");
 });
 
 test("slugs the SPA answers for itself are reserved, so no profile can shadow them", () => {
