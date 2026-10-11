@@ -173,6 +173,15 @@ test("a token the mock did not mint is rejected, and never echoed, logged or pri
   assert.ok(!(await raw(t.mock, "GET", "/__mock/requests")).text.includes(real));
 });
 
+test("a webhook target outside the local machine is refused, so the mock can never be made to send anywhere else", async () => {
+  const post = (url: string) => raw(t.mock, "POST", "/__mock/webhooks/target", { "content-type": "application/json", "x-mock-control": t.mock.controlToken }, JSON.stringify({ url }));
+  assert.equal((await post("https://example.com/hook")).status, 400);
+  assert.equal((await post("http://169.254.169.254/latest/meta-data")).status, 400);
+  assert.equal(t.mock.state().webhooks.target, "http://localhost:3000/api/webhooks/whatsapp");
+  assert.equal((await post("http://127.0.0.1:3999/hook")).status, 200);
+  await post("http://localhost:3000/api/webhooks/whatsapp");
+});
+
 test("the Meta side never echoes or logs the app secret, a client secret in a query, or a token it did not mint", async () => {
   const unknown = "EAAB-real-looking-meta-token-0123456789";
   const appToken = `${META_APP_ID}|${META_APP_SECRET}`;

@@ -4,9 +4,10 @@ import { META_APP_ID, META_APP_SECRET } from "./fixtures";
 import { registerEmbedded } from "./embedded";
 import { registerGmail } from "./gmail";
 import { registerGoogle } from "./google";
-import { dispatch, isLocalUrl, randomHex, Router, type Runtime, type WebhookPort } from "./http";
+import { dispatch, isLocalUrl, randomHex, Router, type Runtime } from "./http";
 import { registerMeta, resumeReviews } from "./meta";
 import { registerSms } from "./sms";
+import { createWebhooks, registerWebhookControls } from "./webhooks";
 import { ACTIVITY_MAX, Persister, deleteStateFile, isInsideTmpdir, loadState, type MockState } from "./state";
 import { registerUi } from "./ui";
 
@@ -26,6 +27,8 @@ export interface MockServerOptions {
   /** Start from a fresh state instead of the saved one. */
   reset?: boolean;
   clock?: () => number;
+  /** Waits between the attempts to deliver one webhook (default 2 s, 10 s, 30 s); the tests use short ones. */
+  webhookRetryDelaysMs?: number[];
 }
 
 export interface MockServer {
@@ -90,8 +93,9 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
     },
     isKnownSecret: (token) =>
       Boolean(state.google.accessTokens[token] || state.google.refreshTokens[token] || state.meta.tokens[token]) || token === `${META_APP_ID}|${META_APP_SECRET}`,
-    webhooks: noWebhooks,
+    webhooks: { deliver: () => undefined },
   };
+  rt.webhooks = createWebhooks(rt, { retryDelaysMs: opts.webhookRetryDelaysMs });
 
   const router = new Router();
   registerUi(router);
@@ -100,6 +104,7 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
   registerMeta(router);
   registerEmbedded(router);
   registerSms(router);
+  registerWebhookControls(router);
 
   const server: Server = createServer((req, res) => {
     void dispatch(rt, router, (server.address() as AddressInfo).port, req, res);
@@ -135,6 +140,3 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
     },
   };
 }
-
-/** Until the webhook sender is wired in (scripts/mock-providers/webhooks.ts), deliveries go nowhere. */
-const noWebhooks: WebhookPort = { deliver: () => undefined };

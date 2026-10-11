@@ -120,7 +120,7 @@ export function setFault(rt: Runtime, key: string, value: string, once = false):
   if (!def) throw new FaultError(`Unknown fault "${key}"`);
   if (!def.valid.test(value)) throw new FaultError(`"${value}" is not a value of ${key} (try: ${def.options.join(", ")})`);
   if (value === def.default) delete rt.state.faults[key];
-  else rt.state.faults[key] = { value, once: once || key === "google.patch412" };
+  else rt.state.faults[key] = { value, once: once || key === "google.patch412" || value === "app_500_once" };
   rt.save();
   rt.activity(`Fault ${key} = ${value}${once ? " (once)" : ""}`);
 }

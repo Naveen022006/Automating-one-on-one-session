@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { mockEnvOverlay } from "../../scripts/mock-providers/fixtures";
-import { createMockServer, type MockServer } from "../../scripts/mock-providers/server";
+import { createMockServer, type MockServer, type MockServerOptions } from "../../scripts/mock-providers/server";
 
 /** Helpers for the tests that run the mock server (doc/11-provider-simulator.md, 6.4). Loopback only, nothing else is reached. */
 
@@ -13,9 +14,9 @@ export interface TestMock {
   stop(): Promise<void>;
 }
 
-export async function startMock(appUrl = "http://localhost:3000"): Promise<TestMock> {
+export async function startMock(appUrl = "http://localhost:3000", extra: Partial<MockServerOptions> = {}): Promise<TestMock> {
   const dir = mkdtempSync(path.join(tmpdir(), "mock-providers-test-"));
-  const mock = await createMockServer({ port: 0, appUrl, stateFile: path.join(dir, "state.json") });
+  const mock = await createMockServer({ port: 0, appUrl, stateFile: path.join(dir, "state.json"), ...extra });
   return {
     mock,
     dir,
@@ -58,6 +59,48 @@ export async function control(mock: MockServer, route: string, body: unknown = {
 }
 
 export const setFault = (mock: MockServer, key: string, value: string, once = false) => control(mock, "/__mock/faults", { key, value, once });
+
+export interface Received {
+  method: string;
+  url: string;
+  headers: Record<string, string | string[] | undefined>;
+  raw: string;
+}
+
+/** A local server that plays the app's webhook endpoint: records what it gets and answers as `respond` says. */
+export async function startReceiver(respond: (n: number, req: Received) => { status: number; body?: string } = () => ({ status: 200, body: '{"ok":true}' })) {
+  const received: Received[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (d: Buffer) => chunks.push(d));
+    req.on("end", () => {
+      const entry = { method: req.method ?? "", url: req.url ?? "", headers: req.headers, raw: Buffer.concat(chunks).toString("utf8") };
+      received.push(entry);
+      const answer = respond(received.length, entry);
+      res.writeHead(answer.status, { "content-type": "text/plain" });
+      res.end(answer.body ?? "");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    received,
+    url,
+    async stop() {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+/** Polls until `check` is true (or fails the test after `ms`). */
+export async function waitFor(check: () => boolean, what: string, ms = 5000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
 
 /**
  * Points the app's own provider clients at `mock` for the duration of a test file: writes the same overlay `npm run dev:mock` gives
