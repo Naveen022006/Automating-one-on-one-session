@@ -1,15 +1,8 @@
 import type { Metadata } from "next";
-import { OnboardingWizard } from "@/components/app/OnboardingWizard";
-import type { GoogleStatusView } from "@/components/app/GoogleConnect";
+import { OnboardingView } from "@/components/views/dashboard/OnboardingView";
 import { requirePageAuth } from "@/lib/auth/guards";
-import { appUrl } from "@/lib/brand";
-import { prisma } from "@/lib/db";
-import { parseQuestions } from "@/lib/intake";
-import { getGoogleStatus } from "@/lib/google-tokens";
-import { getPayoutAccountView } from "@/lib/payout-account";
-import { loadReadiness } from "@/lib/readiness";
-import { getConnectionView } from "@/lib/whatsapp-connection";
-import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
+import { jsonify } from "@/lib/jsonify";
+import { loadOnboardingView } from "@/lib/views/dashboard-onboarding";
 
 export const metadata: Metadata = { title: "Set up your booking page", robots: { index: false } };
 
@@ -17,58 +10,5 @@ export const metadata: Metadata = { title: "Set up your booking page", robots: {
 export default async function OnboardingPage({ searchParams }: { searchParams: Promise<{ step?: string; google?: string }> }) {
   const auth = await requirePageAuth("/onboarding", { allowOnboarding: true });
   const sp = await searchParams;
-  const [influencer, services, rules, blocked, google, whatsapp, payout, readiness] = await Promise.all([
-    prisma.influencer.findUniqueOrThrow({
-      where: { id: auth.influencerId },
-      select: { name: true, bio: true, photoUrl: true, timezone: true, slug: true, notifyByEmail: true },
-    }),
-    prisma.service.findMany({ where: { influencerId: auth.influencerId }, orderBy: { createdAt: "asc" } }),
-    prisma.availabilityRule.findMany({ where: { influencerId: auth.influencerId }, orderBy: [{ weekday: "asc" }, { startTime: "asc" }] }),
-    prisma.blockedDate.findMany({ where: { influencerId: auth.influencerId }, orderBy: { date: "asc" } }),
-    getGoogleStatus(auth.influencerId, { details: true }),
-    getConnectionView(auth.influencerId),
-    getPayoutAccountView(auth.influencerId),
-    loadReadiness(auth.influencerId, auth.emailVerified),
-  ]);
-  const googleView: GoogleStatusView =
-    google.state === "connected"
-      ? { state: "connected", email: google.email, connectedAt: google.connectedAt.toISOString(), gmailSend: google.gmailSend, liveEvents: google.liveEvents ?? 0, gmailFailing: google.gmailFailing ?? false }
-      : google.state === "reconnect-needed"
-        ? { state: "reconnect-needed", email: google.email, reason: google.reason, liveEvents: google.liveEvents ?? 0 }
-        : { state: "not-connected", requestsGmail: google.requestsGmail, liveEvents: google.liveEvents ?? 0, previousEmail: google.previousEmail ?? null };
-
-  return (
-    <OnboardingWizard
-      step={Number(sp.step) || 0}
-      profile={influencer}
-      services={services.map((s) => ({
-        id: s.id,
-        title: s.title,
-        description: s.description,
-        durationMin: s.durationMin,
-        priceMinor: s.priceMinor,
-        currency: s.currency,
-        type: s.type,
-        capacity: s.capacity,
-        active: s.active,
-        refundPolicy: s.refundPolicy,
-          intakeQuestions: parseQuestions(s.intakeQuestions),
-          minNoticeHours: s.minNoticeHours,
-          maxAdvanceDays: s.maxAdvanceDays,
-          prepNotes: s.prepNotes,
-          requiresApproval: s.requiresApproval,
-      }))}
-      rules={rules.map((r) => ({ id: r.id, weekday: r.weekday, startTime: r.startTime, endTime: r.endTime, timezone: r.timezone }))}
-      blocked={blocked.map((b) => ({ id: b.id, date: b.date.toISOString().slice(0, 10), reason: b.reason }))}
-      google={googleView}
-      googleOutcome={sp.google ?? null}
-      whatsapp={whatsapp ? { displayPhone: whatsapp.displayPhone, verifiedName: whatsapp.verifiedName, source: whatsapp.source, status: whatsapp.status, lastError: whatsapp.lastError, templates: whatsapp.templates, ready: whatsapp.ready } : null}
-      embedded={embeddedSignupConfig()}
-      payout={payout}
-      checklist={readiness.items.map((i) => ({ key: i.key, label: i.label, done: i.state === "done", required: i.required }))}
-      publicUrl={`${appUrl()}/${influencer.slug}`}
-      email={auth.email}
-      emailVerified={auth.emailVerified}
-    />
-  );
+  return <OnboardingView data={jsonify(await loadOnboardingView(auth))} step={Number(sp.step) || 0} outcome={sp.google ?? null} />;
 }
