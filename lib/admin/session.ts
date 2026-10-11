@@ -1,8 +1,7 @@
 import { cookies } from "next/headers";
 import { cache } from "react";
-import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
-import { ADMIN_SECURITY_PATH, admin2faRequired } from "@/lib/admin/policy";
+import { admin2faRequired } from "@/lib/admin/policy";
 import { hashToken, randomToken } from "@/lib/auth/tokens";
 import { dummyPasswordHash, hashPassword, passwordProblem, verifyPassword } from "@/lib/auth/password";
 import { isSecureCookies } from "@/lib/auth/session";
@@ -191,23 +190,6 @@ export function adminApiGate(
 }
 
 /**
- * Page guard: unauthenticated visitors go to the admin login; an admin who must enrol is sent to the Security page
- * (the only page open to them); and a password-only session of an admin who HAS 2FA ("verify": a session older than
- * the enrollment) is sent back to sign in with a code, so it cannot browse the console. `mfaGate: false` skips both
- * redirects for callers that cannot tell which page they are guarding.
- */
-export async function requireAdminPage(path = "/admin", opts: { mfaGate?: boolean } = {}): Promise<AdminContext> {
-  const admin = await getAdminAuth();
-  if (!admin) redirect(`/admin/login?next=${encodeURIComponent(path)}`);
-  if (opts.mfaGate !== false) {
-    const gate = mfaGateStatus(admin);
-    if (gate === "verify") redirect(`/admin/login?next=${encodeURIComponent(path)}`);
-    if (gate === "enroll" && path.split("?")[0] !== ADMIN_SECURITY_PATH) redirect(ADMIN_SECURITY_PATH);
-  }
-  return admin;
-}
-
-/**
  * Whether this session may see the list of administrators and their 2FA status. Hidden from a session that has not
  * passed what it must (a stolen cookie of an admin who has not enrolled, or a password-only session) so it cannot be
  * used to pick targets; with 2FA required that means "enrolled and verified".
@@ -231,9 +213,9 @@ export async function requireAdminApi(opts: { allowEnrollment?: boolean } = {}):
  * approving, paying or cancelling payouts, changing fees). As requireAdminApi, and additionally the session must have
  * passed a second factor whenever the admin has one enabled.
  *
- * It is also the guard of every admin READ endpoint the SPA uses (GET /api/admin/...): it denies exactly what the old
- * server-rendered pages denied ("enroll" and "verify", see requireAdminPage), which `requireAdminApi()` alone does not
- * (it lets a password-only session of a 2FA admin through). `allowEnrollment` is only for the two endpoints behind the
+ * It is also the guard of every admin READ endpoint the SPA uses (GET /api/admin/...): it denies "enroll" and "verify" (the
+ * console is closed to an admin who must enrol, and to a password-only session of an admin who has 2FA), which
+ * `requireAdminApi()` alone does not (it lets a password-only session of a 2FA admin through). `allowEnrollment` is only for the two endpoints behind the
  * only console screens an enrolling admin can open: GET /api/admin/security and GET /api/admin/shell. "verify" stays
  * denied there too. Calling it without options keeps its previous behaviour.
  */
