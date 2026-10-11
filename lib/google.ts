@@ -403,7 +403,7 @@ export const google: GoogleClient = createGoogleClient();
 export async function exchangeCode(
   code: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ refreshToken: string; scope: string; email: string | null }> {
+): Promise<{ refreshToken: string; scope: string; email: string | null; sub: string | null }> {
   let res: Response;
   try {
     res = await fetchImpl(googleEndpoints().token, {
@@ -431,25 +431,35 @@ export async function exchangeCode(
       "Google did not return a refresh token. Remove the app at myaccount.google.com/permissions and connect again.",
     );
   }
-  return { refreshToken: body.refresh_token, scope: body.scope ?? "", email: emailFromIdToken(body.id_token) };
+  const { email, sub } = claimsFromIdToken(body.id_token);
+  return { refreshToken: body.refresh_token, scope: body.scope ?? "", email, sub };
 }
 
 /**
- * Reads the `email` claim from the ID token returned by the token endpoint. The token came straight from Google
- * over TLS in response to our own client-authenticated request, so (per OpenID Connect Core 3.1.3.7) its
- * signature does not need re-verifying for this display-only use.
+ * Reads the `email` and `sub` claims from the ID token returned by the token endpoint. The token came straight from
+ * Google over TLS in response to our own client-authenticated request, so (per OpenID Connect Core 3.1.3.7) its
+ * signature does not need re-verifying for this use. `sub` is the account's stable id: unlike the address it survives a
+ * rename, so it is what decides whether two connections are the same Google account (lib/google-connect.ts).
  */
-export function emailFromIdToken(idToken: string | undefined): string | null {
-  if (!idToken) return null;
+export function claimsFromIdToken(idToken: string | undefined): { email: string | null; sub: string | null } {
+  if (!idToken) return { email: null, sub: null };
   try {
     const payload = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8")) as {
-      email?: string;
-      email_verified?: boolean;
+      email?: unknown;
+      sub?: unknown;
     };
-    return typeof payload.email === "string" && payload.email.length <= 320 ? payload.email : null;
+    return {
+      email: typeof payload.email === "string" && payload.email.length <= 320 ? payload.email : null,
+      // Google's ids are at most 255 ASCII characters.
+      sub: typeof payload.sub === "string" && payload.sub.length > 0 && payload.sub.length <= 255 ? payload.sub : null,
+    };
   } catch {
-    return null;
+    return { email: null, sub: null };
   }
+}
+
+export function emailFromIdToken(idToken: string | undefined): string | null {
+  return claimsFromIdToken(idToken).email;
 }
 
 /** Revokes a refresh token at Google (used by "Disconnect"). Best-effort: a dead token is already revoked. */

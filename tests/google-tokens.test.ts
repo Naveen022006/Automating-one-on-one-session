@@ -149,3 +149,38 @@ test("S3: getRefreshToken returns the connectedAt it read, and a renewed grant h
   assert.equal(first.state === "ok" && (await markReconnectNeeded(a, "stale", first.connectedAt)), false);
   assert.equal((await prisma.googleToken.findUniqueOrThrow({ where: { influencerId: a } })).status, "ACTIVE");
 });
+
+test("N1: the account's stable id is stored with the grant, read with its token in one go, and the next connect replaces it", { skip }, async () => {
+  const { getGoogleAccountRecord } = await import("../lib/google-tokens");
+  await saveGoogleToken(a, "rt-n1", SCOPE, "n1@gmail.com"); // a row from before the id was recorded
+  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "n1@gmail.com", sub: null, refreshToken: "rt-n1" });
+
+  await saveGoogleToken(a, "rt-n2", SCOPE, "renamed@gmail.com", "sub-n1"); // reconnected: the id is filled in, the address follows the rename
+  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "renamed@gmail.com", sub: "sub-n1", refreshToken: "rt-n2" });
+
+  await saveGoogleToken(a, "rt-n3", SCOPE, "renamed@gmail.com", null); // an ID token without one clears it: address-only comparison, never a revoke
+  assert.equal((await getGoogleAccountRecord(a)).sub, null);
+
+  // After a disconnect only the address is remembered; there is no token and no id.
+  await saveGoogleToken(a, "rt-n4", SCOPE, "last@gmail.com", "sub-last");
+  await deleteGoogleToken(a);
+  assert.deepEqual(await getGoogleAccountRecord(a), { connected: false, email: "last@gmail.com", sub: null, refreshToken: null });
+});
+
+test("N2: the record returns the token of a grant flagged 'reconnect needed' too (it is usually still authorised at Google)", { skip }, async () => {
+  const { getGoogleAccountRecord } = await import("../lib/google-tokens");
+  await saveGoogleToken(c, "rt-flag", SCOPE, "flag@gmail.com", "sub-flag");
+  assert.equal(await markReconnectNeeded(c, "401 from Google"), true);
+  assert.equal(await getActiveGrant(c), null, "the active-grant read still skips it");
+  assert.deepEqual(await getGoogleAccountRecord(c), { connected: true, email: "flag@gmail.com", sub: "sub-flag", refreshToken: "rt-flag" });
+});
+
+test("N1: another profile on the same Google account is also found by the stable id when the address differs", { skip }, async () => {
+  await saveGoogleToken(a, "rt-m1", SCOPE, "before-rename@gmail.com", "sub-shared");
+  await saveGoogleToken(c, "rt-m2", SCOPE, "mine@gmail.com", "sub-mine");
+  assert.equal(await googleAccountSharedWithOthers(c, "after-rename@gmail.com", "sub-shared"), true, "same id, other address");
+  assert.equal(await googleAccountSharedWithOthers(c, "before-rename@gmail.com", null), true, "same address, no id");
+  assert.equal(await googleAccountSharedWithOthers(c, "nobody@gmail.com", "sub-nobody"), false);
+  assert.equal(await googleAccountSharedWithOthers(c, null, "sub-mine"), false, "this profile's own id never counts");
+  assert.equal(await googleAccountSharedWithOthers(c, null, null), false);
+});

@@ -35,6 +35,38 @@ export function isAccountSwitch(current: string | null | undefined, next: string
   return !!current && !!next && current.trim().toLowerCase() !== next.trim().toLowerCase();
 }
 
+/** A Google account as far as we know it: the address (can change) and the OpenID `sub` (cannot). Either may be unknown. */
+export interface GoogleAccountRef {
+  email?: string | null;
+  sub?: string | null;
+}
+
+/**
+ * Whether `next` is another Google account than `current`, and how sure that is.
+ *
+ * With a `sub` on both sides the answer is exact (`certain`): a renamed address on the same account is NOT a switch, and
+ * two accounts are different even if one took over the other's old address. Otherwise it falls back to the address
+ * (`isAccountSwitch`), which cannot tell a rename from a switch, so it is not `certain`.
+ *
+ * `certain` is what a REVOKE must wait for. Google's revoke ends the app's access for the whole Google account, so
+ * revoking a token of what turns out to be the same account kills the connection that was just made or is working.
+ * `different` alone is enough to ask the influencer to confirm a switch, which is only a question.
+ */
+export function compareAccounts(current: GoogleAccountRef, next: GoogleAccountRef): { different: boolean; certain: boolean } {
+  if (current.sub && next.sub) return { different: current.sub !== next.sub, certain: true };
+  return { different: isAccountSwitch(current.email, next.email), certain: false };
+}
+
+/**
+ * Whether a token of the account `other` that we do not keep may be revoked without hurting the connection on record:
+ * nothing is connected at all, or the two are known by `sub` to be different accounts.
+ */
+export function mayRevokeOther(record: { connected: boolean } & GoogleAccountRef, other: GoogleAccountRef): boolean {
+  if (!record.connected) return true;
+  const { different, certain } = compareAccounts(record, other);
+  return different && certain;
+}
+
 /**
  * Switching accounts replaces the connection, but Calendar events that already exist (and customers' invites for them)
  * stay on the old account: later reschedules 404, cancels leave the old invite behind, and a later booking of a group

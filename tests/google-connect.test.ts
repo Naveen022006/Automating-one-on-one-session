@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { NextRequest } from "next/server";
-import { isAccountSwitch, outcomeTarget, switchNeedsConfirmation } from "../lib/google-connect";
+import { claimsFromIdToken } from "../lib/google";
+import { compareAccounts, isAccountSwitch, mayRevokeOther, outcomeTarget, switchNeedsConfirmation } from "../lib/google-connect";
 import { signToken, verifyToken } from "../lib/signing";
 
 /**
@@ -36,6 +37,36 @@ test("an account switch is a different, known email (case does not matter)", () 
   assert.equal(isAccountSwitch("a@gmail.com", null), false);
 });
 
+test("N1: two accounts are compared by their stable id when both have one, by address only otherwise", () => {
+  // A renamed address on the same account is not a switch; an address another account took over is one.
+  assert.deepEqual(compareAccounts({ email: "old@x.com", sub: "s1" }, { email: "new@x.com", sub: "s1" }), { different: false, certain: true });
+  assert.deepEqual(compareAccounts({ email: "a@x.com", sub: "s1" }, { email: "a@x.com", sub: "s2" }), { different: true, certain: true });
+  // One side without a sub (a row from before it was recorded): the address decides, and it is never certain.
+  assert.deepEqual(compareAccounts({ email: "old@x.com", sub: null }, { email: "new@x.com", sub: "s1" }), { different: true, certain: false });
+  assert.deepEqual(compareAccounts({ email: "Old@x.com", sub: null }, { email: "old@x.com", sub: "s1" }), { different: false, certain: false });
+  assert.deepEqual(compareAccounts({ email: null, sub: null }, { email: "new@x.com", sub: "s1" }), { different: false, certain: false });
+});
+
+test("N1: a token we do not keep may be revoked only when nothing is connected or the two are known to be different accounts", () => {
+  assert.equal(mayRevokeOther({ connected: false, email: "old@x.com" }, { email: "new@x.com" }), true, "no connection to hurt");
+  assert.equal(mayRevokeOther({ connected: true, email: "a@x.com", sub: "s1" }, { email: "b@x.com", sub: "s2" }), true, "different ids");
+  assert.equal(mayRevokeOther({ connected: true, email: "a@x.com", sub: "s1" }, { email: "b@x.com", sub: "s1" }), false, "renamed, same account");
+  assert.equal(mayRevokeOther({ connected: true, email: "a@x.com", sub: null }, { email: "b@x.com", sub: "s2" }), false, "old id unknown");
+  assert.equal(mayRevokeOther({ connected: true, email: "a@x.com", sub: "s1" }, { email: "b@x.com", sub: null }), false, "new id unknown");
+  assert.equal(mayRevokeOther({ connected: true, email: "a@x.com", sub: "s1" }, { email: "a@x.com", sub: "s1" }), false, "same account");
+});
+
+test("N1: the ID token's claims are read defensively", () => {
+  const token = (payload: unknown) => `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.s`;
+  assert.deepEqual(claimsFromIdToken(token({ email: "a@x.com", sub: "1234" })), { email: "a@x.com", sub: "1234" });
+  assert.deepEqual(claimsFromIdToken(token({ email: "a@x.com" })), { email: "a@x.com", sub: null });
+  assert.deepEqual(claimsFromIdToken(token({ email: 7, sub: 12 })), { email: null, sub: null }, "only strings count");
+  assert.deepEqual(claimsFromIdToken(token({ sub: "x".repeat(256) })), { email: null, sub: null }, "an absurd id is not stored");
+  assert.deepEqual(claimsFromIdToken(token({ sub: "" })), { email: null, sub: null });
+  assert.deepEqual(claimsFromIdToken("garbage"), { email: null, sub: null });
+  assert.deepEqual(claimsFromIdToken(undefined), { email: null, sub: null });
+});
+
 test("a switch needs confirmation only when upcoming bookings have events and it was not confirmed", () => {
   assert.equal(switchNeedsConfirmation({ liveEvents: 2, confirmed: false }), true);
   assert.equal(switchNeedsConfirmation({ liveEvents: 2, confirmed: true }), false);
@@ -51,12 +82,26 @@ const tokens = {
   connectedEmail: "old@gmail.com" as string | null,
   /** Whether another influencer profile is connected with the same Google account (Google's revoke would hit it too). */
   shared: false,
-  saved: [] as { influencerId: string; email: string | null; scope: string }[],
+  saved: [] as { influencerId: string; email: string | null; sub: string | null; scope: string }[],
   counted: 0,
-  /** The grant a confirmed switch replaces (what getActiveGrant reads before saveGoogleToken overwrites it); null when none is active. */
-  activeGrant: null as { refreshToken: string; connectedAt: Date } | null,
+  /** The stable id stored with the grant (null: connected before it was recorded). */
+  connectedSub: null as string | null,
+  /** The refresh token stored with the grant, whatever its status (null: no grant, or unreadable), as the one-query read returns it. */
+  connectedToken: null as string | null,
+  /** What the shared-account lookup was asked, and whether it fails (the database hiccuping during the best-effort revoke). */
+  sharedAsked: [] as { email: string | null | undefined; sub: string | null | undefined }[],
+  sharedThrows: false,
+  /** Everything that happened to the stores and to Google, in order ("save", "revoke:<token>"). */
+  order: [] as string[],
 };
 let auth: { influencerId: string; email: string } | null = { influencerId: "inf1", email: "login@example.com" };
+
+const accountRecord = async () => ({ connected: tokens.connected, email: tokens.connectedEmail, sub: tokens.connectedSub, refreshToken: tokens.connectedToken });
+const sharedLookup = async (_influencerId: string, email?: string | null, sub?: string | null) => {
+  tokens.sharedAsked.push({ email, sub });
+  if (tokens.sharedThrows) throw new Error("database unavailable");
+  return tokens.shared;
+};
 
 async function loadRoute(which: "connect" | "callback") {
   mock.module("@/lib/auth/session", { namedExports: { getAuth: async () => auth } });
@@ -64,11 +109,14 @@ async function loadRoute(which: "connect" | "callback") {
     namedExports: {
       NONCE_COOKIE: "g_oauth_nonce",
       OAUTH_STATE_PURPOSE: "google-oauth-state",
-      googleAccountSharedWithOthers: async () => tokens.shared,
+      googleAccountSharedWithOthers: sharedLookup,
       countLiveCalendarEvents: async () => (tokens.counted++, tokens.liveEvents),
-      getActiveGrant: async () => tokens.activeGrant,
       getGoogleAccountOfRecord: async () => ({ connected: tokens.connected, email: tokens.connectedEmail }),
-      saveGoogleToken: async (influencerId: string, _rt: string, scope: string, email: string | null) => void tokens.saved.push({ influencerId, email, scope }),
+      getGoogleAccountRecord: accountRecord,
+      saveGoogleToken: async (influencerId: string, _rt: string, scope: string, email: string | null, sub: string | null = null) => {
+        tokens.order.push("save");
+        tokens.saved.push({ influencerId, email, sub, scope });
+      },
     },
   });
   mock.module("@/lib/meeting", { namedExports: { requeuePendingMeetings: async () => 0 } });
@@ -76,7 +124,11 @@ async function loadRoute(which: "connect" | "callback") {
 }
 
 function reset(over: Partial<typeof tokens> = {}) {
-  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", shared: false, saved: [], counted: 0, activeGrant: null }, over);
+  Object.assign(
+    tokens,
+    { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", connectedSub: null, connectedToken: null, shared: false, sharedAsked: [], sharedThrows: false, saved: [], counted: 0, order: [] },
+    over,
+  );
   auth = { influencerId: "inf1", email: "login@example.com" };
 }
 
@@ -170,20 +222,26 @@ test("connect: a visitor who is not logged in is sent to the login page", async 
 
 // ---- the callback ----
 
-const idToken = (email: string) => `x.${Buffer.from(JSON.stringify({ email })).toString("base64url")}.y`;
+const idToken = (email: string, sub?: string) => `x.${Buffer.from(JSON.stringify({ email, ...(sub ? { sub } : {}) })).toString("base64url")}.y`;
+
+/** What the token endpoint hands out: the account's address, its stable id (omitted: an ID token without one), the permissions granted. */
+type GoogleGrant = { email: string; scope: string; sub?: string; revokeFails?: boolean };
 
 /** Replaces global fetch with Google's token and revoke endpoints; `google` says what the token endpoint hands out. */
-function fakeGoogle(google: { email: string; scope: string }) {
+function fakeGoogle(google: GoogleGrant) {
   const revoked: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL) => {
     const u = String(url);
     if (u.includes("/revoke")) {
-      revoked.push(new URL(u).searchParams.get("token") ?? "");
+      if (google.revokeFails) throw new Error("network down");
+      const token = new URL(u).searchParams.get("token") ?? "";
+      revoked.push(token);
+      tokens.order.push(`revoke:${token}`);
       return new Response("{}", { status: 200 });
     }
     if (u.includes("/token")) {
-      return new Response(JSON.stringify({ refresh_token: "rt-new", scope: google.scope, id_token: idToken(google.email) }), { status: 200 });
+      return new Response(JSON.stringify({ refresh_token: "rt-new", scope: google.scope, id_token: idToken(google.email, google.sub) }), { status: 200 });
     }
     throw new Error(`unexpected fetch ${u}`);
   }) as typeof fetch;
@@ -197,7 +255,7 @@ function callbackReq(opts: { c?: number; r?: string } = {}) {
   });
 }
 
-async function runCallback(google: { email: string; scope: string }, opts: { c?: number; r?: string } = {}) {
+async function runCallback(google: GoogleGrant, opts: { c?: number; r?: string } = {}) {
   const fake = fakeGoogle(google);
   try {
     const { GET } = await loadRoute("callback");
@@ -215,23 +273,41 @@ test("callback: Calendar unticked on a first connection or another account -> th
   assert.equal(first.outcome, "missing-permission");
   assert.deepEqual(first.revoked, ["rt-new"]);
 
-  reset({ connected: true, connectedEmail: "old@gmail.com" });
-  const other = await runCallback({ email: "other@gmail.com", scope: `openid email ${GMAIL}` });
+  // Both accounts have a stable id and the ids differ: a different account's grant cannot hurt the connection that works.
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old" });
+  const other = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: `openid email ${GMAIL}` });
   assert.equal(other.outcome, "missing-permission");
-  assert.deepEqual(other.revoked, ["rt-new"], "a different account's grant cannot hurt the connection that works");
+  assert.deepEqual(other.revoked, ["rt-new"]);
   assert.deepEqual(tokens.saved, []);
 });
 
 test("callback: Calendar unticked on the account that is already connected -> NOT revoked (Google would end the working connection too)", async () => {
-  reset({ connected: true, connectedEmail: "old@gmail.com" });
-  const r = await runCallback({ email: "OLD@gmail.com", scope: `openid email ${GMAIL}` });
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old" });
+  const r = await runCallback({ email: "OLD@gmail.com", sub: "sub-old", scope: `openid email ${GMAIL}` });
   assert.equal(r.outcome, "missing-permission");
   assert.deepEqual(r.revoked, []);
   assert.deepEqual(tokens.saved, []);
 
   // A connection whose account is unknown is treated the same way: better a stray grant than killing a working one.
   reset({ connected: true, connectedEmail: null });
-  assert.deepEqual((await runCallback({ email: "any@gmail.com", scope: `openid email ${GMAIL}` })).revoked, []);
+  assert.deepEqual((await runCallback({ email: "any@gmail.com", sub: "sub-any", scope: `openid email ${GMAIL}` })).revoked, []);
+});
+
+test("N1: Calendar unticked after the account's address was renamed (same stable id) -> NOT revoked", async () => {
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-1" });
+  const r = await runCallback({ email: "renamed@gmail.com", sub: "sub-1", scope: `openid email ${GMAIL}` });
+  assert.equal(r.outcome, "missing-permission");
+  assert.deepEqual(r.revoked, [], "it is the same Google account: revoking would end the connection that works");
+});
+
+test("N1: Calendar unticked on another address while the stored account has no stable id yet -> NOT revoked (cannot tell a rename from a switch)", async () => {
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: null });
+  const r = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: `openid email ${GMAIL}` });
+  assert.equal(r.outcome, "missing-permission");
+  assert.deepEqual(r.revoked, []);
+  // Nor when Google's ID token carries no id although the stored account has one.
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old" });
+  assert.deepEqual((await runCallback({ email: "other@gmail.com", scope: `openid email ${GMAIL}` })).revoked, []);
 });
 
 test("callback: after a disconnect, a different account is still a switch (the account is remembered) and is refused unconfirmed", async () => {
@@ -251,28 +327,104 @@ test("callback: after a disconnect, the same account reconnects, and a confirmed
   assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
 });
 
-test("callback: a confirmed switch revokes the OLD account's grant (its token is overwritten, so nobody could revoke it later); a reconnect of the same account does not", async () => {
-  const oldGrant = { refreshToken: "rt-old", connectedAt: new Date() };
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: oldGrant });
-  const switched = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
-  assert.equal(switched.outcome, "connected");
-  assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
-  assert.deepEqual(switched.revoked, ["rt-old"], "the replaced grant is revoked at Google, the new one is kept");
+const BOTH = `openid email ${CALENDAR} ${GMAIL}`;
 
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: oldGrant });
-  const same = await runCallback({ email: "OLD@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
+test("callback: a confirmed switch revokes the OLD account's grant (its token is overwritten, so nobody could revoke it later), after the new one is saved; a reconnect of the same account does not", async () => {
+  const known = { connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", connectedToken: "rt-old", liveEvents: 2 };
+  reset(known);
+  const switched = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 });
+  assert.equal(switched.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => [s.email, s.sub]), [["other@gmail.com", "sub-other"]], "the new account's id is stored with it");
+  assert.deepEqual(switched.revoked, ["rt-old"], "the replaced grant is revoked at Google, the new one is kept");
+  assert.deepEqual(tokens.order, ["save", "revoke:rt-old"], "the new connection is safe before anything is revoked");
+
+  reset(known);
+  const same = await runCallback({ email: "OLD@gmail.com", sub: "sub-old", scope: BOTH }, { c: 1 });
   assert.equal(same.outcome, "connected");
   assert.deepEqual(same.revoked, [], "the same account: Google's revoke would end the very connection just made");
 
   // Another influencer profile uses the old account: Google's revoke ends the app's access for the whole account, so it is skipped.
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, shared: true, activeGrant: oldGrant });
-  const shared = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR}` }, { c: 1 });
+  reset({ ...known, shared: true });
+  const shared = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: `openid email ${CALENDAR}` }, { c: 1 });
   assert.equal(shared.outcome, "connected-no-gmail");
   assert.deepEqual(shared.revoked, []);
+  assert.deepEqual(tokens.sharedAsked, [{ email: "old@gmail.com", sub: "sub-old" }], "asked about the OLD account, by address and by id");
 
-  // A connection that was already dead (reconnect needed) has no active grant to revoke.
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: null });
-  assert.deepEqual((await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 })).revoked, []);
+  // A grant whose token cannot be read has nothing to revoke.
+  reset({ ...known, connectedToken: null });
+  assert.deepEqual((await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 })).revoked, []);
+});
+
+test("N1: an address renamed on the SAME Google account is not a switch: nothing is refused, nothing revoked", async () => {
+  const renamed = { connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-1", connectedToken: "rt-old", liveEvents: 3 };
+
+  // Reconnect (no Switch account) with upcoming events: an email-only comparison would call this a switch and refuse it.
+  reset(renamed);
+  const reconnect = await runCallback({ email: "renamed@gmail.com", sub: "sub-1", scope: BOTH });
+  assert.equal(reconnect.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => [s.email, s.sub]), [["renamed@gmail.com", "sub-1"]]);
+  assert.deepEqual(reconnect.revoked, [], "revoking would end the connection that was just made");
+
+  // The same through "Switch account" (confirmed), and with nothing at stake ("Send from my Gmail" with no upcoming bookings).
+  reset(renamed);
+  const confirmed = await runCallback({ email: "renamed@gmail.com", sub: "sub-1", scope: BOTH }, { c: 1 });
+  assert.equal(confirmed.outcome, "connected");
+  assert.deepEqual(confirmed.revoked, []);
+  reset({ ...renamed, liveEvents: 0 });
+  const gmailButton = await runCallback({ email: "renamed@gmail.com", sub: "sub-1", scope: BOTH });
+  assert.equal(gmailButton.outcome, "connected");
+  assert.deepEqual(gmailButton.revoked, []);
+});
+
+test("N1: a stored account without a stable id (connected before it was recorded) is compared by address and never leads to a revoke; the id is recorded now", async () => {
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: null, connectedToken: "rt-old", liveEvents: 2 });
+  const r = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 });
+  assert.equal(r.outcome, "connected", "the confirmed switch still goes through");
+  assert.deepEqual(r.revoked, [], "but the old grant is left alone: it could be the same account under an older address");
+  assert.deepEqual(tokens.saved.map((s) => s.sub), ["sub-other"]);
+
+  // A plain reconnect of the same address fills the id in.
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: null, connectedToken: "rt-old", liveEvents: 2 });
+  const same = await runCallback({ email: "old@gmail.com", sub: "sub-old", scope: BOTH });
+  assert.equal(same.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => s.sub), ["sub-old"]);
+  assert.deepEqual(same.revoked, []);
+});
+
+test("N1/N2: the replaced grant is revoked whatever its status (a 'reconnect needed' grant is read as well), never the token just issued", async () => {
+  // The one-query read returns the token of a flagged grant too (tests/google-tokens.test.ts covers the query itself).
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", connectedToken: "rt-flagged", liveEvents: 2 });
+  const r = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 });
+  assert.deepEqual(r.revoked, ["rt-flagged"]);
+
+  // Google handed out the very token we already hold: revoking "the old one" would revoke the new one.
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", connectedToken: "rt-new", liveEvents: 2 });
+  const same = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 });
+  assert.equal(same.outcome, "connected");
+  assert.deepEqual(same.revoked, []);
+});
+
+test("N1: a failing revoke (Google unreachable, or the shared-account lookup failing) still ends in 'connected'", async () => {
+  const base = { connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", connectedToken: "rt-old", liveEvents: 2 };
+
+  reset(base);
+  const unreachable = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH, revokeFails: true }, { c: 1 });
+  assert.equal(unreachable.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"], "the new connection was saved first");
+  assert.deepEqual(unreachable.revoked, []);
+
+  reset({ ...base, sharedThrows: true });
+  const realError = console.error;
+  let logged = 0;
+  console.error = () => void logged++;
+  try {
+    const lookupFails = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: BOTH }, { c: 1 });
+    assert.equal(lookupFails.outcome, "connected");
+    assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
+    assert.equal(logged, 1, "logged, not thrown");
+  } finally {
+    console.error = realError;
+  }
 });
 
 // ---- disconnect (DELETE /api/dashboard/google) ----
@@ -285,8 +437,8 @@ async function loadDisconnect() {
   mock.module("@/lib/google-tokens", {
     namedExports: {
       countLiveCalendarEvents: async () => tokens.liveEvents,
-      getGoogleAccountOfRecord: async () => ({ connected: true, email: tokens.connectedEmail }),
-      googleAccountSharedWithOthers: async () => tokens.shared,
+      getGoogleAccountRecord: accountRecord,
+      googleAccountSharedWithOthers: sharedLookup,
       deleteGoogleToken: async () => (calls.deleted++, "rt-old"),
       getGoogleStatus: async () => ({ state: "not-connected", requestsGmail: true }),
     },
@@ -342,11 +494,26 @@ test("disconnect: confirmed, or with nothing at stake, disconnects and revokes t
 });
 
 test("callback: a different Google account that was not chosen with Switch account is refused when events would be stranded", async () => {
-  reset({ liveEvents: 3 });
-  const r = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR}` });
+  reset({ liveEvents: 3, connectedSub: "sub-old" });
+  const r = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: `openid email ${CALENDAR}` });
   assert.equal(r.outcome, "switch-unconfirmed");
-  assert.deepEqual(r.revoked, ["rt-new"], "the new account's grant is revoked, the old connection is untouched");
+  assert.deepEqual(r.revoked, ["rt-new"], "the new account's grant is revoked (both ids are known and differ), the old connection is untouched");
   assert.deepEqual(tokens.saved, []);
+});
+
+test("N1: a refused switch revokes the new grant only when the two accounts are known to differ by their stable id", async () => {
+  // Another address, but the stored account has no id yet: still refused (events would be stranded if it is a real switch), not revoked.
+  reset({ liveEvents: 3, connectedSub: null });
+  const unknown = await runCallback({ email: "other@gmail.com", sub: "sub-other", scope: `openid email ${CALENDAR}` });
+  assert.equal(unknown.outcome, "switch-unconfirmed");
+  assert.deepEqual(unknown.revoked, [], "it could be the same account under an older address, and the revoke would end the working connection");
+  assert.deepEqual(tokens.saved, []);
+
+  // The same address, different id (the address was taken over by someone else): a switch, refused and revoked.
+  reset({ liveEvents: 3, connectedSub: "sub-old" });
+  const takenOver = await runCallback({ email: "old@gmail.com", sub: "sub-stranger", scope: `openid email ${CALENDAR}` });
+  assert.equal(takenOver.outcome, "switch-unconfirmed");
+  assert.deepEqual(takenOver.revoked, ["rt-new"]);
 });
 
 test("callback: reconnecting the same account works (case-insensitive) and keeps the page's query", async () => {
@@ -383,25 +550,28 @@ test("S6: a refused grant is not revoked while another influencer profile is con
   assert.deepEqual(unticked.revoked, [], "revoking would disconnect the other profile too");
 
   // A refused switch: same.
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 3, shared: true });
-  const refused = await runCallback({ email: "shared@gmail.com", scope: `openid email ${CALENDAR}` });
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", liveEvents: 3, shared: true });
+  const refused = await runCallback({ email: "shared@gmail.com", sub: "sub-shared", scope: `openid email ${CALENDAR}` });
   assert.equal(refused.outcome, "switch-unconfirmed");
   assert.deepEqual(refused.revoked, []);
+  assert.deepEqual(tokens.sharedAsked, [{ email: "shared@gmail.com", sub: "sub-shared" }], "asked about the NEW account, by address and by id");
   assert.deepEqual(tokens.saved, [], "and it is still refused");
 
   // Nobody else uses the account: revoked as before.
-  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 3, shared: false });
-  assert.deepEqual((await runCallback({ email: "alone@gmail.com", scope: `openid email ${CALENDAR}` })).revoked, ["rt-new"]);
+  reset({ connected: true, connectedEmail: "old@gmail.com", connectedSub: "sub-old", liveEvents: 3, shared: false });
+  assert.deepEqual((await runCallback({ email: "alone@gmail.com", sub: "sub-alone", scope: `openid email ${CALENDAR}` })).revoked, ["rt-new"]);
 });
 
 test("S6: disconnecting deletes our copy but does not revoke at Google while another profile uses the same account", async () => {
   reset({ liveEvents: 0, shared: true });
   const fake = fakeGoogle({ email: "x", scope: "" });
   try {
+    tokens.connectedSub = "sub-old";
     const { DELETE, calls } = await loadDisconnect();
     assert.equal((await DELETE(deleteReq())).status, 200);
     assert.equal(calls.deleted, 1, "this profile is disconnected");
     assert.deepEqual(fake.revoked, [], "but the shared Google account is left authorised for the other profile");
+    assert.deepEqual(tokens.sharedAsked, [{ email: "old@gmail.com", sub: "sub-old" }], "matched by address and by stable id");
   } finally {
     fake.restore();
     mock.reset();

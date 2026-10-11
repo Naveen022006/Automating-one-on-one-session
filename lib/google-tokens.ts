@@ -15,15 +15,19 @@ export async function saveGoogleToken(
   refreshToken: string,
   scope: string,
   googleEmail: string | null = null,
+  googleSub: string | null = null,
 ): Promise<void> {
   const refreshTokenEnc = encryptSecret(refreshToken, googleTokenAad(influencerId));
   await prisma.googleToken.upsert({
     where: { influencerId },
-    create: { influencerId, refreshTokenEnc, scope, googleEmail },
+    create: { influencerId, refreshTokenEnc, scope, googleEmail, googleSub },
     update: {
       refreshTokenEnc,
       scope,
       googleEmail,
+      // Written with every connect, so a row that had none gets one at its next reconnect. A connect whose ID token carried
+      // none clears it: the account is then only known by address, which never leads to a revoke.
+      googleSub,
       status: "ACTIVE",
       reconnectReason: null,
       reconnectNeededAt: null,
@@ -106,13 +110,55 @@ export async function getGoogleAccountOfRecord(influencerId: string): Promise<{ 
 }
 
 /**
+ * What the callback needs to know about the account on record, from ONE read so that the address, the stable id and the
+ * token it may have to revoke belong to the same grant (two reads could straddle a concurrent reconnect or disconnect).
+ * Unlike getRefreshToken it returns the token whatever the grant's status: a grant flagged "reconnect needed" (which also
+ * happens on a plain 401/403) is usually still authorised at Google, and replacing it must not leave it that way.
+ * After a disconnect there is no grant: `connected` is false, `email` is the one remembered then, `sub` and `refreshToken`
+ * are null. `refreshToken` is also null when the stored token cannot be decrypted. Server side only: never put it in a response.
+ */
+export interface GoogleAccountRecord {
+  connected: boolean;
+  email: string | null;
+  sub: string | null;
+  refreshToken: string | null;
+}
+
+export async function getGoogleAccountRecord(influencerId: string): Promise<GoogleAccountRecord> {
+  const row = await prisma.googleToken.findUnique({
+    where: { influencerId },
+    select: { googleEmail: true, googleSub: true, refreshTokenEnc: true },
+  });
+  if (row) {
+    let refreshToken: string | null = null;
+    try {
+      refreshToken = decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId));
+    } catch {
+      /* unreadable: nothing to revoke */
+    }
+    return { connected: true, email: row.googleEmail, sub: row.googleSub, refreshToken };
+  }
+  const influencer = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { disconnectedGoogleEmail: true } });
+  return { connected: false, email: influencer?.disconnectedGoogleEmail ?? null, sub: null, refreshToken: null };
+}
+
+/**
  * Whether ANOTHER influencer profile is connected with the same Google account. Google's revoke ends the app's access
  * for the whole account, not for one token, so revoking a refused or disconnected token of this profile would also kill
- * the other profile's working connection: callers skip the revoke when this is true. Unknown accounts never match.
+ * the other profile's working connection: callers skip the revoke when this is true. The account matches by address
+ * (case-insensitive) or by stable id, either is enough to hold the revoke back; unknown accounts never match.
  */
-export async function googleAccountSharedWithOthers(influencerId: string, email: string | null | undefined): Promise<boolean> {
-  if (!email) return false;
-  const others = await prisma.googleToken.count({ where: { influencerId: { not: influencerId }, googleEmail: { equals: email, mode: "insensitive" } } });
+export async function googleAccountSharedWithOthers(
+  influencerId: string,
+  email: string | null | undefined,
+  sub?: string | null,
+): Promise<boolean> {
+  const same = [
+    ...(email ? [{ googleEmail: { equals: email, mode: "insensitive" as const } }] : []),
+    ...(sub ? [{ googleSub: sub }] : []),
+  ];
+  if (same.length === 0) return false;
+  const others = await prisma.googleToken.count({ where: { influencerId: { not: influencerId }, OR: same } });
   return others > 0;
 }
 
