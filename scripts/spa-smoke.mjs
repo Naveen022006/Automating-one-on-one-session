@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 /**
- * HTTP smoke test of a running server (doc/10-react-migration-plan.md, section 7.3). Dependency-free (Node 22 `fetch`),
- * needs no cookies, no login and no test data, so it is safe to point at a staging deployment and to run in CI.
+ * HTTP smoke test of a running server (doc/12-front-end.md). Dependency-free (Node 22 `fetch`), needs no cookies, no login
+ * and no test data, so it is safe to point at a staging deployment and to run in CI.
  *
- *   node scripts/spa-smoke.mjs http://127.0.0.1:3001 [--no-db] [--old] [--verbose]
+ *   node scripts/spa-smoke.mjs http://127.0.0.1:3001 [--no-db] [--verbose]
  *
- * Default mode expects the server to run with SPA_GROUPS=all: one sample URL per route class must return the SPA shell with
- * the right status, robots and Referrer-Policy, and the CSP nonce in the header must equal EVERY nonce in the HTML (a mismatch
- * is a blank page under the strict CSP). It also checks the security headers, the immutable asset caching, the internal
- * shell route, the two session endpoints, the CSRF Origin check, and that no body leaks a stack trace or a connection string.
+ * One sample URL per route class must return the SPA shell with the right status, robots and Referrer-Policy, and the CSP nonce
+ * in the header must equal EVERY nonce in the HTML (a mismatch is a blank page under the strict CSP). It also checks the security
+ * headers, the immutable asset caching, the internal shell route, the two session endpoints, the CSRF Origin check, and that no
+ * body leaks a stack trace or a connection string. Point it at a production build (`npm run build && npm start`, or the Docker
+ * image).
  *
  *   --no-db    the server has no database (the docker CI job): profile routes may answer 503 and the profile API is skipped
- *   --old      the server runs with SPA_GROUPS empty: checks that the OLD Next pages are served (no shell) and that the same
- *              guards, headers and endpoints behave as before
  *   --verbose  print a line for every passing check too (by default only failures, skips and the summary)
  *
  * Exit code 1 if any check fails.
@@ -21,10 +20,9 @@
 const args = process.argv.slice(2);
 const base = (args.find((a) => !a.startsWith("--")) ?? "").replace(/\/$/, "");
 const NO_DB = args.includes("--no-db");
-const OLD = args.includes("--old");
 const VERBOSE = args.includes("--verbose");
 if (!base) {
-  console.error("usage: node scripts/spa-smoke.mjs <base-url> [--no-db] [--old] [--verbose]");
+  console.error("usage: node scripts/spa-smoke.mjs <base-url> [--no-db] [--verbose]");
   process.exit(2);
 }
 
@@ -88,41 +86,37 @@ async function shellSample(s) {
   const name = s.path;
   check(`${name}: status ${s.status.join(" or ")}`, s.status.includes(r.status), String(r.status));
   check(`${name}: content-type text/html`, header(r, "content-type").startsWith("text/html"), header(r, "content-type"));
-  if (OLD) {
-    check(`${name}: the OLD Next page is served (no SPA shell)`, !r.body.includes('<div id="root">'));
-  } else {
-    check(`${name}: SPA shell (<div id="root">)`, r.body.includes('<div id="root">'));
-    const csp = header(r, "content-security-policy");
-    const headerNonce = cspNonce(csp);
-    check(`${name}: CSP header carries a nonce`, Boolean(headerNonce));
-    const bodyNonces = [...r.body.matchAll(/\bnonce="([^"]*)"/g)].map((m) => m[1]);
-    check(`${name}: at least three nonce'd tags in the HTML`, bodyNonces.length >= 3, String(bodyNonces.length));
-    check(`${name}: every nonce in the HTML equals the CSP header's`, bodyNonces.length > 0 && bodyNonces.every((n) => n === headerNonce));
-    check(`${name}: no placeholder left in the HTML`, !r.body.includes("__CSP_NONCE__") && !r.body.includes("<!--spa-head-->") && !r.body.includes("<!--spa-support-->"));
-    check(`${name}: cache-control no-store`, /no-store/.test(header(r, "cache-control")), header(r, "cache-control"));
-    check(`${name}: spa-groups meta present`, /<meta name="spa-groups" content="[a-z,]+">/.test(r.body));
-    const meta = /<meta name="robots" content="([^"]*)">/.exec(r.body)?.[1] ?? null;
-    if (s.robots) {
-      check(`${name}: robots meta ${s.robots}`, meta === s.robots, String(meta));
-      check(`${name}: x-robots-tag ${s.robots}`, header(r, "x-robots-tag") === s.robots, header(r, "x-robots-tag"));
-    } else if (r.status === 200) {
-      check(`${name}: indexable (no robots meta, no x-robots-tag)`, meta === null && header(r, "x-robots-tag") === "");
-    }
-    if (s.tag === "landing") {
-      check(`/: canonical link`, /<link rel="canonical" href="[^"]+\/">/.test(r.body));
-      check(`/: Open Graph title, description and image`, ["og:title", "og:description", "og:image"].every((p) => r.body.includes(`property="${p}"`)));
-      check(`/: Twitter card`, r.body.includes('name="twitter:card" content="summary_large_image"'));
-      check(`/: Organization JSON-LD`, /<script type="application\/ld\+json"[^>]*>\{"@context":"https:\/\/schema\.org","@type":"Organization"/.test(r.body));
-    }
-    if (s.path === "/no-such-slug-xyz" && r.status === 404) check(`${name}: a real 404 status, not a soft 404`, r.status === 404);
+  check(`${name}: SPA shell (<div id="root">)`, r.body.includes('<div id="root">'));
+  const csp = header(r, "content-security-policy");
+  const headerNonce = cspNonce(csp);
+  check(`${name}: CSP header carries a nonce`, Boolean(headerNonce));
+  const bodyNonces = [...r.body.matchAll(/\bnonce="([^"]*)"/g)].map((m) => m[1]);
+  check(`${name}: at least three nonce'd tags in the HTML`, bodyNonces.length >= 3, String(bodyNonces.length));
+  check(`${name}: every nonce in the HTML equals the CSP header's`, bodyNonces.length > 0 && bodyNonces.every((n) => n === headerNonce));
+  check(`${name}: no placeholder left in the HTML`, !r.body.includes("__CSP_NONCE__") && !r.body.includes("<!--spa-head-->") && !r.body.includes("<!--spa-support-->"));
+  check(`${name}: cache-control no-store`, /no-store/.test(header(r, "cache-control")), header(r, "cache-control"));
+  check(`${name}: no page-group switch left in the HTML`, !r.body.includes("spa-groups"));
+  const meta = /<meta name="robots" content="([^"]*)">/.exec(r.body)?.[1] ?? null;
+  if (s.robots) {
+    check(`${name}: robots meta ${s.robots}`, meta === s.robots, String(meta));
+    check(`${name}: x-robots-tag ${s.robots}`, header(r, "x-robots-tag") === s.robots, header(r, "x-robots-tag"));
+  } else if (r.status === 200) {
+    check(`${name}: indexable (no robots meta, no x-robots-tag)`, meta === null && header(r, "x-robots-tag") === "");
   }
-  checkSecurityHeaders(name, r, { noReferrer: s.noReferrer && !OLD });
+  if (s.tag === "landing") {
+    check(`/: canonical link`, /<link rel="canonical" href="[^"]+\/">/.test(r.body));
+    check(`/: Open Graph title, description and image`, ["og:title", "og:description", "og:image"].every((p) => r.body.includes(`property="${p}"`)));
+    check(`/: Twitter card`, r.body.includes('name="twitter:card" content="summary_large_image"'));
+    check(`/: Organization JSON-LD`, /<script type="application\/ld\+json"[^>]*>\{"@context":"https:\/\/schema\.org","@type":"Organization"/.test(r.body));
+  }
+  if (s.path === "/no-such-slug-xyz" && r.status === 404) check(`${name}: a real 404 status, not a soft 404`, r.status === 404);
+  checkSecurityHeaders(name, r, { noReferrer: s.noReferrer });
   noLeaks(name, r.body);
   return r;
 }
 
 async function main() {
-  console.log(`Smoke test of ${base}${NO_DB ? " (no database)" : ""}${OLD ? " (SPA_GROUPS empty: old pages expected)" : ""}`);
+  console.log(`Smoke test of ${base}${NO_DB ? " (no database)" : ""}`);
 
   // --- pages
   let shellBody = "";
@@ -146,18 +140,16 @@ async function main() {
   check("/spa-shell/terms with a forged x-nonce header is still 404", forged.status === 404 && !forged.body.includes('<div id="root">'), String(forged.status));
 
   // --- built assets
-  if (!OLD) {
-    const asset = /(?:src|href)="(\/assets\/[^"]+\.js)"/.exec(shellBody)?.[1];
-    check("the shell references a hashed script under /assets", Boolean(asset));
-    if (asset) {
-      const r = await get(asset);
-      check(`${asset}: 200`, r.status === 200, String(r.status));
-      check(`${asset}: cache-control immutable`, /immutable/.test(header(r, "cache-control")), header(r, "cache-control"));
-      check(`${asset}: a JavaScript content type`, /javascript/.test(header(r, "content-type")), header(r, "content-type"));
-    }
-    const missing = await get("/assets/does-not-exist-0123.js");
-    check("a missing /assets file is a 404, never the shell", missing.status === 404 && !missing.body.includes('<div id="root">'), String(missing.status));
+  const asset = /(?:src|href)="(\/assets\/[^"]+\.js)"/.exec(shellBody)?.[1];
+  check("the shell references a hashed script under /assets", Boolean(asset));
+  if (asset) {
+    const r = await get(asset);
+    check(`${asset}: 200`, r.status === 200, String(r.status));
+    check(`${asset}: cache-control immutable`, /immutable/.test(header(r, "cache-control")), header(r, "cache-control"));
+    check(`${asset}: a JavaScript content type`, /javascript/.test(header(r, "content-type")), header(r, "content-type"));
   }
+  const missing = await get("/assets/does-not-exist-0123.js");
+  check("a missing /assets file is a 404, never the shell", missing.status === 404 && !missing.body.includes('<div id="root">'), String(missing.status));
 
   // --- API
   for (const [path, name] of [["/api/auth/session", "influencer"], ["/api/admin/session", "admin"]]) {
