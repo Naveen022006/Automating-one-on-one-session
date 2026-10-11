@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isCsrfExempt, isSameOriginRequest } from "@/lib/auth/csrf";
 import { rateLimitHeaders, type RateLimitResult } from "@/lib/rate-limit/core";
 import { clientIp, GLOBAL_API_RULE, hit, matchRouteRule, tooManyRequests } from "@/lib/rate-limit";
+import { loggablePath } from "@/lib/rate-limit/redact";
 import { matchEnabledSpaRoute, parseSpaGroups } from "@/lib/spa/routes";
 
 /**
@@ -97,7 +98,7 @@ async function handleApi(req: NextRequest): Promise<NextResponse> {
   const result = strictest([global, route]);
 
   if (result && !result.allowed) {
-    console.warn(`[rate-limit] ${result.degraded ? 503 : 429} ${method} ${pathname} rule=${route && !route.allowed ? rule?.name : "api"} key=${routeId}`);
+    console.warn(`[rate-limit] ${result.degraded ? 503 : 429} ${method} ${loggablePath(pathname)} rule=${route && !route.allowed ? rule?.name : "api"} key=${routeId}`);
     // 429, or 503 when a fail-closed rule (administrator code checks) could not be evaluated because no store is up.
     return tooManyRequests(result, "Too many requests. Please wait a moment and try again.");
   }

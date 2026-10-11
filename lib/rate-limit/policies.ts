@@ -71,10 +71,12 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "slots", pattern: /^\/api\/slots(\/days)?$/, limit: 120, windowMs: MIN, by: "ip" },
   // Page loads of the SPA's customer screens (these GET endpoints are what the server-rendered pages used to do inline).
   // Keyed by IP, with headroom for a popular booking page behind a shared NAT; RATE_LIMIT_MULTIPLIER is the lever.
-  { name: "public-profile", pattern: /^\/api\/public\/profiles\/[^/]+$/, methods: ["GET"], limit: 120, windowMs: MIN, by: "ip" },
-  { name: "pay-view", pattern: /^\/api\/pay\/[^/]+$/, methods: ["GET"], limit: 30, windowMs: 10 * MIN, by: "ip" },
+  { name: "public-profile", pattern: /^\/api\/public\/profiles\/[^/]+$/, methods: ["GET", "HEAD"], limit: 120, windowMs: MIN, by: "ip" },
+  // Same budget as the booking status poll: tokens are signed (not guessable), and a customer behind a shared NAT must not be
+  // locked out of paying while their hold runs down.
+  { name: "pay-view", pattern: /^\/api\/pay\/[^/]+$/, methods: ["GET", "HEAD"], limit: 120, windowMs: 5 * MIN, by: "ip" },
   // Listed before self-service so that opening the manage page does not use up the 20 per 10 minutes meant for actions.
-  { name: "self-service-view", pattern: /^\/api\/manage\/[^/]+$/, methods: ["GET"], limit: 60, windowMs: 10 * MIN, by: "ip" },
+  { name: "self-service-view", pattern: /^\/api\/manage\/[^/]+$/, methods: ["GET", "HEAD"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
 
   // --- Worker liveness for uptime monitors (also the watchdog that alerts when the worker stops). Cheap, public.

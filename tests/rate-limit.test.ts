@@ -159,7 +159,13 @@ test("SPA view endpoints: each new rule matches its path, the right method, and 
   const names = ROUTE_RULES.map((r) => r.name);
   assert.ok(names.indexOf("self-service-view") < names.indexOf("self-service"));
   assert.ok(names.indexOf("auth-session") < names.indexOf("auth-other"));
-  assert.deepEqual([matchRouteRule("GET", "/api/public/profiles/demo")!.limit, matchRouteRule("GET", "/api/pay/t")!.limit], [120, 30]);
+  assert.deepEqual([matchRouteRule("GET", "/api/public/profiles/demo")!.limit, matchRouteRule("GET", "/api/pay/t")!.limit], [120, 120]);
+  // HEAD is answered by the GET handler, so it must hit the same rules instead of only the general ceiling.
+  for (const [path, name] of [["/api/public/profiles/demo", "public-profile"], ["/api/pay/sometoken", "pay-view"], ["/api/manage/sometoken", "self-service-view"]] as const) {
+    assert.equal(matchRouteRule("HEAD", path)?.name, name, `HEAD ${path}`);
+  }
+  // A customer must be able to open the pay page at least as often as the confirmation page polls.
+  assert.ok(rate("GET", "/api/pay/t") >= rate("GET", "/api/bookings/b1"), "pay-view budget is not tighter than booking-status");
   assert.equal(matchRouteRule("POST", "/api/public/profiles/demo"), null, "no write method is rule-matched here (the handler does not exist)");
   assert.equal(matchRouteRule("GET", "/api/public/profiles/a/b"), null, "one segment only");
 });
@@ -210,4 +216,13 @@ test("client IP comes only from headers a client cannot forge", () => {
     if (prev === undefined) delete process.env.CLIENT_IP_HEADER;
     else process.env.CLIENT_IP_HEADER = prev;
   }
+});
+
+test("rate-limit log lines never contain a pay or manage token", async () => {
+  const { loggablePath } = await import("../lib/rate-limit/redact");
+  assert.equal(loggablePath("/api/pay/abc.def-123"), "/api/pay/:token");
+  assert.equal(loggablePath("/api/manage/abc.def-123"), "/api/manage/:token");
+  assert.equal(loggablePath("/api/manage/abc.def-123/slots"), "/api/manage/:token/slots");
+  assert.equal(loggablePath("/api/public/profiles/demo"), "/api/public/profiles/demo", "other paths are logged as they are");
+  assert.equal(loggablePath("/api/bookings/b1/cancel"), "/api/bookings/b1/cancel");
 });
