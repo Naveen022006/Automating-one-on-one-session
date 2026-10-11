@@ -1,5 +1,17 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { SettingsView } from "@/components/views/admin/SettingsView";
+import { PageLoading, QueryGate } from "../../lib/states";
+import { PageTitle } from "../../lib/head";
+import { useAdminSession } from "../../lib/session";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/40-admin-core replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** `/admin/settings`: needs nothing but the administrator's own email, which the admin session (already cached by the guard) has. */
+export function Component() {
+  const session = useAdminSession();
+  return (
+    <>
+      <PageTitle title="Settings" template="admin" />
+      <QueryGate query={session} embedded>
+        {(s) => (s.authenticated ? <SettingsView email={s.admin.email} /> : <PageLoading />)}
+      </QueryGate>
+    </>
+  );
+}
