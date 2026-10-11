@@ -82,9 +82,15 @@ const secrets = {
   waToken: (o: Owner) => `wa-token-enc-${o.label}-${run}`,
   waba: (o: Owner) => `waba-${o.label}-${run}`,
   phoneId: (o: Owner) => `phoneid-${o.label}-${run}`,
+  /** The two-step PIN of each number, in the clear (what the owner typed) and as stored (whatsapp_registration_pins.pin_enc, filled in by `before`). */
+  pinPlain: (o: Owner) => `pin-plain-${o.label}-${run}`,
   account: { Alpha: "111122223333", Bravo: "999988887777" } as Record<string, string>,
   metaSecret: `meta-app-secret-${run}`,
 };
+const pinsEnc: string[] = [];
+// The tests change process.env; every changed name is put back in `after`. (There is no table of OAuth states to seed: the
+// Google round trip keeps its state in a signed value, not in the database.)
+const savedEnv = { RATE_LIMIT_STORE: process.env.RATE_LIMIT_STORE };
 
 async function ask(handler: Handler, cookie?: string): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
   jar.clear();
@@ -102,8 +108,9 @@ function assertOnlyOwn(body: unknown, mine: Owner, ...others: Owner[]) {
   }
   assert.ok(!text.includes(mine.influencerId) && !text.includes(mine.userId) && !text.includes(mine.cookie), "no influencer id, user id or session token");
   for (const o of [A, B, C]) {
-    for (const s of [secrets.googleEnc(o), secrets.waToken(o), secrets.waba(o), secrets.phoneId(o), secrets.metaSecret]) assert.ok(!text.includes(s), `a stored secret or id (${s}) is in the body`);
+    for (const s of [secrets.googleEnc(o), secrets.waToken(o), secrets.waba(o), secrets.phoneId(o), secrets.pinPlain(o), secrets.metaSecret]) assert.ok(!text.includes(s), `a stored secret or id (${s}) is in the body`);
   }
+  for (const enc of pinsEnc) assert.ok(!text.includes(enc), "an encrypted registration PIN is in the body");
   for (const n of Object.values(secrets.account)) assert.ok(!text.includes(n), "a full account number is in the body");
   assertNoSecretKeys(body);
 }
@@ -221,15 +228,38 @@ before(async () => {
   await prisma.whatsAppConnection.create({
     data: { influencerId: B.influencerId, wabaId: secrets.waba(B), phoneNumberId: secrets.phoneId(B), displayPhone: "+91 91234 56789", tokenEnc: secrets.waToken(B), status: "ERROR", lastError: "Bravo token was revoked" },
   });
+  // The two-step PIN of each number: its own table, keyed by phone number id, encrypted with the number id as AAD. It is shown
+  // nowhere, so neither the clear value nor the stored one may appear in any body.
+  const { encryptSecret } = await import("../lib/crypto");
+  const { whatsappPinAad } = await import("../lib/whatsapp-connection");
+  for (const o of [A, B]) {
+    const enc = encryptSecret(secrets.pinPlain(o), whatsappPinAad(secrets.phoneId(o)));
+    await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: secrets.phoneId(o), pinEnc: enc, generated: true } });
+    pinsEnc.push(enc);
+  }
 });
 
 after(async () => {
-  if (!skip) {
-    const ids = [A, B, C].map((o) => o.influencerId).filter(Boolean);
-    await prisma.payout.deleteMany({ where: { influencerId: { in: ids } } }); // Restrict: payouts block deleting their influencer
-    await prisma.influencer.deleteMany({ where: { id: { in: ids } } });
+  try {
+    if (!skip) {
+      const ids = [A, B, C].map((o) => o.influencerId).filter(Boolean);
+      // Each delete has its own try/catch: one that fails (a dropped connection) must not leave the later ones undone.
+      const attempt = async (what: string, step: () => Promise<unknown>) => {
+        try {
+          await step();
+        } catch (error) {
+          console.error(`cleanup: ${what} failed:`, error instanceof Error ? error.message : error);
+        }
+      };
+      await attempt("registration pins", () => prisma.whatsAppRegistrationPin.deleteMany({ where: { phoneNumberId: { in: [A, B].map((o) => secrets.phoneId(o)) } } }));
+      await attempt("payouts", () => prisma.payout.deleteMany({ where: { influencerId: { in: ids } } })); // Restrict: payouts block deleting their influencer
+      await attempt("influencers", () => prisma.influencer.deleteMany({ where: { id: { in: ids } } }));
+    }
+  } finally {
+    if (savedEnv.RATE_LIMIT_STORE === undefined) delete process.env.RATE_LIMIT_STORE;
+    else process.env.RATE_LIMIT_STORE = savedEnv.RATE_LIMIT_STORE;
+    await prisma.$disconnect();
   }
-  await prisma.$disconnect();
 });
 
 /* ---------- pure: the field-by-field copies ---------- */
