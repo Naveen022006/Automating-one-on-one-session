@@ -21,6 +21,7 @@ import { BRAND_NAME } from "../lib/brand";
 import { jsonify, type Jsonify } from "../lib/jsonify";
 import { DEFAULT_THRESHOLDS, type HealthSnapshot } from "../lib/health-eval";
 import { QUEUE_NAMES } from "../lib/queue";
+import { matchRouteRule } from "../lib/rate-limit/policies";
 import { formatTitle, spaRouteById, type SpaRouteId } from "../lib/spa/routes";
 import { buildAdminHealthView, scrubHealthText } from "../lib/views/admin-health";
 import { parseBookingStatus } from "../lib/views/admin-bookings";
@@ -408,6 +409,15 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
   const far = await ask(routes.payments, "?page=9999", token);
   assert.equal(far.status, 200);
   assert.deepEqual(far.body.rows, [], "a page past the end is empty, not an error");
+});
+
+test("the five GET endpoints fall under the generic admin rate rule (120 a minute); the money actions next to them keep their tight ones", () => {
+  for (const p of ["payments", "payouts", "bookings", "health", "audit"]) {
+    for (const search of ["", "?page=2", "?view=captured&page=9999", "?status=PAID"]) assert.equal(matchRouteRule("GET", `/api/admin/${p}`)?.name, "admin", `GET /api/admin/${p}${search}`);
+  }
+  assert.equal(matchRouteRule("POST", "/api/admin/payouts/abc")?.name, "admin-money", "approve, mark paid and cancel (payouts/[id]) keep the money rule");
+  assert.equal(matchRouteRule("POST", "/api/admin/payments/reconcile")?.name, "admin-reconcile");
+  assert.equal(matchRouteRule("POST", "/api/admin/payments/abc/unreconcile")?.name, "admin-money");
 });
 
 test("payment, payout and booking URL rules: an unknown tab is the default one, never an error", () => {
