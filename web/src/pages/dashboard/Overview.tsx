@@ -1,5 +1,20 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { OverviewView } from "@/components/views/dashboard/OverviewView";
+import type { DashboardOverviewView } from "@/lib/views/dashboard-overview";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/30-dashboard-core replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** /dashboard. The guard and the frame come from the router (RequireInfluencer, DashboardLayout). */
+export function Component() {
+  const query = useApiQuery<Jsonify<DashboardOverviewView>>(queryKeys.dashboard("overview"), "/api/dashboard/overview");
+  return (
+    <>
+      <PageTitle title="Overview" template="dashboard" />
+      <QueryGate query={query} embedded>
+        {(data) => <OverviewView data={data} />}
+      </QueryGate>
+    </>
+  );
+}
