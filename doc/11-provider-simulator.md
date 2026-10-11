@@ -1027,6 +1027,8 @@ The rules (the pure function `planWorker` in `scripts/dev-mock-worker.ts`):
    - Print the **host only** of `DATABASE_URL` and warn if it is not local: "fake connections and the demo's bookings will be
      written to this database". (The web process writes there even without a worker.)
 3. **Start the mock server in-process** (`createMockServer`) on `127.0.0.1:<port>`.
+   Before the children start, the launcher also starts the React app's watch build (`scripts/dev-spa.ts`, the same one `npm run dev` uses; `[web]`
+   lines), because Next serves the app from the files that build writes.
 4. **Spawn the children** with `env = { ...process.env, ...mockEnvOverlay(mockUrl, appUrl) }`, so the overlay wins over
    `.env`. Neither Next nor dotenv overrides an existing variable, and `.env` stays untouched.
    - `next dev`: `process.execPath <require.resolve("next/dist/bin/next")> dev`.
