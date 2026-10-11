@@ -53,6 +53,8 @@ const tokens = {
   shared: false,
   saved: [] as { influencerId: string; email: string | null; scope: string }[],
   counted: 0,
+  /** The grant a confirmed switch replaces (what getActiveGrant reads before saveGoogleToken overwrites it); null when none is active. */
+  activeGrant: null as { refreshToken: string; connectedAt: Date } | null,
 };
 let auth: { influencerId: string; email: string } | null = { influencerId: "inf1", email: "login@example.com" };
 
