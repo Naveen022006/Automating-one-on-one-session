@@ -1,25 +1,21 @@
-// Pure tests of the SPA route table (lib/spa/routes.ts): which URL is which page, which group switches it, and what
-// the title is. The proxy, the shell head and the web router all read this table, so these tests are the contract.
+// Pure tests of the SPA route table (lib/spa/routes.ts): which URL is which page, and what the title is. The proxy, the
+// shell head and the web router all read this table, so these tests are the contract.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RESERVED_SLUGS, slugProblem } from "../lib/auth/slug";
 import {
-  SPA_GROUPS,
   SPA_NOT_FOUND_ROUTES,
   SPA_ROUTES,
   decodeSpaParam,
   formatTitle,
-  matchEnabledSpaRoute,
+  matchPageRequest,
   matchSpaRoute,
-  parseSpaGroups,
-  unknownSpaGroups,
-  type SpaGroup,
 } from "../lib/spa/routes";
 
 const idOf = (path: string) => matchSpaRoute(path)?.route.id;
 const sample = (pattern: string) => pattern.replace(":slug", "demo").replace(":token", "tok_123").replace(":id", "abc123");
 
-test("every route in the table matches its own path, with the right id, group and status", () => {
+test("every route in the table matches its own path, with the right id and status", () => {
   const ids = new Set<string>();
   const paths = new Set<string>();
   for (const route of SPA_ROUTES) {
@@ -27,10 +23,8 @@ test("every route in the table matches its own path, with the right id, group an
     assert.ok(!paths.has(route.path), `duplicate path ${route.path}`);
     ids.add(route.id);
     paths.add(route.path);
-    assert.ok((SPA_GROUPS as readonly string[]).includes(route.group), `${route.id}: unknown group`);
     const m = matchSpaRoute(sample(route.path));
     assert.equal(m?.route.id, route.id, `${route.path}`);
-    assert.equal(m?.route.group, route.group);
     assert.equal(m?.status, 200);
     if (route.head === "static") assert.ok(route.title, `${route.id}: a static head needs a title`);
   }
@@ -76,28 +70,27 @@ test("a static first segment beats the /:slug catch-all, as in Next's own routin
   assert.equal(idOf("/onboarding"), "onboarding");
 });
 
-test("not-found families: the status is 404 and the group says which switch controls them", () => {
-  const cases: [string, string, SpaGroup, 200 | 404][] = [
-    ["/a/b/c", "not-found", "public", 404],
-    ["/demo/other", "not-found", "public", 404],
-    ["/pay/a/b", "not-found", "public", 404],
-    ["/profile.name", "not-found", "public", 404],
-    ["/%E0%A4%A", "not-found", "public", 404],
-    ["//double", "not-found", "public", 404],
-    ["/admin/nope", "admin-not-found", "admin", 404],
-    ["/admin/influencers/a/b", "admin-not-found", "admin", 404],
-    ["/dashboard/nope", "dashboard-not-found", "dashboard", 404],
-    ["/dashboard/sessions/x", "dashboard-not-found", "dashboard", 404],
-    ["/onboarding/x", "dashboard-not-found", "dashboard", 404],
-    // Next resolves a bare /pay to the profile route (slug "pay"), so it is a profile lookup here too.
-    ["/pay", "profile", "booking", 200],
+test("not-found families: the status is 404, and the id says which frame (site, dashboard, admin) shows the screen", () => {
+  const cases: [string, string, 200 | 404][] = [
+    ["/a/b/c", "not-found", 404],
+    ["/demo/other", "not-found", 404],
+    ["/pay/a/b", "not-found", 404],
+    ["/profile.name", "not-found", 404],
+    ["/%E0%A4%A", "not-found", 404],
+    ["//double", "not-found", 404],
+    ["/admin/nope", "admin-not-found", 404],
+    ["/admin/influencers/a/b", "admin-not-found", 404],
+    ["/dashboard/nope", "dashboard-not-found", 404],
+    ["/dashboard/sessions/x", "dashboard-not-found", 404],
+    ["/onboarding/x", "dashboard-not-found", 404],
+    // A bare /pay is a profile lookup (slug "pay"): the token route needs a second segment.
+    ["/pay", "profile", 200],
     // A trailing slash is ignored, so this is the influencers list.
-    ["/admin/influencers/", "admin-influencers", "admin", 200],
+    ["/admin/influencers/", "admin-influencers", 200],
   ];
-  for (const [path, id, group, status] of cases) {
+  for (const [path, id, status] of cases) {
     const m = matchSpaRoute(path);
     assert.equal(m?.route.id, id, path);
-    assert.equal(m?.route.group, group, path);
     assert.equal(m?.status, status, path);
   }
   for (const r of SPA_NOT_FOUND_ROUTES) {
@@ -106,37 +99,14 @@ test("not-found families: the status is 404 and the group says which switch cont
   }
 });
 
-test("parseSpaGroups: empty means none, 'all' means every group, unknown names are ignored", () => {
-  assert.equal(parseSpaGroups(undefined).size, 0);
-  assert.equal(parseSpaGroups(null).size, 0);
-  assert.equal(parseSpaGroups("").size, 0);
-  assert.equal(parseSpaGroups("  ").size, 0);
-  assert.deepEqual([...parseSpaGroups("all")].sort(), [...SPA_GROUPS].sort());
-  assert.deepEqual([...parseSpaGroups(" ALL ")].sort(), [...SPA_GROUPS].sort());
-  assert.deepEqual([...parseSpaGroups("public, Auth")].sort(), ["auth", "public"]);
-  assert.deepEqual([...parseSpaGroups("public,bogus")], ["public"]);
-  assert.deepEqual([...parseSpaGroups("all,bogus")].sort(), [...SPA_GROUPS].sort());
-  assert.deepEqual([...parseSpaGroups("dashboard,dashboard")], ["dashboard"]);
-  assert.deepEqual(unknownSpaGroups("public, bogus,x,all,"), ["bogus", "x"]);
-  assert.deepEqual(unknownSpaGroups("all"), []);
-  assert.deepEqual(unknownSpaGroups(undefined), []);
-});
-
-test("matchEnabledSpaRoute: only GET/HEAD, only enabled groups; with no groups nothing is SPA", () => {
-  const none = parseSpaGroups("");
-  const publicOnly = parseSpaGroups("public");
-  const all = parseSpaGroups("all");
-  assert.equal(matchEnabledSpaRoute("GET", "/", none), null, "SPA_GROUPS empty: the old pages everywhere");
-  assert.equal(matchEnabledSpaRoute("GET", "/dashboard", none), null);
-  assert.equal(matchEnabledSpaRoute("GET", "/terms", publicOnly)?.route.id, "terms");
-  assert.equal(matchEnabledSpaRoute("HEAD", "/terms", publicOnly)?.route.id, "terms");
-  assert.equal(matchEnabledSpaRoute("GET", "/login", publicOnly), null, "auth is not enabled");
-  assert.equal(matchEnabledSpaRoute("GET", "/demo", publicOnly), null, "booking is not enabled");
-  assert.equal(matchEnabledSpaRoute("GET", "/unknown/path/here", publicOnly)?.route.id, "not-found", "public owns the generic 404");
-  assert.equal(matchEnabledSpaRoute("GET", "/admin/nope", publicOnly), null, "the admin 404 belongs to admin");
-  for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) assert.equal(matchEnabledSpaRoute(method, "/terms", all), null, method);
-  assert.equal(matchEnabledSpaRoute("GET", "/api/auth/session", all), null);
-  assert.equal(matchEnabledSpaRoute("GET", "/admin/login", parseSpaGroups("admin"))?.route.id, "admin-login");
+test("matchPageRequest: only GET and HEAD are page views, and every page of every kind is one", () => {
+  for (const [path, id] of [["/", "landing"], ["/terms", "terms"], ["/login", "login"], ["/demo", "profile"], ["/dashboard", "dashboard"], ["/admin/login", "admin-login"], ["/admin/nope", "admin-not-found"], ["/unknown/path/here", "not-found"]]) {
+    assert.equal(matchPageRequest("GET", path)?.route.id, id, path);
+    assert.equal(matchPageRequest("HEAD", path)?.route.id, id, `HEAD ${path}`);
+  }
+  for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) assert.equal(matchPageRequest(method, "/terms"), null, method);
+  assert.equal(matchPageRequest("GET", "/api/auth/session"), null);
+  assert.equal(matchPageRequest("GET", "/assets/index-abc.js"), null);
 });
 
 test("formatTitle follows the old Next title templates", () => {
@@ -158,10 +128,11 @@ test("formatTitle follows the old Next title templates", () => {
 test("privacy flags: private screens are noindex, token screens send no Referer, public pages are indexable", () => {
   const by = (id: string) => SPA_ROUTES.find((r) => r.id === id)!;
   for (const id of ["landing", "terms", "privacy", "refund-policy", "contact", "register"]) assert.equal(by(id).robots, "index", id);
-  for (const r of SPA_ROUTES.filter((x) => x.group === "dashboard" || x.group === "admin" || ["login", "forgot-password", "reset-password", "verify-email", "pay", "manage", "design"].includes(x.id))) {
+  const signedIn = (x: { path: string }) => x.path === "/onboarding" || x.path.startsWith("/dashboard") || x.path.startsWith("/admin");
+  for (const r of SPA_ROUTES.filter((x) => signedIn(x) || ["login", "forgot-password", "reset-password", "verify-email", "pay", "manage", "design"].includes(x.id))) {
     assert.notEqual(r.robots, "index", r.id);
   }
-  for (const r of SPA_ROUTES.filter((x) => x.group === "admin" || x.id === "pay")) assert.equal(r.robots, "noindex,nofollow", r.id);
+  for (const r of SPA_ROUTES.filter((x) => x.path.startsWith("/admin") || x.id === "pay")) assert.equal(r.robots, "noindex,nofollow", r.id);
   for (const id of ["manage", "verify-email", "reset-password"]) assert.equal((by(id) as { noReferrer?: boolean }).noReferrer, true, id);
   assert.equal((by("pay") as { noReferrer?: boolean }).noReferrer, undefined);
 });

@@ -26,7 +26,7 @@ const posix = (p: string) => p.split(path.sep).join("/");
 /** The only variables the web build reads from the environment or the root .env. All are public by nature. */
 const NAMES = ["NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL", "APP_LOCALE", "ENABLE_DESIGN_PAGE"] as const;
 
-export default defineConfig(({ mode, command }) => {
+export default defineConfig(({ mode }) => {
   const fromFile = loadEnv(mode, repoRoot, [...NAMES]);
   // The real environment wins over .env files, like in Next; an unset name is "" (lib/brand.ts then uses its defaults).
   const pick = (name: (typeof NAMES)[number]): string => process.env[name] ?? fromFile[name] ?? "";
@@ -51,8 +51,6 @@ export default defineConfig(({ mode, command }) => {
       "process.env.APP_LOCALE": JSON.stringify(pick("APP_LOCALE")),
       // The /design catalogue is part of the bundle only when built for development or with ENABLE_DESIGN_PAGE=true.
       __DESIGN_PAGE__: JSON.stringify(mode !== "production" || pick("ENABLE_DESIGN_PAGE") === "true"),
-      // Dev only: where the not-yet-migrated pages still live (shown by the placeholder page). Empty in a build.
-      __NEXT_DEV_ORIGIN__: JSON.stringify(command === "serve" ? nextOrigin : ""),
     },
     // Vite adds nonce="__CSP_NONCE__" to every script/style/link tag it writes, and <meta property="csp-nonce"> for the
     // tags it adds at run time. The server replaces the placeholder per request (lib/spa/shell.ts).
@@ -62,7 +60,8 @@ export default defineConfig(({ mode, command }) => {
       strictPort: true,
       fs: { allow: [repoRoot] },
       proxy: {
-        // Same-origin in the browser: /api and the metadata routes are served by `next dev` (SPA_API_TARGET, default :3000).
+        // `npm run dev:hmr` only: the browser talks to this server, so /api and the metadata routes are forwarded to `next dev`
+        // (SPA_API_TARGET, default :3000) and stay same-origin for cookies and the CSRF check.
         "^/(api/|sitemap\\.xml|robots\\.txt|icon\\.svg|opengraph-image)": {
           target: nextOrigin,
           changeOrigin: false,
@@ -76,7 +75,7 @@ export default defineConfig(({ mode, command }) => {
       sourcemap: false,
       rolldownOptions: {
         onwarn(warning, warn) {
-          // Shared components carry Next's "use client" directive, which means nothing to Vite.
+          // Some libraries carry React's "use client" directive, which means nothing to Vite.
           if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);
         },
       },

@@ -1,9 +1,9 @@
-// proxy.ts, the SPA switch (doc/10-react-migration-plan.md, section 1.7): which pages are rewritten to the internal shell route,
-// that the CSP/nonce and the server-side guards are untouched, that the shell route cannot be requested directly, and that
-// GET /api/* keeps the rolling session cookie alive. No database: the rate limiter uses its in-memory store.
-// SPA_GROUPS is read when proxy.ts is first loaded, so this file fixes it to "public,booking"; the empty setting is
-// tests/spa-proxy-empty.test.ts (a separate file, because node:test gives every file its own process).
+// proxy.ts (doc/12-front-end.md): every page path is rewritten to the internal shell route, the CSP/nonce and the server-side
+// guards are applied first, the shell route cannot be requested directly, and GET /api/* keeps the rolling session cookie
+// alive. No database: the rate limiter uses its in-memory store.
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { before, test } from "node:test";
 import { NextRequest } from "next/server";
 
@@ -12,7 +12,6 @@ const SESSION = "A".repeat(43);
 
 before(async () => {
   process.env.RATE_LIMIT_STORE = "memory";
-  process.env.SPA_GROUPS = "public,booking";
   proxy = (await import("../proxy")).proxy;
 });
 
@@ -41,9 +40,17 @@ test("QA-9: a path with a broken percent escape or a NUL byte is a 400 for pages
   for (const path of ["/d%C3%A9mo", "/api/pay/a%2Fb", "/api/public/profiles/demo%20", "/a%20b"]) assert.notEqual((await proxy(req(path))).status, 400, path);
 });
 
-test("an enabled group is rewritten to the internal shell route, with the request's own nonce in the CSP and the request headers", async () => {
-  for (const [path, target] of [["/terms", "/spa-shell/terms"], ["/", "/spa-shell"], ["/demo", "/spa-shell/demo"], ["/demo/book", "/spa-shell/demo/book"], ["/pay/abc", "/spa-shell/pay/abc"], ["/no/such/page", "/spa-shell/no/such/page"]]) {
-    const res = await proxy(req(path));
+test("every page path is rewritten to the internal shell route, with the request's own nonce in the CSP and the request headers", async () => {
+  const cookies = { headers: { cookie: `sa_session=${SESSION}; sa_admin=${SESSION}` } };
+  for (const [path, target] of [
+    ["/terms", "/spa-shell/terms"], ["/", "/spa-shell"], ["/demo", "/spa-shell/demo"], ["/demo/book", "/spa-shell/demo/book"], ["/pay/abc", "/spa-shell/pay/abc"],
+    ["/no/such/page", "/spa-shell/no/such/page"], ["/design", "/spa-shell/design"], ["/spa-shell-lookalike", "/spa-shell/spa-shell-lookalike"],
+    // Formerly gated by SPA_GROUPS: auth, dashboard and admin pages are the SPA too (the cookie only lets the redirects below pass).
+    ["/login", "/spa-shell/login"], ["/register", "/spa-shell/register"], ["/forgot-password", "/spa-shell/forgot-password"],
+    ["/dashboard/sessions", "/spa-shell/dashboard/sessions"], ["/onboarding", "/spa-shell/onboarding"], ["/dashboard/nope", "/spa-shell/dashboard/nope"],
+    ["/admin/login", "/spa-shell/admin/login"], ["/admin/payments", "/spa-shell/admin/payments"], ["/admin/nope", "/spa-shell/admin/nope"],
+  ]) {
+    const res = await proxy(req(path, cookies));
     assert.ok(isRewriteTo(res, target), `${path} -> ${res.headers.get("x-middleware-rewrite")}`);
     const csp = res.headers.get("content-security-policy");
     const nonce = nonceOf(csp);
@@ -59,23 +66,29 @@ test("an enabled group is rewritten to the internal shell route, with the reques
   assert.notEqual(a, b);
 });
 
-test("a client cannot choose the nonce or the pathname: both request headers are overwritten", async () => {
-  const res = await proxy(req("/terms", { headers: { "x-nonce": "attacker-nonce", "x-pathname": "/admin", "content-security-policy": "default-src *" } }));
+test("a client cannot choose the nonce: the request header is overwritten", async () => {
+  const res = await proxy(req("/terms", { headers: { "x-nonce": "attacker-nonce", "content-security-policy": "default-src *" } }));
   const nonce = nonceOf(res.headers.get("content-security-policy"));
   assert.notEqual(res.headers.get("x-middleware-request-x-nonce"), "attacker-nonce");
   assert.equal(res.headers.get("x-middleware-request-x-nonce"), nonce);
-  assert.equal(res.headers.get("x-middleware-request-x-pathname"), "/terms");
   assert.equal(res.headers.get("x-middleware-request-content-security-policy"), res.headers.get("content-security-policy"));
 });
 
-test("groups that are not enabled stay on the old Next pages", async () => {
-  for (const path of ["/login", "/register", "/forgot-password", "/dashboard/sessions", "/admin/login", "/onboarding"]) {
-    const res = await proxy(req(path, { headers: { cookie: `sa_session=${SESSION}; sa_admin=${SESSION}` } }));
-    assert.ok(isPassThrough(res), `${path}: ${res.headers.get("x-middleware-rewrite") ?? res.status}`);
-    assert.ok(res.headers.get("content-security-policy"), `${path}: still gets the per-request CSP`);
-    assert.ok(res.headers.get("x-middleware-request-x-nonce"), `${path}: and the nonce header the Next layout reads`);
-  }
-  assert.ok(isPassThrough(await proxy(req("/admin/nope", { headers: { cookie: `sa_admin=${SESSION}` } }))), "the admin 404 belongs to the admin group");
+test("x-pathname is gone: the proxy does not set it and no source file reads it", async () => {
+  const res = await proxy(req("/terms"));
+  assert.equal(res.headers.get("x-middleware-request-x-pathname"), null);
+  const root = path.resolve(__dirname, "..");
+  const sources: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(dir, e.name));
+      else if (/\.(ts|tsx|mjs)$/.test(e.name)) sources.push(path.join(dir, e.name));
+    }
+  };
+  for (const dir of ["app", "lib", "web/src", "worker", "scripts"]) walk(path.join(root, dir));
+  sources.push(path.join(root, "proxy.ts"));
+  const readers = sources.filter((file) => readFileSync(file, "utf8").includes("x-pathname")).map((file) => path.relative(root, file));
+  assert.deepEqual(readers, [], "nothing reads or sets x-pathname");
 });
 
 test("only GET and HEAD are rewritten: a POST to a page URL is not a page view", async () => {
@@ -91,7 +104,7 @@ test("the shell route is not a public URL: /spa-shell... answers 404 before anyt
   }
 });
 
-test("the redirects that stay on the server still run first, whichever groups are enabled", async () => {
+test("the redirects that stay on the server still run first", async () => {
   const dash = await proxy(req("/dashboard/sessions?view=past"));
   assert.equal(dash.status, 307);
   assert.equal(new URL(dash.headers.get("location")!).pathname + new URL(dash.headers.get("location")!).search, "/login?next=%2Fdashboard%2Fsessions%3Fview%3Dpast");
@@ -101,8 +114,10 @@ test("the redirects that stay on the server still run first, whichever groups ar
   assert.equal(admin.status, 307);
   assert.equal(new URL(admin.headers.get("location")!).pathname, "/admin/login");
   assert.equal(new URL(admin.headers.get("location")!).search, "?next=%2Fadmin%2Fpayments%3Fview%3Dmismatch");
-  // With the cookie present the proxy lets the request through (the page validates the session against the database).
-  assert.ok(isPassThrough(await proxy(req("/dashboard", { headers: { cookie: `sa_session=${SESSION}` } }))));
+  assert.ok(isRewriteTo(await proxy(req("/admin/login")), "/spa-shell/admin/login"), "the admin login page itself is not redirected");
+  // With the cookie present the request goes on to the shell (the API validates the session against the database).
+  assert.ok(isRewriteTo(await proxy(req("/dashboard", { headers: { cookie: `sa_session=${SESSION}` } })), "/spa-shell/dashboard"));
+  assert.ok(isRewriteTo(await proxy(req("/admin", { headers: { cookie: `sa_admin=${SESSION}` } })), "/spa-shell/admin"));
 });
 
 test("token pages get Referrer-Policy: no-referrer from the proxy; other shell pages do not", async () => {

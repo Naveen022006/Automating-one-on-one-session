@@ -12,7 +12,7 @@ import {
   type HeadContext,
   type ProfileHeadData,
 } from "../lib/spa/head";
-import { matchSpaRoute, parseSpaGroups } from "../lib/spa/routes";
+import { matchSpaRoute } from "../lib/spa/routes";
 import {
   HEAD_PLACEHOLDER,
   NONCE_PLACEHOLDER,
@@ -54,11 +54,10 @@ const ctx = (over: Partial<HeadContext> = {}): HeadContext => ({
 const head = (path: string, c: HeadContext = ctx()) => resolveHead(matchSpaRoute(path)!, c);
 const profile = (over: Partial<ProfileHeadData> = {}): ProfileHeadData => ({ slug: "priya", name: "Priya Sharma", bio: "Career coach.", preview: false, ...over });
 
-test("renderShell: every nonce placeholder is replaced, the head and the groups are inserted, nothing is left over", () => {
+test("renderShell: every nonce placeholder is replaced, the head is inserted, nothing is left over", () => {
   const html = renderShell(TEMPLATE, {
     nonce: NONCE,
     headHtml: "<title>T</title>",
-    groups: parseSpaGroups("booking,public"),
     supportEmail: "help@acme.example",
   });
   assert.ok(!html.includes(NONCE_PLACEHOLDER) && !html.includes(HEAD_PLACEHOLDER) && !html.includes("<!--spa-support-->"));
@@ -69,14 +68,14 @@ test("renderShell: every nonce placeholder is replaced, the head and the groups 
     assert.ok(tag.includes(`nonce="${NONCE}"`), tag);
   }
   assert.ok(html.includes("<title>T</title>"));
-  // Canonical group order, only the enabled ones.
-  assert.ok(html.includes('<meta name="spa-groups" content="public,booking">'));
+  // The shell no longer tells the browser which page groups it serves: there is only one kind of page.
+  assert.ok(!html.includes("spa-groups"));
   assert.ok(html.includes("Questions: help@acme.example</noscript>"));
 });
 
 test("renderShell: the nonce differs per call and the support email is escaped", () => {
-  const a = renderShell(TEMPLATE, { nonce: NONCE, headHtml: "", groups: parseSpaGroups("all"), supportEmail: 'a"b<c>&d@x.example' });
-  const b = renderShell(TEMPLATE, { nonce: "ZZZZ-other-nonce-ZZZZ", headHtml: "", groups: parseSpaGroups("all"), supportEmail: "x@x.example" });
+  const a = renderShell(TEMPLATE, { nonce: NONCE, headHtml: "", supportEmail: 'a"b<c>&d@x.example' });
+  const b = renderShell(TEMPLATE, { nonce: "ZZZZ-other-nonce-ZZZZ", headHtml: "", supportEmail: "x@x.example" });
   assert.ok(a.includes(`nonce="${NONCE}"`) && !a.includes("ZZZZ-other"));
   assert.ok(b.includes('nonce="ZZZZ-other-nonce-ZZZZ"') && !b.includes(NONCE));
   assert.ok(a.includes("a&quot;b&lt;c&gt;&amp;d@x.example"));
@@ -84,13 +83,13 @@ test("renderShell: the nonce differs per call and the support email is escaped",
 });
 
 test("renderShell: head text is inserted literally, replacement patterns such as $& are not interpreted", () => {
-  const html = renderShell(TEMPLATE, { nonce: NONCE, headHtml: "<title>$&amp; $' $` $1</title>", groups: parseSpaGroups("all"), supportEmail: "$&@x.example" });
+  const html = renderShell(TEMPLATE, { nonce: NONCE, headHtml: "<title>$&amp; $' $` $1</title>", supportEmail: "$&@x.example" });
   assert.ok(html.includes("<title>$&amp; $' $` $1</title>"));
   assert.ok(html.includes("Questions: $&amp;@x.example"));
 });
 
 test("renderShell refuses a template without the CSP or head placeholder, and a nonce of an unexpected shape", () => {
-  const base = { nonce: NONCE, headHtml: "", groups: parseSpaGroups("all"), supportEmail: "a@b.example" };
+  const base = { nonce: NONCE, headHtml: "", supportEmail: "a@b.example" };
   assert.throws(() => renderShell(TEMPLATE.split(NONCE_PLACEHOLDER).join("fixed"), base), ShellTemplateError);
   assert.throws(() => renderShell(TEMPLATE.replace(HEAD_PLACEHOLDER, ""), base), ShellTemplateError);
   for (const bad of ["", "short", 'a"b'.repeat(10), "has space inside the nonce value", "x".repeat(300)]) {
@@ -101,7 +100,7 @@ test("renderShell refuses a template without the CSP or head placeholder, and a 
   assert.match(shellTemplateProblem("__CSP_NONCE__") ?? "", /spa-head/);
 });
 
-test("loadShellTemplate reads once and keeps it; a missing or unusable file is a clear ShellTemplateError", () => {
+test("loadShellTemplate reads once and keeps it in production; a missing or unusable file is a clear ShellTemplateError", () => {
   resetShellTemplateCache();
   try {
     let reads = 0;
@@ -110,8 +109,8 @@ test("loadShellTemplate reads once and keeps it; a missing or unusable file is a
       assert.ok(file.replace(/\\/g, "/").endsWith("/srv/app/web/dist/index.html"), file);
       return TEMPLATE;
     };
-    assert.equal(loadShellTemplate(reader, "/srv/app"), TEMPLATE);
-    assert.equal(loadShellTemplate(reader, "/srv/app"), TEMPLATE);
+    assert.equal(loadShellTemplate(reader, "/srv/app", true), TEMPLATE);
+    assert.equal(loadShellTemplate(reader, "/srv/app", true), TEMPLATE);
     assert.equal(reads, 1, "cached after the first read");
 
     resetShellTemplateCache();
@@ -123,6 +122,34 @@ test("loadShellTemplate reads once and keeps it; a missing or unusable file is a
     assert.throws(() => loadShellTemplate(() => "<html>no placeholders</html>", "/srv/app"), (e: unknown) => e instanceof ShellTemplateError && /__CSP_NONCE__/.test(e.message));
     // A failed read is not cached: once the file appears it works.
     assert.equal(loadShellTemplate(() => TEMPLATE, "/srv/app"), TEMPLATE);
+  } finally {
+    resetShellTemplateCache();
+  }
+});
+
+test("loadShellTemplate in development reads the file again every time (npm run dev rebuilds it with new hashed file names)", () => {
+  resetShellTemplateCache();
+  try {
+    let current = TEMPLATE;
+    let reads = 0;
+    const reader = () => {
+      reads++;
+      return current;
+    };
+    assert.equal(loadShellTemplate(reader, "/srv/app", false), TEMPLATE);
+    current = TEMPLATE.replace("index-abc.js", "index-def.js");
+    assert.ok(loadShellTemplate(reader, "/srv/app", false).includes("index-def.js"), "a rebuilt template is picked up");
+    assert.equal(reads, 2);
+    // The default follows NODE_ENV: kept only in production.
+    const saved = process.env.NODE_ENV;
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+      assert.equal(loadShellTemplate(reader, "/srv/app"), current);
+      current = TEMPLATE;
+      assert.ok(loadShellTemplate(reader, "/srv/app").includes("index-def.js"), "production keeps the first read");
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = saved;
+    }
   } finally {
     resetShellTemplateCache();
   }
@@ -257,7 +284,7 @@ test("escaping: an influencer's name and bio cannot break out of the title, the 
   for (const path of ["/priya", "/priya/book"]) {
     const h = await head(path, c);
     const headHtml = renderHead(h, "Acme", NONCE);
-    const page = renderShell(TEMPLATE, { nonce: NONCE, headHtml, groups: parseSpaGroups("all"), supportEmail: "a@b.example" });
+    const page = renderShell(TEMPLATE, { nonce: NONCE, headHtml, supportEmail: "a@b.example" });
     for (const out of [headHtml, page]) {
       assert.ok(!out.includes("<script>alert"), `${path}: a raw <script> from the name/bio`);
       assert.ok(!out.includes('"><script'), `${path}: attribute break-out`);
@@ -286,6 +313,6 @@ test("escaping: JSON-LD cannot close its script block; the data survives a round
   assert.equal(JSON.parse(ld).email, `x"@</script>.example`);
   assert.ok(!html.includes("<script>alert"));
   assert.equal(jsonLdText({ a: "<b>&" }), '{"a":"\\u003cb>&"}');
-  const page = renderShell(TEMPLATE, { nonce: NONCE, headHtml: html, groups: parseSpaGroups("all"), supportEmail: "a@b.example" });
+  const page = renderShell(TEMPLATE, { nonce: NONCE, headHtml: html, supportEmail: "a@b.example" });
   assert.ok(!page.includes("<script>alert"));
 });

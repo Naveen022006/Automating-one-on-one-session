@@ -28,6 +28,7 @@ import { parseBookingStatus } from "../lib/views/admin-bookings";
 import { parsePaymentView } from "../lib/views/admin-payments";
 import { parsePayoutFilter, type AdminPayoutsView } from "../lib/views/admin-payouts";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
+import { fakeNavigate } from "./helpers/fake-navigate";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -874,20 +875,13 @@ type Views = {
 let viewsLoaded: Promise<Views> | undefined;
 
 /**
- * The shared views rendered on the server, as the old Next pages render them. Next's router hooks and links, and the client
- * components that need a provider (the action buttons), are replaced by stand-ins that print their props; then the views are
- * imported (mock.module only affects modules imported afterwards, hence the lazy import).
+ * The views rendered on the server. The navigation hooks (they need a Router and a QueryClient) and the client components that
+ * need a provider (the action buttons) are replaced by stand-ins that print their props; then the views are imported
+ * (mock.module only affects modules imported afterwards, hence the lazy import). The real link component renders a plain <a> here.
  */
 function loadViews(): Promise<Views> {
   viewsLoaded ??= (async () => {
-    mock.module("next/link", { defaultExport: (p: Record<string, unknown>) => createElement("a", p) });
-    mock.module("next/navigation", {
-      namedExports: {
-        useRouter: () => ({ push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} }),
-        usePathname: () => "/admin",
-        useSearchParams: () => new URLSearchParams(),
-      },
-    });
+    mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/admin") });
     mock.module("@web/components/admin/PayoutActions", {
       namedExports: {
         ReconcileButton: (p: { ids: string[] }) => (p.ids.length === 0 ? null : createElement("button", { "data-reconcile": p.ids.join(",") })), // like the real one: nothing to reconcile, no button
@@ -1062,39 +1056,35 @@ test("HealthView: 'Worker is not running' for a stale heartbeat, Running for a f
   assert.ok(fresh.includes("No payment has needed recovery.") && fresh.includes("No failed jobs"));
 });
 
-/** One row per page of this branch: route id, old Next page, SPA page, the view both render, the view function, the endpoint. */
-const PAGES: { id: SpaRouteId; old: string; spa: string; view: string; fn: string; endpoint: string }[] = [
-  { id: "admin-payments", old: "app/admin/(console)/payments/page.tsx", spa: "web/src/pages/admin/Payments.tsx", view: "PaymentsView", fn: "lib/views/admin-payments.ts", endpoint: "app/api/admin/payments/route.ts" },
-  { id: "admin-payouts", old: "app/admin/(console)/payouts/page.tsx", spa: "web/src/pages/admin/Payouts.tsx", view: "PayoutsView", fn: "lib/views/admin-payouts.ts", endpoint: "app/api/admin/payouts/route.ts" },
-  { id: "admin-bookings", old: "app/admin/(console)/bookings/page.tsx", spa: "web/src/pages/admin/Bookings.tsx", view: "BookingsView", fn: "lib/views/admin-bookings.ts", endpoint: "app/api/admin/bookings/route.ts" },
-  { id: "admin-health", old: "app/admin/(console)/health/page.tsx", spa: "web/src/pages/admin/Health.tsx", view: "HealthView", fn: "lib/views/admin-health.ts", endpoint: "app/api/admin/health/route.ts" },
-  { id: "admin-audit", old: "app/admin/(console)/audit/page.tsx", spa: "web/src/pages/admin/Audit.tsx", view: "AuditView", fn: "lib/views/admin-audit.ts", endpoint: "app/api/admin/audit/route.ts" },
+/** One row per page: route id, SPA page, the view it renders, the view function, the endpoint. */
+const PAGES: { id: SpaRouteId; spa: string; view: string; fn: string; endpoint: string }[] = [
+  { id: "admin-payments", spa: "web/src/pages/admin/Payments.tsx", view: "PaymentsView", fn: "lib/views/admin-payments.ts", endpoint: "app/api/admin/payments/route.ts" },
+  { id: "admin-payouts", spa: "web/src/pages/admin/Payouts.tsx", view: "PayoutsView", fn: "lib/views/admin-payouts.ts", endpoint: "app/api/admin/payouts/route.ts" },
+  { id: "admin-bookings", spa: "web/src/pages/admin/Bookings.tsx", view: "BookingsView", fn: "lib/views/admin-bookings.ts", endpoint: "app/api/admin/bookings/route.ts" },
+  { id: "admin-health", spa: "web/src/pages/admin/Health.tsx", view: "HealthView", fn: "lib/views/admin-health.ts", endpoint: "app/api/admin/health/route.ts" },
+  { id: "admin-audit", spa: "web/src/pages/admin/Audit.tsx", view: "AuditView", fn: "lib/views/admin-audit.ts", endpoint: "app/api/admin/audit/route.ts" },
 ];
 
-test("every page: the old Next page and the SPA page render the same view from the same view function, behind the same gate as the endpoint", () => {
+test("every page: the SPA page renders its view, and the endpoint loads it through the view function behind the full admin gate", () => {
   for (const p of PAGES) {
     const viewImport = `@web/components/views/admin/${p.view}`;
     const fnImport = `@/${p.fn.replace(/\.ts$/, "")}`;
-    const old = read(p.old);
     const spa = read(p.spa);
     const endpoint = read(p.endpoint);
-    assert.ok(old.includes(`"${viewImport}"`) && spa.includes(`"${viewImport}"`), `${p.id}: both render ${p.view}`);
-    assert.ok(old.includes(`"${fnImport}"`) && endpoint.includes(`"${fnImport}"`), `${p.id}: the old page and the endpoint load through ${p.fn}`);
-    assert.ok(/jsonify\(await load/.test(old), `${p.old}: the old page renders from exactly the JSON the SPA gets`);
-    assert.ok(old.includes("requireAdminPage("), `${p.old}: keeps its page gate`);
-    // The old page keeps only what Next needs: no table or chrome of its own, no data access.
-    assert.ok(!/from "@\/components\/(ui|app|admin)\//.test(old) && !old.includes("@/lib/db") && !old.includes("@/lib/admin/data"), `${p.old}: no page body or queries left in it`);
-    // The endpoint: the gate that matches the page (requireAdminMfa with no option), jsonView, GET only.
+    assert.ok(spa.includes(`"${viewImport}"`), `${p.id}: the page renders ${p.view}`);
+    assert.ok(endpoint.includes(`"${fnImport}"`), `${p.id}: the endpoint loads through ${p.fn}`);
+    // The page body lives in the view: the page itself renders no table or chrome and reads no data directly.
+    assert.ok(!/from "@web\/components\/(ui|app|admin)\//.test(spa) && !spa.includes("@/lib/db") && !spa.includes("@/lib/admin/data"), `${p.spa}: no page body or queries in it`);
+    // The endpoint: the full gate (requireAdminMfa with no option: no enrolling admin, no password-only session of a 2FA admin), jsonView, GET only.
     assert.ok(/await requireAdminMfa\(\);/.test(endpoint), `${p.endpoint}: requireAdminMfa() without allowEnrollment`);
     assert.ok(!endpoint.includes("requireAdminApi") && !endpoint.includes("allowEnrollment: true"), `${p.endpoint}: never the weaker gate`);
     assert.ok(endpoint.includes("jsonView(") && /export async function GET\b/.test(endpoint) && !/export async function (POST|PUT|PATCH|DELETE)\b/.test(endpoint), `${p.endpoint}: a GET that answers with jsonView`);
     assert.ok(endpoint.includes('export const dynamic = "force-dynamic"'), `${p.endpoint}: never cached`);
     assert.equal(count(spa, "<PageTitle"), 1, `${p.spa}: exactly one PageTitle`);
   }
-  assert.ok(read("app/admin/(console)/health/page.tsx").includes('export const dynamic = "force-dynamic"'), "the old health page still measures on every visit");
 });
 
-test("every SPA page sets its title with the same text and template as the route table, and each old page's metadata title equals it", () => {
+test("every SPA page sets its title with the same text and template as the route table (the admin pages end in \" · Admin\")", () => {
   for (const p of PAGES) {
     const route = spaRouteById(p.id);
     assert.ok("title" in route && route.title, `${p.id} has a title in the route table`);
@@ -1102,23 +1092,23 @@ test("every SPA page sets its title with the same text and template as the route
     assert.ok(m, `${p.spa} renders a <PageTitle> with literal props`);
     assert.equal(m[1], route.title, `${p.id}: title`);
     assert.equal(m[2] ?? "brand", route.template, `${p.id}: template`);
-    const old = /title: "([^"]+)"/.exec(read(p.old));
-    assert.ok(old, `${p.old}: metadata title`);
-    assert.equal(old[1], route.title, `${p.id}: the old page's title (the admin layout adds " · Admin")`);
-    assert.equal(formatTitle(old[1], "admin", BRAND_NAME), formatTitle(route.title, route.template, BRAND_NAME));
+    assert.equal(route.template, "admin", `${p.id}: template`);
+    assert.equal(formatTitle(route.title, route.template, BRAND_NAME), `${route.title} · Admin`);
   }
 });
 
 test("views and SPA pages import nothing server-side: only allowlisted lib modules, type-only imports from the view functions (what the Vite guard demands)", () => {
-  const viewFiles = readdirSync(path.join(root, "components/views/admin")).filter((f) => f.endsWith(".tsx")).map((f) => `components/views/admin/${f}`);
-  for (const view of PAGES.map((p) => `components/views/admin/${p.view}.tsx`)) assert.ok(viewFiles.includes(view), view);
+  const viewFiles = readdirSync(path.join(root, "web/src/components/views/admin")).filter((f) => f.endsWith(".tsx")).map((f) => `web/src/components/views/admin/${f}`);
+  for (const view of PAGES.map((p) => `web/src/components/views/admin/${p.view}.tsx`)) assert.ok(viewFiles.includes(view), view);
   for (const file of [...viewFiles.filter((f) => PAGES.some((p) => f.endsWith(`${p.view}.tsx`))), ...PAGES.map((p) => p.spa)]) {
     const src = read(file);
     for (const m of src.matchAll(/^import (?!type )[^"']*from\s+["']([^"']+)["']/gm)) {
       const spec = m[1];
       assert.equal(specifierProblem(spec), null, `${file}: ${spec}`);
-      if (spec.startsWith("@/")) {
-        const target = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"].map((ext) => spec.slice(2) + ext).find((rel) => existsSync(path.join(root, rel)) && statSync(path.join(root, rel)).isFile());
+      // "@/..." is the repository root, "@web/..." is web/src.
+      const base = spec.startsWith("@/") ? spec.slice(2) : spec.startsWith("@web/") ? `web/src/${spec.slice(5)}` : null;
+      if (base) {
+        const target = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"].map((ext) => base + ext).find((rel) => existsSync(path.join(root, rel)) && statSync(path.join(root, rel)).isFile());
         assert.ok(target, `${file}: ${spec} resolves to a file`);
         assert.equal(repoPathProblem(target), null, `${file}: ${spec}`);
       }

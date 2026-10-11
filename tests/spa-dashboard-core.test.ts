@@ -16,6 +16,7 @@ import { EARNINGS_ROW_CAP, MAX_REPORT_DAY, MIN_REPORT_DAY, parsePageParam, parse
 import { parseMessageStatus } from "../lib/views/dashboard-messages";
 import { parseSessionView } from "../lib/views/dashboard-sessions";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
+import { fakeNavigate } from "./helpers/fake-navigate";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -542,20 +543,13 @@ type Views = {
 let viewsLoaded: Promise<Views> | undefined;
 
 /**
- * The shared views rendered on the server, as the old Next pages render them. Next's router hooks and links, and the two client
- * components that need a provider (the sessions board with its drawer, the erase button), are replaced by stand-ins, then the
- * views are imported (mock.module only affects modules imported afterwards, hence the lazy import).
+ * The views rendered on the server. The navigation hooks (they need a Router and a QueryClient) and the two client components that
+ * need a provider (the sessions board with its drawer, the erase button) are replaced by stand-ins, then the views are imported
+ * (mock.module only affects modules imported afterwards, hence the lazy import). The real link component renders a plain <a> here.
  */
 function loadViews(): Promise<Views> {
   viewsLoaded ??= (async () => {
-    mock.module("next/link", { defaultExport: (p: Record<string, unknown>) => createElement("a", p) });
-    mock.module("next/navigation", {
-      namedExports: {
-        useRouter: () => ({ push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} }),
-        usePathname: () => "/dashboard",
-        useSearchParams: () => new URLSearchParams(),
-      },
-    });
+    mock.module("@web/lib/navigate", { namedExports: fakeNavigate("/dashboard") });
     mock.module("@web/components/app/SessionsBoard", {
       namedExports: {
         SessionsBoard: (p: { sessions: unknown[]; emptyTitle: string; initialBookingId?: string | null }) =>

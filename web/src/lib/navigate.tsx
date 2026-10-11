@@ -1,12 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo } from "react";
 import { Navigate, useLocation, useNavigate, type DataRouter } from "react-router";
-import { isSpaHref } from "./groups";
+import { isSpaHref } from "./href";
 
 /**
  * Navigation for the whole SPA. A target the router can show is a client-side route change; anything else (another origin,
- * /api, /assets, a path the route table does not know) is a full page load. Every redirect in the SPA (guards, error
- * handlers, the shared components) goes through here.
+ * /api, /assets, a file such as /sitemap.xml) is a full page load. Every redirect in the SPA (guards, error handlers, the
+ * components) goes through here.
  *
  * `useRouter` and `usePathname` keep the call shape the components were written with (`router.push(href)`,
  * `router.refresh()`), on top of React Router and TanStack Query.
