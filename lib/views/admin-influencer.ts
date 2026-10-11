@@ -172,7 +172,11 @@ export async function loadAdminInfluencerView(id: string, adminEmail: string): P
     },
     readinessItems: readiness.items.map((c) => ({ key: c.key, label: c.label, state: c.state, required: c.required })),
     connections: {
-      google: { state: !i.googleToken ? "none" : i.googleToken.status === "ACTIVE" ? "active" : "reconnect", email: i.googleToken?.googleEmail ?? null },
+      // The Google account's email is shown only while the connection works; "Reconnect needed" carries no email (as on the old page).
+      google: {
+        state: !i.googleToken ? "none" : i.googleToken.status === "ACTIVE" ? "active" : "reconnect",
+        email: i.googleToken?.status === "ACTIVE" ? (i.googleToken.googleEmail ?? null) : null,
+      },
       // The same state as the influencer's own checklist (lib/readiness.ts), with the number when there is one.
       whatsapp: {
         text: i.whatsappConnection?.displayPhone && input.whatsapp !== "error" ? `${i.whatsappConnection.displayPhone}, ${badge.label.toLowerCase()}` : badge.label,
