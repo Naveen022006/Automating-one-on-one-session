@@ -4,7 +4,6 @@ import { prisma } from "@/lib/db";
 import { formatSessionTime } from "@/lib/format";
 import { BookingNotManageableError, cancelBooking, type CancelResult } from "@/lib/manage";
 import { reportError } from "@/lib/observability";
-import { PLATFORM_CANCEL_MARK } from "@/lib/refunds";
 
 /**
  * Cancels a booking on the platform's behalf (for example to unwind a suspended influencer's upcoming sessions). It reuses
@@ -81,7 +80,7 @@ export async function adminCancelBooking(
 
   let result: CancelResult;
   try {
-    result = await deps.cancel(bookingId, { actor: "influencer", byPlatform: true, reason: `${PLATFORM_CANCEL_MARK} ${reason}` });
+    result = await deps.cancel(bookingId, { actor: "influencer", byPlatform: true, reason: `Cancelled by the platform: ${reason}` });
   } catch (e) {
     if (e instanceof BookingNotManageableError) {
       // The booking changed between the read and the cancel (another administrator, the customer, the influencer).

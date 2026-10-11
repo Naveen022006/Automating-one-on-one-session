@@ -196,9 +196,12 @@ export interface PayablePayment {
   payoutId: string | null;
   bookingStatus: string;
   sessionEnd: Date;
+  /** Flagged for a refund (a cancelled booking still owed one, a double payment, a failed refund): money that is not the influencer's yet. */
+  needsRefund?: boolean;
 }
 
 export type Blocker =
+  | "flagged-for-refund"
   | "not-paid"
   | "fully-refunded"
   | "in-payout"
@@ -212,6 +215,7 @@ export const BLOCKER_LABEL: Record<Blocker, string> = {
   "fully-refunded": "Fully refunded",
   "in-payout": "Already in a payout",
   "refund-in-flight": "Refund in progress",
+  "flagged-for-refund": "Flagged for a refund",
   "not-reconciled": "Waiting for reconciliation",
   "booking-not-held": "Session did not take place as booked",
   "session-not-finished": "Session not finished yet, or in the hold period",
@@ -225,6 +229,7 @@ export function payoutBlocker(p: PayablePayment, now: Date, holdDays: number): B
   if (netOf(p) <= 0) return "fully-refunded";
   if (p.payoutId) return "in-payout";
   if (p.refundStatus === "requested" || p.refundStatus === "pending") return "refund-in-flight";
+  if (p.needsRefund) return "flagged-for-refund";
   if (!p.reconciledAt) return "not-reconciled";
   if (p.bookingStatus !== "SCHEDULED" && p.bookingStatus !== "COMPLETED") return "booking-not-held";
   if (p.sessionEnd.getTime() + holdDays * 86_400_000 > now.getTime()) return "session-not-finished";
@@ -307,6 +312,7 @@ export async function loadPayable(influencerId: string, now = new Date(), db: Pr
       payoutId: r.payoutId,
       bookingStatus: r.booking.status,
       sessionEnd: r.booking.session.endTime,
+      needsRefund: r.needsRefund,
     };
     return {
       ...base,
@@ -435,7 +441,7 @@ export async function createPayout(
   /** Tests only: runs between reading the payable payments and claiming them, to interleave another administrator's action. */
   hooks: { afterRead?: () => Promise<void> } = {},
 ) {
-  return prisma.$transaction(
+  return guardConflicts(() => prisma.$transaction(
     async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM influencers WHERE id = ${influencerId} FOR UPDATE`;
       if (locked.length === 0) throw new PayoutError("Influencer not found", 404);
@@ -489,7 +495,7 @@ export async function createPayout(
       return payout;
     },
     { timeout: 20_000 },
-  );
+  ));
 }
 
 /**
@@ -499,9 +505,22 @@ export async function createPayout(
  * 409 `refund-in-flight`; cancel the payout and create it again. The payments are locked (`FOR UPDATE`) for the rest of the transaction,
  * so a refund update cannot slip in between this check and the status change.
  */
-async function assertRefundsSettled(tx: Prisma.TransactionClient, payoutId: string, refundsMinor: number): Promise<void> {
-  const rows = await tx.$queryRaw<{ refund_status: string | null; refund_amount_minor: number | null }[]>`
-    SELECT refund_status, refund_amount_minor FROM payments WHERE payout_id = ${payoutId} FOR UPDATE`;
+async function assertRefundsSettled(tx: Prisma.TransactionClient, payoutId: string, refundsMinor: number, notPendingMessage: string): Promise<void> {
+  // Lock order everywhere (createPayout, cancelPayout, here): the payout row first, then its payments. Taking the payments first would
+  // deadlock with a concurrent cancel (which locks the payout, then updates the payments).
+  const locked = await tx.$queryRaw<{ status: string }[]>`SELECT status FROM payouts WHERE id = ${payoutId} FOR UPDATE`;
+  if (locked.length === 0 || locked[0].status !== "PENDING") throw new PayoutError(notPendingMessage, 409);
+  const rows = await tx.$queryRaw<{ refund_status: string | null; refund_amount_minor: number | null; needs_refund: boolean; booking_status: string }[]>`
+    SELECT p.refund_status, p.refund_amount_minor, p.needs_refund, b.status::text AS booking_status
+    FROM payments p JOIN bookings b ON b.id = p.booking_id
+    WHERE p.payout_id = ${payoutId} FOR UPDATE OF p`;
+  if (rows.some((r) => r.needs_refund || !["PAID", "SCHEDULED", "COMPLETED"].includes(r.booking_status))) {
+    throw new PayoutError(
+      "A payment in this payout is flagged for a refund, or its booking was cancelled, after the payout was created. Cancel this payout and create it again.",
+      409,
+      "flagged-payment",
+    );
+  }
   const inFlight = rows.some((r) => r.refund_status === "requested" || r.refund_status === "pending");
   const total = rows.reduce((n, r) => n + (r.refund_amount_minor ?? 0), 0);
   if (inFlight || total !== refundsMinor) {
@@ -518,6 +537,21 @@ async function assertRefundsSettled(tx: Prisma.TransactionClient, payoutId: stri
  * one who created it may do this. Enforced here (not just hidden in the UI), and the update is conditional on the
  * payout still being pending and unapproved, so concurrent approvals cannot overwrite each other.
  */
+/** A deadlock or serialization failure between two administrators' actions is a "try again", not a server error. */
+async function guardConflicts<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    const err = e as { code?: string; message?: string; meta?: { code?: string }; cause?: { code?: string; originalCode?: string; message?: string } };
+    const codes = [err.code, err.meta?.code, err.cause?.code, err.cause?.originalCode];
+    const text = `${err.message ?? ""} ${err.cause?.message ?? ""}`;
+    if (codes.some((c) => c === "40P01" || c === "40001" || c === "P2034") || /deadlock detected|could not serialize access/i.test(text)) {
+      throw new PayoutError("Another change to this payout or its payments happened at the same moment. Reload and try again.", 409, "try-again");
+    }
+    throw e;
+  }
+}
+
 export async function approvePayout(payoutId: string, adminEmail: string, now = new Date(), override?: SuspendedOverride) {
   const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true, influencerId: true, refundsMinor: true } });
   if (!payout) throw new PayoutError("Payout not found", 404);
@@ -527,15 +561,15 @@ export async function approvePayout(payoutId: string, adminEmail: string, now = 
   }
   if (payout.approvedAt) throw new PayoutError("This payout is already approved.", 409);
   const suspendedOverride = await checkSuspended(payout.influencerId, override);
-  const count = await prisma.$transaction(async (tx) => {
-    await assertRefundsSettled(tx, payoutId, payout.refundsMinor);
+  const count = await guardConflicts(() => prisma.$transaction(async (tx) => {
+    await assertRefundsSettled(tx, payoutId, payout.refundsMinor, "Only a pending payout can be approved.");
     const done = await tx.payout.updateMany({
       // The suspension is part of the condition too, so a suspension that lands after the read above cannot be raced.
       where: { id: payoutId, status: "PENDING", approvedAt: null, ...(override ? {} : { influencer: { suspendedAt: null } }) },
       data: { approvedAt: now, approvedByEmail: adminEmail },
     });
     return done.count;
-  });
+  }));
   if (count === 0) {
     await checkSuspended(payout.influencerId, override); // suspended in the meantime: say so, not "changed"
     throw new PayoutError("This payout changed while you were approving it. Reload and try again.", 409);
@@ -558,15 +592,15 @@ export async function markPayoutPaid(payoutId: string, reference: string, adminE
   if (needsApproval && !payout.approvedAt) {
     throw new PayoutError("This payout has to be approved by a second administrator before it can be marked as paid.", 409);
   }
-  const count = await prisma.$transaction(async (tx) => {
-    await assertRefundsSettled(tx, payoutId, payout.refundsMinor);
+  const count = await guardConflicts(() => prisma.$transaction(async (tx) => {
+    await assertRefundsSettled(tx, payoutId, payout.refundsMinor, "This payout is not pending (it may already be paid or cancelled).");
     const done = await tx.payout.updateMany({
       // The approval and the suspension are part of the condition too, so the checks cannot be raced.
       where: { id: payoutId, status: "PENDING", ...(needsApproval ? { approvedAt: { not: null } } : {}), ...(override ? {} : { influencer: { suspendedAt: null } }) },
       data: { status: "PAID", reference: ref, paidAt: new Date(), paidByEmail: adminEmail },
     });
     return done.count;
-  });
+  }));
   if (count === 0) {
     await checkSuspended(payout.influencerId, override); // suspended in the meantime: say so, not "not pending"
     throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
@@ -576,12 +610,15 @@ export async function markPayoutPaid(payoutId: string, reference: string, adminE
 }
 
 /** PENDING -> CANCELLED: releases every payment so it can go into a later payout. */
-export async function cancelPayout(payoutId: string, note: string | null) {
-  return prisma.$transaction(async (tx) => {
-    const { count } = await tx.payout.updateMany({ where: { id: payoutId, status: "PENDING" }, data: { status: "CANCELLED", note: note?.slice(0, 300) ?? null } });
-    if (count === 0) throw new PayoutError("Only a pending payout can be cancelled.", 409);
-    await tx.payment.updateMany({ where: { payoutId }, data: { payoutId: null } });
-  });
+export async function cancelPayout(payoutId: string, note: string | null, hooks: { afterPayoutLocked?: (tx: Prisma.TransactionClient) => Promise<void> } = {}) {
+  return guardConflicts(() =>
+    prisma.$transaction(async (tx) => {
+      const { count } = await tx.payout.updateMany({ where: { id: payoutId, status: "PENDING" }, data: { status: "CANCELLED", note: note?.slice(0, 300) ?? null } });
+      if (count === 0) throw new PayoutError("Only a pending payout can be cancelled.", 409);
+      await hooks.afterPayoutLocked?.(tx); // tests only: holds the payout row lock before the payments are released
+      await tx.payment.updateMany({ where: { payoutId }, data: { payoutId: null } });
+    }),
+  );
 }
 
 /** Refunds made on a payment after its payout was paid: money the influencer received that should come back. */

@@ -8,6 +8,8 @@ export { NOTICE_MS, describeRefundPolicy, refundDecision, type CancelActor, type
 export class RefundError extends Error {}
 /** The refund is not allowed (wrong state, wrong owner, bad amount, one already in flight). */
 export class RefundNotAllowedError extends Error {}
+/** The payment is locked in a PENDING payout (nothing was sent to Razorpay). The refund has to wait until that payout is paid or cancelled. */
+export class RefundBlockedByPayoutError extends RefundNotAllowedError {}
 /** The admin console's expected amount no longer matches what is left of the payment (nothing was sent to Razorpay). */
 export class RefundAmountChangedError extends Error {}
 /**
@@ -16,8 +18,12 @@ export class RefundAmountChangedError extends Error {}
  */
 export class RefundPendingError extends Error {}
 
-/** The text `adminCancelBooking` puts at the start of the cancel reason; cancelBooking records it in the payment's `failureReason`. */
-export const PLATFORM_CANCEL_MARK = "Cancelled by the platform:";
+/**
+ * Recorded at the very START of a payment's `failureReason` by `cancelBooking` when the platform (an administrator) cancelled the booking.
+ * `failureReason` otherwise always starts with "booking ..." or a system sentence, and a host's own reason only ever comes after that, so
+ * text a host types can never produce this prefix; it is matched with `startsWith`, never `includes`. (No column of its own: no migration.)
+ */
+export const PLATFORM_CANCEL_PREFIX = "[platform-cancel] ";
 
 /** How long an unconfirmed "requested" claim blocks new refunds before it is reconciled against Razorpay. */
 export const CLAIM_STALE_MS = 10 * 60_000;
@@ -164,7 +170,7 @@ export async function refundPayment(
       // Say what actually changed (a payout took the payment, or another refund moved the total) instead of "in progress".
       const now = await prisma.payment.findUnique({ where: { id: payment.id }, select: { refundAmountMinor: true, payout: { select: { status: true } } } });
       if (blockPayout && now?.payout?.status === "PENDING") {
-        throw new RefundNotAllowedError(
+        throw new RefundBlockedByPayoutError(
           opts.influencerId
             ? "This payment is part of a payout being prepared. Try again once that payout is paid or cancelled."
             : "This payment is in a pending payout. Cancel that payout first.",
@@ -200,8 +206,8 @@ export async function refundPayment(
   await upsertRefundRow(prisma, payment.id, refund);
   await prisma.payment.update({ where: { id: payment.id }, data: { refundedAt: new Date() } });
   // A booking cancelled by the platform promised the customer a FULL refund (recorded in the payment's failureReason by cancelBooking, which
-  // the cancel route prefixes with PLATFORM_CANCEL_MARK): a partial refund does not clear the flag; it goes when nothing is left to refund.
-  const platformCancelled = (payment.failureReason ?? "").includes(PLATFORM_CANCEL_MARK);
+  // the prefix PLATFORM_CANCEL_PREFIX): a partial refund does not clear the flag; it goes when nothing is left to refund.
+  const platformCancelled = (payment.failureReason ?? "").startsWith(PLATFORM_CANCEL_PREFIX);
   const summary = await recomputeRefundSummary(payment.id, prisma, { needsRefund: platformCancelled, latestStatus: refund.status });
   return {
     refundId: refund.id,

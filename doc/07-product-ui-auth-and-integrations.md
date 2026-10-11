@@ -350,8 +350,9 @@ the parts that depend on each other (auth ↔ dashboard ↔ design system) land 
 Fixed while integrating: dashboard/self-service cancel and reschedule (`lib/manage.ts`) did not touch reminders and
 re-sent the *confirmation* template instead of a cancellation/reschedule notice; "Resend link" was swallowed by the
 messaging idempotency check. All three now behave as documented. Customers can no longer move a whole group
-session from their self-service link (host only). `/api/bookings/[id]/cancel|reschedule` now require the owning
-influencer's login and use the same code path as the dashboard.
+session from their self-service link (host only). (`/api/bookings/[id]/cancel|reschedule` existed for a while as
+signed-in influencer routes; the SPA never used them, they wrote no activity-log entry, and they were deleted in
+`mk/z-money-fixes`. The dashboard routes `/api/dashboard/bookings/[id]` are the one path.)
 
 ### Part B: accounts
 - [x] `users`, `auth_sessions`, `password_reset_tokens`, `email_verification_tokens` (migration
