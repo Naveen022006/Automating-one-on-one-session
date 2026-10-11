@@ -1,5 +1,6 @@
 import { Outlet, ScrollRestoration } from "react-router";
 import { FocusOnNavigate, HashScroller, RouteAnnouncer } from "../lib/a11y";
+import { scrollRestorationKey } from "../lib/scroll";
 
 /**
  * The root of every route: what app/layout.tsx's <body> contained (the skip link) plus the route-change behaviour Next
@@ -15,7 +16,7 @@ export function RootLayout() {
       <FocusOnNavigate />
       <HashScroller />
       <Outlet />
-      <ScrollRestoration />
+      <ScrollRestoration getKey={scrollRestorationKey} />
     </>
   );
 }

@@ -23,6 +23,18 @@ const isRewriteTo = (res: Response, path: string) => (res.headers.get("x-middlew
 const isPassThrough = (res: Response) => res.headers.get("x-middleware-next") === "1" && !res.headers.get("x-middleware-rewrite");
 const nonceOf = (csp: string | null) => /'nonce-([^']+)'/.exec(csp ?? "")?.[1];
 
+test("QA-9: a path with a broken percent escape or a NUL byte is a 400 for pages and API alike, never a 500 deeper down", async () => {
+  // Next answers 500 for `%E0%A4%A` on every dynamic route, and `%00` reaches Postgres (which refuses a NUL byte in text, also a 500).
+  for (const path of ["/%E0%A4%A", "/terms%E0%A4%A", "/a/%E0%A4%A", "/pay/%E0%A4%A", "/api/pay/%E0%A4%A", "/api/manage/%E0%A4%A", "/api/public/profiles/%E0%A4%A", "/api/public/profiles/%00", "/api/bookings/%E0%A4%A"]) {
+    const res = await proxy(req(path));
+    assert.equal(res.status, 400, path);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.equal(res.headers.get("x-middleware-next"), null, `${path} must not be passed on`);
+  }
+  // Valid escapes, also of unusual characters, are untouched.
+  for (const path of ["/d%C3%A9mo", "/api/pay/a%2Fb", "/api/public/profiles/demo%20", "/a%20b"]) assert.notEqual((await proxy(req(path))).status, 400, path);
+});
+
 test("an enabled group is rewritten to the internal shell route, with the request's own nonce in the CSP and the request headers", async () => {
   for (const [path, target] of [["/terms", "/spa-shell/terms"], ["/", "/spa-shell"], ["/demo", "/spa-shell/demo"], ["/demo/book", "/spa-shell/demo/book"], ["/pay/abc", "/spa-shell/pay/abc"], ["/no/such/page", "/spa-shell/no/such/page"]]) {
     const res = await proxy(req(path));
