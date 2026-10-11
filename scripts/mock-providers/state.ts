@@ -23,6 +23,8 @@ export interface PendingDecision {
   /** Every scope the app asked for (identity scopes included). */
   scopes: string[];
   accessType: string;
+  /** include_granted_scopes=true: what an earlier grant of this account allowed is part of the new token (incremental consent). */
+  includeGranted: boolean;
   loginHint: string | null;
   expiresAt: number;
 }
@@ -34,6 +36,7 @@ export interface AuthCode {
   /** The scopes the user actually allowed (identity scopes included). */
   scopes: string[];
   offline: boolean;
+  includeGranted: boolean;
   expiresAt: number;
   used: boolean;
 }

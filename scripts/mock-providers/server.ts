@@ -1,6 +1,8 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { META_APP_ID, META_APP_SECRET } from "./fixtures";
+import { registerGmail } from "./gmail";
+import { registerGoogle } from "./google";
 import { dispatch, isLocalUrl, randomHex, Router, type Runtime, type WebhookPort } from "./http";
 import { ACTIVITY_MAX, Persister, deleteStateFile, isInsideTmpdir, loadState, type MockState } from "./state";
 import { registerUi } from "./ui";
@@ -90,6 +92,8 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
 
   const router = new Router();
   registerUi(router);
+  registerGoogle(router);
+  registerGmail(router);
 
   const server: Server = createServer((req, res) => {
     void dispatch(rt, router, (server.address() as AddressInfo).port, req, res);

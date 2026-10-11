@@ -78,6 +78,14 @@ export function renderPage(o: PageOptions): string {
 <nav>${nav}</nav><main><h1>${esc(o.title)}</h1>${o.body}</main></body></html>`;
 }
 
+/** A page of the mock's pretend providers (consent, sign-up window, Meet room): the red banner, no owner navigation. */
+export function renderPlainPage(o: { title: string; banner: string; body: string; script?: { nonce: string; code: string } }): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(o.title)}</title><style>${CSS}</style></head><body><div class="banner">${esc(o.banner)}</div><main style="max-width:640px">${o.body}</main>${
+    o.script ? `<script nonce="${esc(o.script.nonce)}">${o.script.code}</script>` : ""
+  }</body></html>`;
+}
+
 /** Sends a frame page. `live` is `?live=N` of the request (a refresh interval in seconds). */
 export function sendPage(c: Ctx, o: Omit<PageOptions, "refresh">): void {
   const live = Number(c.query.get("live"));

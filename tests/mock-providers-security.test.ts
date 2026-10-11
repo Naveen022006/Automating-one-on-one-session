@@ -154,3 +154,72 @@ test("the request log redacts credential-like query values", async () => {
   assert.ok(!logged.path.includes("SOME-SECRET-VALUE") && !logged.path.includes("ABC123"));
   assert.match(logged.path, /x=visible/);
 });
+
+test("a token the mock did not mint is rejected, and never echoed, logged or printed", async () => {
+  const real = "ya29.something-real-looking-0123456789";
+  const base = "/google/calendar/v3/calendars/primary/events/abcde12345";
+  const res = await raw(t.mock, "GET", base, { authorization: `Bearer ${real}` });
+  assert.equal(res.status, 401);
+  assert.ok(!res.text.includes(real));
+  const gmail = await raw(t.mock, "POST", "/google/gmail/v1/users/me/messages/send", { authorization: `Bearer ${real}`, "content-type": "application/json" }, JSON.stringify({ raw: "AAAA" }));
+  assert.equal(gmail.status, 401);
+  assert.ok(!gmail.text.includes(real));
+  assert.equal((await raw(t.mock, "GET", base)).status, 401, "no token at all");
+  assert.equal((await raw(t.mock, "GET", base, { authorization: "Basic abc" })).status, 401);
+  const logged = JSON.stringify(t.mock.state().requests);
+  assert.ok(!logged.includes(real), "the unknown token is not in the request log");
+  assert.ok(t.mock.state().requests.some((r) => r.auth === "Bearer <unknown token, not logged>"));
+  assert.ok(!JSON.stringify(t.mock.state()).includes(real));
+  assert.ok(!(await raw(t.mock, "GET", "/__mock/requests")).text.includes(real));
+});
+
+test("every credential the mock mints is marked MOCK-NOT-REAL-, and no Meet link points at meet.google.com", async () => {
+  const origin = t.mock.url;
+  const query = new URLSearchParams({
+    client_id: "mock-client-id.apps.mock-google.invalid",
+    redirect_uri: "http://localhost:3000/api/google/callback",
+    response_type: "code",
+    scope: "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.send",
+    include_granted_scopes: "true",
+    access_type: "offline",
+    prompt: "consent",
+    state: "s",
+  });
+  const page = await raw(t.mock, "GET", `/google/o/oauth2/v2/auth?${query}`);
+  const decisionId = /name="decisionId" value="([^"]+)"/.exec(page.text)![1];
+  const form = new URLSearchParams({ decisionId, account: "creator@mock-google.invalid", action: "allow" });
+  form.append("scope", "https://www.googleapis.com/auth/calendar.events");
+  const decision = await raw(t.mock, "POST", "/google/o/oauth2/v2/auth/decision", { "content-type": "application/x-www-form-urlencoded", origin, "sec-fetch-site": "same-origin" }, form.toString());
+  const code = new URL(String(decision.headers.location)).searchParams.get("code")!;
+  const token = await raw(
+    t.mock,
+    "POST",
+    "/google/token",
+    { "content-type": "application/x-www-form-urlencoded" },
+    new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: "http://localhost:3000/api/google/callback", client_id: "mock-client-id.apps.mock-google.invalid", client_secret: "MOCK-NOT-REAL-google-client-secret" }).toString(),
+  );
+  assert.equal(token.status, 200, token.text);
+  const body = token.json();
+  for (const v of [code, body.access_token, body.refresh_token]) assert.match(String(v), /^MOCK-NOT-REAL-/);
+  const idToken = String(body.id_token).split(".");
+  assert.equal(Buffer.from(idToken[0], "base64url").toString().includes('"alg":"none"'), true, "the ID token is unsigned and says so");
+  assert.equal(Buffer.from(idToken[2], "base64url").toString(), "MOCK-NOT-REAL");
+  assert.match(JSON.parse(Buffer.from(idToken[1], "base64url").toString()).email, /@mock-google\.invalid$/);
+
+  const event = await raw(
+    t.mock,
+    "POST",
+    "/google/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all",
+    { authorization: `Bearer ${body.access_token}`, "content-type": "application/json" },
+    JSON.stringify({ id: "secevent00001", summary: "s", start: { dateTime: "2030-01-01T10:00:00Z" }, end: { dateTime: "2030-01-01T10:30:00Z" }, conferenceData: { createRequest: { requestId: "r" } } }),
+  );
+  assert.equal(event.status, 200, event.text);
+  assert.ok(!event.text.includes("meet.google.com"), "a random code in Meet's real format could be a stranger's live meeting");
+  assert.match(event.json().hangoutLink, new RegExp(`^${origin}/meet/mock-`));
+
+  const state = t.mock.state();
+  for (const k of [...Object.keys(state.google.codes), ...Object.keys(state.google.refreshTokens), ...Object.keys(state.google.accessTokens)]) assert.match(k, /^MOCK-NOT-REAL-/, k);
+  const text = JSON.stringify(state);
+  assert.ok(!/(ya29\.|1\/\/0|"EAA)/.test(text), "no real-looking token prefixes");
+  assert.ok(!text.includes("https://meet.google.com"));
+});

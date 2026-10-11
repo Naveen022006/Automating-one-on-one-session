@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { applyLatency } from "./faults";
+import { ConnectionResetError, applyLatency } from "./faults";
 import { REQUEST_LOG_MAX, type MockState } from "./state";
 
 /**
@@ -347,7 +347,7 @@ export async function dispatch(rt: Runtime, router: Router, port: number, req: I
     await found.route.handler(c);
     if (!res.writableEnded) throw new Error(`the handler for ${c.method} ${c.path} sent no response`);
   } catch (e) {
-    if (res.writableEnded || res.destroyed) return;
+    if (e instanceof ConnectionResetError || res.writableEnded || res.destroyed) return;
     if (res.headersSent) {
       res.end();
       return;

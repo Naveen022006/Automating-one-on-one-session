@@ -105,6 +105,8 @@ export const FAULTS: Record<string, FaultDef> = {
 };
 
 export class FaultError extends Error {}
+/** Thrown after the connection was closed on purpose (latency fault "reset"): there is nothing left to answer. */
+export class ConnectionResetError extends Error {}
 
 /** Sets a fault. A value equal to the default clears it. Throws FaultError for an unknown key or a value it does not accept. */
 export function setFault(rt: Runtime, key: string, value: string, once = false): void {
@@ -134,7 +136,7 @@ export async function applyLatency(c: Ctx, kind: LatencyKind): Promise<void> {
   if (value === "0") return;
   if (value === "reset") {
     c.req.socket.destroy();
-    throw new Error("connection reset on purpose (fault latency)");
+    throw new ConnectionResetError("connection reset on purpose (fault latency)");
   }
   await new Promise<void>((resolve) => setTimeout(resolve, Number(value)));
 }
