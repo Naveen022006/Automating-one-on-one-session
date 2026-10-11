@@ -137,13 +137,19 @@ test("profile page: loading keeps the server's title, 404 is the not-found scree
   const pending = await render(pages.profile, "/:slug", "/demo", key, "pending");
   assert.ok(!pending.includes("<title>"), "no title of its own until the host's name is known");
   assert.ok(pending.includes('aria-busy="true"'));
+  // QA-1: the loading state sits in the public frame (brand header, one `main#main` for the skip link and the focus move),
+  // not bare in the corner of the window.
+  assert.ok(pending.includes('class="site-header"') && count(pending, '<main id="main"') === 1 && pending.includes("container--narrow"));
 
   const notFound = await render(pages.profile, "/:slug", "/demo", key, { error: { status: 404, body: { error: "Not found" } } });
   assert.ok(notFound.includes("<title>Not found · Session Automation</title>"));
   assert.ok(notFound.includes("This page does not exist") && count(notFound, '<main id="main"') === 1);
 
   const failed = await render(pages.profile, "/:slug", "/demo", key, { error: { status: 500 } });
-  assert.ok(failed.includes("Something went wrong") && failed.includes("Try again") && !failed.includes("<title>"));
+  assert.ok(failed.includes("Something went wrong") && failed.includes("Try again"));
+  // QA-1: the failure keeps the page in its frame, and does not leave the previous page's title in the tab.
+  assert.ok(failed.includes("<title>Something went wrong · Session Automation</title>"));
+  assert.ok(failed.includes('class="site-header"') && count(failed, '<main id="main"') === 1);
   const limited = await render(pages.profile, "/:slug", "/demo", key, { error: { status: 429, body: { error: "Too many requests. Slow down." } } });
   assert.ok(limited.includes("Too many requests. Slow down.") && !limited.includes("Try again"));
 });
@@ -242,6 +248,8 @@ test("pay page: loading and failures keep the page title; a token with special c
   assert.ok(pending.includes(PAY_TITLE) && pending.includes('aria-busy="true"'));
   const failed = await payPage("tok", { error: { status: 500 } });
   assert.ok(failed.includes(PAY_TITLE) && failed.includes("Something went wrong") && failed.includes("Try again"));
+  // QA-1: both states are drawn inside the public frame (header and one `main#main`), not bare in the corner of the window.
+  for (const html of [pending, failed]) assert.ok(html.includes('class="site-header"') && count(html, '<main id="main"') === 1);
   // `%2E` in the URL is `.` for the page: the query key (and so the request) is built from the decoded token.
   const token = "abc.def-ghi_jkl";
   const router = rr.createMemoryRouter([{ path: "/pay/:token", Component: pages.pay }], { initialEntries: ["/pay/abc%2Edef-ghi_jkl"] });
@@ -297,6 +305,9 @@ test("manage page: a 403 that is not the endpoint's own answer, and every other 
   assert.ok(stray.includes(MANAGE_TITLE) && stray.includes("This page does not exist"));
   const pending = await managePage("pending");
   assert.ok(pending.includes(MANAGE_TITLE) && pending.includes('aria-busy="true"'));
+  // QA-1: loading and failure are drawn inside the public frame, with exactly one `main#main`.
+  const failed = await managePage({ error: { status: 500 } });
+  for (const html of [pending, failed]) assert.ok(html.includes('class="site-header"') && count(html, '<main id="main"') === 1);
 });
 
 test("manage page: sets the no-referrer policy itself in every state, so a soft navigation from the pay page cannot leak the token", async () => {

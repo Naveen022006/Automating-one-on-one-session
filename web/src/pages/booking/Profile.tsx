@@ -16,8 +16,16 @@ export function Component() {
   const query = useApiQuery<Jsonify<PublicProfile>>(queryKeys.publicProfile(slug), `/api/public/profiles/${encodeURIComponent(slug)}`);
   return (
     <>
-      {query.data ? <PageTitle title={`Book a session with ${query.data.name}`} /> : query.error?.status === 404 ? <PageTitle title="Not found" /> : null}
-      <QueryGate query={query}>{(profile) => <ProfileView data={profile} />}</QueryGate>
+      {query.data ? (
+        <PageTitle title={`Book a session with ${query.data.name}`} />
+      ) : query.error?.status === 404 ? (
+        <PageTitle title="Not found" />
+      ) : query.isError ? (
+        <PageTitle title="Something went wrong" />
+      ) : null}
+      <QueryGate query={query} framed>
+        {(profile) => <ProfileView data={profile} />}
+      </QueryGate>
     </>
   );
 }
