@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
+import { chooseFacebookSdkUrl } from "@/lib/facebook-sdk";
 import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateState } from "@/lib/message-templates";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
@@ -49,7 +50,7 @@ declare global {
 
 let sdkLoading: Promise<FacebookSdk> | null = null;
 
-function loadFacebookSdk(appId: string, version: string): Promise<FacebookSdk> {
+function loadFacebookSdk(appId: string, version: string, src: string): Promise<FacebookSdk> {
   if (window.FB) return Promise.resolve(window.FB);
   // One load at a time, so the component mounting twice (or remounting) never adds a second script.
   sdkLoading ??= new Promise<FacebookSdk>((resolve, reject) => {
@@ -59,7 +60,7 @@ function loadFacebookSdk(appId: string, version: string): Promise<FacebookSdk> {
       resolve(window.FB!);
     };
     const el = document.createElement("script");
-    el.src = "https://connect.facebook.net/en_US/sdk.js";
+    el.src = src;
     el.async = true;
     el.onerror = () => {
       el.remove();
@@ -79,7 +80,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * "Connect your WhatsApp number". Meta Embedded Signup when the platform is a configured Meta Tech Provider,
  * otherwise (or additionally) by entering the account ids and a permanent token.
  */
-export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string; graphVersion?: string } | null }) {
+export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null }) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
@@ -106,6 +107,8 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   const [sdkState, setSdkState] = useState<"loading" | "ready" | "failed">("loading");
   const appId = embedded?.appId;
   const version = embedded?.graphVersion ?? DEFAULT_GRAPH_VERSION;
+  // Meta's SDK; the server only offers another (the local mock's) in development, and only a loopback one is accepted.
+  const sdkSrc = chooseFacebookSdkUrl(embedded?.sdkUrl);
 
   // The connect buttons are on screen: when nothing is connected, or after Reconnect was pressed on a broken connection.
   // Facebook's script is not loaded for anyone who is connected and just looking at their settings.
@@ -116,7 +119,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
   useEffect(() => {
     if (!appId || !connectVisible) return;
     let live = true;
-    loadFacebookSdk(appId, version).then(
+    loadFacebookSdk(appId, version, sdkSrc).then(
       (FB) => {
         sdk.current = FB;
         if (live) setSdkState("ready");
@@ -126,7 +129,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     return () => {
       live = false;
     };
-  }, [appId, version, connectVisible]);
+  }, [appId, version, sdkSrc, connectVisible]);
 
   // Embedded Signup reports what happened in the sign-up window as window messages, separately from the login code:
   // FINISH carries the new account's ids; CANCEL and ERROR say why there will be no account.
@@ -221,7 +224,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     if (!FB) {
       // The SDK did not load (a blocker or a flaky connection). Try again; the pop-up needs a fresh click afterwards.
       setSdkState("loading");
-      loadFacebookSdk(embedded.appId, version).then(
+      loadFacebookSdk(embedded.appId, version, sdkSrc).then(
         (loaded) => {
           sdk.current = loaded;
           setSdkState("ready");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { FACEBOOK_SDK_URL, chooseFacebookSdkUrl } from "../lib/facebook-sdk";
 import { exchangeCode, buildAuthUrl, createGoogleClient, revokeToken } from "../lib/google";
 import { sendGmail } from "../lib/gmail";
 import {
@@ -164,6 +165,36 @@ test("embeddedSignupConfig carries the mock SDK URL only while the override is a
   assert.equal("sdkUrl" in embeddedSignupConfig(e({ ...base, ...ACTIVE, NODE_ENV: "production" }))!, false);
   assert.equal("sdkUrl" in embeddedSignupConfig(e({ ...base, ...ACTIVE, APP_URL: "https://app.example.com" }))!, false, "non-local APP_URL");
   assert.equal(embeddedSignupConfig(e({ ...ACTIVE })), null, "no Meta app: still no config");
+});
+
+test("the browser loads the mock SDK only if the server's URL is a loopback mock URL, otherwise Meta's", () => {
+  assert.equal(FACEBOOK_SDK_URL, "https://connect.facebook.net/en_US/sdk.js");
+  for (const bad of [
+    undefined,
+    null,
+    "",
+    "https://evil.com/meta/en_US/sdk.js",
+    "https://127.0.0.1:4010/meta/en_US/sdk.js",
+    "http://127.0.0.1:4010/x.js",
+    "http://127.0.0.1:4010/meta/en_US/sdk.js?x",
+    "http://127.0.0.1:4010/meta/en_US/sdk.js#x",
+    "http://127.0.0.1.evil.com:4010/meta/en_US/sdk.js",
+    "http://127.0.0.1@evil.com:4010/meta/en_US/sdk.js",
+    "http://evil.com:4010/meta/en_US/sdk.js",
+    "http://app.localhost:4010/meta/en_US/sdk.js",
+    "http://127.0.0.1/meta/en_US/sdk.js",
+    "http://127.0.0.1:4010/meta/en_US/sdk.js/",
+    " http://127.0.0.1:4010/meta/en_US/sdk.js",
+    "javascript:alert(1)",
+  ]) {
+    assert.equal(chooseFacebookSdkUrl(bad), FACEBOOK_SDK_URL, String(bad));
+  }
+  for (const ok of ["http://127.0.0.1:4010/meta/en_US/sdk.js", "http://localhost:4110/meta/en_US/sdk.js", "http://[::1]:4010/meta/en_US/sdk.js"]) {
+    assert.equal(chooseFacebookSdkUrl(ok), ok);
+  }
+  // What the server offers while the override is active is accepted by the browser rule, and nothing else is.
+  assert.equal(chooseFacebookSdkUrl(mockFacebookSdkUrl(ACTIVE)), `${MOCK}/meta/en_US/sdk.js`);
+  assert.equal(chooseFacebookSdkUrl(mockFacebookSdkUrl({ ...ACTIVE, NODE_ENV: "production" })), FACEBOOK_SDK_URL);
 });
 
 /* ---------- the call sites, with fetch spied on and the environment written into process.env ---------- */
