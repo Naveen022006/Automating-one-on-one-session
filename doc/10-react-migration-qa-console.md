@@ -39,8 +39,23 @@ low = rough edge, cosmetic or defence in depth. Every fix has a test in `tests/q
 | C19 | low | WhatsApp card, templates not submitted | "Could not submit: booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation" (internal keys) above a table that says "Booking confirmation", "Reminder, 24 hours before". | fixed `e0ae789`: one shared label map |
 | C20 | low | links with a `#fragment` inside the dashboard and console (the new `#google` return, the checklist links) | The sticky top bar covered the target of an anchor: the section heading was scrolled to y = 0, behind the 64 px bar. | fixed `fa43168`: `.app-main [id] { scroll-margin-top }` |
 | C21 | low | Sessions, Availability, Customers and Messages tables | Four data tables had no accessible name (the other tables of the dashboard and the console have a `caption`), so a screen reader announced "table" with no context. | fixed `5f8d2de`: visually hidden captions ("Bookings", "Weekly hours", "Customers", "Messages") |
-| C7 | info | every post-mutation refresh | When the refetch after a mutation fails (500 from a connection-pool timeout, which happened repeatedly on the loaded shared database), the screen keeps the old data and says nothing, while the success toast already said "Saved" (design decision D21: a failed refetch keeps the stale data). Seen with "Copy to weekdays" in the onboarding wizard: the server had five weekdays, the screen one, until the next refetch. | not fixed (design); a toast such as "Saved, but the page could not refresh" would be the follow-up |
-| C17 | info | WhatsApp templates, rejected | The reason is Meta's raw code (`INVALID_FORMAT`) next to "Rejected". | not fixed (the real codes were not available to map them) |
+| C7 | low | every post-mutation refresh | When the refetch after a mutation fails (500 from a connection-pool timeout, which happened repeatedly on the loaded shared database), the screen keeps the old data and says nothing, while the success toast already said "Saved" (design decision D21: a failed refetch keeps the stale data). Seen with "Copy to weekdays" in the onboarding wizard: the server had five weekdays, the screen one, until the next refetch. | fixed `f029083` (review round, N10): `QueryGate` shows a polite "Couldn't refresh. Retry" status above the page while it still has data and the last refetch failed. The page does not unmount; the loading, 404 and error rules and `guard-decisions.ts` are unchanged; public customer pages (`framed`) do not show it |
+| C17 | low | WhatsApp templates, rejected | The reason is Meta's raw code (`INVALID_FORMAT`) next to "Rejected". | fixed `f029083` (N10): Meta's documented reasons (ABUSIVE_CONTENT, INCORRECT_CATEGORY, INVALID_FORMAT, PROMOTIONAL, SCAM, TAG_CONTENT_MISMATCH, NONE and unknown codes) become a sentence, and a rejection says what happens next: the wording is ours, nothing here resubmits it, contact support, customers get the message by SMS meanwhile |
+
+### Review round (an independent review of this branch found no blocking security regression, and these)
+
+| Id | Sev | Where | Finding | Status |
+|---|---|---|---|---|
+| N1 | medium | Google callback, C14 revoke (`app/api/google/callback/route.ts`, `lib/google.ts`) | "Different account" was decided by address alone. After a Workspace rename or a Gmail address change, reconnecting the SAME account (or "Send from my Gmail" with nothing upcoming) looked like a switch: the callback saved the new token and then revoked the old one, and Google's revoke ends the app's access for the whole account, so the connection just made died and the booking page went offline right after "Google connected". The address, token and id were also read in two queries. | fixed `c02adc3`: the OpenID `sub` is stored on `google_tokens` (nullable `google_sub`, migration `20261105000000_google_sub`, never returned to the browser); two accounts are compared by `sub` when both have one, by address otherwise; every revoke (unticked Calendar, refused switch, replaced grant) needs nothing connected or both ids known and different; the token, address and id come from one query; the token just issued is never revoked; the revoke runs after the save and a failing revoke or shared-account lookup still ends in "connected". An address-only comparison still asks for the switch confirmation, it just never revokes. Rows connected before this have no `sub`: they get one at their next connect or reconnect (a background backfill from the token refresh was not done: the Google client returns only the access token) |
+| N2 | low | same | The replaced-grant revoke read only ACTIVE grants, so switching away from an account flagged "reconnect needed" (also set on a plain 401/403) left its grant authorised at Google. | fixed `c02adc3`: the token is read whatever the status, under the N1 rules |
+| N3 | low | list pages' status lines | While the previous results stayed on screen the live region announced the old total with the new search text. | fixed `93ef91a`: "Searching..." (the two searches) or "Loading..." (tabs, pages, ranges) while `busy`, on all nine list pages |
+| N4 | low | `components/ui/MobileNav.tsx` | The More list stayed open when Tab or Shift+Tab left the bar, and Escape (listening on the whole document) always pulled focus to More, out of a search field. | fixed `93ef91a`: closes on a focus move to a known target outside the bar (never for a null target: Safari would lose the tapped link); Escape returns focus only when it was in the bar; the decisions are pure functions with tests |
+| N5 | low | `tests/qa-console.test.ts` C18 | `markTokenInvalid` alerts through the default sender, which emails the influencer through `EMAIL_PROVIDER` (a `.env`-loaded run could send a real email). | fixed `93ef91a`: a recording no-op sender (`setAlertSender` now returns the previous one, restored in `finally`); no other new test can send email, WhatsApp, SMS or reach Google, Meta or Razorpay (the C16 route calls fail validation or authentication first) |
+| N6 | low | `tests/qa-console.test.ts` C5, C15, C18 | Rows were created before `try` and cleanup errors were swallowed. | fixed `93ef91a`: created inside `try`, ids tracked as they appear, a cleanup failure is logged with the ids |
+| N7 | low | WhatsApp card, onboarding step | "Recommended" was hard-coded although `READINESS_REQUIRED` can require WhatsApp. | fixed `480e396`: the settings view carries `whatsappRequired` (from `requiredConnections`), the wizard reads its checklist item; the card and the step text say Required or Recommended |
+| N8 | low | `components/ui/overlays.tsx` | Every toast shown or expired re-rendered every component that calls `useToast()`. | fixed `c3b4426`: the push function and the list are separate contexts; only the viewports read the list |
+| N9 | low | `next.config.ts` | `GET /api/bookings/:id` (Meet link, self-service link) had no `Cache-Control`. | fixed `c3b4426`: `/api/bookings/:path*` joins the private, no-store rules (checked live on `next start`: the 404 answer for an unknown id carries it) |
+| N10 | low | C17 and C7 above | The two items left unfixed in the first round. | fixed `f029083` |
 
 ## What was walked and what held
 
@@ -87,6 +102,14 @@ heading levels jump from `h1` to `h3` on the Services cards and in the admin `Em
   headers) were run one file at a time with `DATABASE_POOL_MAX=2 ... --test-concurrency=1`: all pass. Two database files timed out
   once on the shared database (connection timeouts, no assertion failed) and passed on the retry.
 - `npm run typecheck` (app and `web/`): clean. `node scripts/spa-smoke.mjs`: 208 passed, 0 failed.
+- Review round (N1 to N10, after merging `origin/main`): `npm run build` passes and `scripts/spa-smoke.mjs` ran again against `next start`
+  (`SPA_GROUPS=all`): 208 passed, 0 failed. `tests/qa-console.test.ts` now has 29 tests; `tests/google-connect.test.ts` 33 and
+  `tests/google-tokens.test.ts` 11, including the new N1 and N2 cases (renamed address on the same account: no revoke; real switch
+  with both ids: the old grant is revoked, after the save; unknown stored id: no revoke; failing revoke or lookup still ends
+  "connected"; a flagged grant is read). The 39 files that touch the changed code were run one at a time with
+  `DATABASE_POOL_MAX=2 ... --test-concurrency=1` (the ones named in the brief: `google-connect`, `google-tokens`, `key-rotation`,
+  `spa-guard`; plus the SPA pages and views, WhatsApp, messaging, refunds, reminders, readiness, env, shell and mock-provider
+  files): all pass on the first attempt.
 
 ## Connection screens (provider simulator)
 
@@ -150,6 +173,11 @@ and webhook delivery through a public URL are NOT proven.
 - Focus moving to `main` after a route change (`FocusOnNavigate`): not observable in a hidden Browser pane.
 - The administrator 2FA "verify" gate state (enrolment ends the other sessions, see above): covered by
   `tests/spa-admin-security.test.ts` only.
+- Review round: N4 (focus leaving the More list), N8 (fewer re-renders) and the C7 "Couldn't refresh" notice were NOT seen in a
+  browser. They are covered by pure decision tests, server-rendered markup and, for C7, the real query library's refetch states
+  (`QueryObserver`), and the production build and smoke run pass, but no DOM was available to the tests to count renders or press
+  Tab. N1 ran against a faked Google (`fetch` replaced), not the mock server and not real Google; the real behaviour of a renamed
+  Workspace address is therefore unverified. No backfill of `google_sub` for existing rows was written (see N1).
 
 ## Clean-up
 
@@ -169,3 +197,16 @@ found zero rows with them.
   before. The demo influencer's fee override is null, it has no Google or WhatsApp connection, and its two services are active.
 - Processes: the production server (`next start -p 3191`), the `dev:mock` pair (app and mock on 4110) and every script were
   stopped; ports 3191 and 4110 are free. No worker was ever started; ports 3000, 5173 and 4010 were not touched.
+
+Review round (N1 to N10):
+
+- One migration was applied to the shared database: `20261105000000_google_sub` (`ALTER TABLE "google_tokens" ADD COLUMN "google_sub"
+  TEXT`, additive and nullable, created with `prisma migrate diff`, applied with `prisma migrate deploy`; it was the only pending
+  migration; the client was regenerated). Nothing reads or writes the column except the Google callback and the shared-account check.
+  The owner's running worker keeps working without a restart: it never selects the column. Existing rows keep `google_sub` NULL until
+  their next connect or reconnect.
+- The only rows created were the tests' own (influencers `qac5-...`, `qac15-...`, `qac18-...`, `gt-...` with their cascades),
+  deleted by the tests; the check afterwards found none, no `QA` services, no `qa-console-` administrators, and no `google_tokens`
+  row with a `google_sub` (the tests do not leave one). `admin1@example.com` and `admin2@example.com` still have no 2FA. A production
+  server on 3191 was started once more for the smoke run and stopped (the task kill did not end the node process, which was stopped by
+  its process id); ports 3191 and 4110 are free and no node process of this worktree is left.
