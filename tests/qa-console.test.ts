@@ -10,7 +10,7 @@ import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { razorpayErrorText } from "../lib/payments";
 import { Dialog, Drawer, ToastProvider } from "../components/ui/overlays";
-import { MobileNav, isNavActive, type MobileNavItem } from "../components/ui/MobileNav";
+import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../components/ui/MobileNav";
 import nextConfig from "../next.config";
 
 const root = (p: string) => path.resolve(__dirname, "..", p);
@@ -87,6 +87,36 @@ test("C11: both shells hand every section that is not in the bar to More (nothin
     assert.equal(declared.length, total, `${file}: the nav lists ${total} sections`);
     for (const p of primaryPaths) assert.ok(declared.includes(p), `${file}: ${p} is a section`);
   }
+});
+
+// N4: the More list follows keyboard focus, and Escape does not steal focus from elsewhere on the page.
+test("N4: Tab or Shift+Tab out of the bar closes the list; a focus change inside the bar, or to nowhere, does not", () => {
+  const link = { id: "inside-link" };
+  const search = { id: "outside-search" };
+  const bar: { contains(n: unknown): boolean } = { contains: (n: unknown) => n === link || n === bar };
+  assert.equal(focusLeavesBar(bar, search), true, "focus went to a control outside the bar");
+  assert.equal(focusLeavesBar(bar, link), false, "from the button to a link in the list");
+  assert.equal(focusLeavesBar(bar, bar), false);
+  assert.equal(focusLeavesBar(bar, null), false, "null is focus leaving the page or a tap that focuses nothing (Safari): closing would eat the click");
+  assert.equal(focusLeavesBar(null, search), false, "no bar mounted");
+});
+
+test("N4: Escape hands focus back to More only when focus was in the bar", () => {
+  const link = {};
+  const search = {};
+  const bar = { contains: (n: unknown) => n === link };
+  assert.equal(escapeReturnsFocus(bar, link), true);
+  assert.equal(escapeReturnsFocus(bar, search), false, "someone typing in a search field elsewhere stays there");
+  assert.equal(escapeReturnsFocus(bar, null), false, "nothing focused");
+  assert.equal(escapeReturnsFocus(null, link), false);
+  assert.equal(isInside(bar, link), true);
+  assert.equal(isInside(bar, undefined), false);
+});
+
+test("N4: the bar wires those decisions to focus-out and to the Escape listener", () => {
+  const src = read("components/ui/MobileNav.tsx");
+  assert.match(src, /onBlur=\{\(e\) => \{\s*if \(open && focusLeavesBar\(e\.currentTarget, e\.relatedTarget\)\) setOpen\(false\);/);
+  assert.match(src, /const hadFocus = escapeReturnsFocus\(rootRef\.current, document\.activeElement\);\s*setOpen\(false\);\s*if \(hadFocus\) buttonRef\.current\?\.focus\(\);/, "the focus is looked at before the list unmounts");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -209,16 +239,58 @@ test("C9: the Influencers list renders a live status line (count, search text, p
   assert.match(page, /busy=\{query\.isPlaceholderData\}/);
 });
 
+test("N3: while the previous result is still shown, the status line says the next one is loading instead of announcing the old total", () => {
+  const data = { rows: [row(1), row(2)], total: 2, page: 1, pageCount: 1 };
+  const busy = renderToStaticMarkup(createElement(InfluencersView, { data, q: "ann", busy: true }));
+  assert.match(busy, /<p role="status" class="sr-only">Searching…<\/p>/);
+  assert.doesNotMatch(busy, /<p role="status"[^>]*>[^<]*accounts/, "the old total is not announced next to the new search text");
+  assert.match(renderToStaticMarkup(createElement(InfluencersView, { data, q: "ann", busy: false })), /2 accounts for “ann”/, "and the result is announced once it has arrived");
+  // Every list page with this status line (the ones that set `busy` from isPlaceholderData) does the same.
+  const searches = ["components/views/admin/InfluencersView.tsx", "components/views/dashboard/CustomersView.tsx"];
+  const lists = [
+    "components/views/admin/AuditView.tsx",
+    "components/views/admin/BookingsView.tsx",
+    "components/views/admin/PaymentsView.tsx",
+    "components/views/admin/PayoutsView.tsx",
+    "components/views/dashboard/EarningsView.tsx",
+    "components/views/dashboard/MessagesView.tsx",
+    "components/views/dashboard/SessionsView.tsx",
+  ];
+  for (const f of searches) assert.match(read(f), /<p role="status" className="sr-only">\{busy \? "Searching…" : found\}<\/p>/, f);
+  for (const f of lists) assert.match(read(f), /<p role="status" className="sr-only">\{busy \? "Loading…" : found\}<\/p>/, f);
+});
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // C5: the owner can read the slots of a service they have hidden (to move its existing bookings).
 const skipDb = process.env.DATABASE_URL ? false : "DATABASE_URL not set";
+
+/**
+ * The database tests create their influencers INSIDE the try block, pushing each id as soon as it exists (a failure halfway
+ * through still leaves the first one to be deleted), and delete them here. A cleanup failure is logged with the ids, never
+ * swallowed: a leftover row on the shared database is something to know about. Everything else hangs off the influencer by
+ * cascade.
+ */
+type Db = typeof import("../lib/db").prisma;
+async function removeInfluencers(prisma: Db, ids: string[]): Promise<void> {
+  try {
+    if (ids.length > 0) await prisma.influencer.deleteMany({ where: { id: { in: ids } } });
+  } catch (e) {
+    console.error(`[qa-console test] could not delete the test influencers ${ids.join(", ")}: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    await prisma.$disconnect().catch(() => {});
+  }
+}
+
 test("C5: loadBookableService lets the owner read a hidden service, and nobody else", { skip: skipDb }, async () => {
   const { prisma } = await import("../lib/db");
   const { loadBookableService } = await import("../lib/availability");
   const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
-  const owner = await prisma.influencer.create({ data: { name: `QA C5 owner ${run}`, slug: `qac5-o-${run}`, email: `qac5-o-${run}@example.com` } });
-  const other = await prisma.influencer.create({ data: { name: `QA C5 other ${run}`, slug: `qac5-x-${run}`, email: `qac5-x-${run}@example.com` } });
+  const ids: string[] = [];
   try {
+    const owner = await prisma.influencer.create({ data: { name: `QA C5 owner ${run}`, slug: `qac5-o-${run}`, email: `qac5-o-${run}@example.com` } });
+    ids.push(owner.id);
+    const other = await prisma.influencer.create({ data: { name: `QA C5 other ${run}`, slug: `qac5-x-${run}`, email: `qac5-x-${run}@example.com` } });
+    ids.push(other.id);
     const hidden = await prisma.service.create({ data: { influencerId: owner.id, title: `QA C5 hidden ${run}`, durationMin: 30, priceMinor: 10000, active: false } });
     const shown = await prisma.service.create({ data: { influencerId: owner.id, title: `QA C5 shown ${run}`, durationMin: 30, priceMinor: 10000, active: true } });
     assert.ok(await loadBookableService(hidden.id, owner.id), "the owner can read a hidden service");
@@ -229,8 +301,7 @@ test("C5: loadBookableService lets the owner read a hidden service, and nobody e
     assert.equal(await loadBookableService(shown.id, other.id), null, "the page is not live, so a stranger cannot");
     assert.equal(await loadBookableService("no-such-service", owner.id), null);
   } finally {
-    await prisma.influencer.deleteMany({ where: { id: { in: [owner.id, other.id] } } }).catch(() => {});
-    await prisma.$disconnect();
+    await removeInfluencers(prisma, ids);
   }
 });
 
@@ -252,8 +323,10 @@ test("C15: the Google reconnect attention text drops the full stop Google's reas
   const { prisma } = await import("../lib/db");
   const { getOverview } = await import("../lib/dashboard-data");
   const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
-  const inf = await prisma.influencer.create({ data: { name: `QA C15 ${run}`, slug: `qac15-${run}`, email: `qac15-${run}@example.com` } });
+  const ids: string[] = [];
   try {
+    const inf = await prisma.influencer.create({ data: { name: `QA C15 ${run}`, slug: `qac15-${run}`, email: `qac15-${run}@example.com` } });
+    ids.push(inf.id);
     await prisma.googleToken.create({
       data: { influencerId: inf.id, refreshTokenEnc: "not-a-real-token", scope: "x", status: "RECONNECT_NEEDED", reconnectReason: "Refresh token rejected: Token has been expired or revoked.", reconnectNeededAt: new Date() },
     });
@@ -265,8 +338,7 @@ test("C15: the Google reconnect attention text drops the full stop Google's reas
     await prisma.googleToken.update({ where: { influencerId: inf.id }, data: { reconnectReason: null } });
     assert.equal((await getOverview(inf.id, true)).attention.find((a) => a.kind === "google")?.detail, "Google stopped accepting the connection. Paid bookings are waiting for their Meet links.", "no reason: no colon");
   } finally {
-    await prisma.influencer.deleteMany({ where: { id: inf.id } }).catch(() => {});
-    await prisma.$disconnect();
+    await removeInfluencers(prisma, ids);
   }
 });
 
@@ -315,9 +387,16 @@ test("C18: refreshing templates with a rejected saved token marks the connection
   const { encryptSecret } = await import("../lib/crypto");
   const { WhatsAppGraphError } = await import("../lib/whatsapp-connect");
   const { WhatsAppConnectError, refreshTemplates, whatsappTokenAad } = await import("../lib/whatsapp-connection");
+  const { setAlertSender } = await import("../lib/alerts");
   const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
-  const inf = await prisma.influencer.create({ data: { name: `QA C18 ${run}`, slug: `qac18-${run}`, email: `qac18-${run}@example.com` } });
+  const ids: string[] = [];
+  // markTokenInvalid alerts the influencer, and the default alert sender emails them through EMAIL_PROVIDER (with dotenv
+  // loading .env that could be a real address book). Nothing leaves the process: a recording no-op sender stands in.
+  const alerts: string[] = [];
+  const previousSender = setAlertSender(async (_to, alert) => void alerts.push(alert.kind));
   try {
+    const inf = await prisma.influencer.create({ data: { name: `QA C18 ${run}`, slug: `qac18-${run}`, email: `qac18-${run}@example.com` } });
+    ids.push(inf.id);
     await prisma.whatsAppConnection.create({
       data: { influencerId: inf.id, wabaId: "123456", phoneNumberId: `5${run}`, tokenEnc: encryptSecret("EAAG-a-token-that-decrypts-1234567890", whatsappTokenAad(inf.id)) },
     });
@@ -332,9 +411,10 @@ test("C18: refreshing templates with a rejected saved token marks the connection
     const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId: inf.id }, select: { status: true, lastError: true } });
     assert.equal(row?.status, "ERROR", "the card will show Reconnect needed");
     assert.match(row?.lastError ?? "", /session has been invalidated/);
+    assert.deepEqual(alerts, ["whatsapp-reconnect-needed"], "the influencer is alerted once, through the recording sender");
   } finally {
-    await prisma.influencer.deleteMany({ where: { id: inf.id } }).catch(() => {});
-    await prisma.$disconnect();
+    setAlertSender(previousSender);
+    await removeInfluencers(prisma, ids);
   }
 });
 

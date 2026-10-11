@@ -22,7 +22,8 @@ export function InfluencersView({ data, q, busy }: { data: Jsonify<AdminInfluenc
       <Card>
         <InfluencerSearchForm q={q} />
       </Card>
-      <p role="status" className="sr-only">{found}</p>
+      {/* While the previous results stay on screen the new ones are loading: say that instead of the old total with the new search text. */}
+      <p role="status" className="sr-only">{busy ? "Searching…" : found}</p>
       {data.rows.length === 0 ? (
         <EmptyState icon={<IconUsers />} title="No influencers found">
           {q ? "Try a different search." : "Accounts appear here as people register."}

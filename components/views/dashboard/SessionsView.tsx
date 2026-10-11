@@ -34,7 +34,7 @@ export function SessionsView({ data, bookingId = null, busy }: { data: Jsonify<D
           count: v.value === current.value ? data.total : undefined,
         }))}
       />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         <SessionsBoard sessions={data.sessions} emptyTitle={current.empty[0]} emptyBody={current.empty[1]} initialBookingId={bookingId} />
         <Pagination page={data.page} pageCount={data.pageCount} hrefFor={(p) => `/dashboard/sessions?view=${current.value}&page=${p}`} />

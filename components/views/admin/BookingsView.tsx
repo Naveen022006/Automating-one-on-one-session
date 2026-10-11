@@ -33,7 +33,7 @@ export function BookingsView({ data, busy }: { data: Jsonify<AdminBookingsView>;
     <div className="stack stack--lg">
       <PageHead title="Bookings" description={`${data.total} booking${data.total === 1 ? "" : "s"}`} />
       <LinkTabs items={STATUSES.map((s) => ({ label: LABEL[s], href: `/admin/bookings?status=${s}`, current: status === s }))} />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.rows.length === 0 ? (
           <EmptyState icon={<IconCalendar />} title="No bookings here">
