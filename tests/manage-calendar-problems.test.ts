@@ -113,6 +113,7 @@ function effects(google: Record<string, unknown>) {
     alerts: [] as { kind: string; detail: string }[],
     remindersCancelled: [] as string[],
     remindersEnqueued: [] as string[],
+    rearmed: [] as string[],
     emails: [] as { bookingId: string; kind: string }[],
     messages: [] as { bookingId: string; template: string }[],
   };
@@ -123,7 +124,7 @@ function effects(google: Record<string, unknown>) {
     enqueueReminders: async (id: string) => void log.remindersEnqueued.push(id),
     sendBookingEmail: async (bookingId: string, kind: string) => void log.emails.push({ bookingId, kind }),
     enqueueSendMessage: async (bookingId: string, template?: string) => void log.messages.push({ bookingId, template: template ?? "" }),
-    rearmMessage: async () => {},
+    rearmMessage: async (bookingId: string, template: string) => void log.rearmed.push(`${bookingId}:${template}`),
     refundPayment: async () => ({}),
   };
   return { deps, log };
@@ -273,6 +274,8 @@ test("a reschedule that finds a revoked grant flags the connection, still replac
   assert.deepEqual(log.alerts.map((a) => a.kind), ["google-reconnect-needed"]);
   assert.deepEqual(log.remindersCancelled, ["b1"]);
   assert.deepEqual(log.remindersEnqueued, ["b1"]);
+  // A reminder already sent for the old time must not block the one for the new time (WP-E).
+  assert.ok(log.rearmed.includes("b1:reminder-24h") && log.rearmed.includes("b1:reminder-15m"), log.rearmed.join(","));
   assert.deepEqual(log.emails, [{ bookingId: "b1", kind: "booking-rescheduled" }]);
   mock.reset();
 });
