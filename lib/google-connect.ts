@@ -15,12 +15,19 @@ export type GoogleOutcome =
   | "confirm-switch"
   | "switch-unconfirmed";
 
-/** `returnTo` (a same-site path, possibly with a query such as onboarding's ?step=3) with ?google=<outcome> set on it. */
-export function outcomeTarget(returnTo: string, outcome: GoogleOutcome): { pathname: string; search: string } {
-  const [pathname, query = ""] = returnTo.split("?");
+/**
+ * `returnTo` (a same-site path, possibly with a query such as onboarding's ?step=3 and a #fragment such as Settings' #google)
+ * with ?google=<outcome> set on it. The fragment is returned as `hash` (only when there is one), so the callback can put the
+ * influencer back at the Google card: the outcome banner is inside that card, far below the fold of the Settings page.
+ */
+export function outcomeTarget(returnTo: string, outcome: GoogleOutcome): { pathname: string; search: string; hash?: string } {
+  const hashAt = returnTo.indexOf("#");
+  const path = hashAt === -1 ? returnTo : returnTo.slice(0, hashAt);
+  const hash = hashAt === -1 ? "" : returnTo.slice(hashAt);
+  const [pathname, query = ""] = path.split("?");
   const params = new URLSearchParams(query);
   params.set("google", outcome);
-  return { pathname, search: `?${params}` };
+  return hash.length > 1 ? { pathname, search: `?${params}`, hash } : { pathname, search: `?${params}` };
 }
 
 /** Whether connecting `next` instead of `current` moves the calendar to a different Google account. Unknown emails never count. */

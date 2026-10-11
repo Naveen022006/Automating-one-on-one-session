@@ -220,3 +220,29 @@ test("C5: loadBookableService lets the owner read a hidden service, and nobody e
     await prisma.$disconnect();
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C12: the wrong-code sentence must be true wherever a code is typed.
+test("C12: the wrong-code message does not tell someone who is typing a recovery code (or turning two-factor on) to use a recovery code or the app", async () => {
+  const { codeFailureMessage } = await import("../lib/admin/mfa");
+  const m = codeFailureMessage("invalid");
+  assert.doesNotMatch(m, /recovery/i, "nobody has recovery codes while enrolling, and a recovery code was just typed at sign-in");
+  assert.doesNotMatch(m, /authenticator app/i, "a recovery code is not in the authenticator app");
+  assert.match(m, /^That code is not correct\./);
+  assert.match(codeFailureMessage("replayed"), /already used/);
+  assert.match(codeFailureMessage("locked", new Date(Date.now() + 5 * 60_000)), /locked for about \d+ minutes?\. You can still use a recovery code\./, "the lock message may mention recovery codes: it is shown at sign-in only, after codes exist");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C13: coming back from Google lands on the Google card, not on the top of a long Settings page.
+test("C13: outcomeTarget keeps the #fragment of returnTo, and Settings asks to come back to #google", async () => {
+  const { outcomeTarget } = await import("../lib/google-connect");
+  assert.deepEqual(outcomeTarget("/dashboard/settings#google", "connected"), { pathname: "/dashboard/settings", search: "?google=connected", hash: "#google" });
+  assert.deepEqual(outcomeTarget("/onboarding?step=3#x", "denied"), { pathname: "/onboarding", search: "?step=3&google=denied", hash: "#x" });
+  assert.deepEqual(outcomeTarget("/dashboard/settings#", "failed"), { pathname: "/dashboard/settings", search: "?google=failed" }, "an empty fragment is dropped");
+  assert.deepEqual(outcomeTarget("/dashboard/settings", "connected"), { pathname: "/dashboard/settings", search: "?google=connected" }, "no fragment: the shape the older callers see");
+  assert.match(read("components/views/dashboard/SettingsView.tsx"), /returnTo="\/dashboard\/settings#google"/);
+  for (const file of ["app/api/google/callback/route.ts", "app/api/google/connect/route.ts"]) {
+    assert.match(read(file), /url\.hash = hash \?\? ""/, `${file} sets the fragment on the redirect`);
+  }
+});

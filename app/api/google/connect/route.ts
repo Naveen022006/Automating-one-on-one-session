@@ -11,9 +11,10 @@ const STATE_TTL_SEC = 600;
 /** Back to the page the influencer started from (keeping its query, e.g. onboarding's ?step=3) with ?google=<outcome>. */
 function backTo(req: NextRequest, returnTo: string, outcome: GoogleOutcome): NextResponse {
   const url = req.nextUrl.clone();
-  const { pathname, search } = outcomeTarget(returnTo, outcome);
+  const { pathname, search, hash } = outcomeTarget(returnTo, outcome);
   url.pathname = pathname;
   url.search = search;
+  url.hash = hash ?? "";
   return NextResponse.redirect(url);
 }
 
