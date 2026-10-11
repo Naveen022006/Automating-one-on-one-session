@@ -7,6 +7,7 @@ import {
   NONCE_COOKIE,
   OAUTH_STATE_PURPOSE,
   countLiveCalendarEvents,
+  getActiveGrant,
   getGoogleAccountOfRecord,
   googleAccountSharedWithOthers,
   saveGoogleToken,
@@ -73,7 +74,14 @@ export async function GET(req: NextRequest) {
       await revokeUnlessShared(state.i, refreshToken, email);
       return back(req, returnTo, "switch-unconfirmed");
     }
+    // A confirmed switch to another account replaces the stored refresh token, so the old account's grant would stay
+    // authorised at Google with nobody able to use or revoke it any more (our copy is gone). Read it before it is overwritten.
+    const replaced = connected && differentAccount ? await getActiveGrant(state.i).catch(() => null) : null;
     await saveGoogleToken(state.i, refreshToken, scope, email);
+    if (replaced) {
+      // Best effort and after the new connection is safe: skipped, like a disconnect, while another profile uses that account.
+      await revokeUnlessShared(state.i, replaced.refreshToken, recorded).catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
+    }
     // Gmail is optional: people can untick it, and customer emails then go out from the platform address instead.
     gmailMissing = state.g === 1 && !hasGmailSendScope(scope);
   } catch (e) {

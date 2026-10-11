@@ -64,6 +64,7 @@ async function loadRoute(which: "connect" | "callback") {
       OAUTH_STATE_PURPOSE: "google-oauth-state",
       googleAccountSharedWithOthers: async () => tokens.shared,
       countLiveCalendarEvents: async () => (tokens.counted++, tokens.liveEvents),
+      getActiveGrant: async () => tokens.activeGrant,
       getGoogleAccountOfRecord: async () => ({ connected: tokens.connected, email: tokens.connectedEmail }),
       saveGoogleToken: async (influencerId: string, _rt: string, scope: string, email: string | null) => void tokens.saved.push({ influencerId, email, scope }),
     },
@@ -73,7 +74,7 @@ async function loadRoute(which: "connect" | "callback") {
 }
 
 function reset(over: Partial<typeof tokens> = {}) {
-  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", shared: false, saved: [], counted: 0 }, over);
+  Object.assign(tokens, { liveEvents: 0, connected: true, connectedEmail: "old@gmail.com", shared: false, saved: [], counted: 0, activeGrant: null }, over);
   auth = { influencerId: "inf1", email: "login@example.com" };
 }
 
@@ -246,6 +247,30 @@ test("callback: after a disconnect, the same account reconnects, and a confirmed
   const switched = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
   assert.equal(switched.outcome, "connected");
   assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
+});
+
+test("callback: a confirmed switch revokes the OLD account's grant (its token is overwritten, so nobody could revoke it later); a reconnect of the same account does not", async () => {
+  const oldGrant = { refreshToken: "rt-old", connectedAt: new Date() };
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: oldGrant });
+  const switched = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
+  assert.equal(switched.outcome, "connected");
+  assert.deepEqual(tokens.saved.map((s) => s.email), ["other@gmail.com"]);
+  assert.deepEqual(switched.revoked, ["rt-old"], "the replaced grant is revoked at Google, the new one is kept");
+
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: oldGrant });
+  const same = await runCallback({ email: "OLD@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 });
+  assert.equal(same.outcome, "connected");
+  assert.deepEqual(same.revoked, [], "the same account: Google's revoke would end the very connection just made");
+
+  // Another influencer profile uses the old account: Google's revoke ends the app's access for the whole account, so it is skipped.
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, shared: true, activeGrant: oldGrant });
+  const shared = await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR}` }, { c: 1 });
+  assert.equal(shared.outcome, "connected-no-gmail");
+  assert.deepEqual(shared.revoked, []);
+
+  // A connection that was already dead (reconnect needed) has no active grant to revoke.
+  reset({ connected: true, connectedEmail: "old@gmail.com", liveEvents: 2, activeGrant: null });
+  assert.deepEqual((await runCallback({ email: "other@gmail.com", scope: `openid email ${CALENDAR} ${GMAIL}` }, { c: 1 })).revoked, []);
 });
 
 // ---- disconnect (DELETE /api/dashboard/google) ----

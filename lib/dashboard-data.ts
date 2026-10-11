@@ -181,7 +181,7 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
       title: google.state === "reconnect-needed" ? "Reconnect Google Calendar" : "Connect Google Calendar",
       detail:
         google.state === "reconnect-needed"
-          ? `Google stopped accepting the connection${google.reason ? `: ${google.reason}` : ""}. Paid bookings are waiting for their Meet links.`
+          ? `Google stopped accepting the connection${google.reason ? `: ${google.reason.replace(/[\s.]+$/, "")}` : ""}. Paid bookings are waiting for their Meet links.`
           : "Meet links are created on your Google Calendar. Connect it before you take bookings.",
       href: "/dashboard/settings#google",
     });

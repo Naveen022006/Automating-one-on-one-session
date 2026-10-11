@@ -234,6 +234,30 @@ test("C12: the wrong-code message does not tell someone who is typing a recovery
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------
+// C15: the "reconnect Google" attention item must not end in two full stops.
+test("C15: the Google reconnect attention text drops the full stop Google's reason already ends with", { skip: skipDb }, async () => {
+  const { prisma } = await import("../lib/db");
+  const { getOverview } = await import("../lib/dashboard-data");
+  const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  const inf = await prisma.influencer.create({ data: { name: `QA C15 ${run}`, slug: `qac15-${run}`, email: `qac15-${run}@example.com` } });
+  try {
+    await prisma.googleToken.create({
+      data: { influencerId: inf.id, refreshTokenEnc: "not-a-real-token", scope: "x", status: "RECONNECT_NEEDED", reconnectReason: "Refresh token rejected: Token has been expired or revoked.", reconnectNeededAt: new Date() },
+    });
+    const overview = await getOverview(inf.id, true);
+    const item = overview.attention.find((a) => a.kind === "google");
+    assert.ok(item, "the reconnect item is listed");
+    assert.equal(item.detail, "Google stopped accepting the connection: Refresh token rejected: Token has been expired or revoked. Paid bookings are waiting for their Meet links.");
+    assert.doesNotMatch(item.detail, /\.\./);
+    await prisma.googleToken.update({ where: { influencerId: inf.id }, data: { reconnectReason: null } });
+    assert.equal((await getOverview(inf.id, true)).attention.find((a) => a.kind === "google")?.detail, "Google stopped accepting the connection. Paid bookings are waiting for their Meet links.", "no reason: no colon");
+  } finally {
+    await prisma.influencer.deleteMany({ where: { id: inf.id } }).catch(() => {});
+    await prisma.$disconnect();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
 // C13: coming back from Google lands on the Google card, not on the top of a long Settings page.
 test("C13: outcomeTarget keeps the #fragment of returnTo, and Settings asks to come back to #google", async () => {
   const { outcomeTarget } = await import("../lib/google-connect");
