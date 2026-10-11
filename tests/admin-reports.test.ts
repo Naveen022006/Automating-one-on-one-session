@@ -26,8 +26,8 @@ import { formatMoney } from "../lib/format";
 import { jsonify } from "../lib/jsonify";
 import { matchRouteRule } from "../lib/rate-limit/policies";
 import { spaRouteById } from "../lib/spa/routes";
-import { monthWindow, nextDay } from "../lib/admin/reports";
-import { MAX_REPORT_DAYS, parseReportsRange, type AdminReportsView } from "../lib/views/admin-reports";
+import { monthWindow, nextDay, REPORT_QUERY_COUNT } from "../lib/admin/reports";
+import { loadAdminReportsView, MAX_REPORT_DAYS, parseReportsRange, type AdminReportsView } from "../lib/views/admin-reports";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
 import { fakeNavigate } from "./helpers/fake-navigate";
 
@@ -41,11 +41,13 @@ const root = path.resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 const keys = (o: unknown) => Object.keys(o as object).sort();
 
-/** Two currency codes only this run uses (letters after "XT", which no real currency has but the reserved test code XTS). */
-const letter = () => String.fromCharCode(65 + Math.floor(Math.random() * 26));
-const C1 = `XT${letter()}`;
-let C2 = `XT${letter()}`;
-while (C2 === C1) C2 = `XT${letter()}`;
+/**
+ * Four currency codes only this run uses: three letters derived from the clock (17 576 codes, a new one every second), so a leftover of a
+ * crashed earlier run never shares one. `currency` is free text in the schema.
+ */
+const code = (n: number) => [Math.floor(n / 676) % 26, Math.floor(n / 26) % 26, n % 26].map((d) => String.fromCharCode(65 + d)).join("");
+const seconds = Math.floor(Date.now() / 1000);
+const [C1, C2, C3, C4] = [0, 4421, 8843, 13264].map((offset) => code(seconds + offset));
 
 const at = (iso: string) => new Date(iso);
 
@@ -93,11 +95,17 @@ const jar = new Map<string, string>();
 let route: Handler;
 let sessionLib: typeof import("../lib/admin/session");
 let payoutsLib: typeof import("../lib/payouts");
+let refundsLib: typeof import("../lib/refunds");
+/** applyRefundWebhook tells the influencer when a refund fails; no test sends anything. */
+const noAlert = (async () => undefined) as unknown as Parameters<typeof import("../lib/refunds").applyRefundWebhook>[2];
 let X = "";
 let Y = "";
 let infA = ""; // fee override 10%
 let infB = ""; // platform default fee (700 bps during this test)
+let infC = ""; // fee override 0 (a free influencer: the override is 0, not "none")
+let infD = ""; // platform default fee
 const ids: Record<string, string> = {}; // payment ids by key
+const bookingIds: Record<string, string> = {};
 const payoutIds: Record<string, string> = {};
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_NAMES = ["RATE_LIMIT_STORE", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "PLATFORM_FEE_BPS", "PAYOUT_HOLD_DAYS", "ADMIN_REQUIRE_2FA"];
@@ -132,21 +140,28 @@ async function addPayment(o: {
   amount: number;
   currency: string;
   createdAt: Date;
-  booking?: "SCHEDULED" | "COMPLETED" | "CANCELLED" | "PENDING_PAYMENT";
+  booking?: "SCHEDULED" | "COMPLETED" | "CANCELLED" | "PENDING_PAYMENT" | "FAILED";
+  /** A second payment on the booking of the payment with this key (a duplicate payment). */
+  sameBookingAs?: string;
   status?: "CAPTURED" | "REFUNDED" | "CREATED" | "FAILED";
   needsRefund?: boolean;
   refunded?: number;
   refundStatus?: string;
 }) {
-  // Every session is in 2023: long finished, so the hold period of the payout code never blocks a payment.
-  const start = new Date(Date.UTC(2023, 0, 1) + serial++ * DAY);
-  const session = await prisma.session.create({ data: { serviceId: o.serviceId, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
-  const booking = await prisma.booking.create({
-    data: { sessionId: session.id, status: o.booking ?? "SCHEDULED", customerName: `Rep ${o.key} ${run}`, customerEmail: `rep-${o.key}-${run}@example.com`, whatsappE164: "+919876543210" },
-  });
+  let bookingId = o.sameBookingAs ? bookingIds[o.sameBookingAs] : "";
+  if (!bookingId) {
+    // Every session is in 2023: long finished, so the hold period of the payout code never blocks a payment.
+    const start = new Date(Date.UTC(2023, 0, 1) + serial++ * DAY);
+    const session = await prisma.session.create({ data: { serviceId: o.serviceId, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+    const booking = await prisma.booking.create({
+      data: { sessionId: session.id, status: o.booking ?? "SCHEDULED", customerName: `Rep ${o.key} ${run}`, customerEmail: `rep-${o.key}-${run}@example.com`, whatsappE164: "+919876543210" },
+    });
+    bookingId = booking.id;
+  }
+  bookingIds[o.key] = bookingId;
   const payment = await prisma.payment.create({
     data: {
-      bookingId: booking.id,
+      bookingId,
       providerOrderId: `order_${run}_${o.key}`,
       providerPaymentId: o.status === "CREATED" ? null : `pay_${run}_${o.key}`,
       amountMinor: o.amount,
@@ -233,6 +248,36 @@ async function seed() {
   payoutIds.po2 = (await payoutsLib.createPayout(infA, C1, "rep-admin@example.com")).id;
   await reconcile("q2");
   await paidPayout("po5", infB, C2, at("2024-05-05T09:00:00Z"));
+
+  // Influencer C (fee override 0), currency C3: money that payoutBlocker lets through although a customer may still be owed it.
+  infC = (await prisma.influencer.create({ data: { slug: `rep-c-${run}`, name: `Rep C ${run}`, email: `rep-c-${run}@example.com`, platformFeeBps: 0 } })).id;
+  await verified(infC);
+  const sC = (await prisma.service.create({ data: { influencerId: infC, title: "C", durationMin: 30, priceMinor: 1000, currency: C3 } })).id;
+  const c = (key: string, amount: number, createdAt: string, extra: Partial<Parameters<typeof addPayment>[0]> = {}) =>
+    addPayment({ influencerId: infC, serviceId: sC, key, amount, currency: C3, createdAt: at(createdAt), ...extra });
+  await c("d1", 1000, "2024-03-02T10:00:00Z", { booking: "COMPLETED" }); //                              the customer's payment
+  await c("d2", 1000, "2024-03-03T10:00:00Z", { sameBookingAs: "d1", needsRefund: true }); //           a duplicate payment on the same booking, flagged
+  await c("d4", 1000, "2024-03-04T10:00:00Z", { booking: "COMPLETED", refunded: 300 }); //              a 300 refund that is processed when the payout is made
+  await refundRow("d4", 300, "processed", at("2024-03-04T12:00:00Z"));
+  await reconcile("d1", "d2");
+  await paidPayout("poc1", infC, C3, at("2024-03-20T10:00:00Z")); //  the flagged duplicate is paid out with the rest: fee 0, net 2000
+  await reconcile("d4");
+  await paidPayout("poc2", infC, C3, at("2024-03-21T10:00:00Z")); //  gross 1000, refunds 300, fee 0, net 700
+  // Razorpay then reports that refund as failed (the real webhook code): the payment is flagged again and the 300 no longer counts.
+  assert.equal(await refundsLib.applyRefundWebhook("refund.failed", { id: `rfnd_${run}_d4_processed`, payment_id: `pay_${run}_d4` }, noAlert), true);
+
+  // Influencer D (platform default fee), currency C4: flagged and not yet paid out.
+  infD = (await prisma.influencer.create({ data: { slug: `rep-d-${run}`, name: `Rep D ${run}`, email: `rep-d-${run}@example.com` } })).id;
+  await verified(infD);
+  const sD = (await prisma.service.create({ data: { influencerId: infD, title: "D", durationMin: 30, priceMinor: 1000, currency: C4 } })).id;
+  const d = (key: string, amount: number, createdAt: string, extra: Partial<Parameters<typeof addPayment>[0]> = {}) =>
+    addPayment({ influencerId: infD, serviceId: sD, key, amount, currency: C4, createdAt: at(createdAt), ...extra });
+  await d("e1", 1000, "2024-03-02T10:00:00Z", { booking: "CANCELLED", needsRefund: true }); //  flagged, free: owed (later partly refunded)
+  await d("e2", 2000, "2024-03-03T10:00:00Z", { booking: "COMPLETED", needsRefund: true }); //  flagged, then put in a payout still to be sent
+  await d("e3", 1500, "2024-03-04T10:00:00Z", { booking: "FAILED" }); //                         a failed booking with captured money, not flagged
+  await d("e5", 3000, "2024-03-05T10:00:00Z"); //                                               held
+  await reconcile("e2");
+  payoutIds.pod = (await payoutsLib.createPayout(infD, C4, "rep-admin@example.com")).id; //     pending: 2000 less 7% = 1860
 }
 
 before(async () => {
@@ -252,6 +297,7 @@ before(async () => {
   });
   sessionLib = await import("../lib/admin/session");
   payoutsLib = await import("../lib/payouts");
+  refundsLib = await import("../lib/refunds");
   route = (await import("../app/api/admin/reports/route")).GET;
   const mfa = await import("../lib/admin/mfa");
   const totp = await import("../lib/admin/totp");
@@ -268,7 +314,7 @@ after(async () => {
   try {
     if (!skip) {
       // Each step on its own (and tried twice), so a pool timeout in one never leaves the rows of the others behind.
-      const slugs = [`rep-a-${run}`, `rep-b-${run}`];
+      const slugs = [`rep-a-${run}`, `rep-b-${run}`, `rep-c-${run}`, `rep-d-${run}`];
       const steps: [string, () => Promise<unknown>][] = [
         // Payouts restrict the influencer's deletion (their payments let go of them: SET NULL).
         ["payouts", () => prisma.payout.deleteMany({ where: { influencer: { slug: { in: slugs } } } })],
@@ -424,27 +470,45 @@ test("the 12 months: per month and currency, newest first, the month before the 
 test("the balances right now: held, in pending payouts, owed to customers, to recover, not payable", { skip }, async () => {
   const body = await report(RANGE);
   const b1 = one(body.balances, C1);
-  assert.deepEqual(keys(b1), ["currency", "heldForInfluencersMinor", "inPendingPayoutsMinor", "owedToCustomersMinor", "toRecoverMinor", "unallocatedMinor"]);
+  assert.deepEqual(keys(b1), ["currency", "flaggedPaidOutMinor", "heldForInfluencersMinor", "inPendingPayoutsMinor", "owedToCustomersMinor", "refundsNotCompletedMinor", "toRecoverMinor", "unallocatedMinor"]);
   // Held (before the fee): p2 3000 (5000 less the 2000 refund) + p5 8000 (its payout is still pending) + p13 1500 (its payout was cancelled)
   // + p9 7000 + p10 1100 = 20600. Not p12, p1, p6 (paid out), p4 (flagged), p8 and p3, p14 (booking cancelled).
   // Pending payouts: PO2 = 8000 less 10% = 7200 (the cancelled PO3 is nothing). Owed: p4 6000. Recover: p6 refunded 1000 after PO1 was paid.
   // Not payable: p8 2500 (cancelled, no refund flagged); p3 and p14 are fully refunded and add 0.
-  assert.deepEqual(b1, { currency: C1, heldForInfluencersMinor: 20600, inPendingPayoutsMinor: 7200, owedToCustomersMinor: 6000, toRecoverMinor: 1000, unallocatedMinor: 2500 });
-  assert.deepEqual(one(body.balances, C2), { currency: C2, heldForInfluencersMinor: 1000, inPendingPayoutsMinor: 0, owedToCustomersMinor: 0, toRecoverMinor: 0, unallocatedMinor: 0 });
+  const zero = { flaggedPaidOutMinor: 0, refundsNotCompletedMinor: 0 };
+  assert.deepEqual(b1, { currency: C1, heldForInfluencersMinor: 20600, inPendingPayoutsMinor: 7200, owedToCustomersMinor: 6000, toRecoverMinor: 1000, unallocatedMinor: 2500, ...zero });
+  assert.deepEqual(one(body.balances, C2), { currency: C2, heldForInfluencersMinor: 1000, inPendingPayoutsMinor: 0, owedToCustomersMinor: 0, toRecoverMinor: 0, unallocatedMinor: 0, ...zero });
+  // C3 (fee override 0): a flagged duplicate payment on a booking was reconciled and paid out with the payment it duplicates (the payout code does not
+  // look at the flag): it is NOT owed money any more (the influencer has it), it is its own figure. A 300 refund counted in a payout and failed afterwards
+  // re-flags the payment (1000 left, also its own figure) and is reported, not clipped: 300 that did not complete.
+  assert.deepEqual(one(body.balances, C3), { currency: C3, heldForInfluencersMinor: 0, inPendingPayoutsMinor: 0, owedToCustomersMinor: 0, toRecoverMinor: 0, unallocatedMinor: 0, flaggedPaidOutMinor: 2000, refundsNotCompletedMinor: 300 });
+  // C4: e5 3000 held; e1 1000 flagged and free, e2 2000 flagged and in a pending payout: both owed (e2 is NOT in held, although its payout is pending: 1860 after
+  // the 7% default fee); e3 1500 is a FAILED booking with captured money, not flagged: not payable.
+  assert.deepEqual(one(body.balances, C4), { currency: C4, heldForInfluencersMinor: 3000, inPendingPayoutsMinor: 1860, owedToCustomersMinor: 3000, toRecoverMinor: 0, unallocatedMinor: 1500, ...zero });
   // The balances do not depend on the range.
   const other = await report("?from=2001-01-01&to=2001-01-02");
-  assert.deepEqual(other.balances.filter((r) => r.currency === C1 || r.currency === C2), body.balances.filter((r) => r.currency === C1 || r.currency === C2));
+  const mine = (rows: { currency: string }[]) => rows.filter((r) => [C1, C2, C3, C4].includes(r.currency));
+  assert.deepEqual(mine(other.balances), mine(body.balances));
 });
 
 test("the report agrees with the payout code: toRecover is the sum of postPayoutRefunds, pending and paid-out amounts are the payout screens'", { skip }, async () => {
   const body = await report(WIDE);
-  const paid = await prisma.payout.findMany({ where: { influencerId: { in: [infA, infB] }, status: "PAID" } });
-  for (const [currency, expected] of [[C1, 1000], [C2, 0]] as const) {
+  const paid = await prisma.payout.findMany({ where: { influencerId: { in: [infA, infB, infC, infD] }, status: "PAID" } });
+  // C3: postPayoutRefunds clips the failed refund (-300) to 0 for its payout, and the report keeps the 300 apart.
+  for (const [currency, expected] of [[C1, 1000], [C2, 0], [C3, 0], [C4, 0]] as const) {
     let sum = 0;
     for (const p of paid.filter((x) => x.currency === currency)) sum += await payoutsLib.postPayoutRefunds(p.id);
     assert.equal(sum, expected, `${currency}: postPayoutRefunds over the fixture's paid payouts`);
-    assert.equal(one(body.balances, currency).toRecoverMinor, sum, `${currency}: the report's To recover equals it`);
+    const row = forCurrency(body.balances, currency)[0];
+    assert.equal(row?.toRecoverMinor ?? 0, sum, `${currency}: the report's To recover equals it`);
   }
+  // The fee override of 0 is a fee of 0 (not "use the default"): both payouts of C3 kept nothing.
+  for (const name of ["poc1", "poc2"]) {
+    const po = await prisma.payout.findUniqueOrThrow({ where: { id: payoutIds[name] } });
+    assert.equal(po.feeBps, 0);
+    assert.equal(po.feeMinor, 0);
+  }
+  assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: payoutIds.poc2 } })).refundsMinor, 300, "the refund was counted when the payout was made");
   // What the influencer's own payout summary shows for A: the money paid out and the money pending.
   const summary = await payoutsLib.influencerPayoutSummary(infA);
   const inr = summary.currencies.find((c) => c.currency === C1);
@@ -459,15 +523,32 @@ test("the report agrees with the payout code: toRecover is the sum of postPayout
   assert.equal(po1.netMinor + po1.feeMinor, po1.grossMinor - po1.refundsMinor);
 });
 
-test("the reconciliation identity: gross - refunds - fees = held + owed + not payable + paid out - to recover (and held + paid out when nothing else is open)", { skip }, async () => {
+type Money = Record<string, number>;
+/**
+ * gross - refunds - fees = held + owed + not payable + paid out (net) - to recover + refunds that did not complete.
+ * Every paid payment is in exactly one of: a sent payout (paid out), flagged (owed), in a pending payout or on a held booking (held),
+ * or not payable; "flagged, already paid out" is inside paid out and is not added again.
+ */
+function identity(body: ReportBody, currency: string): { left: number; right: number } {
+  const r = one(body.range, currency) as unknown as Money;
+  const b = one(body.balances, currency) as unknown as Money;
+  return {
+    left: r.grossMinor - r.refundsMinor - r.feesEarnedMinor,
+    right: b.heldForInfluencersMinor + b.owedToCustomersMinor + b.unallocatedMinor + r.payoutsPaidNetMinor - b.toRecoverMinor + b.refundsNotCompletedMinor,
+  };
+}
+
+test("the reconciliation identity: gross - refunds - fees = held + owed + not payable + paid out - to recover + refunds that did not complete", { skip }, async () => {
   const body = await report(WIDE);
-  for (const currency of [C1, C2]) {
-    const r = one(body.range, currency) as unknown as { grossMinor: number; refundsMinor: number; feesEarnedMinor: number; payoutsPaidNetMinor: number };
-    const b = one(body.balances, currency) as unknown as { heldForInfluencersMinor: number; owedToCustomersMinor: number; unallocatedMinor: number; toRecoverMinor: number };
-    const left = r.grossMinor - r.refundsMinor - r.feesEarnedMinor;
-    const right = b.heldForInfluencersMinor + b.owedToCustomersMinor + b.unallocatedMinor + r.payoutsPaidNetMinor - b.toRecoverMinor;
+  for (const currency of [C1, C2, C3, C4]) {
+    const { left, right } = identity(body, currency);
     assert.equal(left, right, `${currency}: ${left} = ${right}`);
   }
+  // C3: a flagged duplicate that was paid out and a refund that failed after the payout: 3000 = 0 + 0 + 0 + 2700 - 0 + 300. C4: 7500 = 3000 + 3000 + 1500.
+  assert.deepEqual(identity(body, C3), { left: 3000, right: 3000 });
+  assert.deepEqual(identity(body, C4), { left: 7500, right: 7500 });
+  const c3 = one(body.range, C3);
+  assert.deepEqual([c3.grossMinor, c3.refundsMinor, c3.feesEarnedMinor, c3.payoutsPaidNetMinor, c3.payoutsPaidCount], [3000, 0, 0, 2700, 2], "fee override 0: no fee, the failed refund no longer counts as a refund");
   // C1 in numbers: gross 53100 (the range's 40000 + p9 7000 + p10 1100 + p12 5000), refunds 7000, fees 1800 -> 44300
   //                = held 20600 + owed 6000 + not payable 2500 + paid out 16200 - recover 1000.
   assert.equal(one(body.range, C1).grossMinor, 53100);
@@ -481,18 +562,39 @@ test("the reconciliation identity: gross - refunds - fees = held + owed + not pa
 });
 
 test("a refund moves money from 'owed to customers' to 'refunds' and leaves the balance (the acceptance path of the plan)", { skip }, async () => {
+  const money = (body: ReportBody, currency: string, section: "range" | "balances") => one(body[section], currency) as unknown as Money;
+  // The real refund code, with Razorpay injected (no call leaves the process). The refund row is dated now by the code; its date is then moved
+  // into the fixture's calendar so the wide range keeps holding every payment and refund.
+  const refund = async (key: string, currency: string, amountMinor?: number) => {
+    const out = await refundsLib.refundPayment(ids[key], { amountMinor }, {
+      createRefund: async (i) => ({ id: `rfnd_${run}_${key}_real`, payment_id: `pay_${run}_${key}`, amount: i.amountMinor ?? 0, currency, status: "processed" }),
+    });
+    await prisma.refund.updateMany({ where: { paymentId: ids[key] }, data: { createdAt: at("2024-05-15T09:00:00Z") } });
+    return out;
+  };
+
+  // C1, p4: a flagged payment of 6000 refunded in full (the acceptance path of the plan).
   const first = await report(WIDE);
-  const owedBefore = (one(first.balances, C1) as unknown as { owedToCustomersMinor: number }).owedToCustomersMinor;
-  assert.equal(owedBefore, 6000);
-  // What WP-B's refund does to the rows: a processed refund row, the summary on the payment, status REFUNDED, the flag cleared.
-  await refundRow("p4", 6000, "processed", at("2024-05-15T09:00:00Z"));
-  await prisma.payment.update({ where: { id: ids.p4 }, data: { status: "REFUNDED", needsRefund: false, refundAmountMinor: 6000, refundStatus: "processed" } });
-  const afterRefund = await report(WIDE);
-  assert.equal((one(afterRefund.balances, C1) as unknown as { owedToCustomersMinor: number }).owedToCustomersMinor, 0);
-  assert.equal(one(afterRefund.range, C1).refundsMinor, 13000, "7000 + 6000");
-  const left = (one(afterRefund.range, C1).grossMinor as number) - (one(afterRefund.range, C1).refundsMinor as number) - (one(afterRefund.range, C1).feesEarnedMinor as number);
-  const b = one(afterRefund.balances, C1) as unknown as { heldForInfluencersMinor: number; owedToCustomersMinor: number; unallocatedMinor: number; toRecoverMinor: number };
-  assert.equal(left, b.heldForInfluencersMinor + b.owedToCustomersMinor + b.unallocatedMinor + (one(afterRefund.range, C1).payoutsPaidNetMinor as number) - b.toRecoverMinor, "the identity still holds");
+  assert.equal(money(first, C1, "balances").owedToCustomersMinor, 6000);
+  const full = await refund("p4", C1);
+  assert.deepEqual([full.fullyRefunded, full.amountMinor], [true, 6000]);
+  const afterFull = await report(WIDE);
+  assert.equal(money(afterFull, C1, "balances").owedToCustomersMinor, 0, "leaves Owed to customers");
+  assert.equal(money(afterFull, C1, "range").refundsMinor, 13000, "and arrives in Refunds: 7000 + 6000");
+  const { left, right } = identity(afterFull, C1);
+  assert.equal(left, right, "the identity still holds");
+
+  // C4, e1: a flagged payment of 1000 refunded 400. refundPayment clears the flag (a partial refund settles the claim), so the 600 left is no
+  // longer owed: it is a cancelled booking, in no payout, not flagged: Not payable (a customer may still be owed part of it).
+  const beforePartial = await report(WIDE);
+  assert.deepEqual([money(beforePartial, C4, "balances").owedToCustomersMinor, money(beforePartial, C4, "balances").unallocatedMinor], [3000, 1500]);
+  const part = await refund("e1", C4, 400);
+  assert.deepEqual([part.fullyRefunded, part.amountMinor], [false, 400]);
+  const afterPartial = await report(WIDE);
+  assert.equal(money(afterPartial, C4, "balances").owedToCustomersMinor, 2000, "e2 only (in the pending payout)");
+  assert.equal(money(afterPartial, C4, "balances").unallocatedMinor, 2100, "e3 1500 + the 600 left of e1");
+  assert.equal(money(afterPartial, C4, "range").refundsMinor, 400);
+  assert.deepEqual(identity(afterPartial, C4), { left: 7100, right: 7100 });
 });
 
 /* ---------- the endpoint ---------- */
@@ -523,14 +625,14 @@ test("input: odd dates fall back (200), an impossible range is a 400 with a sent
 
 test("no response carries anything but aggregates: no ids, e-mail addresses, names or payout details of the fixture", { skip }, async () => {
   const sent = JSON.stringify(await report(WIDE));
-  const ids2 = [...Object.values(ids), ...Object.values(payoutIds), infA, infB, X, Y];
+  const ids2 = [...Object.values(ids), ...Object.values(payoutIds), infA, infB, infC, infD, X, Y];
   for (const id of ids2) assert.ok(!sent.includes(id), `an id is in the body: ${id}`);
   for (const needle of [`rep-a-${run}`, `rep-b-${run}`, `Rep A ${run}`, `Rep ${"p1"} ${run}`, `UTR${run}`, "rep-admin@example.com", emailX, emailY, "XXXX0001", "Test Bank", `pay_${run}`, `order_${run}`]) {
     assert.ok(!sent.includes(needle), `the body contains ${needle}`);
   }
 });
 
-test("the report does not run more than ten queries, one after the other", { skip }, async () => {
+test("the report runs exactly nine aggregate queries, one after the other",{ skip }, async () => {
   let running = 0;
   let peak = 0;
   let total = 0;
@@ -545,11 +647,12 @@ test("the report does not run more than ten queries, one after the other", { ski
     });
   };
   try {
-    await report(RANGE);
+    await loadAdminReportsView("2024-03-01", "2024-05-31"); // the view alone: no session or gate queries in the count
   } finally {
     (prisma as unknown as { $queryRaw: unknown }).$queryRaw = original;
   }
-  assert.ok(total >= 1 && total <= 12, `${total} queries`);
+  assert.equal(total, 9, "three for the range, three for the months, three for the balances");
+  assert.equal(total, REPORT_QUERY_COUNT);
   assert.equal(peak, 1, "never two at once");
 });
 
@@ -601,7 +704,7 @@ const fixtureView: AdminReportsView = {
     { month: "2026-03", currency: "USD", grossMinor: 5000, refundsMinor: 0, feesEarnedMinor: 0, paymentCount: 1 },
     { month: "2026-02", currency: "INR", grossMinor: 40000, refundsMinor: 0, feesEarnedMinor: 0, paymentCount: 1 },
   ],
-  balances: [{ currency: "INR", heldForInfluencersMinor: 700_000, inPendingPayoutsMinor: 180_000, owedToCustomersMinor: 50_000, toRecoverMinor: 30_000, unallocatedMinor: 0 }],
+  balances: [{ currency: "INR", heldForInfluencersMinor: 700_000, inPendingPayoutsMinor: 180_000, owedToCustomersMinor: 50_000, toRecoverMinor: 30_000, unallocatedMinor: 0, flaggedPaidOutMinor: 0, refundsNotCompletedMinor: 0 }],
 };
 
 test("ReportsView: a section per currency, the definitions, a hidden status line, aria-busy only while loading, and the figures as the server gave them", async () => {
@@ -616,7 +719,7 @@ test("ReportsView: a section per currency, the definitions, a hidden status line
   assert.ok(!/<div class="stat"><span class="stat__label">Not payable/.test(html), "no 'Not payable' stat at 0");
   assert.ok(t.includes("Mar 2026") && t.includes("Feb 2026"), "month labels");
   assert.ok(t.includes("before the platform fee") || t.includes("Before the platform fee"));
-  assert.ok(t.includes("Flagged payments not yet refunded"));
+  assert.ok(t.includes("Flagged payments, not in a sent payout, not yet refunded"));
   assert.equal((html.match(/<form /g) ?? []).length, 1);
   assert.ok(html.includes('name="from"') && html.includes('name="to"') && html.includes('value="2026-03-01"') && html.includes('value="2026-03-31"'));
   const status = /<p role="status" class="sr-only">([^<]*)<\/p>/.exec(html);
@@ -630,6 +733,13 @@ test("ReportsView: a section per currency, the definitions, a hidden status line
   const odd = jsonify({ ...fixtureView, balances: [{ ...fixtureView.balances[0], unallocatedMinor: 2500 }], range: [{ ...fixtureView.range[0], netMinor: -1000 }] });
   const oddText = text(renderToStaticMarkup(createElement(ReportsView, { data: odd })));
   assert.ok(oddText.includes(formatMoney(2500, "INR")) && oddText.includes(formatMoney(-1000, "INR")));
+  assert.ok(!/stat__label">Flagged, already paid out/.test(renderToStaticMarkup(createElement(ReportsView, { data }))) && !/stat__label">Refunds that did not complete/.test(html), "hidden at 0");
+  const extra = jsonify({ ...fixtureView, balances: [{ ...fixtureView.balances[0], flaggedPaidOutMinor: 2000, refundsNotCompletedMinor: 300 }] });
+  const extraHtml = renderToStaticMarkup(createElement(ReportsView, { data: extra }));
+  assert.ok(/stat__label">Flagged, already paid out/.test(extraHtml) && /stat__label">Refunds that did not complete/.test(extraHtml));
+  const extraText = text(extraHtml);
+  assert.ok(extraText.includes(formatMoney(2000, "INR")) && extraText.includes(formatMoney(300, "INR")) && extraText.includes("a customer may still be owed"));
+  assert.ok(extraText.includes("day checkout began"), "Gross is dated by the day checkout began");
 });
 
 test("ReportsView: empty range, nothing at all, and the refused-range message keep the form", async () => {

@@ -19,7 +19,7 @@ export interface AdminReportsView {
   /** Per currency, for [from, to]. A currency with no activity in the range is not listed. */
   range: {
     currency: string;
-    /** Payments CAPTURED or REFUNDED, by the day the payment was made. */
+    /** Payments CAPTURED or REFUNDED, by the day checkout began (the day the payment's order was created; the schema keeps no capture time). */
     grossMinor: number;
     paymentCount: number;
     /** Refunds pending or processed, by the day the refund was made (they may belong to earlier payments). */
@@ -35,7 +35,7 @@ export interface AdminReportsView {
   }[];
   /** The 12 months ending with the month of `to` (never later than this month), newest first. A month with nothing in it is not listed. */
   monthly: { month: string; currency: string; grossMinor: number; refundsMinor: number; feesEarnedMinor: number; paymentCount: number }[];
-  /** Right now, whatever the range, per currency. A currency with nothing in any of the five figures is not listed. */
+  /** Right now, whatever the range, per currency. A currency with nothing in any of the figures is not listed. Definitions: lib/admin/reports.ts. */
   balances: {
     currency: string;
     heldForInfluencersMinor: number;
@@ -43,6 +43,10 @@ export interface AdminReportsView {
     owedToCustomersMinor: number;
     toRecoverMinor: number;
     unallocatedMinor: number;
+    /** Flagged for refund and already in a sent payout. */
+    flaggedPaidOutMinor: number;
+    /** Refunds counted in a sent payout that failed afterwards. */
+    refundsNotCompletedMinor: number;
   }[];
 }
 
@@ -92,6 +96,8 @@ export async function loadAdminReportsView(from: Day, to: Day, now = new Date())
       owedToCustomersMinor: b.owedToCustomersMinor,
       toRecoverMinor: b.toRecoverMinor,
       unallocatedMinor: b.unallocatedMinor,
+      flaggedPaidOutMinor: b.flaggedPaidOutMinor,
+      refundsNotCompletedMinor: b.refundsNotCompletedMinor,
     })),
   };
 }

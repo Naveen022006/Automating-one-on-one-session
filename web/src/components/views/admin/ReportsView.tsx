@@ -19,15 +19,17 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 /** What each figure means. Shown on the page, under the numbers they explain. */
 export const DEFINITIONS: { term: string; text: string }[] = [
-  { term: "Gross", text: "What customers paid: payments that were captured (including those since refunded), by the day the payment was made (UTC)." },
+  { term: "Gross", text: "What customers paid: payments that were captured (including those since refunded), by the day checkout began, that is when the payment's order was created (UTC). A payment captured later by the recovery job stays on the day it began." },
   { term: "Refunds", text: "Refunds that are pending or processed, by the day the refund was made. A refund can belong to a payment of an earlier period, so Net is a difference of two period figures, not of the same payments." },
   { term: "Platform fees", text: "The fee kept on payouts marked as sent in the period, by the day they were marked: the amount stored on each payout when it was created, with that influencer's fee or the platform default." },
   { term: "Paid out", text: "The net amount of payouts marked as sent in the period (after the platform fee)." },
-  { term: "Held for influencers", text: "Paid by customers for bookings that are paid, scheduled or completed, not flagged for refund and not in a payout that was sent: the amount less refunds, before the platform fee. It includes the payments of payouts that are still to be sent." },
-  { term: "In pending payouts", text: "Payouts created and not yet marked as sent, after the platform fee. Their payments are part of Held for influencers (before the fee)." },
-  { term: "Owed to customers", text: "Captured payments flagged for refund that have not been refunded yet (less any partial refund)." },
+  { term: "Held for influencers", text: "Payments not flagged for refund and not in a payout that was sent, whose booking is paid, scheduled or completed (or that are in a payout still to be sent): the amount less refunds, before the platform fee." },
+  { term: "In pending payouts", text: "Payouts created and not yet marked as sent, after the platform fee. Their payments are counted in Held for influencers (before the fee), or in Owed to customers when a payment in them is flagged for refund." },
+  { term: "Owed to customers", text: "Payments flagged for refund that are not in a payout that was sent: the amount not yet refunded, the most a customer can still be given back. A flagged payment that is in a payout still to be sent is counted here, not in Held." },
+  { term: "Flagged, already paid out", text: "Payments flagged for refund whose payout was already sent: the amount not yet refunded. The influencer has this money and a customer may still be owed it. It is part of Paid out, not of Owed to customers." },
   { term: "To recover", text: "Refunds made after an influencer's payout was marked as sent: money the influencer received that should come back. The same figure as \"Refunded since\" on the Payouts page, added up." },
-  { term: "Not payable", text: "Paid by customers for bookings that were cancelled, expired or failed, with no refund flagged. No payout can include these payments." },
+  { term: "Refunds that did not complete", text: "Refunds that were counted in a sent payout (so they reduced what the influencer was sent) and have failed since. The influencer was sent that much less than the payment now leaves them." },
+  { term: "Not payable", text: "Paid by customers for bookings that are requested, held, awaiting payment, expired, cancelled or failed (anything but paid, scheduled or completed), not flagged for refund and in no payout. No payout can include these payments, and a customer may still be owed part of this money (for example after a partial refund)." },
 ];
 
 /** The date-range form. Without JavaScript it is a plain GET form (see GetForm). */
@@ -94,12 +96,18 @@ export function ReportsView({ data, busy }: { data: Report; busy?: boolean }) {
                 balances.map((b) => (
                   <Card key={b.currency} title={<h3 className="card__title">{b.currency}</h3>}>
                     <div className="grid grid--3">
-                      <Stat label="Held for influencers" value={money(b.heldForInfluencersMinor, b.currency)} hint="Before the platform fee. Includes payouts still to be sent." />
-                      <Stat label="In pending payouts" value={money(b.inPendingPayoutsMinor, b.currency)} hint="After the fee, created and not yet sent. Part of the held amount." />
-                      <Stat label="Owed to customers" value={money(b.owedToCustomersMinor, b.currency)} hint="Flagged payments not yet refunded." />
+                      <Stat label="Held for influencers" value={money(b.heldForInfluencersMinor, b.currency)} hint="Before the platform fee. Includes payments in payouts still to be sent." />
+                      <Stat label="In pending payouts" value={money(b.inPendingPayoutsMinor, b.currency)} hint="After the fee, created and not yet sent. Counted in Held (or in Owed when flagged)." />
+                      <Stat label="Owed to customers" value={money(b.owedToCustomersMinor, b.currency)} hint="Flagged payments, not in a sent payout, not yet refunded." />
                       <Stat label="To recover" value={money(b.toRecoverMinor, b.currency)} hint="Refunded after the payout was sent." />
+                      {b.flaggedPaidOutMinor !== 0 && (
+                        <Stat label="Flagged, already paid out" value={money(b.flaggedPaidOutMinor, b.currency)} hint="Flagged for refund but the payout was sent. A customer may still be owed it." />
+                      )}
+                      {b.refundsNotCompletedMinor !== 0 && (
+                        <Stat label="Refunds that did not complete" value={money(b.refundsNotCompletedMinor, b.currency)} hint="Counted in a sent payout, then failed." />
+                      )}
                       {b.unallocatedMinor !== 0 && (
-                        <Stat label="Not payable" value={money(b.unallocatedMinor, b.currency)} hint="Cancelled or failed bookings, no refund flagged." />
+                        <Stat label="Not payable" value={money(b.unallocatedMinor, b.currency)} hint="Bookings not paid or scheduled, in no payout. A customer may still be owed part." />
                       )}
                     </div>
                   </Card>
