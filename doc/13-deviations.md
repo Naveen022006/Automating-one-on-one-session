@@ -54,5 +54,17 @@ Only differences from section 2, "WP-B Admin money operations"; everything else 
    cell (visible without horizontal scrolling); Cancel has its own Actions column.
 6. **Not changed, noted risk:** `cancelBooking` (`lib/manage.ts`, not WP-B's) has no claim, so two administrators cancelling the same booking
    in the same instant could both pass and send the customer notice twice. Money is not affected (refunds go through the claim in `refundPayment`).
-7. **Tests:** `tests/spa-admin-money.test.ts` pinned key sets updated (`refund`, `cancel`, `q`); new `tests/admin-exports.test.ts`,
+7. **Review fixes, with small edits outside WP-B's file list** (all additive; other callers behave as before):
+   - `lib/refunds.ts`: `refundPayment` options `blockPendingPayout` (the claim also requires no PENDING payout; a payout that took the payment
+     in between gives "in a pending payout") and `expectedRemainingMinor` (a check, never the amount: `RefundAmountChangedError`, and the
+     claim requires the refund total it read to be unchanged). Only the admin path passes them.
+   - `lib/payouts.ts`: `createPayout`'s claim now also requires no refund in flight and the same refund total as read, so a refund claimed
+     in between turns the count check into a 409; optional test-only `hooks.afterRead` to interleave.
+   - `lib/manage.ts`: `cancelBooking` option `byPlatform` (no "refund-needed"/"refund-failed" alert to the host; the customer is told the
+     platform will refund). `lib/dashboard.ts`: `csvCell` also neutralises a leading LF and the full-width = + - @ (shared with the earnings export).
+   - A flagged (`needsRefund`) payment on an upcoming live booking is refundable only when the booking has ANOTHER captured payment.
+   - The refund body requires `expectedRemainingMinor`; a mismatch is `409 { code: "amount-changed" }`. An unexpected fault after the claim is
+     `500 { error: "outcome-unknown" }`, audited `payment.refund_unconfirmed`; Razorpay status other than `processed` is audited
+     `payment.refund_submitted`. Exports start with a UTF-8 BOM.
+8. **Tests:** `tests/spa-admin-money.test.ts` pinned key sets updated (`refund`, `cancel`, `q`); new `tests/admin-exports.test.ts`,
    `tests/admin-refund-cancel.test.ts`, `tests/admin-money-views.test.ts`.
