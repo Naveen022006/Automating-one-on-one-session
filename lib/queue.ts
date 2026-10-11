@@ -10,7 +10,7 @@ export const CREATE_MEETING_ATTEMPTS = 5;
 export const REMINDER_ATTEMPTS = 5;
 
 /** How long before the session each reminder fires. */
-const REMINDER_OFFSETS_MS: Record<ReminderKind, number> = {
+export const REMINDER_OFFSETS_MS: Record<ReminderKind, number> = {
   "24h": 24 * 60 * 60 * 1_000,
   "15m": 15 * 60 * 1_000,
 };
@@ -173,6 +173,11 @@ export interface ReminderQueue {
   getJob: Queue["getJob"];
 }
 
+/** Bound on each Redis call of the repair job, so an unreachable Redis fails a step instead of hanging the worker. */
+const ENSURE_REDIS_TIMEOUT_MS = 5_000;
+
+export type EnsureReminderOutcome = "added" | "replaced" | "kept" | "stale";
+
 export async function enqueueReminders(
   bookingId: string,
   startTime: Date,
@@ -209,6 +214,71 @@ export async function enqueueReminders(
       },
     );
   }
+}
+
+/**
+ * Makes sure ONE reminder job exists for the given start time, without disturbing a healthy one. Used by the repair
+ * job (reconcileReminders); unlike enqueueReminders it never removes a job that is already right, and an overdue
+ * reminder is added with no delay rather than skipped (the handler re-checks the clock when it runs).
+ *
+ * - no job with the deterministic id: add it (`added`);
+ * - a job for the same start time, in any state: leave it (`kept`);
+ * - a job for ANOTHER start time (a reschedule happened while Redis or the worker was away): remove it and add one
+ *   for this time (`replaced`), whether it is delayed, waiting, completed or failed. A completed or failed leftover
+ *   only skipped itself on the time mismatch, and the Message rows still stop a delivered reminder from being
+ *   repeated. The one exception is an `active` job, which is running right now and is left alone (`kept`);
+ * - `stillCurrent` is asked right before anything is removed or added; when it says the booking has moved on (a
+ *   reschedule or cancel landed after the repair read it) nothing is touched (`stale`).
+ * Every Redis call is bounded with `within`.
+ */
+export async function ensureReminder(
+  kind: ReminderKind,
+  bookingId: string,
+  startTime: Date,
+  now: Date,
+  queue: ReminderQueue = getQueue(REMINDER_QUEUE),
+  stillCurrent?: () => Promise<boolean>,
+): Promise<EnsureReminderOutcome> {
+  const jobId = reminderJobId(kind, bookingId);
+  const existing = await within(queue.getJob(jobId), ENSURE_REDIS_TIMEOUT_MS, `reminder job ${jobId} lookup`);
+  if (existing && existing.data?.expectedStartTime === startTime.toISOString()) return "kept";
+  if (existing) {
+    const state = await within(existing.getState(), ENSURE_REDIS_TIMEOUT_MS, `reminder job ${jobId} state`);
+    if (state === "active") return "kept";
+  }
+  // Last look at the booking before touching the queue: a reschedule that landed since the repair read it must not
+  // make us remove the (correct) new job and add one for the old time.
+  if (stillCurrent && !(await stillCurrent())) return "stale";
+  let outcome: EnsureReminderOutcome = "added";
+  if (existing) {
+    try {
+      await within(existing.remove(), ENSURE_REDIS_TIMEOUT_MS, `reminder job ${jobId} removal`);
+    } catch (e) {
+      // Picked up by the worker between the state read and the removal (BullMQ refuses to remove a locked job): it
+      // is running, so leave it. Anything else is a real Redis problem.
+      if (/lock/i.test(e instanceof Error ? e.message : String(e))) return "kept";
+      throw e;
+    }
+    outcome = "replaced";
+  }
+  const delay = Math.max(0, startTime.getTime() - REMINDER_OFFSETS_MS[kind] - now.getTime());
+  await within(
+    queue.add(
+      "send-reminder",
+      { bookingId, kind, expectedStartTime: startTime.toISOString() },
+      {
+        jobId,
+        delay,
+        attempts: REMINDER_ATTEMPTS,
+        backoff: { type: "exponential", delay: 5_000 },
+        removeOnComplete: { age: 7 * 86_400 },
+        removeOnFail: false,
+      },
+    ),
+    ENSURE_REDIS_TIMEOUT_MS,
+    `reminder job ${jobId} add`,
+  );
+  return outcome;
 }
 
 /**

@@ -7,16 +7,18 @@ import {
   type ReminderKind,
   type ReminderQueue,
 } from "../lib/queue";
-import { sendReminderForBooking, type ReminderBooking, type ReminderDeps } from "../lib/reminders";
+import { sendReminderForBooking, staleReminderReason, type ReminderBooking, type ReminderDeps } from "../lib/reminders";
 import type { MessageOutcome } from "../lib/messaging";
 
 // Pure-logic tests: no Redis and no DB. The booking read, the message send and the queue are all injected as
 // fakes, so these exercise the run-time status check and the deterministic job id/delay logic directly.
 
 /** Deps for sendReminderForBooking that record what was sent and report a fixed booking status. */
-function reminderFakes(booking: ReminderBooking | null) {
+function reminderFakes(booking: ReminderBooking | null, now?: Date) {
   const sent: Array<{ bookingId: string; template: string }> = [];
   const deps: Partial<ReminderDeps> = {
+    // Default clock: exactly 24 h before the booking, i.e. when the 24h reminder is due and the 15m one is early.
+    now: () => now ?? new Date((booking?.session.startTime.getTime() ?? 0) - 24 * 60 * 60 * 1_000),
     findBooking: async () => booking,
     sendMessage: async (bookingId, template): Promise<MessageOutcome> => {
       sent.push({ bookingId, template });
@@ -169,4 +171,85 @@ test("cancelReminders is a no-op when the jobs are absent", async () => {
   const { queue, removed } = fakeQueue([]);
   await cancelReminders("bk7", queue);
   assert.deepEqual(removed, []);
+});
+
+// --- late jobs after an outage: the clock guard (staleReminderReason / sendReminderForBooking `now`) ---
+
+const HOUR = 60 * 60 * 1_000;
+const MIN = 60 * 1_000;
+
+test("staleReminderReason: every reminder kind at the edges", () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const at = (msBeforeStart: number) => new Date(start.getTime() - msBeforeStart);
+  // 15m: fine until the start, skipped at the start and after it.
+  assert.equal(staleReminderReason("15m", start, at(24 * HOUR)), null);
+  assert.equal(staleReminderReason("15m", start, at(15 * MIN)), null);
+  assert.equal(staleReminderReason("15m", start, at(1)), null);
+  assert.match(staleReminderReason("15m", start, at(0))!, /already started/);
+  assert.match(staleReminderReason("15m", start, at(-5 * MIN))!, /already started/);
+  // 24h: needs at least 12 h left ("tomorrow"), so it is also skipped when the session is over.
+  assert.equal(staleReminderReason("24h", start, at(24 * HOUR)), null);
+  assert.equal(staleReminderReason("24h", start, at(13 * HOUR)), null);
+  assert.equal(staleReminderReason("24h", start, at(12 * HOUR)), null);
+  assert.match(staleReminderReason("24h", start, at(12 * HOUR - 1))!, /less than 12 h/);
+  assert.match(staleReminderReason("24h", start, at(11 * HOUR))!, /less than 12 h/);
+  assert.match(staleReminderReason("24h", start, at(0))!, /less than 12 h/);
+  assert.match(staleReminderReason("24h", start, at(-2 * HOUR))!, /less than 12 h/);
+});
+
+test("a 15m reminder that fires after the session started is skipped and sends nothing", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const { deps, sent } = reminderFakes(scheduledBooking("bk10", start), new Date(start.getTime() + 20 * MIN));
+  assert.equal(await sendReminderForBooking("bk10", "15m", start, deps), "skipped");
+  assert.deepEqual(sent, []);
+});
+
+test("a 15m reminder one minute before the start is still sent", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const { deps, sent } = reminderFakes(scheduledBooking("bk11", start), new Date(start.getTime() - MIN));
+  assert.equal(await sendReminderForBooking("bk11", "15m", start, deps), "sent");
+  assert.deepEqual(sent, [{ bookingId: "bk11", template: "reminder-15m" }]);
+});
+
+test("a 24h reminder with 11 h left is skipped, with 13 h left it is sent", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const late = reminderFakes(scheduledBooking("bk12", start), new Date(start.getTime() - 11 * HOUR));
+  assert.equal(await sendReminderForBooking("bk12", "24h", start, late.deps), "skipped");
+  assert.deepEqual(late.sent, []);
+  const ok = reminderFakes(scheduledBooking("bk12", start), new Date(start.getTime() - 13 * HOUR));
+  assert.equal(await sendReminderForBooking("bk12", "24h", start, ok.deps), "sent");
+  assert.deepEqual(ok.sent, [{ bookingId: "bk12", template: "reminder-24h" }]);
+});
+
+test("a 24h reminder after the session started is skipped", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const { deps, sent } = reminderFakes(scheduledBooking("bk13", start), new Date(start.getTime() + HOUR));
+  assert.equal(await sendReminderForBooking("bk13", "24h", start, deps), "skipped");
+  assert.deepEqual(sent, []);
+});
+
+test("non-SCHEDULED bookings are skipped whatever the clock says (every status, both kinds)", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  for (const status of ["CANCELLED", "EXPIRED", "FAILED", "HELD", "PENDING_PAYMENT", "PAID", "COMPLETED"]) {
+    for (const kind of ["24h", "15m"] as ReminderKind[]) {
+      const booking = { id: "bk14", status, session: { startTime: start } };
+      const { deps, sent } = reminderFakes(booking, new Date(start.getTime() - 20 * HOUR));
+      assert.equal(await sendReminderForBooking("bk14", kind, start, deps), "skipped", `${status} ${kind}`);
+      assert.deepEqual(sent, []);
+    }
+  }
+});
+
+test("the clock guard logs why it skipped", async () => {
+  const start = new Date("2026-03-10T10:00:00.000Z");
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+  try {
+    const { deps } = reminderFakes(scheduledBooking("bk15", start), new Date(start.getTime() - 6 * HOUR));
+    await sendReminderForBooking("bk15", "24h", start, deps);
+  } finally {
+    console.log = orig;
+  }
+  assert.ok(lines.some((l) => l.includes("bk15") && l.includes("less than 12 h left")), lines.join("\n"));
 });
