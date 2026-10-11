@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BRAND_NAME } from "../lib/brand";
 import { portalErasedMessage, portalLinkMessage } from "../lib/email/customer-portal";
-import { buildReceipt, refundedMinorOf, type ReceiptBooking, type ReceiptPayment } from "../lib/receipts";
+import { buildReceipt, pickReceiptPayment, refundedMinorOf, type ReceiptBooking, type ReceiptPayment } from "../lib/receipts";
 
 const booking: ReceiptBooking = {
   id: "bk_1",
@@ -101,4 +101,29 @@ test("portal e-mails: the link is in both bodies, the wording is the same for ev
   assert.match(many.text, /2 upcoming bookings were kept so the sessions can still happen\. Cancel them from your manage links/);
   assert.match(portalErasedMessage({ erased: 3, blocked: 0 }).text, /No upcoming bookings were kept\./);
   for (const m of [one, many, link]) assert.ok(!/undefined|NaN|\[object/.test(m.text + m.html));
+});
+
+test("pickReceiptPayment / buildReceipt: a payment that stands wins over a refunded or flagged duplicate, then the earliest", () => {
+  const early = new Date("2026-10-11T08:00:00.000Z");
+  const late = new Date("2026-10-11T09:00:00.000Z");
+  const refundedFirst = payment({ status: "REFUNDED", refundAmountMinor: 49900, providerPaymentId: "pay_old", createdAt: early });
+  const standing = payment({ providerPaymentId: "pay_new", createdAt: late });
+  assert.equal(buildReceipt(booking, [refundedFirst, standing])!.paymentReference, "pay_new");
+  assert.equal(buildReceipt(booking, [refundedFirst, standing])!.statusText, "Paid", "a refunded duplicate does not make a paid session Refunded");
+  const flagged = payment({ providerPaymentId: "pay_dup", needsRefund: true, createdAt: early });
+  assert.equal(buildReceipt(booking, [flagged, standing])!.paymentReference, "pay_new", "a flagged payment is not the one that bought the session, even when it is older");
+  // Nothing stands: the earliest of what there is (a cancelled, refunded booking keeps its receipt).
+  assert.equal(buildReceipt(booking, [payment({ status: "REFUNDED", providerPaymentId: "pay_b", createdAt: late }), refundedFirst])!.paymentReference, "pay_old");
+  assert.equal(buildReceipt(booking, [flagged])!.paymentReference, "pay_dup");
+  assert.equal(pickReceiptPayment([]), undefined);
+});
+
+test("portalStatusText: a session that has started and is not over is `In progress`", async () => {
+  const { portalStatusText } = await import("../lib/customer-portal");
+  const paid = { amountMinor: 100, refundedMinor: 0, needsRefund: false, refundInFlight: false };
+  assert.equal(portalStatusText({ status: "SCHEDULED", upcoming: false, inProgress: true, paid }), "In progress");
+  assert.equal(portalStatusText({ status: "PAID", upcoming: false, inProgress: true, paid }), "In progress");
+  assert.equal(portalStatusText({ status: "SCHEDULED", upcoming: true, inProgress: false, paid }), "Upcoming");
+  assert.equal(portalStatusText({ status: "SCHEDULED", upcoming: false, inProgress: false, paid }), "Completed");
+  assert.equal(portalStatusText({ status: "SCHEDULED", upcoming: false, paid }), "Completed", "inProgress defaults to false");
 });

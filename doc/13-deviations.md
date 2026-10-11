@@ -63,5 +63,22 @@ Dated 2026-10-11. Only differences from the WP-D section; everything else was do
    `receipt` key.
 10. **Not verified:** a real browser print dialog and PDF (the `@media print` rules were applied to the screen and checked on the DOM),
     and a delivered e-mail (seen only through the log provider's line in a production build).
-11. **Deviation note location:** the plan puts WP deviations in `doc/13-marketplace-essentials.md`; this section is in this file as
+11. **Review fixes (D1 to D8).** A pending approval REQUEST is now kept by every erasure: `KEPT_BOOKING_STATUSES` / `isKeptBooking` in
+    `lib/privacy.ts` is the one list, used by the host's Erase and by the portal (a test pins that the portal copies nothing), and
+    `approveRequest` (`lib/booking-approval.ts`, WP-A's file; three lines) refuses a request whose customer was erased. `eraseCustomerData`
+    redacts with a conditional update and counts only the rows it changed.
+12. **Mail limits: order and trade-off.** The lookup now runs BEFORE the per-address allowance is used, so asking about addresses with no
+    bookings costs nobody anything; then the per-address limit (3 per hour); then a global cap on all portal mail
+    (`CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR`, default 300, `0` stops all portal mail; read in `lib/customer-portal.ts`, silent, same 202). The
+    trade-off that remains: anyone can use up a real customer's 3 per hour from one IP (5 asks per hour per IP), which delays that
+    customer's link by up to an hour but cannot reveal anything or send them more than 3 e-mails; the alternative (no per-address limit)
+    would let one IP mail-bomb a customer. The global cap bounds the total however many addresses and IPs are used.
+13. **`after()`** keeps the detached send alive on serverless hosts; the response is unchanged. Two simultaneous erasures of one address
+    in one process share a single run (one audit row, one e-mail); across processes the conditional update still prevents double counting.
+14. **"In progress"**: a paid session that has started and not ended is listed with the upcoming ones under that label, has no manage
+    link (as on the manage page) and is kept by an erasure (the erase rule uses the end time).
+15. **Receipt payment**: among captured or refunded payments, one that is neither flagged for a refund nor fully refunded wins, then the
+    earliest (`pickReceiptPayment` in `lib/receipts.ts`).
+
+16. **Deviation note location:** the plan puts WP deviations in `doc/13-marketplace-essentials.md`; this section is in this file as
     the work-package instructions said.

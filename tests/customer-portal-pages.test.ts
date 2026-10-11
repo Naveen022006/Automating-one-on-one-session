@@ -2,6 +2,8 @@
 // browser renders them (memory router + a QueryClient holding what the endpoint answered), in the style of tests/spa-booking-pages.test.ts:
 // no database, no browser, no network. Each state of the portal is checked here; the endpoint behind it is tests/customer-portal.test.ts.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { before, test } from "node:test";
 import * as React from "react";
 import { createElement, type ComponentType } from "react";
@@ -26,6 +28,8 @@ let keys: WebQuery["queryKeys"];
 let find: ComponentType;
 let portal: ComponentType;
 let ReceiptCard: ComponentType<{ receipt: ReceiptView }>;
+let FindBookingsView: ComponentType<{ initial?: { sent?: boolean; fieldError?: string } }>;
+let FIND_SENT_HEADING_ID: string;
 
 before(async () => {
   (globalThis as { React?: unknown }).React = React;
@@ -36,6 +40,9 @@ before(async () => {
   find = (await import("../web/src/pages/booking/FindBookings")).Component as ComponentType;
   portal = (await import("../web/src/pages/booking/CustomerPortal")).Component as ComponentType;
   ReceiptCard = (await import("../web/src/components/views/booking/ReceiptCard")).ReceiptCard as ComponentType<{ receipt: ReceiptView }>;
+  const findModule = await import("../web/src/components/views/booking/FindBookingsView");
+  FindBookingsView = findModule.FindBookingsView as typeof FindBookingsView;
+  FIND_SENT_HEADING_ID = findModule.FIND_SENT_HEADING_ID;
 });
 
 type Held = { data: unknown } | { error: { status: number; body?: unknown } } | "pending";
@@ -211,4 +218,37 @@ test("receipt card: every field, the refund row only when something was refunded
   assert.ok(!noRef.includes("Payment reference"));
   const hostile = renderToStaticMarkup(createElement(ReceiptCard, { receipt: receipt({ issuedTo: "<b>x</b>", hostName: "<i>y</i>", serviceTitle: "\"><script>1</script>" }) }));
   assert.ok(!hostile.includes("<b>x") && !hostile.includes("<i>y") && !hostile.includes("<script>1"));
+});
+
+// Keyboard focus (QA-2 style, see tests/spa-form-focus.test.ts): effects do not run in a static render, so what is checked is that the
+// focus TARGETS exist and are wired: a refused address is an error on the field (the input is marked invalid, which is what
+// focusFirstInvalid looks for, and linked to its message), and the confirmation has a focusable heading that the page moves focus to.
+test("find page: a refused address is an error on the field, linked to the input", () => {
+  const html = renderToStaticMarkup(createElement(FindBookingsView, { initial: { fieldError: "Please enter a valid e-mail address." } }));
+  assert.match(html, /<input[^>]*id="find-email"/);
+  const input = /<input[^>]*id="find-email"[^>]*>/.exec(html)![0];
+  assert.ok(input.includes('aria-invalid="true"'), "marked invalid: the marker focusFirstInvalid looks for");
+  assert.ok(input.includes('aria-describedby="find-email-error"'));
+  assert.ok(html.includes('id="find-email-error"') && html.includes("Please enter a valid e-mail address."));
+  assert.ok(!html.includes("Check your e-mail"));
+  const clean = renderToStaticMarkup(createElement(FindBookingsView));
+  assert.ok(!/<input[^>]*aria-invalid/.test(clean) && !clean.includes("find-email-error"), "no error markup before a submit");
+});
+
+test("find page: the confirmation has a focusable heading, and the page's effect focuses exactly that id", () => {
+  const html = renderToStaticMarkup(createElement(FindBookingsView, { initial: { sent: true } }));
+  assert.equal(FIND_SENT_HEADING_ID, "find-sent-title");
+  assert.match(html, /<span id="find-sent-title" tabindex="-1">Check your e-mail<\/span>/);
+  assert.ok(html.includes("If we have bookings for that address") && !html.includes("<form"));
+  const source = readFileSync(join(__dirname, "..", "web", "src", "components", "views", "booking", "FindBookingsView.tsx"), "utf8");
+  assert.ok(source.includes("document.getElementById(FIND_SENT_HEADING_ID)?.focus()") && source.includes("focusFirstInvalid(formRef.current)"));
+});
+
+test("portal page: a session in progress is listed with the upcoming ones", async () => {
+  const html = await portalPage({
+    data: okView({
+      bookings: [booking({ reference: "bk_run", status: "SCHEDULED", statusText: "In progress", manageUrl: null }), booking({ reference: "bk_old", status: "COMPLETED", statusText: "Completed", manageUrl: null })],
+    }),
+  });
+  assert.ok(html.indexOf("Upcoming") < html.indexOf("In progress") && html.indexOf("In progress") < html.indexOf("Past and cancelled"));
 });
