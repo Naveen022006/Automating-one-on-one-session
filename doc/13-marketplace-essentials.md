@@ -85,7 +85,55 @@ the behaviour is covered with injected queues and fake timers instead.
 
 ## WP-F Admin finance report
 
-_Not started._
+Done 2026-10-11 on `mk/f-admin-reports`. Read-only: `GET /api/admin/reports` (`requireAdminMfa`, rate rule `admin-reports`) over `lib/admin/reports.ts`
+(nine aggregate SQL queries, one after the other: 3 range, 3 months, 3 balances; asserted in the test) and `lib/views/admin-reports.ts`; page `web/src/pages/admin/Reports.tsx` with
+`web/src/components/views/admin/ReportsView.tsx`; tests in `tests/admin-reports.test.ts`. No migration, no dependency, no shared file touched.
+
+How the numbers follow the payout code (so the report cannot disagree with the payout screens):
+- **Fees and paid-out amounts** are the stored `fee_minor` / `net_minor` of `PAID` payouts, which `createPayout()` computed with
+  `buildPayoutTotals()` (the influencer's override or `PLATFORM_FEE_BPS`, `floor(net x bps / 10000)`); nothing is recomputed. The test makes its
+  payouts with the real `createPayout`, `markPayoutPaid` and `cancelPayout` (override 10% for one influencer, the platform default 7% for the other).
+- **To recover** is `postPayoutRefunds()` in one SQL statement (per `PAID` payout: refunds now on its payments minus `refunds_minor`; the positive
+  part per payout, summed per currency). The query is in `lib/admin/reports.ts` (`refundsSinceByCurrency`), not in `lib/payouts.ts` (not a
+  WP-F file); the test asserts it equals the sum of `postPayoutRefunds` over the fixture's paid payouts. The negative part, which
+  `postPayoutRefunds` clips away (a refund counted when the payout was made that failed afterwards), is its own figure, `refundsNotCompletedMinor`.
+- A payment is money paid when `CAPTURED` or `REFUNDED`; what is left of it is `amount - refund_amount_minor` (`netOf`); a booking "holds" it
+  when `PAID`, `SCHEDULED` or `COMPLETED`.
+
+Reconciliation identity, per currency, over a range that holds every payment (asserted in the test):
+`gross - refunds - fees = held + owed to customers + not payable + paid out (net) - to recover + refunds that did not complete`. With nothing
+flagged, not payable or refunded since, this is the plan's `gross - refunds - fees = held + paid out`. Figures that are "right now" (the balances)
+are all-time, whatever the range. Every paid payment is in exactly one place, in this order: in a PAID payout (paid out) / flagged `needs_refund`
+(owed) / in a PENDING payout (held) / booking PAID, SCHEDULED or COMPLETED (held) / anything else (not payable). `payoutBlocker` does not look at
+the flag, so a flagged payment (a duplicate payment, a refund that failed and re-flagged it) can be paid out: it is then inside Paid out and also
+shown as `flaggedPaidOutMinor` ("Flagged, already paid out": the influencer has it and a customer may still be owed it), not in Owed.
+
+Deviations and interpretations:
+1. **Extra balances** (shown only when not zero): `unallocatedMinor` ("Not payable"): captured money, not flagged, in no payout, for a booking that is
+   REQUESTED, HELD, PENDING_PAYMENT, EXPIRED, CANCELLED or FAILED (anything but PAID/SCHEDULED/COMPLETED; no payout can ever take it, and a customer
+   may still be owed part of it, for example the rest after a partial refund, which clears the flag); `flaggedPaidOutMinor` and
+   `refundsNotCompletedMinor` (see above). Without them the identity does not hold.
+2. **"Held" includes the payments of payouts that are still pending** unless they are flagged (those are in Owed); the plan says "not in a PAID
+   payout". "In pending payouts" is the net after the fee of the payouts; the page says its payments are counted in Held, or in Owed when flagged.
+   Cancelled payouts release their payments. "Owed to customers" is amount minus refunded of flagged payments that are not in a PAID payout.
+2b. **Gross is dated by `payments.created_at`, the day checkout began** (the order was created). The schema has no capture time (no `captured_at`;
+   `updated_at` moves with every later change), so a capture applied days later by the recovery job stays on the day it began. The page and the
+   DTO comments say so. No migration was added.
+3. **The monthly table ends with the month of `to`** (never later than this month), not always with this month, so a range in the past has its
+   months in the table. With the default range it is the last 12 months, as planned. A month and currency with no payments, refunds or fees is
+   not listed.
+4. **Range input.** A `from` or `to` that is not a real day between 2000 and 2100 is ignored and replaced by the default, like the earnings page
+   (`to` = today; `from` = the 1st of the month of `to`, which is also the default when only `to` is given). A range that ends before it starts
+   or is longer than 366 days (both ends counted) is a 400 `{ error }`; the page keeps its form and shows that sentence.
+5. **Dates in SQL** are compared as `created_at >= $1::date AND created_at < ($2::date + 1)`, so the day boundaries are UTC midnight regardless of the
+   session time zone (the columns are `timestamp(3)` holding UTC); the test pins 23:59:59.999 and 00:00:00.000.
+6. The plan lists this section in `doc/13-marketplace-essentials.md`; the assignment brief said `doc/13-deviations.md` (the foundation's file). It
+   is written here.
+
+`tests/foundation.test.ts`: the `admin-reports` row was removed from the "placeholder pages" loop (the page is real now).
+Test fixtures (four run-unique currencies derived from the clock): refunds, partial and full, fee override 10% / 0 / default, a flagged duplicate
+payment on one booking paid out, a refund that failed after the payout, a flagged payment inside a pending payout, a FAILED booking with captured
+money, and the real `refundPayment` / `applyRefundWebhook` (Razorpay injected) for the refund steps.
 
 ## Verification
 
