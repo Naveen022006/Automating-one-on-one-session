@@ -256,11 +256,12 @@ async function seed() {
   const c = (key: string, amount: number, createdAt: string, extra: Partial<Parameters<typeof addPayment>[0]> = {}) =>
     addPayment({ influencerId: infC, serviceId: sC, key, amount, currency: C3, createdAt: at(createdAt), ...extra });
   await c("d1", 1000, "2024-03-02T10:00:00Z", { booking: "COMPLETED" }); //                              the customer's payment
-  await c("d2", 1000, "2024-03-03T10:00:00Z", { sameBookingAs: "d1", needsRefund: true }); //           a duplicate payment on the same booking, flagged
+  await c("d2", 1000, "2024-03-03T10:00:00Z", { sameBookingAs: "d1" }); //                              a duplicate payment on the same booking (flagged below, AFTER its payout: a flagged payment is not payable any more)
   await c("d4", 1000, "2024-03-04T10:00:00Z", { booking: "COMPLETED", refunded: 300 }); //              a 300 refund that is processed when the payout is made
   await refundRow("d4", 300, "processed", at("2024-03-04T12:00:00Z"));
   await reconcile("d1", "d2");
-  await paidPayout("poc1", infC, C3, at("2024-03-20T10:00:00Z")); //  the flagged duplicate is paid out with the rest: fee 0, net 2000
+  await paidPayout("poc1", infC, C3, at("2024-03-20T10:00:00Z")); //  the duplicate is paid out with the rest: fee 0, net 2000
+  await prisma.payment.update({ where: { id: ids.d2 }, data: { needsRefund: true } }); //          found to be a duplicate and flagged after the payout was paid
   await reconcile("d4");
   await paidPayout("poc2", infC, C3, at("2024-03-21T10:00:00Z")); //  gross 1000, refunds 300, fee 0, net 700
   // Razorpay then reports that refund as failed (the real webhook code): the payment is flagged again and the 300 no longer counts.
@@ -273,11 +274,12 @@ async function seed() {
   const d = (key: string, amount: number, createdAt: string, extra: Partial<Parameters<typeof addPayment>[0]> = {}) =>
     addPayment({ influencerId: infD, serviceId: sD, key, amount, currency: C4, createdAt: at(createdAt), ...extra });
   await d("e1", 1000, "2024-03-02T10:00:00Z", { booking: "CANCELLED", needsRefund: true }); //  flagged, free: owed (later partly refunded)
-  await d("e2", 2000, "2024-03-03T10:00:00Z", { booking: "COMPLETED", needsRefund: true }); //  flagged, then put in a payout still to be sent
+  await d("e2", 2000, "2024-03-03T10:00:00Z", { booking: "COMPLETED" }); //                    put in a payout still to be sent, flagged after that
   await d("e3", 1500, "2024-03-04T10:00:00Z", { booking: "FAILED" }); //                         a failed booking with captured money, not flagged
   await d("e5", 3000, "2024-03-05T10:00:00Z"); //                                               held
   await reconcile("e2");
   payoutIds.pod = (await payoutsLib.createPayout(infD, C4, "rep-admin@example.com")).id; //     pending: 2000 less 7% = 1860
+  await prisma.payment.update({ where: { id: ids.e2 }, data: { needsRefund: true } }); //         flagged after the payout was created
 }
 
 before(async () => {
