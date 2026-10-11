@@ -563,7 +563,12 @@ export async function refreshTemplates(influencerId: string, deps: ConnectDeps =
     // template sync reports it (worker/whatsapp-sync.ts) because it is not a WhatsAppConnectError.
     if (e instanceof WhatsAppConnectError) throw e;
     if (!(e instanceof WhatsAppGraphError)) throw e;
-    if (e.invalidToken) await markTokenInvalid(influencerId, e.message);
+    if (e.invalidToken) {
+      await markTokenInvalid(influencerId, e.message);
+      // Not friendly(e): that sentence is for the connect form ("Check it is a permanent token...") and nobody pasted a token here.
+      // The saved one stopped working, which the card now shows as "Reconnect needed".
+      throw new WhatsAppConnectError("WhatsApp stopped accepting the connection (Meta rejected the saved access token). Use Reconnect to connect it again.", 400);
+    }
     throw friendly(e);
   }
 }

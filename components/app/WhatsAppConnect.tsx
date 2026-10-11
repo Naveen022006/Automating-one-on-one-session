@@ -251,7 +251,13 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     setBusy("refresh");
     const r = await api<{ submitted?: string[] }>("/api/dashboard/whatsapp", { method: "POST", body: { action: "refresh" } });
     setBusy(null);
-    if (!r.ok) return toast(r.data.error ?? "Could not refresh.", "error");
+    if (!r.ok) {
+      toast(r.data.error ?? "Could not refresh.", "error");
+      // A refusal can change what the card must show: Meta rejecting the saved token makes the server mark the connection as
+      // needing a reconnect, and without this the card kept saying "Ready" until the page was reloaded.
+      router.refresh();
+      return;
+    }
     toast(r.data.submitted?.length ? `Submitted ${r.data.submitted.length} template(s) to Meta.` : "Template statuses are up to date.");
     router.refresh();
   }
@@ -439,7 +445,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
         </span>
         <div>
           <p style={{ fontWeight: 600 }}>
-            Not connected <Badge tone="warning">Required to message by WhatsApp</Badge>
+            Not connected <Badge>Recommended</Badge>
           </p>
           <p className="subtle">
             Connect your own WhatsApp Business number so confirmations and reminders reach customers from you. Without it, they

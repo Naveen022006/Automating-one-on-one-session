@@ -270,3 +270,65 @@ test("C13: outcomeTarget keeps the #fragment of returnTo, and Settings asks to c
     assert.match(read(file), /url\.hash = hash \?\? ""/, `${file} sets the fragment on the redirect`);
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C16: the WhatsApp connect form's field errors are plain language.
+test("C16: connecting WhatsApp with empty or too-short fields answers with sentences an influencer can act on, not zod's defaults", async () => {
+  const { POST } = await import("../app/api/dashboard/whatsapp/route");
+  const send = async (body: unknown) => {
+    const res = await POST(new Request("http://localhost/api/dashboard/whatsapp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+    return { status: res.status, body: (await res.json()) as { details?: { fieldErrors?: Record<string, string[]> } } };
+  };
+  const manual = await send({ action: "connect-manual", wabaId: "", phoneNumberId: " ", accessToken: "short" });
+  assert.equal(manual.status, 400);
+  const fe = manual.body.details?.fieldErrors ?? {};
+  assert.deepEqual(Object.keys(fe).sort(), ["accessToken", "phoneNumberId", "wabaId"]);
+  assert.match(fe.wabaId[0], /^Enter the WhatsApp Business Account ID/);
+  assert.match(fe.phoneNumberId[0], /^Enter the Phone number ID/);
+  assert.match(fe.accessToken[0], /^Paste the permanent access token/);
+  const embedded = await send({ action: "connect-embedded", code: "x", wabaId: "1", phoneNumberId: "2" });
+  assert.equal(embedded.status, 400);
+  for (const msgs of Object.values({ ...fe, ...(embedded.body.details?.fieldErrors ?? {}) })) {
+    for (const m of msgs) assert.doesNotMatch(m, /Too small|expected string|Invalid input/i, m);
+  }
+  assert.match((embedded.body.details?.fieldErrors ?? {}).code?.[0] ?? "", /did not send a sign-up code/);
+  assert.match(fe.wabaId[0] + (await send({ action: "connect-manual", wabaId: "1".repeat(41), phoneNumberId: "12345", accessToken: "t".repeat(20) })).body.details?.fieldErrors?.wabaId?.[0], /too long/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C18 and C8: "Check template status" with a token Meta no longer accepts, and the not-connected badge.
+test("C18: refreshing templates with a rejected saved token marks the connection and says to Reconnect (not 'check it is a permanent token')", { skip: skipDb }, async () => {
+  const { prisma } = await import("../lib/db");
+  const { encryptSecret } = await import("../lib/crypto");
+  const { WhatsAppGraphError } = await import("../lib/whatsapp-connect");
+  const { WhatsAppConnectError, refreshTemplates, whatsappTokenAad } = await import("../lib/whatsapp-connection");
+  const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  const inf = await prisma.influencer.create({ data: { name: `QA C18 ${run}`, slug: `qac18-${run}`, email: `qac18-${run}@example.com` } });
+  try {
+    await prisma.whatsAppConnection.create({
+      data: { influencerId: inf.id, wabaId: "123456", phoneNumberId: `5${run}`, tokenEnc: encryptSecret("EAAG-a-token-that-decrypts-1234567890", whatsappTokenAad(inf.id)) },
+    });
+    const deps = { ensureTemplates: async () => { throw new WhatsAppGraphError("Error validating access token: The session has been invalidated.", 400, 190); } } as unknown as Parameters<typeof refreshTemplates>[1];
+    await assert.rejects(refreshTemplates(inf.id, deps), (e: unknown) => {
+      assert.ok(e instanceof WhatsAppConnectError);
+      assert.match(e.message, /Use Reconnect to connect it again\./);
+      assert.doesNotMatch(e.message, /permanent token/);
+      assert.equal(e.field, undefined, "not a field of the connect form");
+      return true;
+    });
+    const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId: inf.id }, select: { status: true, lastError: true } });
+    assert.equal(row?.status, "ERROR", "the card will show Reconnect needed");
+    assert.match(row?.lastError ?? "", /session has been invalidated/);
+  } finally {
+    await prisma.influencer.deleteMany({ where: { id: inf.id } }).catch(() => {});
+    await prisma.$disconnect();
+  }
+});
+
+test("C18/C8: the card reloads after a refused refresh, and a number that is not connected is 'Recommended', not 'Required'", () => {
+  const src = read("components/app/WhatsAppConnect.tsx");
+  const refresh = src.slice(src.indexOf("async function refresh()"), src.indexOf("// The ways to connect"));
+  assert.match(refresh, /if \(!r\.ok\) \{[\s\S]*router\.refresh\(\);[\s\S]*return;[\s\S]*\}/, "a failure also asks the page to reload its data");
+  assert.doesNotMatch(src, /Required to message by WhatsApp/);
+  assert.match(src, /Not connected <Badge>Recommended<\/Badge>/, "the go-live checklist already calls it Recommended");
+});
