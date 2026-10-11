@@ -30,4 +30,73 @@ through the Browser pane at `http://[::1]:3181` (its own cookie jar). Notes for 
 | QA-11 | low | register form (`components/auth/AuthForms.tsx`) | Same gap as QA-2: a failed submit (local checks, or an answer such as "address taken") left focus on the button, the "terms" error had no icon, no `role="alert"` and no link to its checkbox, and the live "address is taken" message did not mark the input invalid. | fixed: first invalid field is focused, the terms error is announced and tied to its checkbox, the slug input follows the live answer; wiring test in `tests/spa-form-focus.test.ts` |
 | QA-12 | low | a tab left open across a deploy (`vite:preloadError`) | The single reload the handler makes goes to the page the tab was ON, so the click that failed (for example "Messages" in the sidebar) is lost and the user lands where they were. A second failure within a minute shows the error screen with "Try again" (a full reload), no loop. Simulated by hiding a chunk file. | not fixed (the event does not say which page was wanted) |
 | QA-13 | low | booking flow, step "Pay" | If the server already ended the hold (clock skew, or the expiry job) the "Pay" button answers "This hold has expired or the booking is already processed" while the countdown keeps running and the button stays; the customer has to wait for the countdown or reload. The answer is ambiguous (expired, or paid in another tab), so it was not turned into the "Your hold has ended" screen. | not fixed |
+| QA-14 | low | booking flow, any refresh while a slot is held | The flow lives in memory only: a refresh or a closed tab between "Hold this time" and payment loses it, and the same customer cannot take that slot again until the hold ends (10 minutes, 20 once the checkout started); the 409 message tells them to pick another time. Parity with the old page. | not fixed (product decision: resuming a hold needs the booking id and poll token kept somewhere) |
 | QA-6 | low | `/pay/<token>` of an approval booking the customer paid and then cancelled (the link stays valid for the payment window) | Showed "This request was not accepted ... You have not been charged", which is false: the customer paid and a refund is due. State `declined` was used for every CANCELLED booking. | fixed: new state `cancelled` when the booking has a captured or refunded payment ("This booking was cancelled", refund depends on the policy, see the cancellation email); an unpaid cancelled booking stays `declined`; tests in `tests/spa-booking.test.ts` and `tests/spa-booking-pages.test.ts` |
+
+## What was run (production build, `SPA_GROUPS=all`)
+
+- `node scripts/spa-smoke.mjs`: 208/208 on the first build of `origin/main`, 211/211 on the last build of this branch.
+- Public and auth routes (`/`, `/terms`, `/privacy`, `/refund-policy`, `/contact`, `/login`, `/register`, `/forgot-password`,
+  `/reset-password?token=x`, `/verify-email?token=x`, `/design`, an unknown path, `/a/b/c`, `/demo`, `/demo/book`,
+  `/demo/book?service=<id>`, an unknown slug, `/pay/bad`, `/manage/bad`): status, `<title>`, description, canonical, Open Graph,
+  JSON-LD (landing), `robots` meta and `X-Robots-Tag`, `Referrer-Policy` on the token pages (header and meta), checked with curl on
+  the raw HTML and in the browser by direct load, in-app link, hard reload and Back/Forward. The skip link is the first Tab stop,
+  focus lands on `main` after an in-app navigation, the route announcer says the new title, cross-page `#hash` scrolling works (and
+  works on a direct load since QA-10), unknown slug and `/a/b/c` are real HTTP 404 with the Not found view, a forced 500 shows the
+  error alert with "Try again" and recovers, a render crash (invalid time zone value pushed into the select) shows the error page.
+  No CSP violation and no console error other than the expected 4xx/5xx of the probes, on any page, including the real Razorpay
+  modal on `/demo/book` and on `/pay/<token>`.
+- F1: landing, demo profile, book (service preselected, time zone switch, month navigation, details, hold, countdown), real
+  `POST /api/checkout` (Razorpay test order), real Razorpay modal, signed `payment.captured` webhook, "Confirming" then "You're
+  booked" by polling, `.ics`, manage link, reschedule, cancel ("You are due a full refund; the host has been notified": the refund
+  of the made-up payment id cannot be issued automatically). Two holds on the same slot at the same moment: exactly one 201, one 409.
+- F2: request on an approval service, approve in the dashboard (the demo login of the shared dev logins), `/pay/<token>`, real
+  Razorpay modal, simulated payment, the page switches to "You're booked" by itself and shows "already booked" on reload; declined,
+  expired, invalid and cancelled-after-payment states. F9: owner preview of a page that is not live (200, `noindex`, no Open Graph,
+  "Still to do" list, also on `/book`), stranger 404 on the page, the booking page and the API.
+- F3 first half and F4: register (slug availability: free, taken, reserved), onboarding redirect, the dashboard gate (`/dashboard/*`
+  goes to `/onboarding` for an account that has not finished), verify e-mail (logged in and logged out), forgot password, reset
+  password (bad and good token), the `?reset=1` notice, login with `?next=` (an external or `//host` target is ignored), wrong
+  password, logout, log out everywhere in a second tab and the first tab's next request going to `/login?next=...`, expired
+  session cookie on a dashboard URL, Back after logout lands on the login page.
+- Session cookie attributes on login: `__Host-sa_session; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=lax`.
+- Accessibility by inspection (no axe-core): tab order and focus styles on login, labels on every input of login, register and the
+  booking form, heading and landmark structure of the landing page, text contrast computed for every text node of `/`, `/login`
+  and the booking form with errors (no failure), `aria-invalid`/`aria-describedby` wiring, step changes (QA-2).
+- Performance: see below.
+
+## Performance
+
+| | |
+|---|---|
+| Entry JS | `index` 227 kB (71 kB gzip) and the shared `SiteChrome` chunk 166 kB (52 kB gzip), CSS 37.6 kB (8.1 kB gzip) |
+| Route chunks (gzip) | Landing 3.6 kB, Profile 1.3, Book 6.5, Pay 2.4, Manage 2.8, Login 0.4; the 93 kB `ServicesManager` is dashboard only and lazy |
+| Fonts | latin subsets only on the pages seen: Inter 48 kB, Newsreader 58 kB (`font-display: swap`) |
+| API calls on load | landing 1 (`/api/auth/session`), login and register 1 (+1 slug check per pause in typing), profile 1, book 3 (profile, days, slots), pay 1, manage 1 |
+| Idle | `/demo/book` open for 69 s: no further request (no focus or interval refetch) |
+| Assets | `Cache-Control: public, max-age=31536000, immutable`, gzip |
+| TTFB | shell of routes without a lookup 3-25 ms; `/demo` and `/demo/book` 0.5-1.4 s (the shell looks the profile up, then the page asks `/api/public/profiles/<slug>` again, about 0.5 s each against the shared remote database) |
+
+## Not fixed, listed
+
+QA-3, QA-4, QA-5, QA-12, QA-13, QA-14 above. Also noted, not defects of the migration: a page-load waterfall (HTML, entry JS, page chunk,
+API) that a `modulepreload` for the route chunk or an inlined profile in the shell would shorten; the booking flow's calendar has a
+roving tabindex but the stepper scrolls sideways inside its row at 375 px; on a phone the booking summary card comes before the
+calendar.
+
+## Not checked
+
+- A real card payment (the Razorpay card form is a cross-origin iframe the browser tool cannot type into), a real Meet link (the
+  shared worker is not ours to run; the confirmation page stays at "Creating your Google Meet link"), a successful automatic refund,
+  e-mail delivery (the log provider prints headers only in production mode).
+- Network throttling (the Browser tools offer none: loading states were seen at their natural 1-2 s and with a delayed fetch),
+  a screen reader, axe-core, Safari and Firefox.
+- The dashboard, connections and the admin console (covered by the other QA engineer).
+
+## Cleanup
+
+Everything created for the runs was deleted: six bookings with their payments and sessions, the temporary approval service on
+`demo`, four `webhook_events`, and the test influencer account (`qa-customer-reg-...`, with its user, tokens and sessions); a query
+for `qa-customer*` e-mails, `qacust*` slugs, `QA Approval ` services and `evt_qa_*` events returns nothing. The Razorpay test orders
+and the BullMQ `create-meeting` jobs the webhooks queued remain (they refer to bookings that no longer exist). The two processes
+started for the runs (`next start` on 3181) were stopped.
