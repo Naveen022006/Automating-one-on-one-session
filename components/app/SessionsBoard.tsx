@@ -63,6 +63,7 @@ export function SessionsBoard({
     <>
       <div className="table-wrap">
         <table className="table table--stack">
+          <caption className="sr-only">Bookings</caption>
           <thead>
             <tr>
               <th scope="col">When</th>

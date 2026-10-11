@@ -44,6 +44,7 @@ export function CustomersView({ data, busy }: { data: Jsonify<DashboardCustomers
         ) : (
           <div className="table-wrap">
             <table className="table table--stack">
+              <caption className="sr-only">Customers</caption>
               <thead>
                 <tr>
                   <th scope="col">Customer</th>

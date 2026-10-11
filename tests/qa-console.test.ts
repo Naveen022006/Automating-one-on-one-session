@@ -29,6 +29,13 @@ test("C10: the .shell grid tracks can shrink below their content (minmax(0, 1fr)
   }
 });
 
+test("C21: every table of the dashboard has a name for screen readers", () => {
+  assert.match(read("components/views/dashboard/CustomersView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Customers<\/caption>/);
+  assert.match(read("components/views/dashboard/MessagesView.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Messages<\/caption>/);
+  assert.match(read("components/app/SessionsBoard.tsx"), /<table className="table table--stack">\s*<caption className="sr-only">Bookings<\/caption>/);
+  assert.match(read("components/app/AvailabilityEditor.tsx"), /<table className="table">\s*<caption className="sr-only">Weekly hours<\/caption>/);
+});
+
 test("C20: an anchor inside the dashboard or console scrolls to below the sticky top bar, not under it", () => {
   const css = read("app/styles/layouts.css");
   assert.match(css, /\.topbar \{[^}]*position: sticky;[^}]*min-height: 64px;/s, "the bar is sticky and 64px tall");

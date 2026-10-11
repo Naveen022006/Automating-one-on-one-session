@@ -50,6 +50,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
         ) : (
           <div className="table-wrap">
             <table className="table table--stack">
+              <caption className="sr-only">Messages</caption>
               <thead>
                 <tr>
                   <th scope="col">Message</th>

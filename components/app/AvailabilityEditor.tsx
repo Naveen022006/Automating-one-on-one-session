@@ -99,6 +99,7 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
         {rules.length === 0 && <Alert tone="info" title="No hours yet">Add the times you are available each week. Customers can only book inside them.</Alert>}
         <div className="table-wrap">
           <table className="table">
+            <caption className="sr-only">Weekly hours</caption>
             <tbody>
               {WEEKDAYS.map((name, i) => {
                 const weekday = i + 1;
