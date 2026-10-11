@@ -1,9 +1,12 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { META_APP_ID, META_APP_SECRET } from "./fixtures";
+import { registerEmbedded } from "./embedded";
 import { registerGmail } from "./gmail";
 import { registerGoogle } from "./google";
 import { dispatch, isLocalUrl, randomHex, Router, type Runtime, type WebhookPort } from "./http";
+import { registerMeta, resumeReviews } from "./meta";
+import { registerSms } from "./sms";
 import { ACTIVITY_MAX, Persister, deleteStateFile, isInsideTmpdir, loadState, type MockState } from "./state";
 import { registerUi } from "./ui";
 
@@ -94,6 +97,9 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
   registerUi(router);
   registerGoogle(router);
   registerGmail(router);
+  registerMeta(router);
+  registerEmbedded(router);
+  registerSms(router);
 
   const server: Server = createServer((req, res) => {
     void dispatch(rt, router, (server.address() as AddressInfo).port, req, res);
@@ -111,6 +117,7 @@ export async function createMockServer(opts: MockServerOptions): Promise<MockSer
   });
   const address = server.address() as AddressInfo;
   rt.origin = `http://127.0.0.1:${address.port}`;
+  resumeReviews(rt);
 
   return {
     url: rt.origin,

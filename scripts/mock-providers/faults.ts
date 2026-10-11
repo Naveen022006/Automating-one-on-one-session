@@ -84,6 +84,12 @@ export const FAULTS: Record<string, FaultDef> = {
     options: ["on", "off", "bad_signature", "app_500_once"],
     valid: enumOf(["on", "off", "bad_signature", "app_500_once"]),
   },
+  sms: {
+    help: "The SMS sink answers 500: the SMS fallback fails and the message job retries (then the influencer is alerted).",
+    default: "ok",
+    options: ["ok", "500"],
+    valid: enumOf(["ok", "500"]),
+  },
   "latency.google": {
     help: "Delay for every Google call in ms. 16000 is past the app's 15 s timeout; reset closes the connection.",
     default: "0",

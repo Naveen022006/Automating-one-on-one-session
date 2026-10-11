@@ -109,6 +109,8 @@ export interface MockTemplate {
   createdAt: string;
   /** When the review timer decides (null: no timer is running). */
   decideAt: string | null;
+  /** What the timer will decide, so a restart can resume it. */
+  planned?: { status: "APPROVED" | "REJECTED"; reason: string | null };
 }
 
 export interface MockWaba {

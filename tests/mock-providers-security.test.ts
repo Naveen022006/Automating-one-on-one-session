@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { GOOGLE_CLIENT_SECRET, META_APP_SECRET } from "../scripts/mock-providers/fixtures";
+import { GOOGLE_CLIENT_SECRET, META_APP_ID, META_APP_SECRET, META_ES_CONFIG_ID } from "../scripts/mock-providers/fixtures";
 import { createMockServer } from "../scripts/mock-providers/server";
 import { defaultStateFile } from "../scripts/mock-providers/state";
 import { control, raw, startMock, type TestMock } from "./helpers/mock-server";
@@ -171,6 +171,28 @@ test("a token the mock did not mint is rejected, and never echoed, logged or pri
   assert.ok(t.mock.state().requests.some((r) => r.auth === "Bearer <unknown token, not logged>"));
   assert.ok(!JSON.stringify(t.mock.state()).includes(real));
   assert.ok(!(await raw(t.mock, "GET", "/__mock/requests")).text.includes(real));
+});
+
+test("the Meta side never echoes or logs the app secret, a client secret in a query, or a token it did not mint", async () => {
+  const unknown = "EAAB-real-looking-meta-token-0123456789";
+  const appToken = `${META_APP_ID}|${META_APP_SECRET}`;
+  const debug = await raw(t.mock, "GET", "/meta/v26.0/debug_token?input_token=whatever", { authorization: `Bearer ${appToken}` });
+  assert.equal(debug.status, 200);
+  assert.equal(debug.json().data.is_valid, false);
+  assert.ok(!debug.text.includes(META_APP_SECRET));
+  const bad = await raw(t.mock, "GET", "/meta/v26.0/990000000002001?fields=id", { authorization: `Bearer ${unknown}` });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json().error.code, 190);
+  assert.ok(!bad.text.includes(unknown));
+  const exchange = await raw(t.mock, "GET", `/meta/v26.0/oauth/access_token?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&code=SOME-CODE`);
+  assert.equal(exchange.status, 400);
+  assert.ok(!exchange.text.includes(META_APP_SECRET) && !exchange.text.includes("SOME-CODE"));
+  const sdk = await raw(t.mock, "GET", "/meta/en_US/sdk.js");
+  const dialog = await raw(t.mock, "GET", `/meta/dialog/embedded-signup?app_id=${META_APP_ID}&config_id=${META_ES_CONFIG_ID}&response_type=code&opener=http://localhost:3000&session=abcdef12345`);
+  for (const res of [sdk, dialog]) assert.ok(!res.text.includes(META_APP_SECRET) && !res.text.includes(GOOGLE_CLIENT_SECRET));
+  const logged = JSON.stringify(t.mock.state().requests);
+  assert.ok(!logged.includes(unknown) && !logged.includes(META_APP_SECRET) && !logged.includes("SOME-CODE"), "none of them is in the request log");
+  assert.match(logged, /client_secret=\[redacted\]/);
 });
 
 test("every credential the mock mints is marked MOCK-NOT-REAL-, and no Meet link points at meet.google.com", async () => {
