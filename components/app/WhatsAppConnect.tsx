@@ -6,7 +6,7 @@ import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 import { chooseFacebookSdkUrl } from "@/lib/facebook-sdk";
-import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateState } from "@/lib/message-templates";
+import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateLabel, templateState } from "@/lib/message-templates";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
@@ -20,14 +20,6 @@ export interface WhatsAppView {
   templates: { name: string; status: string; reason: string | null }[];
   ready: boolean;
 }
-
-const TEMPLATE_LABEL: Record<string, string> = {
-  "booking-confirmation": "Booking confirmation",
-  "reminder-24h": "Reminder, 24 hours before",
-  "reminder-15m": "Reminder, 15 minutes before",
-  reschedule: "Session rescheduled",
-  cancellation: "Session cancelled",
-};
 
 function TemplateBadge({ status }: { status: string }) {
   const known = TEMPLATE_STATUS_LABELS[status];
@@ -397,7 +389,7 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
               {connection.templates.map((t) => (
                 <tr key={t.name}>
                   <td>
-                    {TEMPLATE_LABEL[t.name] ?? t.name}
+                    {templateLabel(t.name)}
                     {t.reason && <div className="subtle">{t.reason}</div>}
                   </td>
                   <td>

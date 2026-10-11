@@ -127,6 +127,16 @@ export function templateState(statuses: string[]): TemplateState {
   return statuses.every((s) => isSendableStatus(s)) ? "ready" : "pending";
 }
 
+/** What the settings card calls each template (by key). Used wherever a template is named to an influencer, never the key. */
+export const TEMPLATE_LABELS: Record<string, string> = {
+  "booking-confirmation": "Booking confirmation",
+  "reminder-24h": "Reminder, 24 hours before",
+  "reminder-15m": "Reminder, 15 minutes before",
+  reschedule: "Session rescheduled",
+  cancellation: "Session cancelled",
+};
+export const templateLabel = (key: string): string => TEMPLATE_LABELS[key] ?? key;
+
 /** The label (and colour) the settings card shows for each template status, so none is shown as something it is not. */
 export const TEMPLATE_STATUS_LABELS: Record<string, { label: string; tone?: "success" | "warning" | "danger" }> = {
   APPROVED: { label: "Approved", tone: "success" },

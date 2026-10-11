@@ -325,6 +325,17 @@ test("C18: refreshing templates with a rejected saved token marks the connection
   }
 });
 
+test("C19: the 'Could not submit' notice names templates the way the card does, not by their internal keys", async () => {
+  const { templateLabel, TEMPLATE_LABELS, TEMPLATE_SPECS } = await import("../lib/message-templates");
+  assert.equal(templateLabel("booking-confirmation"), "Booking confirmation");
+  assert.equal(templateLabel("reminder-24h"), "Reminder, 24 hours before");
+  assert.equal(templateLabel("something-new"), "something-new", "an unknown key is shown as it is rather than hidden");
+  for (const key of Object.keys(TEMPLATE_SPECS)) assert.ok(TEMPLATE_LABELS[key], `every template key has a label (${key})`);
+  const src = read("lib/whatsapp-connection.ts");
+  assert.equal(count(src, "Could not submit: ${sync.failed.map((f) => templateLabel(f.name)).join"), 2, "both places that build the notice use the labels");
+  assert.doesNotMatch(read("components/app/WhatsAppConnect.tsx"), /const TEMPLATE_LABEL\b/, "one label map, shared");
+});
+
 test("C18/C8: the card reloads after a refused refresh, and a number that is not connected is 'Recommended', not 'Required'", () => {
   const src = read("components/app/WhatsAppConnect.tsx");
   const refresh = src.slice(src.indexOf("async function refresh()"), src.indexOf("// The ways to connect"));
