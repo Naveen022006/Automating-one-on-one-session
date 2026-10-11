@@ -206,3 +206,10 @@ test("Onboarding: a ?step= change after the first render refetches the page's da
   assert.ok(/\}, \[step, queryClient\]\)/.test(source), "the effect depends on the step");
   assert.ok(!/refetchQueries|queryClient\.invalidateQueries\(\)/.test(source), "no refetch of every query");
 });
+
+test("Onboarding: when the data arrives after FocusOnNavigate has given up, the wizard's landmark takes the focus, but only after an in-app navigation and only if nothing else has focus", () => {
+  const source = readFileSync(path.resolve(__dirname, "..", "web/src/pages/dashboard/Onboarding.tsx"), "utf8");
+  assert.ok(/useNavigationType\(\)/.test(source) && /navigationType === "POP"/.test(source), "not on a first load or back/forward");
+  assert.ok(/document\.activeElement !== document\.body/.test(source), "never takes the focus from something the user already focused");
+  assert.ok(/waitedForData/.test(source) && /main\.focus\(\{ preventScroll: true \}\)/.test(source), "only on the transition from loading to loaded, without scrolling");
+});

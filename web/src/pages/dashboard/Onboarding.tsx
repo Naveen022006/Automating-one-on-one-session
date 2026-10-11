@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, type ReactNode } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigationType, useSearchParams } from "react-router";
 import { Wordmark } from "@/components/site/SiteChrome";
 import { OnboardingView } from "@/components/views/dashboard/OnboardingView";
 import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
@@ -55,11 +55,26 @@ export function Component() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard("onboarding") });
   }, [step, queryClient]);
 
+  // FocusOnNavigate gives up after 3 s, and the data of this page can take longer than that: when the wizard first appears after
+  // an in-app navigation (a guard sent an unfinished account here) and nothing has focus, put the focus on its landmark. Not on
+  // a first load or back/forward (POP), as in FocusOnNavigate.
+  const navigationType = useNavigationType();
+  const hasData = query.data !== undefined;
+  const waitedForData = useRef(!hasData);
+  useEffect(() => {
+    if (!hasData || !waitedForData.current) return;
+    waitedForData.current = false;
+    const main = document.getElementById("main");
+    if (navigationType === "POP" || !main || (document.activeElement && document.activeElement !== document.body)) return;
+    if (!main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+    main.focus({ preventScroll: true });
+  }, [hasData, navigationType]);
+
   const gate = <QueryGate query={query}>{(data) => <OnboardingView data={data} step={step} outcome={search.get("google")} />}</QueryGate>;
   return (
     <>
       <PageTitle title="Set up your booking page" />
-      {query.data ? gate : <LoadingFrame>{gate}</LoadingFrame>}
+      {hasData ? gate : <LoadingFrame>{gate}</LoadingFrame>}
     </>
   );
 }
