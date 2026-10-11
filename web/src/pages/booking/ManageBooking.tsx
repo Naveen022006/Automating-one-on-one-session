@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { IconCalendarClock, IconCalendarX, IconChevronLeft, IconDownload, IconVideo } from "@web/components/icons";
 import { FocusedLayout } from "@web/components/site/SiteChrome";
 import { ConfirmDialog } from "@web/components/ui/overlays";
-import { Alert, Button, Card, StatusPill } from "@web/components/ui/primitives";
+import { Alert, Button, Card, StatusPill, cx } from "@web/components/ui/primitives";
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
+import { ReceiptCard } from "@web/components/views/booking/ReceiptCard";
 import type { ManageBookingData } from "@/lib/views/booking-manage";
 
 function when(iso: string, tz: string) {
@@ -104,10 +105,12 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
   }
 
   const cancelled = status === "CANCELLED";
+  // A paid booking shows its printable receipt; printing the page then prints only the receipt (styles/print.css).
+  const receipt = !cancelled ? data.receipt : null;
 
   return (
     <FocusedLayout>
-      <div className="stack stack--lg">
+      <div className={cx("stack stack--lg", receipt && "print-receipt-only")}>
         <div className="stack stack--sm">
           <h1 className="focused__title">Manage your booking</h1>
           <p className="muted">Hi {data.customerName}. Times are shown in {tz.replace(/_/g, " ")}.</p>
@@ -206,6 +209,8 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
             </div>
           </Card>
         )}
+
+        {receipt && <ReceiptCard receipt={receipt} />}
       </div>
 
       <ConfirmDialog

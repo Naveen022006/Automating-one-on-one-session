@@ -32,11 +32,8 @@ test("the three new routes have a lazy page module in the router, in the right g
 });
 
 test("placeholder pages render the route's own title and say 'Coming soon' (Z refuses to tag while any remains)", () => {
-  for (const [id, file, template] of [
-    ["customer-bookings", "web/src/pages/booking/FindBookings.tsx", undefined],
-    ["customer-portal", "web/src/pages/booking/CustomerPortal.tsx", undefined],
-    ["admin-reports", "web/src/pages/admin/Reports.tsx", "admin"],
-  ] as const) {
+  // The two customer pages are real since WP-D (tests/customer-portal.test.ts pins their wiring); only the report is still a placeholder here.
+  for (const [id, file, template] of [["admin-reports", "web/src/pages/admin/Reports.tsx", "admin"]] as const) {
     const src = read(file);
     assert.equal(src.match(/<PageTitle /g)?.length, 1, `${file}: exactly one PageTitle`);
     assert.ok(src.includes(`<PageTitle title="${route(id).title}"${template ? ` template="${template}"` : ""} />`), `${file}: title equals the route table`);
@@ -45,6 +42,15 @@ test("placeholder pages render the route's own title and say 'Coming soon' (Z re
   }
   // The token page keeps the no-referrer policy of the other token pages (see pages/booking/Manage.tsx).
   assert.ok(read("web/src/pages/booking/CustomerPortal.tsx").includes('<meta name="referrer" content="no-referrer" />'));
+  for (const [id, file] of [
+    ["customer-bookings", "web/src/pages/booking/FindBookings.tsx"],
+    ["customer-portal", "web/src/pages/booking/CustomerPortal.tsx"],
+  ] as const) {
+    const src = read(file);
+    assert.equal(src.match(/<PageTitle /g)?.length, 1, `${file}: exactly one PageTitle`);
+    assert.ok(src.includes(`<PageTitle title="${route(id).title}" />`), `${file}: title equals the route table`);
+    assert.ok(!src.includes("Coming soon"), file);
+  }
 });
 
 test("navigation: the admin sidebar has Reports after Payouts, the site footers link to /bookings", () => {
@@ -67,11 +73,11 @@ test("the influencer detail page mounts each stub panel once: status under the h
   assert.ok(view.indexOf('<Card title="Recent bookings">') < view.indexOf("<InfluencerActivityPanel"));
 });
 
-test("the retention sweeps are wired into sweepExpiredAuthRows and return a count (0 in the stub)", async () => {
+test("the retention sweeps are wired into sweepExpiredAuthRows and return a count (the activity one is still a stub)", async () => {
   assert.equal(await sweepOldActivity(), 0);
   assert.equal(await sweepOldActivity(new Date()), 0);
-  assert.equal(await sweepExpiredCustomerAccess(), 0);
-  assert.equal(await sweepExpiredCustomerAccess(new Date()), 0);
+  // sweepExpiredCustomerAccess is real since WP-D and deletes rows: tests/customer-portal.test.ts covers it with its own rows.
+  assert.equal(typeof sweepExpiredCustomerAccess, "function");
   const sweep = read("lib/auth/sweep.ts");
   assert.ok(sweep.includes("await sweepOldActivity(now)") && sweep.includes("await sweepExpiredCustomerAccess(now)"));
   assert.ok(/return a\.count \+ b\.count \+ c\.count \+ activity \+ customerAccess;/.test(sweep));

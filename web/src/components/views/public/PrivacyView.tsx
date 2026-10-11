@@ -1,4 +1,5 @@
 import { LegalPage } from "@web/components/site/LegalPage";
+import { AppLink } from "@web/lib/link";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
 
 /** The Privacy Policy text. The only copy of the text. */
@@ -36,6 +37,13 @@ export function PrivacyView() {
       <p>
         You can ask for a copy of your data, a correction, or erasure. Write to{" "}
         <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>. We reply within 30 days.
+      </p>
+      <p>
+        Customers can also do this themselves, without an account: <AppLink href="/bookings">find your bookings</AppLink> with the e-mail
+        address you booked with, then see them, download a copy of the data we hold under that address, or erase it. Erasing removes your
+        name, e-mail address, phone number, time zone and booking answers from past bookings with every host. Payment records are kept
+        without your personal details, because the law requires them for accounting, and an upcoming session keeps its details until it
+        is cancelled, so that it can still take place.
       </p>
       <h2>Security</h2>
       <p>
