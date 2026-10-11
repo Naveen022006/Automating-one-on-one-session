@@ -28,7 +28,7 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
 
       const booking = await tx.booking.findUniqueOrThrow({
         where: { id: bookingId },
-        include: { session: { include: { service: true } } },
+        include: { session: { include: { service: { include: { influencer: { select: { suspendedAt: true } } } } } } },
       });
       const now = new Date();
       const payable =
@@ -36,6 +36,9 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
         booking.holdExpiresAt !== null &&
         booking.holdExpiresAt > now;
       if (!payable) throw new NotPayableError("This hold has expired or the booking is already processed");
+      // A suspended influencer takes no new payments, not even for a hold made before the suspension. Nothing is created or
+      // reused below this line. (A Razorpay order opened earlier still completes through the webhook, which is unchanged.)
+      if (booking.session.service.influencer.suspendedAt) throw new NotPayableError("This booking can no longer be paid. You have not been charged.");
 
       const service = booking.session.service;
       const customer = { name: booking.customerName, email: booking.customerEmail, contact: booking.whatsappE164 };

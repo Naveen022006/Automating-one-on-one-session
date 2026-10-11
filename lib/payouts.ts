@@ -409,7 +409,9 @@ export async function createPayout(influencerId: string, currency: string, admin
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM influencers WHERE id = ${influencerId} FOR UPDATE`;
       if (locked.length === 0) throw new PayoutError("Influencer not found", 404);
 
-      const influencer = await tx.influencer.findUniqueOrThrow({ where: { id: influencerId }, select: { platformFeeBps: true, payoutAccount: true } });
+      const influencer = await tx.influencer.findUniqueOrThrow({ where: { id: influencerId }, select: { platformFeeBps: true, payoutAccount: true, suspendedAt: true } });
+      // Read under the row lock above, so a suspension in progress and a payout being created cannot both win.
+      if (influencer.suspendedAt) throw new PayoutError("This influencer is suspended. Reinstate them before creating a payout.", 409);
       const account = influencer.payoutAccount;
       if (!account) throw new PayoutError("This influencer has not added payout details.");
       if (account.status !== "VERIFIED") throw new PayoutError("Verify the influencer's payout details before creating a payout.");

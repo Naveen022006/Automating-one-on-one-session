@@ -105,11 +105,14 @@ export async function approveRequest(influencerId: string, bookingId: string, no
   const b = await loadOwned(prisma, influencerId, bookingId);
   if (b.status !== "REQUESTED") throw new ApprovalError(b.status === "HELD" ? "This request is already approved." : "This booking is not a pending request.");
   if (!b.holdExpiresAt || b.holdExpiresAt <= now) throw new ApprovalError("This request expired before you answered. The customer can request again.");
+  // A suspended account takes no new payments, so it cannot approve a request into a payable hold. Declining stays allowed.
+  const standing = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { suspendedAt: true } });
+  if (standing?.suspendedAt) throw new ApprovalError("Your account is suspended, so requests cannot be approved.", 409);
   const payBy = paymentDeadline(now, b.session.startTime);
   if (!payBy) throw new ApprovalError("This session starts too soon for the customer to pay. Decline it and ask them to pick another time.");
 
   const { count } = await prisma.booking.updateMany({
-    where: { id: b.id, status: "REQUESTED", holdExpiresAt: { gt: now } },
+    where: { id: b.id, status: "REQUESTED", holdExpiresAt: { gt: now }, session: { service: { influencer: { suspendedAt: null } } } },
     data: { status: "HELD", holdExpiresAt: payBy, decidedAt: now, declineReason: null },
   });
   if (count === 0) throw new ApprovalError("This request changed while you were approving it. Refresh and try again.");

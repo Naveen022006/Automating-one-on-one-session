@@ -1,5 +1,6 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { SUPPORT_EMAIL } from "@/lib/brand";
 import { GMAIL_SEND_SCOPE } from "@/lib/google";
 import { TEMPLATE_STATE_NOTICE } from "@/lib/message-templates";
 import { whatsappTemplateState } from "@/lib/whatsapp-connection";
@@ -16,10 +17,29 @@ import { whatsappTemplateState } from "@/lib/whatsapp-connection";
  * Everything here is pure except `loadReadiness`, so the rules and the matching database filter are unit-tested.
  */
 
-export type ReadinessKey = "email" | "service" | "availability" | "google" | "gmail" | "whatsapp" | "payout";
+export type ReadinessKey = "email" | "service" | "availability" | "google" | "gmail" | "whatsapp" | "payout" | "account";
 export const CONNECTION_KEYS = ["google", "gmail", "whatsapp", "payout"] as const;
 type ConnectionKey = (typeof CONNECTION_KEYS)[number];
 const BASICS: ReadinessKey[] = ["email", "service", "availability"];
+
+/**
+ * Whether a blocker keeps the booking page offline. Services and weekly hours are not part of "live" (a page with
+ * nothing to book simply shows nothing); the email, the required connections and the account's standing are. This is the
+ * single place that rule lives: the public page, the admin list and the dashboard overview all ask it.
+ */
+export function isLiveBlocker(key: ReadinessKey): boolean {
+  return key === "email" || key === "account" || (CONNECTION_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * True when a new page needs an administrator's approval before it goes live (READINESS_REQUIRED contains "approval").
+ * READINESS_BYPASS=true turns it off outside production, like the connections; it never bypasses a suspension.
+ */
+export function approvalRequired(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.READINESS_BYPASS === "true" && env.NODE_ENV !== "production") return false;
+  const wanted = (env.READINESS_REQUIRED ?? "google,payout").split(",").map((s) => s.trim().toLowerCase());
+  return wanted.includes("approval");
+}
 
 /** Which connections are required. Basics are always required. READINESS_BYPASS=true turns the connections off outside production. */
 export function requiredConnections(env: NodeJS.ProcessEnv = process.env): ConnectionKey[] {
@@ -41,6 +61,10 @@ export interface ReadinessInput {
    */
   whatsapp: "none" | "ready" | "pending" | "rejected" | "not-submitted" | "error";
   payout: "none" | "pending" | "verified" | "rejected";
+  /** Set while the platform has suspended the account (the reason is shown to the influencer, never who did it). */
+  suspended: { reason: string } | null;
+  /** An administrator approved the page. Only matters while approvalRequired() is on. */
+  approved: boolean;
 }
 
 /** The short badge the admin console shows for each WhatsApp state, the same states as the influencer's own checklist. */
@@ -70,7 +94,11 @@ export interface Readiness {
   ready: boolean;
 }
 
-export function evaluateReadiness(input: ReadinessInput, required: ConnectionKey[] = requiredConnections()): Readiness {
+export function evaluateReadiness(
+  input: ReadinessInput,
+  required: ConnectionKey[] = requiredConnections(),
+  opts: { approvalRequired: boolean } = { approvalRequired: approvalRequired() },
+): Readiness {
   const req = new Set<ReadinessKey>([...BASICS, ...required]);
   const item = (key: ReadinessKey, label: string, state: ReadinessItem["state"], detail: string, href: string): ReadinessItem => ({
     key,
@@ -120,6 +148,27 @@ export function evaluateReadiness(input: ReadinessInput, required: ConnectionKey
       "/dashboard/payouts",
     ),
   ];
+  // Account standing is appended only when it applies, so a normal account sees exactly the items above. A suspension is
+  // never optional and is not affected by READINESS_BYPASS.
+  if (input.suspended) {
+    items.push({
+      key: "account",
+      label: "Account in good standing",
+      state: "attention",
+      required: true,
+      detail: `Suspended by the platform: ${input.suspended.reason}. Contact ${SUPPORT_EMAIL} to resolve it.`,
+      href: "/contact",
+    });
+  } else if (opts.approvalRequired && !input.approved) {
+    items.push({
+      key: "account",
+      label: "Platform review",
+      state: "todo",
+      required: true,
+      detail: "We review new booking pages before they go live. You will get an e-mail.",
+      href: "/dashboard",
+    });
+  }
   // A connection whose templates are rejected or unsent is flagged but never blocks, exactly like one still in review:
   // buildPublicInfluencerWhere below only asks for an ACTIVE connection, and the two must agree.
   const connectedWithTemplateTrouble = input.whatsapp === "rejected" || input.whatsapp === "not-submitted";
@@ -137,6 +186,8 @@ export function buildPublicInfluencerWhere(env: NodeJS.ProcessEnv = process.env)
     { onboardedAt: { not: null } },
     { OR: [{ user: { is: null } }, { user: { is: { emailVerifiedAt: { not: null } } } }] },
   ];
+  and.push({ suspendedAt: null });
+  if (approvalRequired(env)) and.push({ approvedAt: { not: null } });
   if (required.includes("google")) and.push({ googleToken: { is: { status: "ACTIVE" } } });
   if (required.includes("gmail")) and.push({ googleToken: { is: { status: "ACTIVE", scope: { contains: GMAIL_SEND_SCOPE } } } });
   if (required.includes("whatsapp")) and.push({ whatsappConnection: { is: { status: "ACTIVE" } } });
@@ -148,6 +199,9 @@ export async function loadReadiness(influencerId: string, emailVerified: boolean
   const row = await prisma.influencer.findUniqueOrThrow({
     where: { id: influencerId },
     select: {
+      suspendedAt: true,
+      suspendedReason: true,
+      approvedAt: true,
       googleToken: { select: { status: true, scope: true } },
       payoutAccount: { select: { status: true } },
       whatsappConnection: { select: { status: true, templates: true } },
@@ -160,6 +214,9 @@ export async function loadReadiness(influencerId: string, emailVerified: boolean
 /** Shapes the rows the dashboard, public page and admin list already load into the pure input. */
 export function readinessInput(
   row: {
+    suspendedAt: Date | null;
+    suspendedReason: string | null;
+    approvedAt: Date | null;
     googleToken: { status: string; scope: string } | null;
     payoutAccount: { status: string } | null;
     whatsappConnection: { status: string; templates: unknown } | null;
@@ -176,5 +233,7 @@ export function readinessInput(
     gmailSend: row.googleToken?.scope.split(/\s+/).includes(GMAIL_SEND_SCOPE) ?? false,
     whatsapp: !wa ? "none" : wa.status === "ERROR" ? "error" : whatsappTemplateState(wa.templates),
     payout: !row.payoutAccount ? "none" : row.payoutAccount.status === "VERIFIED" ? "verified" : row.payoutAccount.status === "REJECTED" ? "rejected" : "pending",
+    suspended: row.suspendedAt ? { reason: row.suspendedReason ?? "No reason was recorded" } : null,
+    approved: row.approvedAt != null,
   };
 }

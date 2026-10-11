@@ -1,7 +1,7 @@
 import { getAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { parseQuestions, type IntakeQuestion } from "@/lib/intake";
-import { CONNECTION_KEYS, evaluateReadiness, readinessInput } from "@/lib/readiness";
+import { evaluateReadiness, isLiveBlocker, readinessInput } from "@/lib/readiness";
 import { describeRefundPolicy, type RefundPolicy } from "@/lib/refund-policy";
 
 export interface PublicService {
@@ -56,7 +56,7 @@ export async function loadPublicProfile(slug: string): Promise<PublicProfile | n
   const readiness = evaluateReadiness(readinessInput(influencer, emailVerified));
   // Live needs onboarding finished, a verified email and every REQUIRED connection. (Services and hours are not part
   // of "live": a page with nothing to book simply shows nothing.)
-  const connectionBlockers = readiness.blockers.filter((b) => b.key === "email" || (CONNECTION_KEYS as readonly string[]).includes(b.key));
+  const connectionBlockers = readiness.blockers.filter((b) => isLiveBlocker(b.key));
   const live = influencer.onboardedAt !== null && connectionBlockers.length === 0;
   let preview = false;
   if (!live) {
