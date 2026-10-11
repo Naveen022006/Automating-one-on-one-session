@@ -17,8 +17,10 @@ export interface ManageBookingData {
   startTime: string;
   meetLink: string | null;
   canManage: boolean;
-  /** False for group sessions and inside a 24-hour notice window. */
+  /** False for group sessions, inside a 24-hour notice window and while the host's account is suspended (no open times are offered then). */
   canReschedule: boolean;
+  /** The platform suspended the host: rescheduling is unavailable for now, cancelling still works. Says nothing else about the account. */
+  hostSuspended: boolean;
   refundPolicyText: string;
   cancelRefundText: string | null;
 }
@@ -36,7 +38,7 @@ export async function loadManageView(token: string): Promise<ManageView> {
   if (!bookingId) return { state: "expired" };
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: { select: { name: true } } } } } }, payments: { where: { status: "CAPTURED" } } },
+    include: { session: { include: { service: { include: { influencer: { select: { name: true, suspendedAt: true } } } } } }, payments: { where: { status: "CAPTURED" } } },
   });
   if (!booking || booking.redactedAt) return { state: "not-found" };
 
@@ -45,6 +47,8 @@ export async function loadManageView(token: string): Promise<ManageView> {
   const policy = booking.refundPolicy ?? service.refundPolicy;
   const decision = refundDecision({ policy, actor: "customer", sessionStart: session.startTime });
   const msToStart = session.startTime.getTime() - Date.now();
+  // A suspended host offers no open times (the slot endpoints are not changed), so say so instead of showing an empty calendar.
+  const hostSuspended = service.influencer.suspendedAt !== null;
   return {
     state: "ok",
     booking: {
@@ -59,7 +63,8 @@ export async function loadManageView(token: string): Promise<ManageView> {
       startTime: session.startTime.toISOString(),
       meetLink: booking.meetLink ?? session.meetLink,
       canManage: (booking.status === "PAID" || booking.status === "SCHEDULED") && msToStart > 0,
-      canReschedule: service.type !== "GROUP" && !(policy === "NOTICE_24H" && msToStart < 24 * 3_600_000),
+      canReschedule: service.type !== "GROUP" && !(policy === "NOTICE_24H" && msToStart < 24 * 3_600_000) && !hostSuspended,
+      hostSuspended,
       refundPolicyText: describeRefundPolicy(policy),
       cancelRefundText:
         booking.payments.length === 0

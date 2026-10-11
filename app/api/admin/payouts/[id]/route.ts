@@ -8,9 +8,17 @@ import { jsonError, parseJson } from "@/lib/http";
 import { approvePayout, cancelPayout, markPayoutPaid, PayoutError } from "@/lib/payouts";
 import { clientIp } from "@/lib/rate-limit";
 
+// For a suspended influencer, approving or paying is refused (409 `influencer-suspended`) unless the administrator confirms with
+// `acknowledgeSuspended: true` and says why in `suspendedReason`; the override and the reason go into the audit entry.
+const suspendedAck = {
+  acknowledgeSuspended: z.boolean().optional(),
+  suspendedReason: z.string().trim().min(5, "Say why you are paying a suspended influencer.").max(300).optional(),
+};
+const needsReason = (b: { acknowledgeSuspended?: boolean; suspendedReason?: string }) => !b.acknowledgeSuspended || b.suspendedReason !== undefined;
+const reasonIssue = { message: "Say why you are paying a suspended influencer.", path: ["suspendedReason"] };
 const schema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("approve") }),
-  z.object({ action: z.literal("paid"), reference: z.string().trim().min(6, "Enter the bank reference (UTR).").max(60) }),
+  z.object({ action: z.literal("approve"), ...suspendedAck }).refine(needsReason, reasonIssue),
+  z.object({ action: z.literal("paid"), reference: z.string().trim().min(6, "Enter the bank reference (UTR).").max(60), ...suspendedAck }).refine(needsReason, reasonIssue),
   z.object({ action: z.literal("cancel"), note: z.string().trim().max(300).optional() }),
 ]);
 
@@ -26,26 +34,27 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const body = parsed.data;
   const actor = { adminId: admin.adminId, email: admin.email };
   const ip = clientIp(req.headers);
+  const override = body.action !== "cancel" && body.acknowledgeSuspended && body.suspendedReason ? { reason: body.suspendedReason } : undefined;
 
   try {
     if (body.action === "approve") {
-      const payout = await approvePayout(id, admin.email);
+      const payout = await approvePayout(id, admin.email, new Date(), override);
       await recordAudit(actor, {
         action: "payout.approved",
         targetType: "payout",
         targetId: id,
-        detail: { netMinor: payout.netMinor, currency: payout.currency, createdBy: payout.createdByEmail },
+        detail: { netMinor: payout.netMinor, currency: payout.currency, createdBy: payout.createdByEmail, ...(payout.suspendedOverride && override ? { suspendedOverride: override.reason } : {}) },
         ip,
       });
       return NextResponse.json({ ok: true, approvedAt: payout.approvedAt, approvedByEmail: payout.approvedByEmail });
     }
     if (body.action === "paid") {
-      const payout = await markPayoutPaid(id, body.reference, admin.email);
+      const payout = await markPayoutPaid(id, body.reference, admin.email, process.env, override);
       await recordAudit(actor, {
         action: "payout.paid",
         targetType: "payout",
         targetId: id,
-        detail: { reference: body.reference, netMinor: payout.netMinor, currency: payout.currency, approvedBy: payout.approvedByEmail },
+        detail: { reference: body.reference, netMinor: payout.netMinor, currency: payout.currency, approvedBy: payout.approvedByEmail, ...(payout.suspendedOverride && override ? { suspendedOverride: override.reason } : {}) },
         ip,
       });
       await sendAccountEmail(
@@ -66,7 +75,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     await recordAudit(actor, { action: "payout.cancelled", targetType: "payout", targetId: id, detail: { note: body.note ?? null }, ip });
     return NextResponse.json({ ok: true });
   } catch (e) {
-    if (e instanceof PayoutError) return jsonError(e.message, e.status);
+    if (e instanceof PayoutError) return jsonError(e.message, e.status, e.code ? { code: e.code } : {});
     throw e;
   }
 }

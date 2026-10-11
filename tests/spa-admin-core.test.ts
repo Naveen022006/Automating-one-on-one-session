@@ -296,7 +296,11 @@ test("M2 GET /api/admin/influencers: paged, searchable, hand-picked rows", { ski
   assert.equal((await ask(() => endpoint.influencers(`?q=${encodeURIComponent(`CORE-${run}`)}`), adminCookie(token))).body.total, 1);
   const none = await ask(() => endpoint.influencers(`?q=zzz-nobody-${run}`), adminCookie(token));
   assert.equal(none.status, 200);
-  assert.deepEqual({ rows: none.body.rows, total: none.body.total, page: none.body.page, pageCount: none.body.pageCount }, { rows: [], total: 0, page: 1, pageCount: 1 });
+  // The whole body: `counts` is the real, global number behind the two moderation tabs, so only its shape is pinned.
+  const { counts: noneCounts, ...noneRest } = none.body;
+  assert.deepEqual(noneRest, { rows: [], total: 0, page: 1, pageCount: 1, status: "all" });
+  assert.deepEqual(keys(noneCounts), ["awaitingApproval", "suspended"]);
+  for (const n of Object.values(noneCounts as Record<string, unknown>)) assert.ok(Number.isInteger(n) && (n as number) >= 0);
   // A bad `page` falls back to 1, an over-long `q` is cut to 80 characters instead of failing.
   assert.equal((await ask(() => endpoint.influencers(`?page=-3&q=${encodeURIComponent(influencerName)}`), adminCookie(token))).body.page, 1);
   assert.equal((await ask(() => endpoint.influencers(`?page=abc`), adminCookie(token))).body.page, 1);

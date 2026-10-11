@@ -27,6 +27,7 @@ const emailX = `mod-x-${run}@example.com`; // administrator with two-factor
 const emailY = `mod-y-${run}@example.com`; // administrator without; does the moderating
 const slug = `mod-${run}`;
 const reviewSlug = `modr-${run}`;
+const thirdSlug = `modt-${run}`;
 const influencerEmail = `mod-inf-${run}@example.com`;
 const REASON = "Chargeback investigation";
 
@@ -34,6 +35,8 @@ const REASON = "Chargeback investigation";
 const ENV_KEYS = [
   "ADMIN_REQUIRE_2FA",
   "PAYOUT_HOLD_DAYS",
+  "PAYOUT_FOUR_EYES",
+  "PAYOUT_FOUR_EYES_MIN_MINOR",
   "PLATFORM_FEE_BPS",
   "READINESS_BYPASS",
   "READINESS_REQUIRED",
@@ -53,6 +56,13 @@ let listRoute: { GET: (req: Request) => Promise<Response> };
 let holdRoute: { POST: (req: Request) => Promise<Response> };
 let slotsRoute: { GET: (req: Request) => Promise<Response> };
 let overviewRoute: { GET: () => Promise<Response> };
+let onboardingRoute: { POST: () => Promise<Response> };
+let payoutRoute: { POST: (req: Request, ctx: Ctx) => Promise<Response> };
+let selfServiceLib: typeof import("../lib/self-service");
+let signingLib: typeof import("../lib/signing");
+let manageViewLib: typeof import("../lib/views/booking-manage");
+let payViewLib: typeof import("../lib/views/booking-pay");
+let payoutViewLib: typeof import("../lib/views/admin-payouts");
 let sessionLib: typeof import("../lib/admin/session");
 let authLib: typeof import("../lib/auth/session");
 let moderationLib: typeof import("../lib/admin/moderation");
@@ -66,6 +76,8 @@ let X = "";
 let Y = "";
 let influencerId = "";
 let reviewId = "";
+let thirdId = "";
+const thirdEmail = `mod-third-${run}@example.com`;
 let ownerCookie = "";
 let serviceId = "";
 let approvalServiceId = "";
@@ -180,6 +192,13 @@ before(async () => {
   holdRoute = await import("../app/api/bookings/hold/route");
   slotsRoute = await import("../app/api/slots/route");
   overviewRoute = await import("../app/api/dashboard/overview/route");
+  onboardingRoute = await import("../app/api/dashboard/onboarding/route");
+  payoutRoute = await import("../app/api/admin/payouts/[id]/route");
+  selfServiceLib = await import("../lib/self-service");
+  signingLib = await import("../lib/signing");
+  manageViewLib = await import("../lib/views/booking-manage");
+  payViewLib = await import("../lib/views/booking-pay");
+  payoutViewLib = await import("../lib/views/admin-payouts");
   const mfa = await import("../lib/admin/mfa");
   const totp = await import("../lib/admin/totp");
 
@@ -198,6 +217,8 @@ before(async () => {
   });
   ownerCookie = await authLib.createSession(user.id);
   reviewId = (await prisma.influencer.create({ data: { slug: reviewSlug, name: `Mod Review ${run}`, email: `mod-review-${run}@example.com`, onboardedAt: new Date() } })).id;
+
+  thirdId = (await prisma.influencer.create({ data: { slug: thirdSlug, name: `Mod Third ${run}`, email: thirdEmail, onboardedAt: new Date() } })).id;
 
   serviceId = (await prisma.service.create({ data: { influencerId, title: "Mod 1:1", durationMin: 30, priceMinor: 1000 } })).id;
   approvalServiceId = (await prisma.service.create({ data: { influencerId, title: "Mod reviewed", durationMin: 30, priceMinor: 2000, requiresApproval: true } })).id;
@@ -238,7 +259,8 @@ after(async () => {
           console.error(`[moderation] cleanup step failed (${what}):`, e instanceof Error ? e.message : e);
         }
       };
-      const ids = (await prisma.influencer.findMany({ where: { slug: { in: [slug, reviewSlug] } }, select: { id: true } }).catch(() => [])).map((i) => i.id);
+      // Everything this file creates has a slug that starts with "mod" and ends with this run's timestamp.
+      const ids = (await prisma.influencer.findMany({ where: { slug: { startsWith: "mod", endsWith: run } }, select: { id: true } }).catch(() => [])).map((i) => i.id);
       if (ids.length) {
         await step("payments", () => prisma.payment.updateMany({ where: { booking: { session: { service: { influencerId: { in: ids } } } } }, data: { payoutId: null } }));
         await step("payouts", () => prisma.payout.deleteMany({ where: { influencerId: { in: ids } } }));
@@ -373,8 +395,9 @@ test("suspend: 200 with the new view, one audit row, one e-mail with the reason;
   const res = await asAdmin(token, () => post({ action: "suspend", reason: `  ${REASON}  ` }));
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual(keys(res.body), ["ok", "view"]);
+  assert.deepEqual(keys(res.body), ["emailed", "ok", "view"]);
   assert.equal(res.body.ok, true);
+  assert.equal(res.body.emailed, true, "the e-mail went out, so the console may say so");
   const view = res.body.view as Record<string, unknown>;
   assert.deepEqual(keys(view), ["approval", "impact", "status", "suspension"]);
   assert.equal(view.status, "suspended");
@@ -409,8 +432,6 @@ test("suspend: 200 with the new view, one audit row, one e-mail with the reason;
   assert.equal((await auditRows("influencer.suspended")).length, 1, "a repeated click adds no audit row");
   assert.equal(accountEmails().length, 1, "and sends no second e-mail");
   assert.equal((await dbRow()).suspendedReason, REASON, "and keeps the first reason");
-  const unsuspendable = await asAdmin(token, () => post({ action: "approve" }));
-  assert.equal(unsuspendable.status, 409, "approval is not required while the gate is off");
 });
 
 test("while suspended: the page is offline for strangers (the owner sees a preview), holds, checkout, approvals and payouts are refused, paid bookings are untouched", { skip }, async () => {
@@ -460,6 +481,21 @@ test("while suspended: the page is offline for strangers (the owner sees a previ
   // The paid booking is untouched.
   assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: paidBookingId } })).status, "SCHEDULED");
   assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: paidPaymentId } })).status, "CAPTURED");
+
+  // The customer's manage page says rescheduling is unavailable (instead of an empty calendar); cancelling still works.
+  const manageToken = signingLib.signToken(selfServiceLib.SELF_SERVICE_PURPOSE, { b: paidBookingId }, 3600);
+  const manage = await manageViewLib.loadManageView(manageToken);
+  assert.equal(manage.state, "ok");
+  if (manage.state === "ok") {
+    assert.equal(manage.booking.hostSuspended, true);
+    assert.equal(manage.booking.canReschedule, false);
+    assert.equal(manage.booking.canManage, true, "cancelling is still offered");
+    assert.ok(!JSON.stringify(manage).includes(REASON) && !JSON.stringify(manage).includes(emailY), "the customer learns nothing about why");
+  }
+  // The pay page of the hold made before the suspension has no Pay button.
+  const payToken = signingLib.signToken(selfServiceLib.BOOKING_PAY_PURPOSE, { b: heldBookingId }, 3600);
+  const pay = await payViewLib.loadPayView(payToken);
+  assert.deepEqual(pay, { state: "unavailable", hostName: `Mod Fixture ${run}` });
 
   // The influencer's own dashboard says why, with the reason and never who suspended them.
   set({ [authLib.sessionCookieName()]: ownerCookie });
@@ -516,13 +552,16 @@ test("reinstate: concurrent clicks give one 200 and one 409, one audit row and o
   const both = await Promise.all([post({ action: "reinstate" }), post({ action: "reinstate" })]);
   assert.deepEqual(both.map((r) => r.status).sort(), [200, 409]);
   const ok = await answer(both.find((r) => r.status === 200)!);
-  assert.deepEqual(keys(ok.body), ["ok", "view"]);
+  assert.deepEqual(keys(ok.body), ["emailed", "ok", "view"]);
+  assert.equal(ok.body.emailed, true);
   assert.equal((ok.body.view as { status: string }).status, "active");
   assert.equal((ok.body.view as { suspension: unknown }).suspension, null);
   assert.equal((await auditRows("influencer.reinstated")).length, 1);
   const mails = accountEmails();
   assert.equal(mails.length, 1);
   assert.match(mails[0].subject, /reinstated/i);
+  assert.match(mails[0].text, /live again/, "the gate is off: reinstating does put the page back online");
+  assert.doesNotMatch(mails[0].text, /still offline/);
   const row = await dbRow();
   assert.deepEqual([row.suspendedAt, row.suspendedReason, row.suspendedByEmail], [null, null, null]);
   const third = await asAdmin(token, () => post({ action: "reinstate" }));
@@ -553,6 +592,13 @@ test("reinstate: concurrent clicks give one 200 and one 409, one audit row and o
   assert.equal(checkout.amountMinor, 1000);
   assert.equal(await prisma.payment.count({ where: { bookingId: heldBookingId } }), 1);
 
+  // The customer-facing pages are back to normal.
+  const manageToken = signingLib.signToken(selfServiceLib.SELF_SERVICE_PURPOSE, { b: paidBookingId }, 3600);
+  const manage = await manageViewLib.loadManageView(manageToken);
+  assert.ok(manage.state === "ok" && manage.booking.canReschedule === true && manage.booking.hostSuspended === false);
+  const pay = await payViewLib.loadPayView(signingLib.signToken(selfServiceLib.BOOKING_PAY_PURPOSE, { b: heldBookingId }, 3600));
+  assert.equal(pay.state, "payable");
+
   // The request can be approved.
   const approved = await approvalLib.approveRequest(influencerId, requestedBookingId);
   assert.ok(approved.payBy instanceof Date);
@@ -566,19 +612,144 @@ test("reinstate: concurrent clicks give one 200 and one 409, one audit row and o
   assert.deepEqual((status.body as { impact: unknown }).impact, { upcomingPaidBookings: 1, pendingPayouts: 1 });
 });
 
-test("approve exists only while READINESS_REQUIRED contains approval; awaiting pages are listed and counted", { skip }, async () => {
+test("checkout waits for a suspension that is already in flight, then refuses (the host row is share-locked)", { skip }, async () => {
+  const sleep = (ms: number) => new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), ms));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let updated!: () => void;
+  const updatedFirst = new Promise<void>((resolve) => (updated = resolve));
+  // A suspension that has changed the host row but not committed yet. Without the share lock, checkout would read the old row, see
+  // "not suspended" and go on to create the order.
+  const suspender = prisma.$transaction(
+    async (tx) => {
+      await tx.influencer.update({ where: { id: influencerId }, data: { suspendedAt: new Date(), suspendedReason: "Race check reason", suspendedByEmail: emailY } });
+      updated();
+      await gate;
+    },
+    { timeout: 60_000 },
+  );
+  await updatedFirst;
+  const calls = orderCalls;
+  const outcome = checkoutLib.startCheckout(heldBookingId).then(
+    () => "paid" as const,
+    (e: unknown) => e,
+  );
+  assert.equal(await Promise.race([outcome, sleep(2500)]), "waiting", "checkout is held back by the suspension in flight");
+  release();
+  await suspender;
+  const result = await outcome;
+  assert.ok(result instanceof checkoutLib.NotPayableError, `checkout refused once the suspension committed (got ${String(result)})`);
+  assert.equal(orderCalls, calls, "no order was created");
+  await prisma.influencer.update({ where: { id: influencerId }, data: { suspendedAt: null, suspendedReason: null, suspendedByEmail: null } });
+});
+
+test("approveRequest's conditional update refuses a suspension that landed after the up-front check", { skip }, async () => {
+  const request = await holdsLib.createHold(holdInput(approvalServiceId, 9 * DAY, `race-${run}@example.com`, true));
+  await prisma.influencer.update({ where: { id: influencerId }, data: { suspendedAt: new Date(), suspendedReason: "Race check reason", suspendedByEmail: emailY } });
+  // Simulates the race: the check at the top of approveRequest still sees "not suspended" (the suspension commits just after it).
+  // (The model delegates answer through a Proxy, so the delegate is wrapped instead of patching one method.)
+  const realDelegate = prisma.influencer;
+  let checks = 0;
+  const stand = (value: unknown) => Object.defineProperty(prisma, "influencer", { value, configurable: true, writable: true });
+  stand(
+    new Proxy(realDelegate, {
+      get: (target, key) => (key === "findUnique" ? async () => (checks++, { suspendedAt: null }) : Reflect.get(target, key)),
+    }),
+  );
+  try {
+    await assert.rejects(
+      approvalLib.approveRequest(influencerId, request.id),
+      (e: unknown) => e instanceof approvalLib.ApprovalError && e.status === 409 && /changed while you were approving/.test(e.message),
+      "the update itself says no, whatever the check saw",
+    );
+    assert.equal(checks, 1, "the stand-in answered the check");
+  } finally {
+    stand(realDelegate);
+    await prisma.influencer.update({ where: { id: influencerId }, data: { suspendedAt: null, suspendedReason: null, suspendedByEmail: null } });
+  }
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: request.id } })).status, "REQUESTED", "the request was not turned into a payable hold");
+});
+
+test("payouts of a suspended influencer: approve and mark-paid need an explicit, audited 'pay anyway'; cancel stays allowed; not suspended is unchanged", { skip }, async () => {
+  const tokenY = await sessionLib.createAdminSession(Y);
+  const tokenX = await sessionLib.createAdminSession(X, {}, { mfaVerified: true });
+  const act = (token: string, id: string, body: unknown) =>
+    asAdmin(token, () => payoutRoute.POST(new Request(`http://localhost/api/admin/payouts/${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) }));
+  const audit = (id: string, action: string) => prisma.adminAuditLog.findMany({ where: { targetType: "payout", targetId: id, action } });
+  const P = await prisma.payout.findFirstOrThrow({ where: { influencerId, status: "PENDING" }, orderBy: { createdAt: "desc" } });
+  const OVERRIDE = "Paying an old, finished session";
+
+  // Not suspended: nothing changes, and a stray acknowledgement is neither needed nor recorded.
+  const plain = await act(tokenX, P.id, { action: "approve", acknowledgeSuspended: true, suspendedReason: "Not needed here" });
+  assert.equal(plain.status, 200);
+  const plainAudit = await audit(P.id, "payout.approved");
+  assert.equal(plainAudit.length, 1);
+  assert.ok(!JSON.stringify(plainAudit[0].detail).includes("suspendedOverride"), "no override is recorded for an influencer in good standing");
+
+  await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, influencerId, { action: "suspend", reason: REASON }, null);
+
+  // The payout list says so.
+  const listing = await payoutViewLib.loadAdminPayoutsView({ status: "PENDING" }, emailX);
+  assert.equal(listing.rows.find((r) => r.influencer.id === influencerId)?.influencer.suspended, true);
+
+  // Mark as paid: refused without the acknowledgement, with a code the console reacts to; 400 without a reason.
+  const reference = `UTRMOD${run}`.slice(0, 40);
+  const refused = await act(tokenY, P.id, { action: "paid", reference });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(keys(refused.body), ["code", "error"]);
+  assert.equal(refused.body.code, "influencer-suspended");
+  assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: P.id } })).status, "PENDING");
+  assert.equal((await audit(P.id, "payout.paid")).length, 0);
+  assert.equal((await act(tokenY, P.id, { action: "paid", reference, acknowledgeSuspended: true })).status, 400, "the acknowledgement needs a reason");
+  assert.equal((await act(tokenY, P.id, { action: "paid", reference, acknowledgeSuspended: true, suspendedReason: "no" })).status, 400, "and a real one");
+  assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: P.id } })).status, "PENDING");
+  const paid = await act(tokenY, P.id, { action: "paid", reference, acknowledgeSuspended: true, suspendedReason: OVERRIDE });
+  assert.equal(paid.status, 200);
+  assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: P.id } })).status, "PAID");
+  const paidAudit = await audit(P.id, "payout.paid");
+  assert.equal(paidAudit.length, 1);
+  assert.equal((paidAudit[0].detail as { suspendedOverride?: string }).suspendedOverride, OVERRIDE, "the override and its reason are in the audit entry");
+
+  // Approve: the same rule (another administrator, as four-eyes requires).
+  const P2 = await prisma.payout.create({
+    data: { influencerId, currency: "INR", grossMinor: 1000, refundsMinor: 0, feeBps: 0, feeMinor: 0, netMinor: 1000, paymentCount: 0, destination: "UPI mod", createdByEmail: emailY },
+  });
+  const refusedApprove = await act(tokenX, P2.id, { action: "approve" });
+  assert.equal(refusedApprove.status, 409);
+  assert.equal(refusedApprove.body.code, "influencer-suspended");
+  assert.equal((await prisma.payout.findUniqueOrThrow({ where: { id: P2.id } })).approvedAt, null);
+  const approved = await act(tokenX, P2.id, { action: "approve", acknowledgeSuspended: true, suspendedReason: OVERRIDE });
+  assert.equal(approved.status, 200);
+  const approvedAudit = await audit(P2.id, "payout.approved");
+  assert.equal(approvedAudit.length, 1);
+  assert.equal((approvedAudit[0].detail as { suspendedOverride?: string }).suspendedOverride, OVERRIDE);
+
+  // Cancelling returns the money to the pool and is always allowed.
+  assert.equal((await act(tokenY, P2.id, { action: "cancel", note: "Not needed" })).status, 200);
+
+  await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, influencerId, { action: "reinstate" }, null);
+});
+
+test("approving works in advance (gate off) and with the gate on; a suspended account is not e-mailed; the reinstate wording follows the gate", { skip }, async () => {
   const token = await sessionLib.createAdminSession(Y);
+  const mailsTo = (email: string) => accountEmails().filter((m) => m.to.email === email);
   sent.length = 0;
 
-  // Gate off (the file runs with READINESS_BYPASS=true, which also turns the approval gate off in development).
+  // Gate off (the file runs with READINESS_BYPASS=true, which also turns the approval gate off in development): approving in advance works.
   const off = await asAdmin(token, () => get());
   assert.deepEqual(off.body.approval, { required: false, at: null, byEmail: null });
-  const refused = await asAdmin(token, () => post({ action: "approve" }));
-  assert.equal(refused.status, 409);
-  assert.match(String(refused.body.error), /not required/i);
-  assert.equal((await dbRow()).approvedAt, null);
-  assert.equal((await auditRows("influencer.approved")).length, 0);
+  const pre = await asAdmin(token, () => post({ action: "approve" }, reviewId));
+  assert.equal(pre.status, 200);
+  assert.deepEqual(keys(pre.body), ["emailed", "ok", "view"]);
+  assert.equal(pre.body.emailed, false, "nothing was sent: it matters only once the gate is on");
+  const preView = pre.body.view as { status: string; approval: { required: boolean; at: string; byEmail: string } };
+  assert.deepEqual([preView.status, preView.approval.required, preView.approval.byEmail], ["active", false, emailY]);
+  assert.ok(preView.approval.at);
+  assert.equal((await prisma.adminAuditLog.findMany({ where: { targetType: "influencer", targetId: reviewId, action: "influencer.approved" } })).length, 1);
   assert.equal(accountEmails().length, 0);
+  const preAgain = await asAdmin(token, () => post({ action: "approve" }, reviewId));
+  assert.equal(preAgain.status, 409);
+  assert.match(String(preAgain.body.error), /already approved/i);
 
   // Gate on: READINESS_REQUIRED has "approval" and the bypass is off.
   process.env.READINESS_REQUIRED = "approval";
@@ -591,19 +762,40 @@ test("approve exists only while READINESS_REQUIRED contains approval; awaiting p
     const q = `&q=${run}`;
     const awaiting = await list(token, `?status=awaiting-approval${q}`);
     const ids = (awaiting.body.rows as { id: string; accountStatus: string }[]).filter((r) => r.accountStatus === "awaiting-approval").map((r) => r.id);
-    assert.ok(ids.includes(influencerId) && ids.includes(reviewId), "both finished, unapproved pages await approval");
+    assert.ok(ids.includes(influencerId) && ids.includes(thirdId), "finished, unapproved pages await approval");
+    assert.ok(!ids.includes(reviewId), "the page approved in advance does not");
     assert.ok((awaiting.body.counts as { awaitingApproval: number }).awaitingApproval >= 2);
     assert.equal(((await list(token, `?status=live&q=${encodeURIComponent(slug)}`)).body as { total: number }).total, 0, "an unapproved page is not live");
+    assert.equal(((await list(token, `?status=live&q=${encodeURIComponent(reviewSlug)}`)).body as { total: number }).total, 1, "the page approved in advance stays live");
 
-    // A suspension outranks "awaiting approval".
-    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, reviewId, { action: "suspend", reason: "Check order of statuses" }, null);
-    const reviewRow = (await list(token, `?q=${encodeURIComponent(reviewSlug)}`)).body.rows as { accountStatus: string }[];
-    assert.equal(reviewRow[0].accountStatus, "suspended");
-    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, reviewId, { action: "reinstate" }, null);
+    // A suspension outranks "awaiting approval"; approving a suspended account is allowed but announces nothing.
+    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, thirdId, { action: "suspend", reason: "Check order of statuses" }, null);
+    const thirdRow = (await list(token, `?q=${encodeURIComponent(thirdSlug)}`)).body.rows as { accountStatus: string }[];
+    assert.equal(thirdRow[0].accountStatus, "suspended");
     sent.length = 0;
+    const quiet = await asAdmin(token, () => post({ action: "approve" }, thirdId));
+    assert.equal(quiet.status, 200);
+    assert.equal(quiet.body.emailed, false, "no approval e-mail to a suspended account");
+    assert.equal((quiet.body.view as { status: string }).status, "suspended");
+    assert.equal(mailsTo(thirdEmail).length, 0);
+    // Reinstated with the page approved: it is live again, and the e-mail says so.
+    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, thirdId, { action: "reinstate" }, null);
+    assert.match(mailsTo(thirdEmail)[0].text, /live again/);
 
+    // Reinstated while the page still needs approval: the e-mail must not say it is live again.
+    sent.length = 0;
+    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, influencerId, { action: "suspend", reason: "Check the wording" }, null);
+    await moderationLib.moderateInfluencer({ adminId: Y, email: emailY }, influencerId, { action: "reinstate" }, null);
+    const reinstated = mailsTo(influencerEmail).find((m) => /reinstated/i.test(m.subject));
+    assert.ok(reinstated);
+    assert.match(reinstated.text, /still offline/);
+    assert.doesNotMatch(reinstated.text, /live again/);
+
+    // Approve normally: one audit row, one e-mail that does not promise it is live.
+    sent.length = 0;
     const approved = await asAdmin(token, () => post({ action: "approve" }));
     assert.equal(approved.status, 200);
+    assert.equal(approved.body.emailed, true);
     const view = approved.body.view as { status: string; approval: { required: boolean; at: string; byEmail: string } };
     assert.equal(view.status, "active");
     assert.equal(view.approval.required, true);
@@ -613,10 +805,10 @@ test("approve exists only while READINESS_REQUIRED contains approval; awaiting p
     const audit = await auditRows("influencer.approved");
     assert.equal(audit.length, 1);
     assert.equal(audit[0].adminEmail, emailY);
-    const mails = accountEmails();
+    const mails = mailsTo(influencerEmail);
     assert.equal(mails.length, 1);
-    assert.equal(mails[0].to.email, influencerEmail);
     assert.match(mails[0].subject, /approved/i);
+    assert.doesNotMatch(mails[0].text, /as soon as/);
 
     const again = await asAdmin(token, () => post({ action: "approve" }));
     assert.equal(again.status, 409);
@@ -625,7 +817,50 @@ test("approve exists only while READINESS_REQUIRED contains approval; awaiting p
 
     const after = await list(token, `?status=awaiting-approval${q}`);
     const left = (after.body.rows as { id: string }[]).map((r) => r.id);
-    assert.ok(!left.includes(influencerId) && left.includes(reviewId), "the approved page left the queue; the other is still waiting");
+    assert.ok(!left.includes(influencerId) && !left.includes(reviewId) && !left.includes(thirdId), "nobody is waiting any more");
+  } finally {
+    process.env.READINESS_BYPASS = "true";
+    delete process.env.READINESS_REQUIRED;
+  }
+});
+
+test("finishing onboarding with the gate off approves the page, so turning the gate on later keeps it live; with the gate on it waits", { skip }, async () => {
+  const onboardable = async (tag: string) => {
+    const inf = await prisma.influencer.create({ data: { slug: `mod${tag}-${run}`, name: `Mod Onboard ${tag} ${run}`, email: `mod-${tag}-inf-${run}@example.com` } });
+    const user = await prisma.user.create({
+      data: { email: `mod-${tag}-user-${run}@example.com`, passwordHash: "not-a-real-hash", emailVerifiedAt: new Date(), termsAcceptedAt: new Date(), influencerId: inf.id },
+    });
+    await prisma.service.create({ data: { influencerId: inf.id, title: "Onboarding service", durationMin: 30, priceMinor: 1000 } });
+    await prisma.availabilityRule.create({ data: { influencerId: inf.id, weekday: 1, startTime: "10:00", endTime: "17:00", timezone: "UTC" } });
+    return { id: inf.id, cookie: await authLib.createSession(user.id) };
+  };
+  const finish = async (cookie: string) => {
+    set({ [authLib.sessionCookieName()]: cookie });
+    return answer(await onboardingRoute.POST());
+  };
+  const live = async (id: string) => (await prisma.influencer.count({ where: { id, AND: [readinessLib.buildPublicInfluencerWhere(process.env)] } })) === 1;
+
+  const early = await onboardable("n"); // finishes while the gate is off
+  const late = await onboardable("m"); // finishes while the gate is on
+
+  assert.equal((await finish(early.cookie)).status, 200);
+  const earlyRow = await prisma.influencer.findUniqueOrThrow({ where: { id: early.id } });
+  assert.ok(earlyRow.onboardedAt);
+  assert.ok(earlyRow.approvedAt, "a finished page counts as approved while nothing asks for approval");
+  assert.equal(earlyRow.approvedByEmail, "system:gate-off");
+
+  process.env.READINESS_REQUIRED = "approval";
+  process.env.READINESS_BYPASS = "false";
+  try {
+    assert.equal(await live(early.id), true, "turning the gate on does not take the page offline");
+    assert.equal((await finish(late.cookie)).status, 200);
+    const lateRow = await prisma.influencer.findUniqueOrThrow({ where: { id: late.id } });
+    assert.ok(lateRow.onboardedAt);
+    assert.equal(lateRow.approvedAt, null, "with the gate on, finishing onboarding does not approve");
+    assert.equal(await live(late.id), false, "it waits for an administrator");
+    const token = await sessionLib.createAdminSession(Y);
+    assert.equal((await asAdmin(token, () => post({ action: "approve" }, late.id))).status, 200);
+    assert.equal(await live(late.id), true);
   } finally {
     process.env.READINESS_BYPASS = "true";
     delete process.env.READINESS_REQUIRED;

@@ -62,7 +62,14 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
                 {rows.map((p) => (
                   <tr key={p.id}>
                     <td data-label="Created">{new Date(p.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
-                    <td data-label="Influencer"><AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink></td>
+                    <td data-label="Influencer">
+                      <AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink>
+                      {p.influencer.suspended && (
+                        <div>
+                          <Badge tone="danger">Suspended</Badge>
+                        </div>
+                      )}
+                    </td>
                     <td data-label="Send to">{p.destination}</td>
                     <td data-label="Gross" className="num">{formatMoney(p.grossAfterRefundsMinor, p.currency)}</td>
                     <td data-label="Fee" className="num">{formatMoney(p.feeMinor, p.currency)} <span className="subtle">({p.feePercentText})</span></td>
@@ -72,7 +79,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
                       {p.reference && <div className="subtle">UTR {p.reference}</div>}
                       {p.owedMinor > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(p.owedMinor, p.currency)} to recover</Badge></div>}
                     </td>
-                    <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} approval={p.approval} /></td>
+                    <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} approval={p.approval} influencerSuspended={p.influencer.suspended} /></td>
                   </tr>
                 ))}
               </tbody>

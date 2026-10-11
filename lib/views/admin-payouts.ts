@@ -21,7 +21,8 @@ export function parsePayoutFilter(value: string | null | undefined): PayoutFilte
 export interface AdminPayoutRow {
   id: string;
   createdAt: Date;
-  influencer: { id: string; name: string };
+  /** `suspended`: the platform suspended this influencer; approving or paying their payout needs an explicit "pay anyway". */
+  influencer: { id: string; name: string; suspended: boolean };
   /** Where the money goes, already masked when the payout was created. */
   destination: string;
   /** The "Gross" column: what the customers paid, less the refunds made before the payout was created. */
@@ -67,7 +68,7 @@ export async function loadAdminPayoutsView(
   const where = status === "all" ? {} : { status };
   const [total, rows, counts] = await Promise.all([
     prisma.payout.count({ where }),
-    prisma.payout.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: { influencer: { select: { id: true, name: true } } } }),
+    prisma.payout.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: { influencer: { select: { id: true, name: true, suspendedAt: true } } } }),
     prisma.payout.groupBy({ by: ["status"], _count: { _all: true } }),
   ]);
   const owed = new Map(await Promise.all(rows.filter((r) => r.status === "PAID").map(async (r) => [r.id, await postPayoutRefunds(r.id)] as const)));
@@ -86,7 +87,7 @@ export async function loadAdminPayoutsView(
       return {
         id: p.id,
         createdAt: p.createdAt,
-        influencer: { id: p.influencer.id, name: p.influencer.name },
+        influencer: { id: p.influencer.id, name: p.influencer.name, suspended: p.influencer.suspendedAt !== null },
         destination: p.destination,
         grossAfterRefundsMinor: p.grossMinor - p.refundsMinor,
         feeMinor: p.feeMinor,

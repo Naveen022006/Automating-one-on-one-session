@@ -1,12 +1,12 @@
 import { useRouter } from "@web/lib/navigate";
 import { useState } from "react";
 import { Dialog, useToast } from "@web/components/ui/overlays";
-import { Badge, Button, Field, Input, Textarea } from "@web/components/ui/primitives";
+import { Alert, Badge, Button, Checkbox, Field, Input, Textarea } from "@web/components/ui/primitives";
 import type { PayoutApprovalView } from "@/lib/payouts";
 
 async function call(url: string, method: "POST" | "PATCH", body?: unknown) {
   const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-  return { ok: res.ok, data: (await res.json().catch(() => ({}))) as Record<string, unknown> & { error?: string } };
+  return { ok: res.ok, data: (await res.json().catch(() => ({}))) as Record<string, unknown> & { error?: string; code?: string } };
 }
 
 export function ReconcileButton({ ids }: { ids: string[] }) {
@@ -77,23 +77,46 @@ export function CreatePayoutButton({ influencerId, currency, label }: { influenc
 /** What the viewing administrator may do with one payout (computed on the server by payoutApprovalView). */
 export type PayoutApprovalProps = Pick<PayoutApprovalView, "required" | "approved" | "approvedByEmail" | "canApprove" | "createdByViewer" | "canMarkPaid">;
 
-export function PayoutRowActions({ payoutId, status, approval }: { payoutId: string; status: string; approval: PayoutApprovalProps }) {
+export function PayoutRowActions({
+  payoutId,
+  status,
+  approval,
+  influencerSuspended = false,
+}: {
+  payoutId: string;
+  status: string;
+  approval: PayoutApprovalProps;
+  /** The list already knows the influencer is suspended; elsewhere the server's `influencer-suspended` answer reveals the same prompt. */
+  influencerSuspended?: boolean;
+}) {
   const toast = useToast();
   const router = useRouter();
   const [open, setOpen] = useState<"paid" | "cancel" | "approve" | null>(null);
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // Moving money for a suspended influencer needs an explicit "pay anyway" with a reason; the server refuses without it.
+  const [suspended, setSuspended] = useState(influencerSuspended);
+  const [payAnyway, setPayAnyway] = useState(false);
+  const [suspendedReason, setSuspendedReason] = useState("");
   if (status !== "PENDING") return null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    const moves = open === "approve" || open === "paid";
+    if (moves && suspended && (!payAnyway || suspendedReason.trim().length < 5)) {
+      return toast("This influencer is suspended. Tick “pay anyway” and say why (at least 5 characters), or go back.", "error");
+    }
     setBusy(true);
+    const ack = moves && suspended ? { acknowledgeSuspended: true, suspendedReason: suspendedReason.trim() } : {};
     const body =
-      open === "approve" ? { action: "approve" } : open === "paid" ? { action: "paid", reference } : { action: "cancel", note: note || undefined };
+      open === "approve" ? { action: "approve", ...ack } : open === "paid" ? { action: "paid", reference, ...ack } : { action: "cancel", note: note || undefined };
     const r = await call(`/api/admin/payouts/${payoutId}`, "POST", body);
     setBusy(false);
-    if (!r.ok) return toast(r.data.error ?? "Could not update the payout.", "error");
+    if (!r.ok) {
+      if (r.data.code === "influencer-suspended") setSuspended(true); // show the "pay anyway" prompt and let the administrator decide
+      return toast(r.data.error ?? "Could not update the payout.", "error");
+    }
     toast(
       open === "approve"
         ? "Payout approved. It can now be marked as paid once the money is sent."
@@ -151,6 +174,17 @@ export function PayoutRowActions({ payoutId, status, approval }: { payoutId: str
               <Textarea id="po-note" value={note} maxLength={300} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNote(e.target.value)} />
             </Field>
           ) : null}
+          {suspended && open !== "cancel" && (
+            <Alert tone="warning" title="This influencer is suspended">
+              <div className="stack stack--sm">
+                <p>Paying them anyway is recorded in the audit log with your reason.</p>
+                <Checkbox label="This influencer is suspended: pay anyway" checked={payAnyway} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPayAnyway(e.target.checked)} />
+                <Field id="po-suspended-reason" label="Why are you paying a suspended influencer?">
+                  <Textarea id="po-suspended-reason" value={suspendedReason} maxLength={300} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setSuspendedReason(e.target.value)} />
+                </Field>
+              </div>
+            </Alert>
+          )}
           <div className="form-actions">
             <Button onClick={() => setOpen(null)} disabled={busy}>
               Back

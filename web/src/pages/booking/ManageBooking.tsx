@@ -169,7 +169,9 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
             </div>
             {!data.canReschedule && (
               <p className="subtle">
-                {data.serviceType === "GROUP"
+                {data.hostSuspended
+                  ? `Rescheduling is not available right now. You can still cancel this booking, or contact ${data.influencerName}.`
+                  : data.serviceType === "GROUP"
                   ? "Rescheduling a group session is arranged by the host for everyone; contact them if the time does not work for you."
                   : "This session is less than 24 hours away, so it can no longer be rescheduled online. Contact the host if you need to change it."}
               </p>

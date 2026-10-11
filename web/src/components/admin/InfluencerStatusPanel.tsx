@@ -48,14 +48,19 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(open === "suspend" ? { action: "suspend", reason: reason.trim() } : { action: open }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as { error?: string; emailed?: boolean };
       if (!res.ok) {
         toast(data.error ?? "Could not update the account.", "error");
-        // A 409 means the state moved under us (another administrator): show the current one.
-        if (res.status === 409) router.refresh();
+        // A 409 means the state moved under us (another administrator): close the dialog and show the current state.
+        if (res.status === 409) {
+          setOpen(null);
+          setReason("");
+          router.refresh();
+        }
         return;
       }
-      toast(open === "suspend" ? "Account suspended. The influencer was emailed." : open === "reinstate" ? "Account reinstated. The influencer was emailed." : "Page approved. The influencer was emailed.");
+      const done = open === "suspend" ? "Account suspended." : open === "reinstate" ? "Account reinstated." : "Page approved.";
+      toast(data.emailed ? `${done} The influencer was emailed.` : done);
       setOpen(null);
       setReason("");
       router.refresh();
@@ -67,7 +72,8 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
   }
 
   const { impact } = v;
-  const showApprove = v.approval.required && v.approval.at === null;
+  // Offered while the approval gate is off too: approving in advance keeps the page live if the gate is turned on later.
+  const showApprove = v.approval.at === null;
 
   return (
     <Card as="section" aria-label="Account status">
@@ -150,7 +156,11 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
         onClose={close}
         onConfirm={() => void submit()}
         title="Approve this page"
-        description="The page can go live once the rest of the go-live checklist is done. The influencer is emailed."
+        description={
+          v.approval.required
+            ? "The page can go live once the rest of the go-live checklist is done. The influencer is emailed (not while the account is suspended)."
+            : "Approval is not required right now. Approving in advance keeps this page live if you turn the approval gate on later. No email is sent."
+        }
         confirmLabel="Approve"
         cancelLabel="Back"
         busy={busy}

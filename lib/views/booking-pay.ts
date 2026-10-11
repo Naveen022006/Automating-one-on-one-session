@@ -32,6 +32,8 @@ export type PayView =
    */
   | { state: "not-completed" }
   | { state: "expired"; hostSlug: string }
+  /** The booking could still be paid, but the host's account is suspended by the platform (checkout refuses it): no pay button. Nothing was charged. */
+  | { state: "unavailable"; hostName: string }
   | {
       state: "payable";
       bookingId: string;
@@ -53,7 +55,7 @@ export async function loadPayView(token: string): Promise<PayView> {
     where: { id: bookingId },
     include: {
       payments: { select: { status: true, needsRefund: true, refundAmountMinor: true } },
-      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } },
+      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true, suspendedAt: true } } } } } },
     },
   });
   // A booking erased on request is as good as missing here too (as in the manage view): its customer asked to be forgotten, and
@@ -90,6 +92,7 @@ export async function loadPayView(token: string): Promise<PayView> {
   if (booking.status === "REQUESTED") return { state: "requested", hostName: host.name, serviceTitle: service.title };
   const payable = (booking.status === "HELD" || booking.status === "PENDING_PAYMENT") && booking.holdExpiresAt !== null && booking.holdExpiresAt > now;
   if (!payable) return { state: "expired", hostSlug: host.slug };
+  if (host.suspendedAt) return { state: "unavailable", hostName: host.name };
 
   return {
     state: "payable",

@@ -32,8 +32,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
 /**
  * Suspend (with a reason of 5 to 500 characters), reinstate or approve an influencer. The change and its audit entry are
- * written in one transaction. 409 when the state does not allow it (already suspended, not suspended, already approved,
- * approval not required).
+ * written in one transaction. 409 when the state does not allow it (already suspended, not suspended, already approved).
+ * `emailed` says whether the influencer was e-mailed (an approval is not announced to a suspended account or while the
+ * approval gate is off). Approving is allowed while the gate is off, so a page can be approved in advance.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const admin = await requireAdminMfa();
@@ -43,13 +44,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const parsed = await parseJson(req, schema);
   if (!parsed.ok) return parsed.response;
 
+  let emailed = false;
   try {
-    await moderateInfluencer({ adminId: admin.adminId, email: admin.email }, id, parsed.data, clientIp(req.headers));
+    emailed = (await moderateInfluencer({ adminId: admin.adminId, email: admin.email }, id, parsed.data, clientIp(req.headers))).emailed;
   } catch (e) {
     if (e instanceof ModerationError) return jsonView({ error: e.message }, { status: e.status });
     throw e;
   }
   const view = await loadInfluencerStatusView(id);
   if (!view) return jsonView(NOT_FOUND, { status: 404 });
-  return jsonView({ ok: true, view });
+  return jsonView({ ok: true, emailed, view });
 }

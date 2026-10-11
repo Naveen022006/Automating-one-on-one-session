@@ -25,6 +25,9 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
     async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM bookings WHERE id = ${bookingId} FOR UPDATE`;
       if (locked.length === 0) throw new BookingNotFoundError("Booking not found");
+      // Share-lock the host's row before reading it: a suspension (an UPDATE of this row) either commits first, and is seen below, or
+      // waits until this checkout has finished. Without it a suspension could land between the check and the order.
+      await tx.$queryRaw`SELECT i.id FROM influencers i JOIN services s ON s.influencer_id = i.id JOIN sessions se ON se.service_id = s.id JOIN bookings b ON b.session_id = se.id WHERE b.id = ${bookingId} FOR SHARE OF i`;
 
       const booking = await tx.booking.findUniqueOrThrow({
         where: { id: bookingId },

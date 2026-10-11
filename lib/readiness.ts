@@ -156,7 +156,8 @@ export function evaluateReadiness(
       label: "Account in good standing",
       state: "attention",
       required: true,
-      detail: `Suspended by the platform: ${input.suspended.reason}. Contact ${SUPPORT_EMAIL} to resolve it.`,
+      // The reason may already end with a full stop: one is enough.
+      detail: `Suspended by the platform: ${input.suspended.reason.replace(/[.\s]+$/, "")}. Contact ${SUPPORT_EMAIL} to resolve it.`,
       href: "/contact",
     });
   } else if (opts.approvalRequired && !input.approved) {

@@ -224,6 +224,19 @@ test("influencers page: page and q reach the API, q is cut to 80 characters, the
   assert.deepEqual(await requestedUrls(bare.client), ["/api/admin/influencers"], "no page, no q: no query string");
   assert.deepEqual(propsOf(bare.html, "InfluencerSearchForm"), {});
 
+  // The status tab is part of the request (and of the cache key), next to page and q; an unknown value is left for the server to read as "all".
+  const tab = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers?status=suspended&q=asha", {
+    key: keys.admin("influencers", { page: "", q: "asha", status: "suspended" }),
+    value: { data: influencers([row], { status: "suspended", counts: { suspended: 1, awaitingApproval: 0 } }) },
+  });
+  assert.deepEqual(await requestedUrls(tab.client), ["/api/admin/influencers?q=asha&status=suspended"], "?status= reaches the API");
+  assert.deepEqual(propsOf(tab.html, "InfluencerSearchForm"), { q: "asha", status: "suspended" }, "a search keeps the open tab");
+  const statusOnly = await renderPage(pages.influencers, "/admin/influencers", "/admin/influencers?status=awaiting-approval", {
+    key: keys.admin("influencers", { page: "", q: "", status: "awaiting-approval" }),
+    value: { data: influencers([], { status: "awaiting-approval", counts: { suspended: 0, awaitingApproval: 0 } }) },
+  });
+  assert.deepEqual(await requestedUrls(statusOnly.client), ["/api/admin/influencers?status=awaiting-approval"]);
+
   const long = "x".repeat(120);
   const cut = "x".repeat(80);
   const trimmed = await renderPage(pages.influencers, "/admin/influencers", `/admin/influencers?q=${long}`, { key: keys.admin("influencers", { page: "", q: cut, status: "" }), value: { data: influencers([]) } });

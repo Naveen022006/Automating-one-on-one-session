@@ -24,11 +24,16 @@ export function accountSuspendedMessage(name: string, reason: string, supportEma
   });
 }
 
-export function accountReinstatedMessage(name: string, pageUrl: string): RenderedEmail {
+/** `awaitingApproval`: the approval gate is on and nobody approved the page, so reinstating does not put it back online. */
+export function accountReinstatedMessage(name: string, pageUrl: string, awaitingApproval = false): RenderedEmail {
   return renderEmail(`Your ${BRAND_NAME} account has been reinstated`, {
-    preheader: "Your booking page is back online.",
+    preheader: awaitingApproval ? "The suspension is lifted. Your page still needs approval." : "Your booking page is back online.",
     heading: "Your account has been reinstated",
-    paragraphs: [`Hi ${firstName(name)}, the suspension on your account has been lifted. Your booking page is live again (as long as everything on your go-live checklist is still in place).`],
+    paragraphs: [
+      awaitingApproval
+        ? `Hi ${firstName(name)}, the suspension on your account has been lifted. Your booking page is still offline: we review pages before they go live, and you will get an email when yours is approved.`
+        : `Hi ${firstName(name)}, the suspension on your account has been lifted. Your booking page is live again, as long as everything on your go-live checklist is still in place.`,
+    ],
     button: { label: "Open your booking page", url: pageUrl },
   });
 }
@@ -37,7 +42,7 @@ export function accountApprovedMessage(name: string, pageUrl: string): RenderedE
   return renderEmail(`Your ${BRAND_NAME} booking page has been approved`, {
     preheader: "We reviewed your page and approved it.",
     heading: "Your page has been approved",
-    paragraphs: [`Hi ${firstName(name)}, we reviewed your booking page and approved it. It goes live as soon as everything else on your go-live checklist is done.`],
+    paragraphs: [`Hi ${firstName(name)}, we reviewed your booking page and approved it. It goes live once everything else on your go-live checklist is in place.`],
     button: { label: "Open your booking page", url: pageUrl },
   });
 }

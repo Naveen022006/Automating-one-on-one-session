@@ -16,9 +16,33 @@ export class PayoutError extends Error {
   constructor(
     message: string,
     readonly status = 400,
+    /** A machine-readable reason the console reacts to (for example `influencer-suspended`: ask the administrator to confirm). */
+    readonly code?: string,
   ) {
     super(message);
   }
+}
+
+/**
+ * An administrator's explicit decision to move money for a suspended influencer ("pay anyway"). Approving or paying an EXISTING payout
+ * is refused for a suspended influencer unless this is given; the reason goes into the audit entry. (Creating a new payout is always
+ * refused while suspended: that is the stricter rule in createPayout.)
+ */
+export interface SuspendedOverride {
+  reason: string;
+}
+
+/**
+ * Throws `influencer-suspended` (409) when the payout's influencer is suspended and no override was given. Returns whether the
+ * override was USED (the influencer is suspended and the administrator confirmed), so the caller can record it in the audit entry.
+ */
+async function checkSuspended(influencerId: string, override?: SuspendedOverride): Promise<boolean> {
+  const row = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { suspendedAt: true } });
+  if (!row?.suspendedAt) return false;
+  if (!override) {
+    throw new PayoutError("This influencer is suspended. Reinstate them first, or confirm that you want to pay anyway.", 409, "influencer-suspended");
+  }
+  return true;
 }
 
 /* ---------- Configuration ---------- */
@@ -451,31 +475,33 @@ export async function createPayout(influencerId: string, currency: string, admin
  * one who created it may do this. Enforced here (not just hidden in the UI), and the update is conditional on the
  * payout still being pending and unapproved, so concurrent approvals cannot overwrite each other.
  */
-export async function approvePayout(payoutId: string, adminEmail: string, now = new Date()) {
-  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true } });
+export async function approvePayout(payoutId: string, adminEmail: string, now = new Date(), override?: SuspendedOverride) {
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true, influencerId: true } });
   if (!payout) throw new PayoutError("Payout not found", 404);
   if (payout.status !== "PENDING") throw new PayoutError("Only a pending payout can be approved.", 409);
   if (sameAdmin(payout.createdByEmail, adminEmail)) {
     throw new PayoutError("You created this payout, so a different administrator has to approve it.", 403);
   }
   if (payout.approvedAt) throw new PayoutError("This payout is already approved.", 409);
+  const suspendedOverride = await checkSuspended(payout.influencerId, override);
   const { count } = await prisma.payout.updateMany({
     where: { id: payoutId, status: "PENDING", approvedAt: null },
     data: { approvedAt: now, approvedByEmail: adminEmail },
   });
   if (count === 0) throw new PayoutError("This payout changed while you were approving it. Reload and try again.", 409);
-  return prisma.payout.findUniqueOrThrow({ where: { id: payoutId } });
+  return { ...(await prisma.payout.findUniqueOrThrow({ where: { id: payoutId } })), suspendedOverride };
 }
 
 /**
  * PENDING -> PAID once the administrator has sent the money. Needs the bank reference (UTR), and, when four-eyes
  * approval applies to this payout (PAYOUT_FOUR_EYES, PAYOUT_FOUR_EYES_MIN_MINOR), an approval from a second admin.
  */
-export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string, env: NodeJS.ProcessEnv = process.env) {
+export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string, env: NodeJS.ProcessEnv = process.env, override?: SuspendedOverride) {
   const ref = reference.trim();
   if (ref.length < 6 || ref.length > 60) throw new PayoutError("Enter the bank reference (UTR) of the transfer.");
   const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true, influencerId: true, currency: true } });
   if (!payout || payout.status !== "PENDING") throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
+  const suspendedOverride = await checkSuspended(payout.influencerId, override);
   // The threshold applies to this payout plus the influencer's other unapproved payouts of the last 24 hours (no splitting).
   const needsApproval = await payoutNeedsApproval({ id: payoutId, influencerId: payout.influencerId, currency: payout.currency, netMinor: payout.netMinor }, new Date(), env);
   if (needsApproval && !payout.approvedAt) {
@@ -487,7 +513,8 @@ export async function markPayoutPaid(payoutId: string, reference: string, adminE
     data: { status: "PAID", reference: ref, paidAt: new Date(), paidByEmail: adminEmail },
   });
   if (count === 0) throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
-  return prisma.payout.findUniqueOrThrow({ where: { id: payoutId }, include: { influencer: { select: { id: true, name: true, email: true } } } });
+  const paid = await prisma.payout.findUniqueOrThrow({ where: { id: payoutId }, include: { influencer: { select: { id: true, name: true, email: true } } } });
+  return { ...paid, suspendedOverride };
 }
 
 /** PENDING -> CANCELLED: releases every payment so it can go into a later payout. */

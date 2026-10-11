@@ -202,6 +202,12 @@ test("a suspended account is a live blocker that no setting bypasses; a normal a
   assert.equal(item.required, true);
   assert.equal(item.href, "/contact");
   assert.match(item.detail, /^Suspended by the platform: Chargeback investigation\. Contact \S+@\S+ to resolve it\.$/);
+  // A reason that already ends with a full stop (or spaces) does not give "..".
+  for (const reason of ["Chargeback.", "Chargeback. ", "Chargeback..."]) {
+    const detail = evaluateReadiness({ ...none, suspended: { reason } }, [], { approvalRequired: false }).items.find((i) => i.key === "account")!.detail;
+    assert.match(detail, /^Suspended by the platform: Chargeback\. Contact /, reason);
+    assert.ok(!detail.includes(".."), reason);
+  }
   // Suspension wins over a missing approval: one item, the more serious one.
   const both = evaluateReadiness({ ...none, approved: false, suspended: { reason: "Abuse reports" } }, [], { approvalRequired: true });
   assert.equal(both.items.filter((i) => i.key === "account").length, 1);
