@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivityForUser } from "@/lib/activity";
 import { verifyEmailToken } from "@/lib/auth/accounts";
 import { jsonError, parseJson } from "@/lib/http";
 
@@ -12,5 +13,6 @@ export async function POST(req: Request) {
   if (!parsed.ok) return parsed.response;
   const userId = await verifyEmailToken(parsed.data.token);
   if (!userId) return jsonError("This verification link is invalid, already used, or expired.", 400);
+  await recordActivityForUser(userId, { action: "auth.email_verified", req });
   return NextResponse.json({ ok: true });
 }

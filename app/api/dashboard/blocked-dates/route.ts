@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 
@@ -45,6 +46,7 @@ export async function POST(req: Request) {
     update: { reason: parsed.data.reason ?? null },
     select: { id: true },
   });
+  await recordActivity({ influencerId, action: "availability.changed", detail: { change: "day-blocked" }, req });
   return NextResponse.json({ blockedDateId: row.id }, { status: 201 });
 }
 
@@ -64,5 +66,6 @@ export async function DELETE(req: Request) {
   if (!existing) return NextResponse.json({ error: "Blocked date not found" }, { status: 404 });
 
   await prisma.blockedDate.delete({ where: { id: existing.id } });
+  await recordActivity({ influencerId, action: "availability.changed", detail: { change: "day-unblocked" }, req });
   return NextResponse.json({ ok: true });
 }

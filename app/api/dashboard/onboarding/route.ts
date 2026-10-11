@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError } from "@/lib/http";
@@ -18,7 +19,7 @@ export async function GET() {
 
 // Marks onboarding finished. Requires at least one active service and one availability rule, so a public page
 // is never published with nothing to book.
-export async function POST() {
+export async function POST(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const [services, rules] = await Promise.all([
@@ -28,5 +29,6 @@ export async function POST() {
   if (services === 0) return jsonError("Add at least one service first.", 400);
   if (rules === 0) return jsonError("Add your weekly availability first.", 400);
   await prisma.influencer.update({ where: { id: auth.influencerId }, data: { onboardedAt: new Date() } });
+  if (!auth.onboarded) await recordActivity({ influencerId: auth.influencerId, action: "onboarding.completed", req });
   return NextResponse.json({ ok: true, redirect: "/dashboard" });
 }

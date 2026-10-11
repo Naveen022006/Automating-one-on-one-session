@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivityForUser } from "@/lib/activity";
 import { AccountError, registerAccount } from "@/lib/auth/accounts";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { createSession, setSessionCookie } from "@/lib/auth/session";
@@ -26,6 +27,7 @@ export async function POST(req: Request) {
   try {
     const { userId } = await registerAccount({ ...body, timezone });
     const token = await createSession(userId, requestMeta(req, clientIp(req.headers)));
+    await recordActivityForUser(userId, { action: "auth.registered", req });
     return setSessionCookie(NextResponse.json({ ok: true, redirect: "/onboarding" }, { status: 201 }), token);
   } catch (e) {
     if (e instanceof AccountError) return jsonError(e.message, e.status, { field: e.field });

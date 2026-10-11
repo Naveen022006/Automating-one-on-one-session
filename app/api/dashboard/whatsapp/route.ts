@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { jsonError, parseJson } from "@/lib/http";
 import {
@@ -65,6 +66,7 @@ export async function POST(req: Request) {
       body.action === "connect-manual"
         ? await connectManual(auth.influencerId, { wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, accessToken: body.accessToken, pin: body.pin })
         : await connectEmbedded(auth.influencerId, { code: body.code, wabaId: body.wabaId, phoneNumberId: body.phoneNumberId, pin: body.pin, resetPin: body.resetPin });
+    await recordActivity({ influencerId: auth.influencerId, action: "whatsapp.connected", detail: { phone: connection?.displayPhone ?? null }, req });
     // connection.notes: things worth telling the influencer that did not stop the connection (a token that could not be checked).
     return NextResponse.json({ connection });
   } catch (e) {
@@ -73,9 +75,11 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: Request) {
   const auth = await requireRecentAuth();
   if (auth instanceof NextResponse) return auth;
-  await disconnect(auth.influencerId);
+  const before = await getConnectionView(auth.influencerId).catch(() => null); // only for the log line
+  const removed = await disconnect(auth.influencerId);
+  if (removed) await recordActivity({ influencerId: auth.influencerId, action: "whatsapp.disconnected", detail: { phone: before?.displayPhone ?? null }, req });
   return NextResponse.json({ ok: true });
 }

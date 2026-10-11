@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { recordActivity } from "@/lib/activity";
 import { readJson } from "@/lib/http";
 import { sendAccountEmail } from "@/lib/email";
 import { payoutDetailsSavedMessage } from "@/lib/email/templates";
@@ -31,6 +32,13 @@ export async function PUT(req: Request) {
   }
 
   const account = await savePayoutAccount(auth.influencerId, parsed.data);
+  // The masked value only (the last four digits of an account, the start of a UPI handle): never the number the person typed.
+  await recordActivity({
+    influencerId: auth.influencerId,
+    action: "payout_account.updated",
+    detail: { method: account.method, destination: (account.method === "BANK" ? account.accountNumber : account.upiId) ?? null },
+    req,
+  });
   const summary =
     account.method === "BANK" ? `bank account ${account.accountNumber} (${account.bankName})` : `UPI ID ${account.upiId}`;
   await sendAccountEmail({ email: auth.email, name: auth.influencerName }, payoutDetailsSavedMessage(auth.influencerName, summary), "payout-details-saved");

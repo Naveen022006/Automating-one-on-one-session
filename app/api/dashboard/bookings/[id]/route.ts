@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { getBookingDetail } from "@/lib/dashboard-data";
 import { prisma } from "@/lib/db";
@@ -51,6 +52,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     select: { id: true },
   });
   if (!booking) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  const recordBookingActivity = (action: "booking.cancelled" | "booking.rescheduled") =>
+    recordActivity({ influencerId, action, targetType: "booking", targetId: booking.id, detail: { bookingId: booking.id }, req });
 
   try {
     if (parsed.data.action === "resend") {
@@ -62,10 +65,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (recent instanceof NextResponse) return recent;
       }
       const result = await cancelBooking(booking.id, { actor: "influencer", reason: parsed.data.reason });
+      await recordBookingActivity("booking.cancelled");
       // `warning`: the booking is cancelled (refund path and customer notice ran) but the Calendar event was not updated.
       return NextResponse.json({ ok: true, refund: result.refund, ...(result.warning ? { warning: result.warning } : {}) });
     } else {
       await rescheduleBooking(booking.id, new Date(parsed.data.startTime));
+      await recordBookingActivity("booking.rescheduled");
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
@@ -75,6 +80,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
     if (e instanceof ManageBlockedError) {
       // The DB change landed but the calendar could not be updated (influencer must reconnect Google).
+      if (parsed.data.action === "cancel") await recordBookingActivity("booking.cancelled");
+      if (parsed.data.action === "reschedule") await recordBookingActivity("booking.rescheduled");
       return NextResponse.json({ ok: true, warning: e.message }, { status: 202 });
     }
     console.error("[dashboard:booking-action] failed", e);

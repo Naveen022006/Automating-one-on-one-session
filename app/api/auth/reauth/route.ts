@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { authenticate } from "@/lib/auth/accounts";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { markReauthenticated, requireApiAuth } from "@/lib/auth/session";
@@ -19,5 +20,6 @@ export async function POST(req: Request) {
   const ok = await authenticate(auth.email, parsed.data.password);
   if (!ok || ok.userId !== auth.userId) return jsonError("That password is not correct.", 401);
   await markReauthenticated(auth.sessionId);
+  await recordActivity({ influencerId: auth.influencerId, action: "auth.reauthenticated", req });
   return NextResponse.json({ ok: true });
 }

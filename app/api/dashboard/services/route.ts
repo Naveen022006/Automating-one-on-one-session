@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { MAX_ADVANCE_DAYS, MAX_NOTICE_HOURS } from "@/lib/booking-window";
@@ -104,6 +105,14 @@ export async function POST(req: Request) {
     },
     select: { id: true },
   });
+  await recordActivity({
+    influencerId,
+    action: "service.created",
+    targetType: "service",
+    targetId: service.id,
+    detail: { serviceId: service.id, title: body.title, priceTo: body.priceMinor, currency: body.currency ?? "INR", activeTo: body.active ?? true },
+    req,
+  });
   return NextResponse.json({ serviceId: service.id, warning: meetLimitWarning(type, body.durationMin) }, { status: 201 });
 }
 
@@ -120,7 +129,7 @@ export async function PATCH(req: Request) {
   // Ownership check: the service must belong to this influencer, else 404.
   const existing = await prisma.service.findFirst({
     where: { id: body.serviceId, influencerId },
-    select: { id: true, type: true, capacity: true, durationMin: true },
+    select: { id: true, type: true, capacity: true, durationMin: true, title: true, priceMinor: true, currency: true, active: true },
   });
   if (!existing) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
@@ -175,6 +184,23 @@ export async function PATCH(req: Request) {
       ...(body.prepNotes !== undefined ? { prepNotes: body.prepNotes || null } : {}),
       ...(body.requiresApproval !== undefined ? { requiresApproval: body.requiresApproval } : {}),
     },
+  });
+  // Only the values that changed (the price is the one a dispute is about).
+  const priceChanged =
+    (body.priceMinor !== undefined && body.priceMinor !== existing.priceMinor) || (body.currency !== undefined && body.currency !== existing.currency);
+  const activeChanged = body.active !== undefined && body.active !== existing.active;
+  await recordActivity({
+    influencerId,
+    action: "service.updated",
+    targetType: "service",
+    targetId: existing.id,
+    detail: {
+      serviceId: existing.id,
+      title: body.title ?? existing.title,
+      ...(priceChanged ? { priceFrom: existing.priceMinor, priceTo: body.priceMinor ?? existing.priceMinor, currency: body.currency ?? existing.currency } : {}),
+      ...(activeChanged ? { activeFrom: existing.active, activeTo: body.active! } : {}),
+    },
+    req,
   });
   return NextResponse.json({
     ok: true,

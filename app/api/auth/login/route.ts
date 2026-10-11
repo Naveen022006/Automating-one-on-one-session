@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity, recordFailedLogin } from "@/lib/activity";
 import { authenticate } from "@/lib/auth/accounts";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { createSession, setSessionCookie } from "@/lib/auth/session";
@@ -30,13 +31,18 @@ export async function POST(req: Request) {
   if (limited) return limited;
 
   const result = await authenticate(email, password);
-  if (!result) return jsonError("That email and password do not match.", 401);
+  if (!result) {
+    // Not awaited: the answer must take the same time whether or not the e-mail has an account (the account log is a side effect).
+    recordFailedLogin(email, req);
+    return jsonError("That email and password do not match.", 401);
+  }
 
   const token = await createSession(result.userId, requestMeta(req, ip));
   const user = await prisma.user.findUnique({
     where: { id: result.userId },
-    select: { influencer: { select: { onboardedAt: true } } },
+    select: { influencerId: true, influencer: { select: { onboardedAt: true } } },
   });
+  if (user) await recordActivity({ influencerId: user.influencerId, action: "auth.login", req });
   const redirect = user?.influencer.onboardedAt ? safeNextPath(next) : "/onboarding";
   return setSessionCookie(NextResponse.json({ ok: true, redirect }), token);
 }

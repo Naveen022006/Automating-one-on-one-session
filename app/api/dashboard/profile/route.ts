@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { isSlugAvailable, isUniqueViolation } from "@/lib/auth/accounts";
 import { requireApiAuth } from "@/lib/auth/session";
 import { slugProblem } from "@/lib/auth/slug";
@@ -49,5 +50,13 @@ export async function PATCH(req: Request) {
     if (isUniqueViolation(e)) return jsonError("This address was just taken.", 409, { field: "slug" });
     throw e;
   }
+  const slugChanged = body.slug !== undefined && body.slug !== auth.influencerSlug;
+  const fields = Object.entries(body).filter(([, v]) => v !== undefined).map(([k]) => k).join(",");
+  await recordActivity({
+    influencerId: auth.influencerId,
+    action: "profile.updated",
+    detail: { fields, ...(slugChanged ? { slugFrom: auth.influencerSlug, slugTo: body.slug! } : {}) },
+    req,
+  });
   return NextResponse.json({ ok: true });
 }

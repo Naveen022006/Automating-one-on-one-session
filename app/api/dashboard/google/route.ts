@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { revokeToken } from "@/lib/google";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
@@ -36,5 +37,6 @@ export async function DELETE(req: Request) {
   const shared = await googleAccountSharedWithOthers(auth.influencerId, email, sub);
   const refreshToken = await deleteGoogleToken(auth.influencerId);
   if (refreshToken && !shared) await revokeToken(refreshToken);
+  await recordActivity({ influencerId: auth.influencerId, action: "google.disconnected", detail: { account: email ?? null }, req });
   return NextResponse.json({ ok: true });
 }

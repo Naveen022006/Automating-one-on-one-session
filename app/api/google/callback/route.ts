@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordActivity } from "@/lib/activity";
 import { getAuth } from "@/lib/auth/session";
 import { CALENDAR_SCOPE, exchangeCode, revokeToken } from "@/lib/google";
 import { hasGmailSendScope } from "@/lib/gmail";
@@ -52,6 +53,7 @@ export async function GET(req: NextRequest) {
   if (!code) return back(req, returnTo, "failed");
 
   let gmailMissing = false;
+  let connectedAccount: string | null = null;
   try {
     const { refreshToken, scope, email, sub } = await exchangeCode(code);
     const incoming: GoogleAccountRef = { email, sub };
@@ -84,6 +86,7 @@ export async function GET(req: NextRequest) {
     // flagged "reconnect needed" usually still is). `record` holds it from before the overwrite. Never the token just issued.
     const replaced = record.connected && record.refreshToken && record.refreshToken !== refreshToken && differentAccount && mayRevoke ? record.refreshToken : null;
     await saveGoogleToken(state.i, refreshToken, scope, email, sub);
+    connectedAccount = email ?? null;
     if (replaced) {
       // Best effort and after the new connection is safe: skipped, like a disconnect, while another profile uses that account.
       await revokeUnlessShared(state.i, replaced, record).catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
@@ -95,6 +98,7 @@ export async function GET(req: NextRequest) {
     return back(req, returnTo, "failed");
   }
 
+  await recordActivity({ influencerId: state.i, action: "google.connected", detail: { account: connectedAccount }, req });
   // Bookings that were paid while the connection was broken can get their Meet link now. A Redis hiccup here must
   // not undo a successful connection: the worker also re-queues these on start-up.
   try {
