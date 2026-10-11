@@ -179,7 +179,9 @@ export class Ctx {
       "Content-Type": contentType,
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
+      // NOT no-referrer: with it a browser sends "Origin: null" on a form POST, and the same-origin checks would refuse the mock's
+      // own forms. same-origin still keeps every URL (which can carry a state or code) from leaving for the app or anyone else.
+      "Referrer-Policy": "same-origin",
       ...extra,
     };
   }

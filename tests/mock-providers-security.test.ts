@@ -144,6 +144,9 @@ test("pages are served with a locked-down CSP, no sniffing and no caching", asyn
   assert.match(csp, /form-action 'self' http:\/\/localhost:3000/);
   assert.equal(res.headers["x-content-type-options"], "nosniff");
   assert.equal(res.headers["cache-control"], "no-store");
+  // Found in the browser walk-through: with `no-referrer` Chrome sends "Origin: null" on a form POST, so the mock's own consent and
+  // control forms were refused as cross-site. same-origin sends the real Origin to the mock and no referrer anywhere else.
+  assert.equal(res.headers["referrer-policy"], "same-origin");
   assert.match(res.text, /MOCK PROVIDERS\. Nothing here is Google or Meta/);
 });
 

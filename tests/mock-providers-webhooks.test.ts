@@ -45,6 +45,7 @@ async function setup(): Promise<string> {
 }
 const templateId = (wabaId: string, name: string) => Object.values(t.mock.state().meta.wabas[wabaId].templates).find((x) => x.name === name)!.id;
 const act = (wabaId: string, name: string, action: string, reason?: string) => control(t.mock, "/__mock/meta/template", { wabaId, templateId: templateId(wabaId, name), action, reason });
+const attemptsOf = (kind: string) => t.mock.state().webhooks.log.filter((x) => x.kind === kind);
 const signatureOf = (r: { headers: Record<string, string | string[] | undefined> }) => String(r.headers["x-hub-signature-256"]);
 const body = (r: { raw: string }) => JSON.parse(r.raw);
 
@@ -62,7 +63,9 @@ test("approving a template delivers a signed POST that the app's own verifier ac
   assert.equal(verifyMetaSignature(r.raw + " ", signatureOf(r), META_APP_SECRET), false, "the signature covers the exact bytes");
   assert.deepEqual(parseTemplateStatusUpdates(JSON.parse(r.raw)), [{ wabaId: WABA_NEW, name: "sa_booking_confirmation", language: "en", status: "APPROVED", reason: null }]);
   assert.equal(body(r).object, "whatsapp_business_account");
-  assert.deepEqual(t.mock.state().webhooks.log.filter((x) => x.kind === "template APPROVED").map((x) => [x.attempt, x.status, x.error]), [[1, 200, null]]);
+  // The log entry is written when the mock has read the app's answer, a moment after the receiver counted the request.
+  await waitFor(() => attemptsOf("template APPROVED").length === 1, "the delivery to be logged");
+  assert.deepEqual(attemptsOf("template APPROVED").map((x) => [x.attempt, x.status, x.error]), [[1, 200, null]]);
 });
 
 test("a rejection carries its reason; pause, disable, flag and reinstate are events the app understands", async () => {
@@ -168,7 +171,8 @@ test("failures: a bad signature is rejected by the app's verifier, 'off' sends n
   await act(WABA_NEW, "sa_cancellation", "approve");
   await waitFor(() => received().length === 2, "the delivery and its retry");
   assert.equal(received()[0].raw, received()[1].raw, "the same body twice");
-  const attempts = t.mock.state().webhooks.log.filter((x) => x.kind === "template APPROVED" && /cancellation/.test(received()[0].raw)).slice(-2);
+  await waitFor(() => attemptsOf("template APPROVED").some((x) => x.attempt === 2 && x.status === 200), "the retry to be logged");
+  const attempts = attemptsOf("template APPROVED").slice(-2);
   assert.deepEqual(attempts.map((x) => [x.attempt, x.status]), [[1, 500], [2, 200]]);
   assert.match(attempts[0].error ?? "", /app_500_once/);
 });
@@ -178,7 +182,8 @@ test("retries: a failing app is retried, then the delivery is dropped; later del
   respond = (n) => (n <= 2 ? { status: 500, body: "boom" } : { status: 200, body: "ok" });
   await act(WABA_NEW, "sa_booking_confirmation", "approve");
   await waitFor(() => received().length === 3, "two failures and a success");
-  assert.deepEqual(t.mock.state().webhooks.log.filter((x) => x.kind === "template APPROVED").map((x) => [x.attempt, x.status]), [[1, 500], [2, 500], [3, 200]]);
+  await waitFor(() => attemptsOf("template APPROVED").length === 3, "the three attempts to be logged");
+  assert.deepEqual(attemptsOf("template APPROVED").map((x) => [x.attempt, x.status]), [[1, 500], [2, 500], [3, 200]]);
   assert.equal(t.mock.state().webhooks.log.find((x) => x.status === 500)?.bodyPreview, "boom", "the start of the app's answer is logged");
 
   receiver.received.length = 0;
