@@ -1,4 +1,5 @@
 import { PageHead } from "@web/components/app/AppShell";
+import { AccountActivityPanel } from "@web/components/app/AccountActivityPanel";
 import { GoogleConnect } from "@web/components/app/GoogleConnect";
 import { WhatsAppConnect } from "@web/components/app/WhatsAppConnect";
 import { DeviceSessions, NotificationPrefs, PasswordForm, ProfileForm, SlugForm, VerifyBanner } from "@web/components/app/SettingsForms";
@@ -36,6 +37,7 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
       <Card title="Signed-in devices">
         <DeviceSessions />
       </Card>
+      <AccountActivityPanel />
     </div>
   );
 }
