@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { AccountError, changePassword } from "@/lib/auth/accounts";
 import { PASSWORD_MAX_LENGTH } from "@/lib/auth/password";
 import { markReauthenticated, requireApiAuth } from "@/lib/auth/session";
@@ -21,6 +22,7 @@ export async function POST(req: Request) {
   try {
     await changePassword(auth.userId, auth.sessionId, parsed.data.currentPassword, parsed.data.newPassword);
     await markReauthenticated(auth.sessionId);
+    await recordActivity({ influencerId: auth.influencerId, action: "auth.password_changed", req });
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof AccountError) return jsonError(e.message, e.status, { field: e.field });

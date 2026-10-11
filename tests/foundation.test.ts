@@ -66,10 +66,9 @@ test("the influencer detail page mounts each stub panel once: status under the h
   assert.ok(view.indexOf('<Card title="Recent bookings">') < view.indexOf("<InfluencerActivityPanel"));
 });
 
-test("the retention sweeps are wired into sweepExpiredAuthRows and return a count (the activity one is still a stub)", async () => {
-  assert.equal(await sweepOldActivity(), 0);
-  assert.equal(await sweepOldActivity(new Date()), 0);
-  // sweepExpiredCustomerAccess is real since WP-D and deletes rows: tests/customer-portal.test.ts covers it with its own rows.
+test("the retention sweeps are wired into sweepExpiredAuthRows and return a count", async () => {
+  // Both sweeps are real now and delete rows: tests/activity-log.test.ts and tests/customer-portal.test.ts cover them with their own rows.
+  assert.equal(typeof sweepOldActivity, "function");
   assert.equal(typeof sweepExpiredCustomerAccess, "function");
   const sweep = read("lib/auth/sweep.ts");
   assert.ok(sweep.includes("await sweepOldActivity(now)") && sweep.includes("await sweepExpiredCustomerAccess(now)"));

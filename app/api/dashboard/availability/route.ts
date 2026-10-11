@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { isValidTimezone } from "@/lib/slots";
@@ -64,6 +65,7 @@ export async function POST(req: Request) {
     },
     select: { id: true },
   });
+  await recordActivity({ influencerId, action: "availability.changed", detail: { change: "rule-added" }, req });
   return NextResponse.json({ ruleId: rule.id }, { status: 201 });
 }
 
@@ -92,6 +94,7 @@ export async function PATCH(req: Request) {
     where: { id: existing.id },
     data: { weekday: body.weekday ?? existing.weekday, startTime, endTime, timezone },
   });
+  await recordActivity({ influencerId, action: "availability.changed", detail: { change: "rule-updated" }, req });
   return NextResponse.json({ ok: true });
 }
 
@@ -111,5 +114,6 @@ export async function DELETE(req: Request) {
   if (!existing) return NextResponse.json({ error: "Availability rule not found" }, { status: 404 });
 
   await prisma.availabilityRule.delete({ where: { id: existing.id } });
+  await recordActivity({ influencerId, action: "availability.changed", detail: { change: "rule-removed" }, req });
   return NextResponse.json({ ok: true });
 }

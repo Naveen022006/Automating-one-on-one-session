@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { getBookingDetail } from "@/lib/dashboard-data";
 import { prisma } from "@/lib/db";
@@ -51,6 +52,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     select: { id: true },
   });
   if (!booking) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  // `calendarFailed`: the booking changed but Google's calendar did not (the entry says so).
+  const recordBookingActivity = (action: "booking.cancelled" | "booking.rescheduled", calendarFailed = false) =>
+    recordActivity({
+      influencerId,
+      action,
+      targetType: "booking",
+      targetId: booking.id,
+      detail: { bookingId: booking.id, ...(calendarFailed ? { calendar: "not-updated" } : {}) },
+      req,
+    });
 
   try {
     if (parsed.data.action === "resend") {
@@ -62,19 +73,27 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (recent instanceof NextResponse) return recent;
       }
       const result = await cancelBooking(booking.id, { actor: "influencer", reason: parsed.data.reason });
+      await recordBookingActivity("booking.cancelled", Boolean(result.warning));
       // `warning`: the booking is cancelled (refund path and customer notice ran) but the Calendar event was not updated.
       return NextResponse.json({ ok: true, refund: result.refund, ...(result.warning ? { warning: result.warning } : {}) });
     } else {
       await rescheduleBooking(booking.id, new Date(parsed.data.startTime));
+      await recordBookingActivity("booking.rescheduled");
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof BookingNotManageableError || e instanceof RescheduleNotAllowedError) {
       return NextResponse.json({ error: e.message }, { status: 409 });
     }
-    if (e instanceof ManageRejectedError) return NextResponse.json({ error: e.message }, { status: 502 });
+    if (e instanceof ManageRejectedError) {
+      // A reschedule that Google refused: the new time is saved already, so the trail has it (the answer stays 502).
+      if (parsed.data.action === "reschedule") await recordBookingActivity("booking.rescheduled", true);
+      return NextResponse.json({ error: e.message }, { status: 502 });
+    }
     if (e instanceof ManageBlockedError) {
       // The DB change landed but the calendar could not be updated (influencer must reconnect Google).
+      if (parsed.data.action === "cancel") await recordBookingActivity("booking.cancelled", true);
+      if (parsed.data.action === "reschedule") await recordBookingActivity("booking.rescheduled", true);
       return NextResponse.json({ ok: true, warning: e.message }, { status: 202 });
     }
     console.error("[dashboard:booking-action] failed", e);

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
@@ -25,5 +26,6 @@ export async function DELETE(req: Request) {
   if (!parsed.ok) return parsed.response;
   const { count } = await prisma.authSession.deleteMany({ where: { id: parsed.data.sessionId, userId: auth.userId } });
   if (count === 0) return jsonError("Session not found", 404);
+  await recordActivity({ influencerId: auth.influencerId, action: "auth.session_revoked", req });
   return NextResponse.json({ ok: true });
 }

@@ -140,7 +140,10 @@ export function NotificationPrefs({ notifyByEmail }: { notifyByEmail: boolean })
         if (!r.ok) {
           setOn(!next);
           toast(r.data.error ?? "Could not save.", "error");
-        } else toast(next ? "Email alerts on." : "Email alerts off. Alerts still show in the dashboard.");
+        } else {
+          toast(next ? "Email alerts on." : "Email alerts off. Alerts still show in the dashboard.");
+          window.dispatchEvent(new Event("sa:activity-changed")); // the account activity card lists the change
+        }
       }}
       label="Email me when something needs attention (Google reconnect, failed messages, refunds due)"
     />
@@ -172,6 +175,8 @@ export function PasswordForm() {
     toast("Password changed. Other devices were signed out.");
     // The server ended every other session: the "Signed-in devices" list below must not keep showing them.
     window.dispatchEvent(new Event(SESSIONS_CHANGED_EVENT));
+    // ...and the account activity card below lists the password change.
+    window.dispatchEvent(new Event("sa:activity-changed"));
   }
   return (
     <form className="stack" onSubmit={save}>

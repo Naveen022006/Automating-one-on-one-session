@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { approveRequest, ApprovalError, declineRequest } from "@/lib/booking-approval";
 import { jsonError, parseJson } from "@/lib/http";
@@ -21,9 +22,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     if (parsed.data.action === "approve") {
       const { payBy } = await approveRequest(auth.influencerId, id);
+      await recordActivity({ influencerId: auth.influencerId, action: "booking.request_approved", targetType: "booking", targetId: id, detail: { bookingId: id }, req });
       return NextResponse.json({ ok: true, payBy: payBy.toISOString() });
     }
     await declineRequest(auth.influencerId, id, parsed.data.reason ?? null);
+    await recordActivity({ influencerId: auth.influencerId, action: "booking.request_declined", targetType: "booking", targetId: id, detail: { bookingId: id }, req });
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof ApprovalError) return jsonError(e.message, e.status);

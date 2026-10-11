@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordActivity } from "@/lib/activity";
 import { requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
@@ -23,7 +24,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const payment = await prisma.payment.findFirst({
     where: { bookingId: id, status: "CAPTURED", booking: { session: { service: { influencerId: auth.influencerId } } } },
     orderBy: { createdAt: "desc" },
-    select: { id: true },
+    select: { id: true, currency: true },
   });
   if (!payment) return jsonError("There is no captured payment to refund on this booking.", 404);
 
@@ -33,11 +34,30 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       amountMinor: parsed.data.amountMinor,
       reason: parsed.data.reason,
     });
+    await recordActivity({
+      influencerId: auth.influencerId,
+      action: "booking.refunded",
+      targetType: "booking",
+      targetId: id,
+      detail: { bookingId: id, amountMinor: result.amountMinor, currency: payment.currency, status: result.status },
+      req,
+    });
     return NextResponse.json({ ok: true, refund: result });
   } catch (e) {
     if (e instanceof RefundNotAllowedError) return jsonError(e.message, 409);
     if (e instanceof RefundError) return jsonError(`Razorpay did not accept the refund: ${e.message}`, 502);
-    if (e instanceof RefundPendingError) return NextResponse.json({ ok: true, pending: true, warning: e.message }, { status: 202 });
+    if (e instanceof RefundPendingError) {
+      // Razorpay may still process it: the trail says it was asked for, even though the outcome is not known yet.
+      await recordActivity({
+        influencerId: auth.influencerId,
+        action: "booking.refunded",
+        targetType: "booking",
+        targetId: id,
+        detail: { bookingId: id, currency: payment.currency, status: "unconfirmed", ...(parsed.data.amountMinor !== undefined ? { amountMinor: parsed.data.amountMinor } : {}) },
+        req,
+      });
+      return NextResponse.json({ ok: true, pending: true, warning: e.message }, { status: 202 });
+    }
     throw e;
   }
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readJson } from "@/lib/http";
+import { recordActivity } from "@/lib/activity";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { revokeToken } from "@/lib/google";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
@@ -32,9 +33,11 @@ export async function DELETE(req: Request) {
   }
   // Google's revoke ends the app's access for the whole Google account, so skip it when another influencer profile is
   // connected with the same account: it would disconnect that profile too. (Our own copy of the token is deleted either way.)
-  const { email, sub } = await getGoogleAccountRecord(auth.influencerId);
+  const { connected, email, sub } = await getGoogleAccountRecord(auth.influencerId);
   const shared = await googleAccountSharedWithOthers(auth.influencerId, email, sub);
   const refreshToken = await deleteGoogleToken(auth.influencerId);
   if (refreshToken && !shared) await revokeToken(refreshToken);
+  // Only when a connection was really removed (a repeated DELETE is a no-op and writes nothing).
+  if (connected || refreshToken) await recordActivity({ influencerId: auth.influencerId, action: "google.disconnected", detail: { account: email ?? null }, req });
   return NextResponse.json({ ok: true });
 }

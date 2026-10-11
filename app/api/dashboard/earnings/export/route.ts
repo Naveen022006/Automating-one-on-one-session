@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { recordActivity } from "@/lib/activity";
+import { isSameOriginRequest } from "@/lib/auth/csrf";
 import { requireApiAuth } from "@/lib/auth/session";
 import { toCsv } from "@/lib/dashboard";
 import { prisma } from "@/lib/db";
@@ -49,6 +51,15 @@ export async function GET(req: Request) {
       ];
     }),
   ];
+  // A GET from our own pages (a click, or the address typed in); not HEAD, and not a link followed from another site (the cookie is SameSite=Lax).
+  if (req.method === "GET" && isSameOriginRequest(req.headers, req.url)) {
+    await recordActivity({
+      influencerId: auth.influencerId,
+      action: "earnings.exported",
+      detail: { from: parseReportDay(params.get("from")), to: parseReportDay(params.get("to")), rows: payments.length },
+      req,
+    });
+  }
   const name = `earnings-${parseReportDay(params.get("from")) ?? "all"}-to-${parseReportDay(params.get("to")) ?? "now"}.csv`;
   return new NextResponse(toCsv(rows), {
     headers: {
