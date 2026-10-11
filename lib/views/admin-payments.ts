@@ -63,7 +63,9 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
       mismatch: counts.mismatch,
       unpaid: counts.unpaid,
     },
-    rows: data.rows.map((p) => ({
+    // A payment deleted together with its booking (a cascade) while the page is being read can come back without its relations. It no
+    // longer exists, so it is left out, instead of the whole page failing on it.
+    rows: data.rows.filter((p) => p.booking?.session?.service?.influencer).map((p) => ({
       id: p.id,
       createdAt: p.createdAt,
       status: p.status,

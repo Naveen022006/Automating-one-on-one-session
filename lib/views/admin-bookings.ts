@@ -43,7 +43,9 @@ export async function loadAdminBookingsView(params: { status?: string | null; pa
     page: data.page,
     pageCount: data.pageCount,
     total: data.total,
-    rows: data.rows.map((b) => {
+    // A booking deleted (with its session: a cascade) while the page is being read can come back without its relations. It no longer
+    // exists, so it is left out, instead of the whole page failing on it.
+    rows: data.rows.filter((b) => b.session?.service?.influencer).map((b) => {
       const svc = b.session.service;
       return {
         id: b.id,

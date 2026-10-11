@@ -73,6 +73,25 @@ async function ask(handler: Handler, query = "", cookie?: string): Promise<{ sta
   return { status: res.status, body: (await res.json()) as Record<string, unknown>, headers: res.headers };
 }
 
+/**
+ * Reads pages 1, 2, ... of a list endpoint until `done(rows)` says every row of THIS run has been seen. Other tests and other people
+ * share the database and add newer rows all the time, so this run's rows need not be on page 1; and when a row is added between two
+ * reads, the one at the end of a page moves to the start of the next, so rows are de-duplicated by id. Returns every page's body
+ * and the unique rows. `query` is "" or "?x=y".
+ */
+async function walk<R extends { id: string }>(handler: Handler, query: string, token: string, done: (rows: R[]) => boolean, maxPages = 15) {
+  const bodies: Record<string, unknown>[] = [];
+  const byId = new Map<string, R>();
+  for (let p = 1; p <= maxPages; p++) {
+    const out = await ask(handler, `${query}${query.includes("?") ? "&" : "?"}page=${p}`, token);
+    assert.equal(out.status, 200, `${query} page ${p}`);
+    bodies.push(out.body);
+    for (const r of out.body.rows as R[]) if (!byId.has(r.id)) byId.set(r.id, r);
+    if (done([...byId.values()]) || p >= (out.body.pageCount as number)) break;
+  }
+  return { bodies, rows: [...byId.values()] };
+}
+
 const orderId = (kind: string) => `order_${run}_${kind}`;
 const customer = (kind: string) => `Money ${kind} ${run}`;
 
@@ -149,7 +168,8 @@ async function seed() {
   await payment((await booking("recon", "SCHEDULED")).id, "recon"); // captured, not reconciled: the "To reconcile" tab
   await payment((await booking("mismatch", "EXPIRED")).id, "mismatch"); // captured, but the booking expired: "No paid booking"
   await payment((await booking("done", "SCHEDULED")).id, "done", { reconciledAt: new Date() });
-  await payment((await booking("refunded", "CANCELLED")).id, "refunded", { status: "REFUNDED", refundStatus: "processed", refundAmountMinor: 1000, reconciledAt: new Date() });
+  const refunded = await payment((await booking("refunded", "CANCELLED")).id, "refunded", { status: "REFUNDED", refundStatus: "processed", refundAmountMinor: 1000, reconciledAt: new Date() });
+  await prisma.refund.create({ data: { paymentId: refunded.id, providerRefundId: secret("refund-id-refunded"), amountMinor: 1000, status: "processed" } });
   await payment((await booking("unpaid", "PENDING_PAYMENT", { holdExpiresAt: new Date(Date.now() + DAY) })).id, "unpaid", { status: "CREATED", providerPaymentId: null });
   await payment((await booking("needsrefund", "CANCELLED")).id, "needsrefund", { needsRefund: true });
 
@@ -158,7 +178,15 @@ async function seed() {
   payoutPaid = (await prisma.payout.create({ data: { ...payoutBase, status: "PAID", reference: `UTR${run}`, paidAt: new Date(), paidByEmail: `${secret("payer")}@example.com`, approvedAt: new Date(), approvedByEmail: emailZ } })).id;
   payoutCancelled = (await prisma.payout.create({ data: { ...payoutBase, status: "CANCELLED" } })).id;
   // A payment in the paid payout that was partly refunded afterwards: money the influencer received that should come back.
-  await payment((await booking("inpayout", "COMPLETED")).id, "inpayout", { reconciledAt: new Date(), payoutId: payoutPaid, refundStatus: "processed", refundAmountMinor: 300 });
+  const inPayout = await payment((await booking("inpayout", "COMPLETED")).id, "inpayout", { reconciledAt: new Date(), payoutId: payoutPaid, refundStatus: "processed", refundAmountMinor: 300 });
+  await prisma.refund.create({ data: { paymentId: inPayout.id, providerRefundId: secret("refund-id-inpayout"), amountMinor: 300, status: "processed" } });
+  // A webhook event the gateway sent (this table keeps only the ids of the events, there is no payload column), and what the administrators hold:
+  // X's encrypted authenticator secret, a recovery-code hash, and every password hash. Session token hashes are collected by the exposure test.
+  await prisma.webhookEvent.create({ data: { provider: secret("webhook-provider"), eventId: secret("webhook-event"), type: secret("webhook-type") } });
+  await prisma.adminRecoveryCode.create({ data: { adminId: X, codeHash: secret("recovery-code-hash") } });
+  const adminX = await prisma.adminUser.findUniqueOrThrow({ where: { id: X }, select: { totpSecretEnc: true, passwordHash: true } });
+  assert.ok(adminX.totpSecretEnc, "X has an encrypted authenticator secret");
+  hidden.push(adminX.totpSecretEnc, adminX.passwordHash);
 
   await booking("failed", "FAILED", { lastError: "E".repeat(200) });
   await booking("requested", "REQUESTED", { holdExpiresAt: new Date(Date.now() + DAY) });
@@ -250,6 +278,7 @@ after(async () => {
         // Payouts restrict the influencer's deletion (their payments let go of them: SET NULL).
         ["payouts", () => prisma.payout.deleteMany({ where: { influencer: { slug } } })],
         ["influencer", () => prisma.influencer.deleteMany({ where: { slug } })],
+        ["webhook", () => prisma.webhookEvent.deleteMany({ where: { eventId: { contains: run } } })],
         ["audit", () => prisma.adminAuditLog.deleteMany({ where: { OR: [{ adminEmail: { in: [emailX, emailY, emailZ, auditEmail] } }, { targetId: `pay-row-${run}` }] } })],
         ["admins", () => prisma.adminUser.deleteMany({ where: { email: { in: [emailX, emailY, emailZ] } } })],
       ];
@@ -345,34 +374,37 @@ const PAYMENT_ROW_KEYS = [
   "amountMinor", "booking", "createdAt", "currency", "id", "inPayout", "influencer", "mismatch", "needsRefund", "razorpayId",
   "reconciled", "refundAmountMinor", "refundStatus", "service", "status",
 ];
-type PaymentRow = { razorpayId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; inPayout: boolean; reconciled: boolean; influencer: { id: string; name: string }; service: { title: string } };
+type PaymentRow = { id: string; razorpayId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; inPayout: boolean; reconciled: boolean; influencer: { id: string; name: string }; service: { title: string } };
 /** The kind a seeded payment was created with ("recon", "done"...): the Razorpay id column holds `pay_<run>_<kind>`, or `order_<run>_<kind>` while there is no payment id. */
 const kindOf = (r: { razorpayId: string }) => (r.razorpayId.includes(`_${run}_`) ? r.razorpayId.split(`_${run}_`)[1] : null);
 
 test("M5 GET /api/admin/payments: each tab shows the matching payments, the counts are the tabs', and a row has exactly the hand-picked fields", { skip }, async () => {
   const token = await sessionLib.createAdminSession(Y);
-  const kinds = async (view: string) => {
-    const out = await ask(routes.payments, `?view=${view}`, token);
-    assert.equal(out.status, 200, view);
-    assert.deepEqual(keys(out.body), ["counts", "page", "pageCount", "rows", "total", "view"]);
-    assert.deepEqual(keys(out.body.counts), ["all", "captured", "mismatch", "needsRefund", "unpaid", "unreconciled"]);
-    assert.equal(out.body.view, view);
-    assert.ok((out.body.rows as unknown[]).length <= 25, "one page at a time");
-    assertNoSecretKeys(out.body);
-    return { out, mine: (out.body.rows as PaymentRow[]).map(kindOf).filter((k): k is string => k !== null).sort() };
+  // `expected` kinds of this run's payments make a tab "done" (see walk: they need not be on page 1 of a busy shared database).
+  const kinds = async (view: string, expected: number) => {
+    const { bodies, rows } = await walk<PaymentRow>(routes.payments, `?view=${view}`, token, (rs) => rs.filter((r) => kindOf(r) !== null).length >= expected);
+    const body = bodies[0];
+    assert.deepEqual(keys(body), ["counts", "page", "pageCount", "rows", "total", "view"]);
+    assert.deepEqual(keys(body.counts), ["all", "captured", "mismatch", "needsRefund", "unpaid", "unreconciled"]);
+    assert.equal(body.view, view);
+    for (const b of bodies) {
+      assert.ok((b.rows as unknown[]).length <= 25, "one page at a time");
+      assertNoSecretKeys(b);
+    }
+    return { body, bodies, rows, mine: rows.map(kindOf).filter((k): k is string => k !== null).sort() };
   };
 
-  assert.deepEqual((await kinds("all")).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded", "unpaid"]);
-  assert.deepEqual((await kinds("unreconciled")).mine, ["mismatch", "needsrefund", "recon"], "captured, not reconciled, not in a payout");
-  assert.deepEqual((await kinds("captured")).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded"], "captured and refunded");
-  assert.deepEqual((await kinds("needs-refund")).mine, ["needsrefund"]);
-  assert.deepEqual((await kinds("mismatch")).mine, ["mismatch"], "captured while the booking expired");
-  assert.deepEqual((await kinds("unpaid")).mine, ["unpaid"]);
+  assert.deepEqual((await kinds("all", 7)).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded", "unpaid"]);
+  assert.deepEqual((await kinds("unreconciled", 3)).mine, ["mismatch", "needsrefund", "recon"], "captured, not reconciled, not in a payout");
+  assert.deepEqual((await kinds("captured", 6)).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded"], "captured and refunded");
+  assert.deepEqual((await kinds("needs-refund", 1)).mine, ["needsrefund"]);
+  assert.deepEqual((await kinds("mismatch", 1)).mine, ["mismatch"], "captured while the booking expired");
+  assert.deepEqual((await kinds("unpaid", 1)).mine, ["unpaid"]);
 
   // The fields of a row, and the values worked out on the server.
-  const all = await kinds("all");
-  const row = (kind: string) => (all.out.body.rows as PaymentRow[]).find((r) => kindOf(r) === kind)!;
-  for (const r of all.out.body.rows as object[]) assert.deepEqual(keys(r), PAYMENT_ROW_KEYS);
+  const all = await kinds("all", 7);
+  const row = (kind: string) => all.rows.find((r) => kindOf(r) === kind)!;
+  for (const r of all.rows) assert.deepEqual(keys(r), PAYMENT_ROW_KEYS);
   assert.equal(row("mismatch").mismatch, true);
   for (const k of ["recon", "done", "refunded", "unpaid", "needsrefund", "inpayout"]) assert.equal(row(k).mismatch, false, k);
   assert.equal(row("needsrefund").needsRefund, true);
@@ -382,7 +414,7 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
   assert.equal(row("recon").reconciled, false);
   assert.equal(row("recon").razorpayId, `pay_${run}_recon`, "the Razorpay payment id");
   assert.equal(row("unpaid").razorpayId, orderId("unpaid"), "the order id while there is no payment id");
-  const text = JSON.stringify(all.out.body);
+  const text = JSON.stringify(all.bodies);
   assert.ok(!text.includes(payoutPaid) && !text.includes(orderId("recon")), "neither the payout id nor an order id that has a payment id is sent");
   assert.deepEqual(row("recon").booking, { status: "SCHEDULED", customerName: customer("recon") });
   assert.equal(row("recon").service.title, `Money call ${run}`);
@@ -394,9 +426,9 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
 
   // Counts are the real numbers behind the tabs (the same function the sidebar badge uses).
   const { paymentViewCounts } = await import("../lib/admin/data");
-  const counts = all.out.body.counts as Record<string, number>;
+  const counts = all.body.counts as Record<string, number>;
   const truth = await paymentViewCounts();
-  for (const [k, v] of Object.entries(truth)) assert.ok(Math.abs(counts[k] - v) <= 3, `count ${k} (${counts[k]} vs ${v}; other test runs may add rows between the two reads)`);
+  for (const [k, v] of Object.entries(truth)) assert.ok(Math.abs(counts[k] - v) <= 25, `count ${k} (${counts[k]} vs ${v}; other tests share the database and add or remove rows between the two reads)`);
   assert.ok(counts.all >= 7 && counts.unreconciled >= 3 && counts.mismatch >= 1 && counts.needsRefund >= 1 && counts.unpaid >= 1);
 
   // Fallbacks and odd pages.
@@ -412,8 +444,11 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
 });
 
 test("the five GET endpoints fall under the generic admin rate rule (120 a minute); the money actions next to them keep their tight ones", () => {
+  // The proxy matches the path only (the query string is not part of it), so one path each is the whole question.
   for (const p of ["payments", "payouts", "bookings", "health", "audit"]) {
-    for (const search of ["", "?page=2", "?view=captured&page=9999", "?status=PAID"]) assert.equal(matchRouteRule("GET", `/api/admin/${p}`)?.name, "admin", `GET /api/admin/${p}${search}`);
+    const rule = matchRouteRule("GET", `/api/admin/${p}`);
+    assert.equal(rule?.name, "admin", `GET /api/admin/${p}`);
+    assert.equal(rule?.limit, 120, `GET /api/admin/${p}: 120 a minute`);
   }
   assert.equal(matchRouteRule("POST", "/api/admin/payouts/abc")?.name, "admin-money", "approve, mark paid and cancel (payouts/[id]) keep the money rule");
   assert.equal(matchRouteRule("POST", "/api/admin/payments/reconcile")?.name, "admin-reconcile");
@@ -436,31 +471,35 @@ type PayoutRow = Jsonify<AdminPayoutsView>["rows"][number];
 
 test("M6 GET /api/admin/payouts: the tabs and their counts, the destination masked, 'refunded since' on a paid payout, exactly the hand-picked fields", { skip }, async () => {
   const token = await sessionLib.createAdminSession(Y);
-  const mine = (body: Record<string, unknown>) => (body.rows as PayoutRow[]).filter((r) => r.influencer.id === influencerId);
-  const pending = await ask(routes.payouts, "", token);
-  assert.equal(pending.status, 200);
+  // This run's payouts on a tab: found by walking the pages (see walk: they need not be on page 1 of a busy shared database).
+  const onTab = async (query: string, expected: number) => {
+    const { bodies, rows } = await walk<PayoutRow>(routes.payouts, query, token, (rs) => rs.filter((r) => r.influencer.id === influencerId).length >= expected);
+    for (const b of bodies) {
+      assert.ok((b.rows as unknown[]).length <= 25);
+      assertNoSecretKeys(b);
+    }
+    return { body: bodies[0], bodies, rows, mine: rows.filter((r) => r.influencer.id === influencerId) };
+  };
+  const pending = await onTab("", 1);
   assert.deepEqual(keys(pending.body), ["counts", "onlyOneAdmin", "page", "pageCount", "rows", "status"]);
   assert.deepEqual(keys(pending.body.counts), ["CANCELLED", "PAID", "PENDING", "all"]);
   assert.equal(pending.body.status, "PENDING", "the default tab is 'To send'");
-  assert.deepEqual(mine(pending.body).map((r) => r.id), [payoutPending]);
-  assertNoSecretKeys(pending.body);
+  assert.deepEqual(pending.mine.map((r) => r.id), [payoutPending]);
 
   const byTab: Record<string, string[]> = { PAID: [payoutPaid], CANCELLED: [payoutCancelled], all: [payoutPending, payoutPaid, payoutCancelled].sort() };
   for (const [tab, ids] of Object.entries(byTab)) {
-    const out = await ask(routes.payouts, `?status=${tab}`, token);
+    const out = await onTab(`?status=${tab}`, ids.length);
     assert.equal(out.body.status, tab);
-    assert.deepEqual(mine(out.body).map((r) => r.id).sort(), ids, tab);
-    assert.ok((out.body.rows as unknown[]).length <= 25);
-    assertNoSecretKeys(out.body);
+    assert.deepEqual(out.mine.map((r) => r.id).sort(), ids, tab);
   }
   for (const odd of ["?status=pending", "?status=bogus", "?status=", "?status=__proto__"]) assert.equal((await ask(routes.payouts, odd, token)).body.status, "PENDING", odd);
 
   const counts = pending.body.counts as Record<string, number>;
   assert.ok(counts.PENDING >= 1 && counts.PAID >= 1 && counts.CANCELLED >= 1);
-  assert.equal(counts.all, counts.PENDING + counts.PAID + counts.CANCELLED, "the All tab counts every status");
+  assert.ok(Math.abs(counts.all - (counts.PENDING + counts.PAID + counts.CANCELLED)) <= 10, "the All tab counts every status (other tests may add payouts between the reads)");
 
-  const paidTab = await ask(routes.payouts, "?status=PAID", token);
-  const paid = mine(paidTab.body)[0];
+  const paidTab = await onTab("?status=PAID", 1);
+  const paid = paidTab.mine[0];
   assert.deepEqual(keys(paid), PAYOUT_ROW_KEYS);
   assert.deepEqual(keys(paid.influencer), ["id", "name"]);
   assert.deepEqual(keys(paid.approval), ["approved", "approvedByEmail", "canApprove", "canMarkPaid", "createdByViewer", "required"]);
@@ -471,11 +510,11 @@ test("M6 GET /api/admin/payouts: the tabs and their counts, the destination mask
   assert.equal(paid.approval.approvedByEmail, null, "the page names an approver only on a payout still to send; the address of another administrator is not sent for a paid one");
   assert.equal(paid.owedMinor, 300, "refunded since it was paid");
   assert.equal(paid.netMinor, 895);
-  const text = JSON.stringify(paidTab.body);
+  const text = JSON.stringify(paidTab.bodies);
   for (const forbidden of ["accountNumber", "ifsc", "upiId", "paidByEmail"]) assert.ok(!text.includes(forbidden), `no ${forbidden}`);
-  assert.equal(mine(pending.body)[0].owedMinor, 0, "only a paid payout can owe");
+  assert.equal(pending.mine[0].owedMinor, 0, "only a paid payout can owe");
 
-  // onlyOneAdmin is the real fact: four-eyes is on here and this database has more than one active administrator.
+  // onlyOneAdmin is the real fact: four-eyes is on here and this database has more than one active administrator (these tests made three).
   const active = await prisma.adminUser.count({ where: { disabledAt: null } });
   assert.equal(pending.body.onlyOneAdmin, payoutsLib.fourEyesEnabled() && active < 2);
   assert.equal(pending.body.onlyOneAdmin, false);
@@ -485,8 +524,8 @@ test("M6: what a row lets the viewer do is worked out per viewer on the server (
   const asY = await sessionLib.createAdminSession(Y);
   const asZ = await sessionLib.createAdminSession(Z);
   const approvalOf = async (token: string, id: string, tab = "PENDING") => {
-    const out = await ask(routes.payouts, `?status=${tab}`, token);
-    return (out.body.rows as PayoutRow[]).find((r) => r.id === id)!.approval;
+    const { rows } = await walk<PayoutRow>(routes.payouts, `?status=${tab}`, token, (rs) => rs.some((r) => r.id === id));
+    return rows.find((r) => r.id === id)!.approval;
   };
 
   assert.deepEqual(await approvalOf(asY, payoutPending), { required: true, approved: false, approvedByEmail: null, canApprove: false, createdByViewer: true, canMarkPaid: false }, "the creator");
@@ -516,21 +555,27 @@ test("M6: what a row lets the viewer do is worked out per viewer on the server (
 /* ---------- M7 bookings ---------- */
 
 const BOOKING_ROW_KEYS = ["currency", "customerName", "id", "influencer", "lastError", "paidMinor", "serviceTitle", "startTime", "status"];
-type BookingRow = { customerName: string; status: string; lastError: string | null; paidMinor: number; currency: string; serviceTitle: string };
+type BookingRow = { id: string; customerName: string; status: string; lastError: string | null; paidMinor: number; currency: string; serviceTitle: string };
 
 test("M7 GET /api/admin/bookings: the status filters, the error text cut to 80 characters, the paid total, exactly the hand-picked fields", { skip }, async () => {
   const token = await sessionLib.createAdminSession(Y);
-  const mine = (body: Record<string, unknown>) => (body.rows as BookingRow[]).filter((r) => r.customerName.endsWith(` ${run}`));
-  const names = (body: Record<string, unknown>) => mine(body).map((r) => r.customerName.replace(/^Money /, "").replace(` ${run}`, "")).sort();
+  const isMine = (r: BookingRow) => r.customerName.endsWith(` ${run}`);
+  const kindOfBooking = (r: BookingRow) => r.customerName.replace(/^Money /, "").replace(` ${run}`, "");
+  // This run's bookings on a filter: found by walking the pages (see walk: they need not be on page 1 of a busy shared database).
+  const onFilter = async (query: string, expected: number) => {
+    const { bodies, rows } = await walk<BookingRow>(routes.bookings, query, token, (rs) => rs.filter(isMine).length >= expected);
+    for (const b of bodies) {
+      assert.ok((b.rows as unknown[]).length <= 25);
+      assertNoSecretKeys(b);
+    }
+    return { body: bodies[0], rows, mine: rows.filter(isMine) };
+  };
 
-  const all = await ask(routes.bookings, "", token);
-  assert.equal(all.status, 200);
+  const all = await onFilter("", 9);
   assert.deepEqual(keys(all.body), ["page", "pageCount", "rows", "status", "total"]);
   assert.equal(all.body.status, "all");
   assert.ok((all.body.total as number) >= 9);
-  assert.ok((all.body.rows as unknown[]).length <= 25);
-  assertNoSecretKeys(all.body);
-  for (const r of all.body.rows as object[]) assert.deepEqual(keys(r), BOOKING_ROW_KEYS);
+  for (const r of all.rows) assert.deepEqual(keys(r), BOOKING_ROW_KEYS);
 
   const expected: Record<string, string[]> = {
     REQUESTED: ["requested"],
@@ -543,17 +588,16 @@ test("M7 GET /api/admin/bookings: the status filters, the error text cut to 80 c
     PAID: [],
   };
   for (const [status, who] of Object.entries(expected)) {
-    const out = await ask(routes.bookings, `?status=${status}`, token);
-    assert.equal(out.status, 200, status);
+    const out = await onFilter(`?status=${status}`, who.length);
     assert.equal(out.body.status, status);
-    assert.deepEqual(names(out.body), who, status);
-    assert.ok((out.body.rows as BookingRow[]).every((r) => r.status === status), `${status}: only that status`);
+    assert.deepEqual(out.mine.map(kindOfBooking).sort(), who, status);
+    assert.ok(out.rows.every((r) => r.status === status), `${status}: only that status`);
   }
   for (const odd of ["?status=HELD", "?status=bogus", "?status=paid", "?status=", "?status=__proto__"]) assert.equal((await ask(routes.bookings, odd, token)).body.status, "all", odd);
 
-  const failed = mine((await ask(routes.bookings, "?status=FAILED", token)).body)[0];
+  const failed = (await onFilter("?status=FAILED", 1)).mine[0];
   assert.equal(failed.lastError, "E".repeat(80), "only the first 80 characters leave the server");
-  const row = (kind: string) => mine(all.body).find((r) => r.customerName === customer(kind))!;
+  const row = (kind: string) => all.mine.find((r) => r.customerName === customer(kind))!;
   assert.equal(row("recon").paidMinor, 1000);
   assert.equal(row("refunded").paidMinor, 1000, "a refunded payment still counts as paid");
   assert.equal(row("unpaid").paidMinor, 0, "a payment that was never captured does not");
@@ -584,14 +628,21 @@ test("M9 GET /api/admin/audit: 25 entries a page, newest first, no free-form det
   assert.ok(!text.includes(DETAIL_MARKER) && !text.includes('"detail"'), "the detail column is never sent");
   const times = (first.rows as unknown as { createdAt: string }[]).map((r) => Date.parse(r.createdAt));
   assert.deepEqual(times, [...times].sort((a, b) => b - a), "newest first");
-  const ownFirst = first.rows.filter((r) => r.adminEmail === auditEmail).map((r) => r.action);
-  assert.deepEqual(ownFirst, [...ownFirst].sort(), "this run's entries appear in order, test.money.00 first");
 
   const second = await page("?page=2");
   assert.equal(second.page, 2);
-  assert.equal(second.pageCount, first.pageCount);
+  assert.ok(second.pageCount >= first.pageCount, "the log may grow between two reads (other tests write entries too), never shrink");
   assert.ok(second.rows.length >= 1);
-  assert.deepEqual(first.rows.filter((r) => second.rows.some((s) => s.id === r.id)), [], "the pages do not overlap");
+
+  // This run's own 30 entries, found by walking the pages. Entries other tests add meanwhile push rows from one page to the next, so one
+  // of ours can be seen twice but never missed: the walk keeps the first sighting of each and ends when all 30 are found.
+  const own = new Map<string, string>();
+  for (let p = 1; p <= first.pageCount + 1 && own.size < 30; p++) {
+    for (const r of (await page(`?page=${p}`)).rows) if (r.adminEmail === auditEmail) own.set(r.id, r.action);
+  }
+  const ownActions = [...own.values()];
+  assert.equal(ownActions.length, 30, "all of this run's entries are reachable page by page");
+  assert.deepEqual(ownActions, [...ownActions].sort(), "newest first across the pages: test.money.00 first, test.money.29 last");
 
   for (const odd of ["?page=0", "?page=-1", "?page=abc", "?page=1e9", "?page=10000", "?page=99999999999", "?page=", "?page=1.5x"]) {
     assert.equal((await page(odd)).page, 1, `page ${odd}`);
@@ -665,25 +716,33 @@ test("M8 GET /api/admin/health: the worker, the conditions, the queues and the l
 /* ---------- exposure ---------- */
 
 test("no response carries a value its page does not show: encrypted tokens and bank details of the influencer, customer contact data, notes, internal ids", { skip }, async () => {
-  assert.ok(hidden.length >= 40, "the fixtures hold the connections' encrypted tokens, the bank account, customer contact data and notes");
+  assert.ok(hidden.length >= 50, "the fixtures hold the connections' encrypted tokens, the bank account, customer contact data, notes, a webhook event, refunds, and the administrators' encrypted authenticator secret, recovery-code and password hashes");
+  assert.ok(hidden.some((h) => h.startsWith("hidden-recovery-code-hash")) && hidden.some((h) => h.startsWith("hidden-refund-id")) && hidden.some((h) => h.startsWith("hidden-webhook-event")));
   const token = await sessionLib.createAdminSession(Y);
+  // The administrators' own secrets: the raw session cookie in use, and the stored hash of every session row the tests made.
+  const sessions = await prisma.adminSession.findMany({ where: { adminId: { in: [X, Y, Z] } }, select: { tokenHash: true } });
+  assert.ok(sessions.length >= 3, "session rows exist (their hashes are stored, never sent)");
+  const adminSecrets = [token, ...sessions.map((s) => s.tokenHash)];
+  // The text of every page read of an endpoint. A list is read page by page until this run's row is on one (see walk).
+  type Row = { id: string } & Record<string, unknown>;
   const bodies: [string, string][] = [];
-  const grab = async (label: string, handler: Handler, query: string) => {
-    const out = await ask(handler, query, token);
-    assert.equal(out.status, 200, label);
-    bodies.push([label, JSON.stringify(out.body)]);
+  const grab = async (label: string, handler: Handler, query: string, mine: (r: Row) => boolean) => {
+    const { bodies: pages } = await walk<Row>(handler, query, token, (rs) => rs.some(mine));
+    bodies.push([label, JSON.stringify(pages)]);
   };
-  await grab("payments", routes.payments, "?view=all");
-  await grab("payouts", routes.payouts, "?status=all");
-  await grab("bookings", routes.bookings, "");
-  await grab("audit", routes.audit, "");
-  await grab("health", routes.health, "");
+  await grab("payments", routes.payments, "?view=all", (r) => r.razorpayId === `pay_${run}_recon`);
+  await grab("payouts", routes.payouts, "?status=all", (r) => r.reference === `UTR${run}`);
+  await grab("bookings", routes.bookings, "", (r) => r.customerName === customer("recon"));
+  await grab("audit", routes.audit, "", (r) => r.action === "test.money.00");
+  const health = await ask(routes.health, "", token);
+  assert.equal(health.status, 200);
+  bodies.push(["health", JSON.stringify(health.body)]);
 
   // The rows really are in the responses (so the check below looks at the data it should).
   assert.ok(bodies[0][1].includes(`pay_${run}_recon`) && bodies[1][1].includes(`UTR${run}`) && bodies[2][1].includes(customer("recon")) && bodies[3][1].includes("test.money.00"));
 
   for (const [label, text] of bodies) {
-    for (const value of hidden) assert.ok(!text.includes(value), `${label}: the response contains ${value}`);
+    for (const value of [...hidden, ...adminSecrets]) assert.ok(!text.includes(value), `${label}: the response contains ${value.slice(0, 12)}...`);
     assert.ok(!text.includes(`money-owner-${run}@example.com`), `${label}: the influencer's email is shown nowhere`);
     // An administrator's address appears only where a page names an administrator: the audit log's "Admin" column (and "Approved by" on a
     // payout still to send, none here), never the creator or payer of a payout.
@@ -701,14 +760,48 @@ test("no response carries a value its page does not show: encrypted tokens and b
 
 /* ---------- no database: scrubbing, fixtures, views, wiring ---------- */
 
-test("scrubHealthText: secret environment values and the password part of a URL never reach the page", () => {
-  const env = { REDIS_URL: "redis://default:hunter22pw@redis.example.com:6379", RAZORPAY_KEY_SECRET: "abcdefgh12345678", APP_SECRET: "short", NODE_ENV: "production", LOG_LEVEL: "verbose-logging" };
-  assert.equal(scrubHealthText("connect ECONNREFUSED redis://default:hunter22pw@redis.example.com:6379", env), "connect ECONNREFUSED [hidden]");
-  assert.equal(scrubHealthText("bad key abcdefgh12345678 rejected", env), "bad key [hidden] rejected");
-  assert.equal(scrubHealthText("a postgres://user:pass@db.example.com:5432/app and rediss://:tok@h:1", {}), "a postgres://***@db.example.com:5432/app and rediss://***@h:1", "URLs that are not in the environment too");
-  assert.equal(scrubHealthText("value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays", env), "value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays", "short values and non-secret names are left alone");
-  assert.equal(scrubHealthText("Redis did not answer: Command timed out", env), "Redis did not answer: Command timed out", "ordinary messages pass through");
-  assert.equal(scrubHealthText("a URL without credentials https://example.com/path stays", {}), "a URL without credentials https://example.com/path stays");
+test("scrubHealthText: realistic secrets in an error message never reach the page (fixed strings, one per way a secret can show up)", () => {
+  const slack = "https://hooks.slack.com/services/T0001/B0002/Xx9Yy8Zz7";
+  const env = {
+    REDIS_URL: "redis://default:hunter22pw@redis.example.com:6379",
+    RAZORPAY_KEY_SECRET: "abcdefgh12345678",
+    ERROR_WEBHOOK_URL: slack,
+    SMS_API_URL: "https://sms.example.com/v1/send?k=abc",
+    APP_SECRET: "short",
+    NODE_ENV: "production",
+    LOG_LEVEL: "verbose-logging",
+  };
+  // [message, what the page may show]
+  const cases: [string, string][] = [
+    // Secret environment values, by name (SECRET, a webhook, _URL...), wherever they occur.
+    ["connect ECONNREFUSED redis://default:hunter22pw@redis.example.com:6379", "connect ECONNREFUSED [hidden]"],
+    ["bad key abcdefgh12345678 rejected", "bad key [hidden] rejected"],
+    [`POST ${slack} failed (404)`, "POST [hidden] failed (404)"],
+    ["sms provider said https://sms.example.com/v1/send?k=abc was down", "sms provider said [hidden] was down"],
+    // The user and password part of any URL, whatever the password contains.
+    ["a postgres://user:pass@db.example.com:5432/app and rediss://:tok@h:1", "a postgres://***@db.example.com:5432/app and rediss://***@h:1"],
+    ["connect failed postgresql://postgres.abc:S3cr3t@pw@host:5432/db (timeout)", "connect failed postgresql://***@host:5432/db (timeout)"],
+    ["redis://default:ab/cd1234@host:6379 refused", "redis://***@host:6379 refused"],
+    ["redis://default:p#ss1234@host:6379 refused", "redis://***@host:6379 refused"],
+    ["redis://default:p?ss1234@host:6379 refused", "redis://***@host:6379 refused"],
+    ['"redis://u:p@h:1" ended', '"redis://***@h:1" ended'],
+    // Tokens in headers, query strings and JSON bodies.
+    ["Authorization: Bearer ya29.a0AfH6SMBxyz-123_456 rejected", "Authorization: Bearer [hidden] rejected"],
+    ["GET https://graph.facebook.com/v20.0/me?access_token=EAAGm0PX4ZCpsBA&fields=id failed", "GET https://graph.facebook.com/v20.0/me?access_token=[hidden]&fields=id failed"],
+    ["POST https://sms.other.example/send?to=1&authkey=AbCdEf123456 failed", "POST https://sms.other.example/send?to=1&authkey=[hidden] failed"],
+    ["https://x.example/y?KEY=abc123&a=b", "https://x.example/y?KEY=[hidden]&a=b"],
+    ['{"access_token":"ya29.abc","expires_in":3599}', '{"access_token":"[hidden]","expires_in":3599}'],
+    // Nothing else is touched: short values, non-secret names, ordinary messages, a URL or an address without credentials.
+    ["value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays", "value short stays, NODE_ENV production stays, LOG_LEVEL verbose-logging stays"],
+    ["Redis did not answer: Command timed out", "Redis did not answer: Command timed out"],
+    ["a URL without credentials https://example.com/path stays; so does ops@example.com", "a URL without credentials https://example.com/path stays; so does ops@example.com"],
+  ];
+  for (const [message, shown] of cases) assert.equal(scrubHealthText(message, env), shown, message);
+  // The same strings with an empty environment: everything that does not depend on an environment value is still taken out.
+  assert.equal(scrubHealthText("redis://default:hunter22pw@redis.example.com:6379", {}), "redis://***@redis.example.com:6379");
+  for (const leaked of ["S3cr3t", "pw@host", "ab/cd1234", "p#ss1234", "ya29.", "EAAGm0PX4ZCpsBA", "AbCdEf123456", "abc123"]) {
+    for (const [message] of cases) assert.ok(!scrubHealthText(message, {}).includes(leaked), `${leaked} must not survive in: ${message}`);
+  }
 });
 
 const NOW = Date.parse("2026-10-11T10:00:00.000Z");
@@ -951,6 +1044,10 @@ test("HealthView: 'Worker is not running' for a stale heartbeat, Running for a f
   const busy = render({}, true);
   assert.ok(/<a [^>]*href="\/admin\/health"[^>]*>Refreshing…<\/a>/.test(busy) && busyAttr(busy));
   assert.ok(!busyAttr(fresh));
+  // While busy the control is inert, so repeated clicks cannot stack health measurements; when idle it is an ordinary link.
+  const refreshTag = (html: string) => /<a [^>]*href="\/admin\/health"[^>]*>/.exec(html)![0];
+  assert.ok(refreshTag(busy).includes('aria-disabled="true"') && refreshTag(busy).includes('style="pointer-events:none"'), "inert while busy");
+  assert.ok(!refreshTag(fresh).includes("aria-disabled") && !refreshTag(fresh).includes("pointer-events"), "an ordinary link when idle");
 
   const lists = render({}, undefined, {
     recovered: [

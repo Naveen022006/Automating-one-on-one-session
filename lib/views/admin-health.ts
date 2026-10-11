@@ -10,14 +10,29 @@ import { QUEUE_NAMES } from "@/lib/queue";
  * the page prints, and every free-text field that can carry an error message goes through scrubHealthText().
  */
 
-/** Environment variables whose values are secrets or connection strings (the same names the build's secret scan looks for). */
-const SECRET_ENV_NAME = /SECRET|PASSWORD|TOKEN|_KEY|PRIVATE|DATABASE_URL|REDIS_URL/;
-const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi;
+/**
+ * Environment variables whose values are secrets or connection strings: the names the build's secret scan looks for, plus every
+ * webhook and every `..._URL` (a Slack webhook URL is itself a secret; so can be an SMS provider URL that carries a key).
+ */
+const SECRET_ENV_NAME = /SECRET|PASSWORD|TOKEN|_KEY|PRIVATE|DATABASE_URL|REDIS_URL|WEBHOOK|_URL$/i;
+/**
+ * `scheme://` followed by the user and password up to the LAST `@` of the same word, so a password that itself contains `@`, `/`,
+ * `?` or `#` is covered whole (`postgresql://user:p@ss/w#rd@host:5432/db`). A URL with no credentials but an `@` further on
+ * (`https://host/x?mail=a@b.c`) is cut at that `@` too: the scrubber prefers hiding too much to leaking.
+ */
+const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)\S*?@(?=[^\s@]*(?:\s|$))/gi;
+const BEARER = /\bBearer\s+\S+/gi;
+const SECRET_QUERY_PARAM = /([?&](?:access_token|refresh_token|id_token|token|api[_-]?key|apikey|authkey|auth|key|secret|client_secret|password|passwd|signature|sig)=)[^&\s]+/gi;
+const SECRET_JSON_FIELD = /("(?:access_token|refresh_token|id_token|token|api_key|apikey|secret|client_secret|password)"\s*:\s*")[^"]+/gi;
 
 /**
- * Error messages from Redis, Razorpay or the queue library are shown on the page. This takes a secret out of such a message
- * if one slipped in: any secret-looking environment value (8 characters or more) becomes "[hidden]", and the user and
- * password part of a URL (`redis://user:password@host`) becomes `***`.
+ * Error messages from Redis, Razorpay, Meta, an SMS provider or the queue library are shown on the page. This takes a secret out
+ * of such a message if one slipped in:
+ *   - any secret-looking environment value (8 characters or more; see SECRET_ENV_NAME) becomes "[hidden]";
+ *   - the user and password part of a URL (`redis://user:password@host`) becomes `***`;
+ *   - `Bearer <token>` becomes `Bearer [hidden]`;
+ *   - the value of a `?token=`, `&access_token=`, `?authkey=`, `?key=`... query parameter, or of a `"access_token":"..."` JSON
+ *     field, becomes `[hidden]`.
  */
 export function scrubHealthText(text: string, env: Record<string, string | undefined> = process.env): string {
   const secrets = Object.entries(env)
@@ -26,7 +41,11 @@ export function scrubHealthText(text: string, env: Record<string, string | undef
     .sort((a, b) => b.length - a.length);
   let out = text;
   for (const secret of secrets) out = out.split(secret).join("[hidden]");
-  return out.replace(URL_CREDENTIALS, "$1***@");
+  return out
+    .replace(URL_CREDENTIALS, "$1***@")
+    .replace(BEARER, "Bearer [hidden]")
+    .replace(SECRET_QUERY_PARAM, "$1[hidden]")
+    .replace(SECRET_JSON_FIELD, "$1[hidden]");
 }
 
 export interface AdminHealthCondition {

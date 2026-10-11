@@ -30,7 +30,18 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
       <PageHead
         title="System health"
         description="Is the background worker running, are payments and meetings getting through, and are any jobs stuck?"
-        actions={<ButtonLink href="/admin/health" variant="secondary" size="sm">{busy ? "Refreshing…" : "Refresh"}</ButtonLink>}
+        actions={
+          <ButtonLink
+            href="/admin/health"
+            variant="secondary"
+            size="sm"
+            // While a measurement runs the control is inert (a click, with the mouse or the keyboard, would start another one on top of it:
+            // the SPA's link component refetches on a click on the current page). The old page reloads instead and never sets `busy`.
+            {...(busy ? { "aria-disabled": true, style: { pointerEvents: "none" as const }, onClick: (e: { preventDefault(): void }) => e.preventDefault() } : {})}
+          >
+            {busy ? "Refreshing…" : "Refresh"}
+          </ButtonLink>
+        }
       />
 
       {report.unhealthy.length === 0 ? (
