@@ -31,6 +31,10 @@ next-env.d.ts
 Dockerfile*
 docker-compose*.yml
 
+# The local provider mock (doc/11-provider-simulator.md) is a development tool: its code never enters an image.
+scripts/mock-providers
+scripts/dev-mock.ts
+
 # Not needed at runtime.
 tests
 doc

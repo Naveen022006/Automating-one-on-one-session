@@ -16,6 +16,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "admin:create": "tsx scripts/create-admin.ts",
     "dev:logins": "tsx scripts/dev-logins.ts",
+    "dev:mock": "tsx scripts/dev-mock.ts",
+    "mock:providers": "tsx scripts/mock-providers/index.ts",
     "keys:rotate": "tsx scripts/rotate-encryption-key.ts",
     "keys:verify": "tsx scripts/verify-encryption-keys.ts",
     "expire-holds": "tsx worker/index.ts",

@@ -66,6 +66,16 @@ test("Google and Meta base URLs are written only in lib/provider-endpoints.ts, l
   }
 });
 
+test("the mock never enters an image: the build context excludes it, and nothing in the Dockerfiles copies it by name", () => {
+  const ignored = readFileSync(join(root, ".dockerignore"), "utf8").split(/\r?\n/).map((l) => l.trim());
+  assert.ok(ignored.includes("scripts/mock-providers") && ignored.includes("scripts/dev-mock.ts"));
+  for (const file of ["Dockerfile", "Dockerfile.worker"]) assert.ok(!/mock-providers|dev-mock/.test(readFileSync(join(root, file), "utf8")), `${file} must not mention the mock`);
+  const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts as Record<string, string>;
+  assert.equal(scripts["dev:mock"], "tsx scripts/dev-mock.ts");
+  assert.equal(scripts["mock:providers"], "tsx scripts/mock-providers/index.ts");
+  assert.ok(!/mock/i.test(`${scripts.start} ${scripts.build} ${scripts.worker}`), "no production script starts the mock");
+});
+
 test("the mock server imports nothing from lib/ (it shares no parsing or signing code with the app); only the launcher reads isLocalAppUrl", () => {
   const importsOf = (file: string) => [...readFileSync(file, "utf8").matchAll(/(?:from|import|require)\s*\(?\s*["']([^"']+)["']/g)].map((m) => m[1]);
   const mockFiles = walk(join(root, "scripts", "mock-providers"));
