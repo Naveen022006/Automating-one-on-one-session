@@ -33,6 +33,11 @@ export async function PATCH(req: Request) {
     if (!(await isSlugAvailable(body.slug, auth.influencerId))) return jsonError("This address is taken.", 409, { field: "slug" });
   }
 
+  // The values before the change, only to tell which fields changed for the activity log (a failed read changes nothing).
+  const previous = await prisma.influencer
+    .findUnique({ where: { id: auth.influencerId }, select: { name: true, bio: true, photoUrl: true, timezone: true, notifyByEmail: true } })
+    .catch(() => null);
+
   try {
     await prisma.influencer.update({
       where: { id: auth.influencerId },
@@ -51,12 +56,21 @@ export async function PATCH(req: Request) {
     throw e;
   }
   const slugChanged = body.slug !== undefined && body.slug !== auth.influencerSlug;
-  const fields = Object.entries(body).filter(([, v]) => v !== undefined).map(([k]) => k).join(",");
-  await recordActivity({
-    influencerId: auth.influencerId,
-    action: "profile.updated",
-    detail: { fields, ...(slugChanged ? { slugFrom: auth.influencerSlug, slugTo: body.slug! } : {}) },
-    req,
-  });
+  const changed = [
+    body.name !== undefined && body.name !== previous?.name ? "name" : null,
+    body.bio !== undefined && (body.bio || null) !== (previous?.bio ?? null) ? "bio" : null,
+    body.photoUrl !== undefined && (body.photoUrl || null) !== (previous?.photoUrl ?? null) ? "photoUrl" : null,
+    body.timezone !== undefined && body.timezone !== previous?.timezone ? "timezone" : null,
+    slugChanged ? "slug" : null,
+    body.notifyByEmail !== undefined && body.notifyByEmail !== previous?.notifyByEmail ? "notifyByEmail" : null,
+  ].filter((f): f is string => f !== null);
+  if (changed.length > 0) {
+    await recordActivity({
+      influencerId: auth.influencerId,
+      action: "profile.updated",
+      detail: { fields: changed.join(","), ...(slugChanged ? { slugFrom: auth.influencerSlug, slugTo: body.slug! } : {}) },
+      req,
+    });
+  }
   return NextResponse.json({ ok: true });
 }

@@ -13,8 +13,8 @@ export function InfluencerActivityPanel({ influencerId }: { influencerId: string
       <div className="stack">
         <p className="subtle">What happened on this account, newest first. Entries are kept for one year and cannot be edited.</p>
         <ActivityLog
-          keyFor={(page) => queryKeys.admin("influencer-activity", { id: influencerId, page })}
-          urlFor={(page) => `/api/admin/influencers/${encodeURIComponent(influencerId)}/activity?page=${page}`}
+          keyFor={(page, action) => queryKeys.admin("influencer-activity", { id: influencerId, page, action })}
+          urlFor={(page, action) => `/api/admin/influencers/${encodeURIComponent(influencerId)}/activity?page=${page}${action ? `&action=${encodeURIComponent(action)}` : ""}`}
           label="Account activity of this influencer"
         />
       </div>

@@ -1,4 +1,4 @@
-import { describeDevice, summariseActivity } from "@/lib/activity-actions";
+import { describeDevice, isActivityAction, summariseActivity, type ActivityAction } from "@/lib/activity-actions";
 import { prisma } from "@/lib/db";
 
 /**
@@ -10,7 +10,9 @@ import { prisma } from "@/lib/db";
  * (a short "Chrome on Windows" instead), the influencer id, or anything of a customer (the log stores none).
  *
  * One page of ACTIVITY_PAGE_SIZE (25) rows per request, newest first, and the page number is bounded to 1 to ACTIVITY_MAX_PAGE (400):
- * there is no way to read the whole log in one call.
+ * there is no way to read the whole log in one call. An optional `?action=` (one of the known actions, see ACTIVITY_ACTIONS) narrows the
+ * log to that action, and the page limit applies to the narrowed list: a payout-detail change is reachable however many entries of
+ * other kinds came after it. Any other value is ignored (all entries).
  */
 
 export const ACTIVITY_PAGE_SIZE = 25;
@@ -21,6 +23,11 @@ export function parseActivityPage(value: string | null | undefined): number {
   if (value === null || value === undefined || !/^\d{1,3}$/.test(value)) return 1;
   const n = Number.parseInt(value, 10);
   return n >= 1 && n <= ACTIVITY_MAX_PAGE ? n : 1;
+}
+
+/** `?action=` as a known action, else null (no filter). */
+export function parseActivityAction(value: string | null | undefined): ActivityAction | null {
+  return isActivityAction(value) ? value : null;
 }
 
 export interface ActivityRowView<Actor extends string> {
@@ -49,8 +56,9 @@ export async function loadActivityPage<Actor extends string>(
   influencerId: string,
   page: number,
   actorLabel: (actor: string) => Actor,
+  action: ActivityAction | null = null,
 ): Promise<ActivityPageView<Actor>> {
-  const where = { influencerId };
+  const where = { influencerId, ...(action ? { action } : {}) };
   const [total, rows] = await Promise.all([
     prisma.influencerActivity.count({ where }),
     prisma.influencerActivity.findMany({
@@ -76,6 +84,6 @@ export async function loadActivityPage<Actor extends string>(
   };
 }
 
-export async function loadDashboardActivityView(influencerId: string, params: { page?: string | null }): Promise<DashboardActivityView> {
-  return loadActivityPage(influencerId, parseActivityPage(params.page), (actor) => (actor === "system" ? "system" : "you"));
+export async function loadDashboardActivityView(influencerId: string, params: { page?: string | null; action?: string | null }): Promise<DashboardActivityView> {
+  return loadActivityPage(influencerId, parseActivityPage(params.page), (actor) => (actor === "system" ? "system" : "you"), parseActivityAction(params.action));
 }

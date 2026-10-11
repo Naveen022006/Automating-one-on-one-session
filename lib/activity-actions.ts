@@ -45,19 +45,19 @@ export type ActivityDetail = Record<string, string | number | boolean | null>;
 export const ACTIVITY_DETAIL_KEYS: Record<ActivityAction, readonly string[]> = {
   "auth.registered": [],
   "auth.login": [],
-  "auth.login_failed": [],
+  "auth.login_failed": ["count"],
   "auth.email_verified": [],
   "auth.password_changed": [],
   "auth.password_reset": [],
   "auth.logout_all": ["sessions"],
   "auth.session_revoked": [],
-  "auth.reauthenticated": [],
-  "profile.updated": ["fields", "slugFrom", "slugTo"],
+  "auth.reauthenticated": ["count"],
+  "profile.updated": ["fields", "slugFrom", "slugTo", "count"],
   "service.created": ["serviceId", "title", "priceTo", "currency", "activeTo"],
   "service.updated": ["serviceId", "title", "priceFrom", "priceTo", "currency", "activeFrom", "activeTo"],
-  "availability.changed": ["change"],
-  "booking.cancelled": ["bookingId"],
-  "booking.rescheduled": ["bookingId"],
+  "availability.changed": ["change", "count"],
+  "booking.cancelled": ["bookingId", "calendar"],
+  "booking.rescheduled": ["bookingId", "calendar"],
   "booking.request_approved": ["bookingId"],
   "booking.request_declined": ["bookingId"],
   "booking.refunded": ["bookingId", "amountMinor", "currency", "status"],
@@ -68,8 +68,21 @@ export const ACTIVITY_DETAIL_KEYS: Record<ActivityAction, readonly string[]> = {
   "whatsapp.connected": ["phone"],
   "whatsapp.disconnected": ["phone"],
   "onboarding.completed": [],
-  "earnings.exported": ["from", "to", "rows"],
+  "earnings.exported": ["from", "to", "rows", "count"],
 };
+
+/**
+ * Low-value, high-volume entries. When the same influencer repeats one of these from the same IP within ACTIVITY_COALESCE_WINDOW_MS,
+ * the earlier row's `count` goes up instead of a new row being inserted (lib/activity.ts), so a loop of requests cannot bury the
+ * entries that matter. Everything else is a security or money entry and is NEVER merged: password and payout-detail changes, sign-ins,
+ * Google and WhatsApp connections, refunds, price changes (service.*), customer erasures, cancellations.
+ */
+export const COALESCED_ACTIONS: readonly ActivityAction[] = ["auth.login_failed", "auth.reauthenticated", "profile.updated", "availability.changed", "earnings.exported"];
+export const ACTIVITY_COALESCE_WINDOW_MS = 15 * 60_000;
+
+export function isCoalescedAction(action: ActivityAction): boolean {
+  return COALESCED_ACTIONS.includes(action);
+}
 
 export function isActivityAction(value: unknown): value is ActivityAction {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(ACTIVITY_ACTIONS, value);
@@ -156,6 +169,18 @@ function serviceSummary(action: "service.created" | "service.updated", detail: u
  */
 export function summariseActivity(action: string, detail?: unknown): string {
   if (!isActivityAction(action)) return "Account activity";
+  let text = summariseBase(action, detail);
+  // A merged row (see COALESCED_ACTIONS) says how many times it happened; a booking change says when the calendar was left behind.
+  const count = isCoalescedAction(action) ? num(detail, "count") : null;
+  if (count !== null && count > 1) text += ` (${count} times)`;
+  if ((action === "booking.cancelled" || action === "booking.rescheduled") && str(detail, "calendar") === "not-updated") text += " (Google Calendar was not updated)";
+  return text;
+}
+
+/** The names the Profile card uses for the fields a profile request carries. */
+const PROFILE_FIELDS: Record<string, string> = { name: "name", bio: "bio", photoUrl: "photo", timezone: "time zone", slug: "page address", notifyByEmail: "e-mail alerts" };
+
+function summariseBase(action: ActivityAction, detail: unknown): string {
   const label = ACTIVITY_ACTIONS[action];
   switch (action) {
     case "auth.logout_all": {
@@ -166,7 +191,9 @@ export function summariseActivity(action: string, detail?: unknown): string {
       const fields = str(detail, "fields");
       const from = str(detail, "slugFrom");
       const to = str(detail, "slugTo");
-      const head = fields ? `${label}: ${fields.split(",").join(", ")}` : label;
+      // The address change is spelled out below, so "slug" is not listed twice.
+      const names = fields ? fields.split(",").filter((f) => f && !(f === "slug" && from && to)).map((f) => PROFILE_FIELDS[f] ?? f) : [];
+      const head = names.length > 0 ? `${label}: ${names.join(", ")}` : label;
       return from && to ? `${head} (page address /${from}${ARROW}/${to})` : head;
     }
     case "service.created":
@@ -180,6 +207,8 @@ export function summariseActivity(action: string, detail?: unknown): string {
       const amount = num(detail, "amountMinor");
       const currency = str(detail, "currency");
       const status = str(detail, "status");
+      // Razorpay did not answer in time: the refund was asked for and may still go through (with or without an amount we knew).
+      if (status === "unconfirmed") return `Refund requested${amount !== null ? `: ${money(amount)}${currency ? ` ${currency}` : ""}` : ""} (not confirmed yet)`;
       if (amount === null) return label;
       return `${label}: ${money(amount)}${currency ? ` ${currency}` : ""}${status ? ` (${status})` : ""}`;
     }

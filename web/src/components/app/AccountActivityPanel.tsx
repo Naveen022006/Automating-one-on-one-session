@@ -1,21 +1,38 @@
 import type { QueryKey } from "@tanstack/react-query";
-import { keepPreviousData } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { keepPreviousData, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { IconShield } from "@web/components/icons";
-import { Alert, Button, Card, EmptyState, Skeleton } from "@web/components/ui/primitives";
+import { Alert, Button, Card, EmptyState, Field, Select, Skeleton } from "@web/components/ui/primitives";
 import { useApiQuery } from "@web/lib/api";
 import { queryKeys } from "@web/lib/query";
+import type { ActivityAction } from "@/lib/activity-actions";
 import type { ActivityPageView } from "@/lib/views/dashboard-activity";
 
 /**
  * The account activity table (doc/13-product-build-plan.md, WP-C): When / What / Device / IP, 25 rows a page, newest first. Used by
  * the "Account activity" card in Settings (the influencer's own entries) and by the admin Influencer page
  * (components/admin/InfluencerActivityPanel.tsx). The sentence in "What" is worded by the server; the browser never sees the stored
- * detail or the raw user agent. The page number is local state (the card is one part of a page, not a page of its own), and the
- * previous page stays on screen while the next one loads.
+ * detail or the raw user agent. The page number and the filter are local state (the card is one part of a page, not a page of its
+ * own), and the previous page stays on screen while the next one loads.
  */
 
 type Row = ActivityPageView<string>["rows"][number];
+
+/** Window event the forms that write an entry without reloading the page dispatch (a password change, the password prompt): the card reads the log again. */
+export const ACTIVITY_CHANGED_EVENT = "sa:activity-changed";
+
+/** The quick filters: the entries somebody investigating an account looks for first. `satisfies` keeps every value a real action. */
+const FILTERS = [
+  { value: "", label: "All activity" },
+  { value: "auth.login_failed", label: "Failed sign-ins" },
+  { value: "auth.login", label: "Sign-ins" },
+  { value: "auth.password_changed", label: "Password changes" },
+  { value: "payout_account.updated", label: "Payout details" },
+  { value: "booking.refunded", label: "Refunds" },
+  { value: "service.updated", label: "Service changes" },
+  { value: "customers.erased", label: "Customer erasures" },
+  { value: "google.connected", label: "Google connections" },
+] satisfies { value: "" | ActivityAction; label: string }[];
 
 function when(iso: string): string {
   return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -30,7 +47,7 @@ const loadingLines = (
   </div>
 );
 
-type LogProps = { keyFor: (page: number) => QueryKey; urlFor: (page: number) => string; label: string };
+type LogProps = { keyFor: (page: number, action: string) => QueryKey; urlFor: (page: number, action: string) => string; label: string };
 
 /**
  * The table, loaded once the page is on screen. The query starts in an effect-driven second render, not during the first one, so a
@@ -45,11 +62,26 @@ export function ActivityLog(props: LogProps) {
 
 function ActivityLogTable({ keyFor, urlFor, label }: LogProps) {
   const [page, setPage] = useState(1);
-  const query = useApiQuery<ActivityPageView<string>>(keyFor(page), urlFor(page), { placeholderData: keepPreviousData });
-  const data = query.data;
+  const [action, setAction] = useState("");
+  const queryClient = useQueryClient();
+  const query = useApiQuery<ActivityPageView<string>>(keyFor(page, action), urlFor(page, action), { placeholderData: keepPreviousData });
 
-  if (data === undefined) {
-    if (query.isPending) return loadingLines;
+  // The forms that write an entry without reloading the page announce it; read the log again.
+  useEffect(() => {
+    const reload = () => void queryClient.invalidateQueries({ queryKey: keyFor(1, "").slice(0, 2) });
+    window.addEventListener(ACTIVITY_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(ACTIVITY_CHANGED_EVENT, reload);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The last page that loaded: the pager stays usable when the next one fails.
+  const lastGood = useRef<ActivityPageView<string> | null>(null);
+  if (query.data !== undefined && !query.isPlaceholderData) lastGood.current = query.data;
+  const data = query.data ?? lastGood.current;
+  const failed = query.isError;
+  const pageCount = data?.pageCount ?? 1;
+
+  if (data === null || data === undefined) {
+    if (!failed) return loadingLines;
     return (
       <Alert tone="danger" title="Could not load the activity" action={<Button onClick={() => void query.refetch()}>Try again</Button>}>
         {query.error?.status === 429 ? (query.error.serverMessage ?? "Too many requests. Please wait a moment and try again.") : "Your account is not affected. Try again in a moment."}
@@ -57,11 +89,43 @@ function ActivityLogTable({ keyFor, urlFor, label }: LogProps) {
     );
   }
 
-  const shown = `${data.rows.length === 0 ? "No entries" : `${data.rows.length} ${data.rows.length === 1 ? "entry" : "entries"} shown`}, page ${data.page} of ${data.pageCount}.`;
+  const busy = query.isPlaceholderData || query.isFetching;
+  const shown = failed
+    ? "Could not load this page."
+    : `${data.rows.length === 0 ? "No entries" : `${data.rows.length} ${data.rows.length === 1 ? "entry" : "entries"} shown`}, page ${data.page} of ${data.pageCount}.`;
   return (
     <div className="stack" aria-busy={query.isPlaceholderData || undefined}>
+      <Field id={"activity-filter"} label="Show">
+        <Select
+          id={"activity-filter"}
+          value={action}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+            setAction(e.target.value);
+            setPage(1);
+          }}
+        >
+          {FILTERS.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
       <p role="status" className="sr-only">{query.isPlaceholderData ? "Loading…" : shown}</p>
-      {data.rows.length === 0 ? (
+      {failed ? (
+        <Alert
+          tone="danger"
+          title="Could not load this page"
+          action={
+            <div className="row">
+              <Button size="sm" onClick={() => void query.refetch()}>Try again</Button>
+              {page > 1 && <Button size="sm" onClick={() => setPage(1)}>Back to page 1</Button>}
+            </div>
+          }
+        >
+          {query.error?.status === 429 ? (query.error.serverMessage ?? "Too many requests. Please wait a moment and try again.") : "Your account is not affected."}
+        </Alert>
+      ) : data.rows.length === 0 ? (
         <EmptyState icon={<IconShield />} title="No activity yet" />
       ) : (
         <div className="table-wrap">
@@ -91,16 +155,16 @@ function ActivityLogTable({ keyFor, urlFor, label }: LogProps) {
           </table>
         </div>
       )}
-      {data.pageCount > 1 && (
+      {(pageCount > 1 || page > 1) && (
         <nav className="pagination" aria-label="Activity pages">
           <span>
-            Page {data.page} of {data.pageCount}
+            Page {page} of {Math.max(pageCount, page)}
           </span>
           <div className="row">
-            <Button size="sm" disabled={data.page <= 1 || query.isPlaceholderData} onClick={() => setPage(data.page - 1)}>
+            <Button size="sm" disabled={page <= 1 || busy} onClick={() => setPage(page - 1)}>
               Previous
             </Button>
-            <Button size="sm" disabled={data.page >= data.pageCount || query.isPlaceholderData} onClick={() => setPage(data.page + 1)}>
+            <Button size="sm" disabled={page >= pageCount || busy || failed} onClick={() => setPage(page + 1)}>
               Next
             </Button>
           </div>
@@ -118,7 +182,11 @@ export function AccountActivityPanel() {
         <p className="subtle">
           The last sign-ins and changes on your account. If you do not recognise an entry, change your password and log out everywhere.
         </p>
-        <ActivityLog keyFor={(page) => queryKeys.dashboard("activity", { page })} urlFor={(page) => `/api/dashboard/activity?page=${page}`} label="Your account activity" />
+        <ActivityLog
+          keyFor={(page, action) => queryKeys.dashboard("activity", { page, action })}
+          urlFor={(page, action) => `/api/dashboard/activity?page=${page}${action ? `&action=${encodeURIComponent(action)}` : ""}`}
+          label="Your account activity"
+        />
       </div>
     </Card>
   );

@@ -101,7 +101,7 @@ test("wording: the plan's acceptance sentences", () => {
   assert.equal(summariseActivity("booking.refunded", { amountMinor: 50000, currency: "INR", status: "processed" }), "Refund issued: 500 INR (processed)");
   assert.equal(summariseActivity("customers.erased", { erased: 1, blocked: 0 }), "Customer data erased: 1 booking erased");
   assert.equal(summariseActivity("customers.erased", { erased: 2, blocked: 1 }), "Customer data erased: 2 bookings erased, 1 upcoming kept");
-  assert.equal(summariseActivity("profile.updated", { fields: "name,slug", slugFrom: "a", slugTo: "b" }), "Profile updated: name, slug (page address /a → /b)");
+  assert.equal(summariseActivity("profile.updated", { fields: "name,slug", slugFrom: "a", slugTo: "b" }), "Profile updated: name (page address /a → /b)");
   assert.equal(summariseActivity("auth.logout_all", { sessions: 1 }), "Signed out everywhere (1 device)");
 });
 
@@ -201,6 +201,10 @@ let routes: {
   services: Handler;
   servicesPatch: Handler;
   logoutAll: Handler;
+  profile: Handler;
+  googleDisconnect: Handler;
+  earningsExport: Handler;
+  bookingAction: (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>;
 };
 let authLib: typeof import("../lib/auth/session");
 let adminSessionLib: typeof import("../lib/admin/session");
@@ -223,6 +227,10 @@ const customerEmail = `act-customer-${run}@example.com`;
 const customerName = `Actcustomer Person ${run}`;
 let refundBookingId = "";
 let providerPaymentId = "";
+/** What the injected Razorpay does: answer, or time out (an unclear outcome). */
+let razorpay = "ok" as "ok" | "timeout";
+/** What the injected calendar step of lib/manage does for the booking route. */
+let calendar = "ok" as "ok" | "rejected" | "warning";
 
 const ENV_KEYS = ["ADMIN_REQUIRE_2FA", "RATE_LIMIT_STORE"] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
@@ -281,8 +289,20 @@ before(async () => {
   mock.module("@/lib/payments", {
     namedExports: {
       ...payments,
-      createRefund: async (input: { providerPaymentId: string; amountMinor: number }) => ({ id: `rfnd_act_${run}`, payment_id: input.providerPaymentId, amount: input.amountMinor, currency: "INR", status: "processed" }),
+      createRefund: async (input: { providerPaymentId: string; amountMinor: number }) => (razorpay === "timeout" ? Promise.reject(new Error("The operation was aborted due to timeout")) : { id: `rfnd_act_${run}`, payment_id: input.providerPaymentId, amount: input.amountMinor, currency: "INR", status: "processed" }),
       listRefunds: async () => [],
+    },
+  });
+  // The booking route reaches the calendar through lib/manage: reschedule and cancel are replaced, the error classes are the real ones.
+  const manage = await import("../lib/manage");
+  mock.module("@/lib/manage", {
+    namedExports: {
+      ...manage,
+      rescheduleBooking: async () => {
+        if (calendar === "rejected") throw new manage.ManageRejectedError("Google refused the calendar update");
+      },
+      cancelBooking: async () => ({ refund: null, ...(calendar === "warning" ? { warning: "calendar not updated" } : {}) }),
+      autoRefundOnCancel: () => false,
     },
   });
   authLib = await import("../lib/auth/session");
@@ -300,6 +320,10 @@ before(async () => {
     services: (await import("../app/api/dashboard/services/route")).POST as Handler,
     servicesPatch: (await import("../app/api/dashboard/services/route")).PATCH as Handler,
     logoutAll: (await import("../app/api/auth/logout-all/route")).POST as Handler,
+    profile: (await import("../app/api/dashboard/profile/route")).PATCH as Handler,
+    googleDisconnect: (await import("../app/api/dashboard/google/route")).DELETE as Handler,
+    earningsExport: (await import("../app/api/dashboard/earnings/export/route")).GET as Handler,
+    bookingAction: (await import("../app/api/dashboard/bookings/[id]/route")).POST as typeof routes.bookingAction,
   };
 
   const accounts = await import("../lib/auth/accounts");
@@ -640,4 +664,341 @@ test("log out everywhere writes the number of devices, and the entry is still re
   const plain = await adminSessionLib.createAdminSession(adminId);
   const seen = await callAdmin(A.influencerId, plain);
   assert.ok((seen.body.rows as { summary: string }[]).some((r) => r.summary.startsWith("Signed out everywhere")));
+});
+
+/* ------------------------------------------------------------------------------------------------------------------------------- */
+/* 3. Merging repeated low-value entries, security entries never merged (no database: an in-memory stand-in)                       */
+/* ------------------------------------------------------------------------------------------------------------------------------- */
+
+interface StubRow {
+  id: string;
+  influencerId: string;
+  action: string;
+  actor: string;
+  ip: string | null;
+  createdAt: Date;
+  detail: Record<string, unknown> | null;
+}
+
+/** A stand-in for the activity table with the three calls recordActivity may make; `wheres` keeps what it looked for. */
+function stubDb(opts: { seed?: StubRow[]; userDelayMs?: number; createDelayMs?: number } = {}) {
+  const rows: StubRow[] = [...(opts.seed ?? [])];
+  const stats = { finds: 0, updates: 0, creates: 0, wheres: [] as { createdAt: { gte: Date } }[] };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const db = {
+    user: { findUnique: (async () => (await sleep(opts.userDelayMs ?? 0), { influencerId: "inf1" })) as never },
+    influencerActivity: {
+      create: (async ({ data }: { data: Record<string, unknown> }) => {
+        await sleep(opts.createDelayMs ?? 0);
+        stats.creates++;
+        const detail = data.detail !== null && typeof data.detail === "object" && Object.keys(data.detail as object).length > 0 ? (data.detail as Record<string, unknown>) : null;
+        const row: StubRow = { id: `r${rows.length + 1}`, influencerId: data.influencerId as string, action: data.action as string, actor: data.actor as string, ip: (data.ip as string | null) ?? null, createdAt: new Date(), detail };
+        rows.push(row);
+        return { id: row.id };
+      }) as never,
+      findFirst: (async ({ where }: { where: { influencerId: string; action: string; actor: string; ip: string | null; createdAt: { gte: Date } } }) => {
+        stats.finds++;
+        stats.wheres.push(where);
+        const hit = rows
+          .filter((r) => r.influencerId === where.influencerId && r.action === where.action && r.actor === where.actor && r.ip === where.ip && r.createdAt >= where.createdAt.gte)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+        return hit ? { id: hit.id, detail: hit.detail } : null;
+      }) as never,
+      update: (async ({ where, data }: { where: { id: string }; data: { detail: Record<string, unknown> } }) => {
+        stats.updates++;
+        rows.find((r) => r.id === where.id)!.detail = data.detail;
+        return { id: where.id };
+      }) as never,
+    },
+  };
+  return { db, rows, stats };
+}
+
+const reqFrom = (ip: string) => new Request("http://localhost/x", { headers: { "x-forwarded-for": ip, "user-agent": CHROME_WINDOWS } });
+
+test("repeated failed sign-ins from one address inside the window are one row with a count; another address is another row", async () => {
+  const { COALESCED_ACTIONS, ACTIVITY_COALESCE_WINDOW_MS } = await import("../lib/activity-actions");
+  assert.deepEqual([...COALESCED_ACTIONS].sort(), ["auth.login_failed", "auth.reauthenticated", "availability.changed", "earnings.exported", "profile.updated"]);
+  const { db, rows, stats } = stubDb();
+  for (let i = 0; i < 3; i++) await recordActivity({ influencerId: "inf1", action: "auth.login_failed", req: reqFrom("198.51.100.1") }, db);
+  assert.equal(rows.length, 1);
+  assert.equal(stats.updates, 2);
+  assert.deepEqual(rows[0].detail, { count: 3 });
+  assert.equal(summariseActivity("auth.login_failed", rows[0].detail), "Failed sign-in (3 times)");
+  await recordActivity({ influencerId: "inf1", action: "auth.login_failed", req: reqFrom("198.51.100.2") }, db);
+  assert.equal(rows.length, 2, "another address is not merged");
+  await recordActivity({ influencerId: "inf2", action: "auth.login_failed", req: reqFrom("198.51.100.1") }, db);
+  assert.equal(rows.length, 3, "another influencer is not merged");
+  // The window is a quarter of an hour back from now.
+  const gte = stats.wheres[0].createdAt.gte.getTime();
+  assert.ok(ACTIVITY_COALESCE_WINDOW_MS === 15 * 60_000 && Math.abs(gte - (Date.now() - ACTIVITY_COALESCE_WINDOW_MS)) < 5_000);
+  // An older row (outside the window) is not merged into.
+  const old = stubDb({ seed: [{ id: "old", influencerId: "inf1", action: "auth.login_failed", actor: "influencer", ip: "198.51.100.1", createdAt: new Date(Date.now() - 20 * 60_000), detail: { count: 9 } }] });
+  await recordActivity({ influencerId: "inf1", action: "auth.login_failed", req: reqFrom("198.51.100.1") }, old.db);
+  assert.equal(old.rows.length, 2);
+  assert.equal(old.stats.updates, 0);
+});
+
+test("profile saves merge their fields, availability changes merge only when they are the same kind of change", async () => {
+  const profile = stubDb();
+  const req = reqFrom("198.51.100.3");
+  await recordActivity({ influencerId: "inf1", action: "profile.updated", detail: { fields: "bio" }, req }, profile.db);
+  await recordActivity({ influencerId: "inf1", action: "profile.updated", detail: { fields: "name,bio" }, req }, profile.db);
+  assert.equal(profile.rows.length, 1);
+  assert.deepEqual(profile.rows[0].detail, { fields: "bio,name", count: 2 });
+  assert.equal(summariseActivity("profile.updated", profile.rows[0].detail), "Profile updated: bio, name (2 times)");
+
+  const avail = stubDb();
+  await recordActivity({ influencerId: "inf1", action: "availability.changed", detail: { change: "rule-added" }, req }, avail.db);
+  await recordActivity({ influencerId: "inf1", action: "availability.changed", detail: { change: "rule-added" }, req }, avail.db);
+  await recordActivity({ influencerId: "inf1", action: "availability.changed", detail: { change: "rule-removed" }, req }, avail.db);
+  assert.equal(avail.rows.length, 2);
+  assert.equal(summariseActivity("availability.changed", avail.rows[0].detail), "Availability changed: weekly time added (2 times)");
+  assert.equal(summariseActivity("availability.changed", avail.rows[1].detail), "Availability changed: weekly time removed");
+});
+
+test("security and money entries are never merged or looked up: every repeat is its own row", async () => {
+  const never: [ActivityAction, Record<string, string | number | boolean | null>][] = [
+    ["auth.login", {}],
+    ["auth.registered", {}],
+    ["auth.password_changed", {}],
+    ["auth.password_reset", {}],
+    ["auth.logout_all", { sessions: 2 }],
+    ["auth.session_revoked", {}],
+    ["payout_account.updated", { method: "BANK", destination: "XXXXXXXX9012" }],
+    ["booking.refunded", { bookingId: "b1", amountMinor: 100, currency: "INR", status: "processed" }],
+    ["booking.cancelled", { bookingId: "b1" }],
+    ["booking.rescheduled", { bookingId: "b1" }],
+    ["service.created", { serviceId: "s1", title: "x", priceTo: 1, currency: "INR", activeTo: true }],
+    ["service.updated", { serviceId: "s1", title: "x", priceFrom: 1, priceTo: 2, currency: "INR" }],
+    ["customers.erased", { erased: 1, blocked: 0 }],
+    ["google.connected", { account: "pat@gmail.example" }],
+    ["google.disconnected", { account: "pat@gmail.example" }],
+    ["whatsapp.connected", { phone: "+91 98765 43210" }],
+    ["whatsapp.disconnected", { phone: "+91 98765 43210" }],
+    ["onboarding.completed", {}],
+  ];
+  for (const [action, detail] of never) {
+    const { db, rows, stats } = stubDb();
+    for (let i = 0; i < 3; i++) await recordActivity({ influencerId: "inf1", action, detail, req: reqFrom("198.51.100.9") }, db);
+    assert.equal(rows.length, 3, `${action} repeated three times is three rows`);
+    assert.equal(stats.finds + stats.updates, 0, `${action} is never looked up or updated`);
+    assert.ok(rows.every((r) => !("count" in (r.detail ?? {}))), `${action} carries no count`);
+  }
+});
+
+test("recordActivityForUser waits one 2 s deadline for the lookup and the insert together", async () => {
+  const { recordActivityForUser } = await import("../lib/activity");
+  const slow = stubDb({ userDelayMs: 1500, createDelayMs: 1500 });
+  const started = Date.now();
+  const logged = await warnings(() => recordActivityForUser("u1", { action: "auth.registered" }, slow.db as never));
+  const took = Date.now() - started;
+  assert.ok(took < ACTIVITY_WRITE_TIMEOUT_MS + 700, `waited ${took} ms (one deadline, not two)`);
+  assert.equal(logged.length, 1);
+  const fast = stubDb();
+  await recordActivityForUser("u1", { action: "auth.registered" }, fast.db as never);
+  assert.equal(fast.rows.length, 1);
+  assert.equal(fast.rows[0].influencerId, "inf1");
+});
+
+test("wording: a booking change names a calendar left behind, an unconfirmed refund is not 'issued', profile fields are named", () => {
+  assert.equal(summariseActivity("booking.rescheduled", { bookingId: "b", calendar: "not-updated" }), "Booking rescheduled (Google Calendar was not updated)");
+  assert.equal(summariseActivity("booking.cancelled", { bookingId: "b", calendar: "not-updated" }), "Booking cancelled (Google Calendar was not updated)");
+  assert.equal(summariseActivity("booking.cancelled", { bookingId: "b" }), "Booking cancelled");
+  assert.equal(summariseActivity("booking.refunded", { bookingId: "b", currency: "INR", status: "unconfirmed" }), "Refund requested (not confirmed yet)");
+  assert.equal(summariseActivity("booking.refunded", { bookingId: "b", currency: "INR", amountMinor: 20000, status: "unconfirmed" }), "Refund requested: 200 INR (not confirmed yet)");
+  assert.equal(summariseActivity("profile.updated", { fields: "photoUrl,timezone,notifyByEmail" }), "Profile updated: photo, time zone, e-mail alerts");
+  assert.equal(summariseActivity("profile.updated", { fields: "slug", slugFrom: "a", slugTo: "b" }), "Profile updated (page address /a → /b)");
+  assert.equal(summariseActivity("auth.login_failed", { count: 1 }), "Failed sign-in", "a count of one says nothing");
+  assert.equal(summariseActivity("auth.login", { count: 5 }), "Signed in", "a count on an action that is never merged is ignored");
+  assert.ok(readFileSync("web/src/components/app/SettingsForms.tsx", "utf8").includes('"sa:activity-changed"'));
+  assert.ok(readFileSync("web/src/components/app/ApiProvider.tsx", "utf8").includes('"sa:activity-changed"'));
+  assert.ok(readFileSync("web/src/components/app/AccountActivityPanel.tsx", "utf8").includes('ACTIVITY_CHANGED_EVENT = "sa:activity-changed"'));
+});
+
+/* ------------------------------------------------------------------------------------------------------------------------------- */
+/* 4. With the database: merging, the action filter, and the routes the review named                                               */
+/* ------------------------------------------------------------------------------------------------------------------------------- */
+
+test("a loop of failed sign-ins is one row with a count; the action filter reaches an old payout entry however many newer rows exist", { skip }, async () => {
+  // Real merging through the database: three failures from one address are one row.
+  const req = reqFrom("203.0.113.111");
+  for (let i = 0; i < 3; i++) await recordActivity({ influencerId: B.influencerId, action: "auth.login_failed", req });
+  const failed = await rowsOf(B.influencerId, "auth.login_failed");
+  assert.equal(failed.length, 1);
+  assert.deepEqual(failed[0].detail, { count: 3 });
+
+  // 30 newer low-value rows push a payout entry from two days ago past the first page.
+  const old = new Date(Date.now() - 2 * 86_400_000);
+  await prisma.influencerActivity.create({ data: { influencerId: B.influencerId, action: "payout_account.updated", detail: { method: "BANK", destination: "XXXXXXXX4321" }, createdAt: old } });
+  await prisma.influencerActivity.createMany({
+    data: Array.from({ length: 30 }, (_, i) => ({ influencerId: B.influencerId, action: "profile.updated", detail: { fields: "bio" }, createdAt: new Date(Date.now() - i * 1000) })),
+  });
+  const bravo = await authLib.createSession(B.userId);
+  const all = await call(routes.activity, { cookie: bravo });
+  assert.ok((all.body.pageCount as number) >= 2);
+  assert.ok(!(all.body.rows as { action: string }[]).some((r) => r.action === "payout_account.updated"), "the payout entry is not on the first page of the full log");
+  assert.equal((all.body.rows as { summary: string }[]).filter((r) => r.summary === "Failed sign-in (3 times)").length, 1);
+
+  const filtered = await call(routes.activity, { cookie: bravo, query: "?action=payout_account.updated" });
+  assert.equal(filtered.status, 200);
+  assert.deepEqual(keys(filtered.body), ["page", "pageCount", "rows"]);
+  assert.equal(filtered.body.pageCount, 1, "the page count applies to the narrowed list");
+  const rows = filtered.body.rows as { action: string; summary: string }[];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].summary, "Payout details changed (bank account ending 4321), sent for review");
+  assertNoSecretKeys(filtered.body);
+  // Anything that is not a known action is ignored (all entries), including look-alikes and injection attempts.
+  for (const q of ["?action=nope", "?action=", "?action=payout_account.updated%27%20OR%201=1", "?action=__proto__", "?action=constructor"]) {
+    const r = await call(routes.activity, { cookie: bravo, query: q });
+    assert.equal(r.status, 200, q);
+    assert.equal((r.body.rows as unknown[]).length, 25, q);
+  }
+  // Another influencer's payout entry never shows in Bravo's filter, and Bravo's never in Alpha's.
+  const alphaFiltered = await call(routes.activity, { cookie: await authLib.createSession(A.userId), query: "?action=payout_account.updated" });
+  assert.ok(!(alphaFiltered.body.rows as { summary: string }[]).some((r) => r.summary.includes("4321")));
+
+  // The administrator has the same filter, and page 2 of a filter is that filter's page 2.
+  const adminCookie = await adminSessionLib.createAdminSession(adminId);
+  const adminFiltered = await callAdmin(B.influencerId, adminCookie, "?action=payout_account.updated");
+  assert.equal(adminFiltered.status, 200);
+  assert.equal((adminFiltered.body.rows as unknown[]).length, 1);
+  assert.equal((adminFiltered.body.rows as { actor: string }[])[0].actor, "influencer");
+  const adminProfile = await callAdmin(B.influencerId, adminCookie, "?action=profile.updated&page=2");
+  assert.equal(adminProfile.body.page, 2);
+  assert.equal((adminProfile.body.rows as unknown[]).length, 5, "30 profile rows: 25 on page 1, 5 on page 2 of the filter");
+  assert.ok((adminProfile.body.rows as { action: string }[]).every((r) => r.action === "profile.updated"));
+  const adminIgnored = await callAdmin(B.influencerId, adminCookie, "?action=nope");
+  assert.equal((adminIgnored.body.rows as unknown[]).length, 25);
+  assert.equal((await callAdmin(B.influencerId, undefined, "?action=payout_account.updated")).status, 401);
+});
+
+test("a reschedule that Google refused is still recorded, and says the calendar was not updated (the answer stays 502)", { skip }, async () => {
+  const cookie = await authLib.createSession(A.userId);
+  const ask = async (body: unknown) => {
+    jar.clear();
+    jar.set(authLib.sessionCookieName(), cookie);
+    const res = await routes.bookingAction(
+      new Request("http://localhost/api/x", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.120" }, body: JSON.stringify(body) }),
+      { params: Promise.resolve({ id: refundBookingId }) },
+    );
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const startTime = new Date(Date.now() + 5 * 86_400_000).toISOString();
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId, action: { in: ["booking.rescheduled", "booking.cancelled"] } } });
+
+  calendar = "rejected";
+  try {
+    const refused = await ask({ action: "reschedule", startTime });
+    assert.equal(refused.status, 502);
+    const row = await waitFor(async () => (await rowsOf(A.influencerId, "booking.rescheduled"))[0]);
+    assert.deepEqual(row.detail, { bookingId: refundBookingId, calendar: "not-updated" });
+    assert.equal(summariseActivity(row.action, row.detail), "Booking rescheduled (Google Calendar was not updated)");
+
+    calendar = "ok";
+    const fine = await ask({ action: "reschedule", startTime });
+    assert.equal(fine.status, 200);
+    const rows = await waitFor(async () => {
+      const all = await rowsOf(A.influencerId, "booking.rescheduled");
+      return all.length >= 2 ? all : null;
+    });
+    assert.deepEqual(rows[1].detail, { bookingId: refundBookingId }, "a clean reschedule carries no calendar note");
+
+    calendar = "warning";
+    const cancelled = await ask({ action: "cancel" });
+    assert.equal(cancelled.status, 200);
+    const cancelRow = await waitFor(async () => (await rowsOf(A.influencerId, "booking.cancelled"))[0]);
+    assert.deepEqual(cancelRow.detail, { bookingId: refundBookingId, calendar: "not-updated" });
+  } finally {
+    calendar = "ok";
+  }
+});
+
+test("a refund whose Razorpay answer is lost is logged as requested, not issued, with no amount when none was asked for", { skip }, async () => {
+  const cookie = await authLib.createSession(A.userId);
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId, action: "booking.refunded" } });
+  razorpay = "timeout";
+  try {
+    jar.clear();
+    jar.set(authLib.sessionCookieName(), cookie);
+    const res = await routes.refund(
+      new Request("http://localhost/api/x", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.130" }, body: JSON.stringify({}) }),
+      { params: Promise.resolve({ id: refundBookingId }) },
+    );
+    assert.equal(res.status, 202);
+    const row = await waitFor(async () => (await rowsOf(A.influencerId, "booking.refunded"))[0]);
+    assert.deepEqual(row.detail, { bookingId: refundBookingId, currency: "INR", status: "unconfirmed" });
+    assert.equal(summariseActivity(row.action, row.detail), "Refund requested (not confirmed yet)");
+  } finally {
+    razorpay = "ok";
+  }
+});
+
+test("a profile save logs only the fields that changed, nothing when nothing changed, and repeats merge", { skip }, async () => {
+  const cookie = await authLib.createSession(A.userId);
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId, action: "profile.updated" } });
+  const headers = { "x-forwarded-for": "203.0.113.140" };
+  // The Profile form sends all four fields every time; none differs from what is stored.
+  const same = await call(routes.profile, { method: "PATCH", cookie, headers, body: { name: `Alpha Activity ${run}`, bio: null, photoUrl: null, timezone: "Asia/Kolkata" } });
+  assert.equal(same.status, 200);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal((await rowsOf(A.influencerId, "profile.updated")).length, 0, "nothing changed: no entry");
+
+  const changed = await call(routes.profile, { method: "PATCH", cookie, headers, body: { name: `Alpha Activity ${run}`, bio: "Hello there", photoUrl: null, timezone: "Asia/Kolkata" } });
+  assert.equal(changed.status, 200);
+  const row = await waitFor(async () => (await rowsOf(A.influencerId, "profile.updated"))[0]);
+  assert.deepEqual(row.detail, { fields: "bio" });
+  assert.equal(summariseActivity(row.action, row.detail), "Profile updated: bio");
+
+  const again = await call(routes.profile, { method: "PATCH", cookie, headers, body: { bio: "Hello again" } });
+  assert.equal(again.status, 200);
+  const merged = await waitFor(async () => {
+    const all = await rowsOf(A.influencerId, "profile.updated");
+    return all.length === 1 && (all[0].detail as { count?: number } | null)?.count === 2 ? all : null;
+  });
+  assert.equal(summariseActivity(merged[0].action, merged[0].detail), "Profile updated: bio (2 times)");
+
+  const notify = await call(routes.profile, { method: "PATCH", cookie, headers: { "x-forwarded-for": "203.0.113.141" }, body: { notifyByEmail: false } });
+  assert.equal(notify.status, 200);
+  const rows = await waitFor(async () => {
+    const all = await rowsOf(A.influencerId, "profile.updated");
+    return all.length === 2 ? all : null;
+  });
+  assert.ok(rows.some((r) => (r.detail as { fields?: string }).fields === "notifyByEmail"));
+  await call(routes.profile, { method: "PATCH", cookie, headers, body: { notifyByEmail: true } });
+});
+
+test("disconnecting Google with nothing connected writes no entry", { skip }, async () => {
+  const cookie = await authLib.createSession(A.userId);
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId, action: "google.disconnected" } });
+  const res = await call(routes.googleDisconnect, { method: "DELETE", cookie, headers: { "x-forwarded-for": "203.0.113.150" } });
+  assert.equal(res.status, 200);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal((await rowsOf(A.influencerId, "google.disconnected")).length, 0);
+});
+
+test("the earnings export is logged for a same-site GET only (not HEAD, not a link from another site)", { skip }, async () => {
+  const cookie = await authLib.createSession(A.userId);
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId, action: "earnings.exported" } });
+  const fetchExport = async (method: string, extra: Record<string, string>) => {
+    jar.clear();
+    jar.set(authLib.sessionCookieName(), cookie);
+    const res = await routes.earningsExport(new Request("http://localhost/api/dashboard/earnings/export?from=2024-01-01&to=2024-12-31", { method, headers: { "x-forwarded-for": "203.0.113.160", ...extra } }));
+    await res.text();
+    return res.status;
+  };
+  assert.equal(await fetchExport("HEAD", { "sec-fetch-site": "same-origin" }), 200);
+  assert.equal(await fetchExport("GET", { "sec-fetch-site": "cross-site" }), 200, "the file is still served");
+  assert.equal(await fetchExport("GET", { origin: "http://evil.example" }), 200);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal((await rowsOf(A.influencerId, "earnings.exported")).length, 0, "no entry for HEAD or a cross-site request");
+  assert.equal(await fetchExport("GET", { "sec-fetch-site": "same-origin" }), 200);
+  const row = await waitFor(async () => (await rowsOf(A.influencerId, "earnings.exported"))[0]);
+  assert.equal((row.detail as { from: string }).from, "2024-01-01");
+  assert.equal(await fetchExport("GET", { "sec-fetch-site": "none" }), 200, "a typed address");
+  const merged = await waitFor(async () => {
+    const all = await rowsOf(A.influencerId, "earnings.exported");
+    return all.length === 1 && (all[0].detail as { count?: number }).count === 2 ? all : null;
+  });
+  assert.match(summariseActivity(merged[0].action, merged[0].detail), /\(2 times\)$/);
 });

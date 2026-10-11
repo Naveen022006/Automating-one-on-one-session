@@ -72,6 +72,8 @@ export function ApiProvider({ children }: { children: ReactNode }) {
       return;
     }
     setAsking(false);
+    // The password confirmation is an entry of the account activity card (components/app/AccountActivityPanel.tsx listens).
+    window.dispatchEvent(new Event("sa:activity-changed"));
     pending.current?.(true);
     pending.current = null;
   }
