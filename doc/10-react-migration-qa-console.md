@@ -37,6 +37,8 @@ low = rough edge, cosmetic or defence in depth. Every fix has a test in `tests/q
 | C15 | low | dashboard attention list | "Google stopped accepting the connection: Refresh token rejected: Token has been expired or revoked.. Paid bookings..." (doubled full stop). | fixed `c263bd5` |
 | C16 | low | WhatsApp manual connect form | Empty fields showed zod's defaults ("Too small: expected string to have >=5 characters", ">=20 characters"). | fixed `d383b91`: the schema says what to enter |
 | C19 | low | WhatsApp card, templates not submitted | "Could not submit: booking-confirmation, reminder-24h, reminder-15m, reschedule, cancellation" (internal keys) above a table that says "Booking confirmation", "Reminder, 24 hours before". | fixed `e0ae789`: one shared label map |
+| C20 | low | links with a `#fragment` inside the dashboard and console (the new `#google` return, the checklist links) | The sticky top bar covered the target of an anchor: the section heading was scrolled to y = 0, behind the 64 px bar. | fixed `fa43168`: `.app-main [id] { scroll-margin-top }` |
+| C21 | low | Sessions, Availability, Customers and Messages tables | Four data tables had no accessible name (the other tables of the dashboard and the console have a `caption`), so a screen reader announced "table" with no context. | fixed `5f8d2de`: visually hidden captions ("Bookings", "Weekly hours", "Customers", "Messages") |
 | C7 | info | every post-mutation refresh | When the refetch after a mutation fails (500 from a connection-pool timeout, which happened repeatedly on the loaded shared database), the screen keeps the old data and says nothing, while the success toast already said "Saved" (design decision D21: a failed refetch keeps the stale data). Seen with "Copy to weekdays" in the onboarding wizard: the server had five weekdays, the screen one, until the next refetch. | not fixed (design); a toast such as "Saved, but the page could not refresh" would be the follow-up |
 | C17 | info | WhatsApp templates, rejected | The reason is Meta's raw code (`INVALID_FORMAT`) next to "Rejected". | not fixed (the real codes were not available to map them) |
 
@@ -68,6 +70,23 @@ low = rough edge, cosmetic or defence in depth. Every fix has a test in `tests/q
   `requestAnimationFrame`), so focus moving to `main` after a route change could not be observed in the hidden Browser pane.
 - Sizes of `web/dist` (gzip): entry 71 kB, shared chunk 52 kB, largest page chunk ServicesManager 27 kB; every other chunk under
   10 kB.
+
+## Accessibility pass (by hand; no axe-core in the repository)
+
+Checked on the pages above: one `h1` per page, labelled controls and search boxes, visible focus, `aria-current` on the active
+navigation item, live regions for list changes (`role="status"`), `aria-busy` while the next list loads, modal `dialog`s that trap
+focus and return it, the More button's `aria-expanded`. Left as they are (not defects of this migration, noted for later):
+heading levels jump from `h1` to `h3` on the Services cards and in the admin `EmptyState`; table rows that open a drawer carry an
+`aria-label` but not a button role (the Enter key works); the 404 page of the console still says "booking page".
+
+## Test results
+
+- `npx tsx --test tests/qa-console.test.ts` (new, 20 tests including the database ones for C5, C15 and C18): pass.
+- The 53 test files that touch the changed code (dashboard and admin views, SPA guards and pages, navigation, toasts and overlays,
+  Google connect and callback, WhatsApp connection and its component, message templates, payments, availability and slots, env and
+  headers) were run one file at a time with `DATABASE_POOL_MAX=2 ... --test-concurrency=1`: all pass. Two database files timed out
+  once on the shared database (connection timeouts, no assertion failed) and passed on the retry.
+- `npm run typecheck` (app and `web/`): clean. `node scripts/spa-smoke.mjs`: 208 passed, 0 failed.
 
 ## Connection screens (provider simulator)
 
@@ -121,6 +140,32 @@ and webhook delivery through a public URL are NOT proven.
   work.
 - A hidden Browser pane cannot draw frames: screenshots sometimes time out and real key presses needed a retry.
 
+## What could not be checked
+
+- Anything that needs the real Google or Meta: the unverified-app warning, restricted `gmail.send`, Meta review times and the real
+  Embedded Signup window (see the section above). The mock proves the app's side only.
+- Calendar event creation and everything else the worker does (`create-meeting`, reminders, hold expiry): no worker was started
+  because the database is shared with the owner's live worker. "Worker not running" banners were not rendered either.
+- A successful Razorpay "Reconcile" or refund (needs a real payment); only the failure path was seen.
+- Focus moving to `main` after a route change (`FocusOnNavigate`): not observable in a hidden Browser pane.
+- The administrator 2FA "verify" gate state (enrolment ends the other sessions, see above): covered by
+  `tests/spa-admin-security.test.ts` only.
+
 ## Clean-up
 
-(filled in at the end of the run)
+Everything created for the run was removed with scripts that match only the run's own markers; the check after the clean-up
+found zero rows with them.
+
+- Fixtures on the `demo` influencer: two services titled `QAC<run>...` with their sessions, bookings, payments, refund flags and
+  message rows (one extra past-booking fixture), and two payouts. All deleted by id/marker; bookings left with the marker: 0.
+- Throwaway influencer `qa-console-a-...` (slug `qacon-a-renamed` after the slug-dialog check): user, service, weekly hours,
+  bookings, mock Google and WhatsApp connection rows, payout account. Deleted.
+- Throwaway administrators `qa-console-<timestamp>@example.com` (two, one per 2FA run) with their sessions and recovery codes.
+  Deleted one by one.
+- One dashboard session row created by a script login on `demo`. Deleted.
+- Audit-log rows written by the checks (reveals, fee changes, payouts, sign-ins) are LEFT: the audit log is append-only by
+  design and those rows carry the throwaway ids.
+- The shared administrators `admin1@example.com` and `admin2@example.com` have no 2FA (`totpEnabledAt` null, not disabled), as
+  before. The demo influencer's fee override is null, it has no Google or WhatsApp connection, and its two services are active.
+- Processes: the production server (`next start -p 3191`), the `dev:mock` pair (app and mock on 4110) and every script were
+  stopped; ports 3191 and 4110 are free. No worker was ever started; ports 3000, 5173 and 4010 were not touched.
