@@ -93,6 +93,43 @@ use the same value at build and run time). Anything else that looks like a secre
 - **Time zones.** Server-rendered times used to appear in the server's zone; the app formats in the viewer's zone, `APP_LOCALE` for number and
   date styles.
 
+## Marketplace screens (doc/13)
+
+Six features added these routes, pages and components (the plan and the deviations are `doc/13-product-build-plan.md`,
+`doc/13-marketplace-essentials.md`, `doc/13-deviations.md`). The browser import allowlist did not change.
+
+**New routes** (rows in `lib/spa/routes.ts`; the router lists `/bookings` before the `:slug` routes, and `bookings` is a reserved slug):
+
+| Path | Route id | Page module | View | Data |
+|---|---|---|---|---|
+| `/bookings` | `customer-bookings` | `pages/booking/FindBookings.tsx` | `components/views/booking/FindBookingsView.tsx` | `POST /api/customer/access` (always 202) |
+| `/bookings/:token` | `customer-portal` | `pages/booking/CustomerPortal.tsx` | `components/views/booking/CustomerPortalView.tsx` | `GET /api/customer/portal/:token`; `.../export` (JSON download) and `POST .../erase` |
+| `/admin/reports` | `admin-reports` | `pages/admin/Reports.tsx` | `components/views/admin/ReportsView.tsx` | `GET /api/admin/reports?from=&to=` (a bad range is a 400 the page shows next to its form) |
+
+`/bookings/:token` is a token page: `noindex,nofollow` and `Referrer-Policy: no-referrer`. An unknown or expired token is a 403
+`{ state: "expired" }` that the view renders as a screen ("This link has expired", with a button back to `/bookings`), not as an error.
+"Find your booking" is the last item of the site footer's Contact column (`components/site/SiteChrome.tsx`), and Reports is a section in the
+admin sidebar (`components/admin/AdminShell.tsx`).
+
+**New components**
+- `components/views/booking/ReceiptCard.tsx`: the printable receipt, shared by the portal and by `pages/booking/ManageBooking.tsx` (the
+  manage page owns its `FocusedLayout`, so it renders the receipt itself and hides it once the booking is cancelled). It is a receipt, not a
+  tax invoice. Its data is `ReceiptView` from `lib/receipts.ts` (type only).
+- `styles/print.css` (imported by `styles/globals.css`): the receipt's screen styles (`.receipt`, `.portal__*`) and `@media print` rules.
+  Printing hides everything except `.receipt` when the page root carries `portal--receipt-open` (portal) or `print-receipt-only` (manage
+  page); anything marked `no-print` is left out. "Print receipt" calls `window.print()`, so "Save as PDF" in the browser's dialog makes the PDF.
+- `components/app/AccountActivityPanel.tsx`: the influencer's "Account activity" card in Settings (`SettingsView`), a paged table of
+  When / What / Device / IP over `GET /api/dashboard/activity`. It starts its query after mount and refreshes on the window event
+  `sa:activity-changed` (`SettingsForms.tsx` and `ApiProvider.tsx` dispatch it after a password change or similar).
+- `components/admin/InfluencerActivityPanel.tsx`: the same table for an administrator, over `GET /api/admin/influencers/:id/activity`.
+- `components/admin/InfluencerStatusPanel.tsx`: suspend, reinstate and approve on the admin Influencer page (`InfluencerDetailView`); the
+  Influencers list (`InfluencersView`) gained the status tabs (Awaiting approval is hidden while its count is 0).
+- `components/admin/ExportControls.tsx`: the CSV download control on the Payments, Bookings, Payouts and Audit views. A plain
+  `<a href download>` whose click is intercepted to `fetch` the file, so a refusal ("More than 20,000 rows") shows as a message.
+- `components/admin/RefundAction.tsx` (in the Payments rows) and `components/admin/CancelBookingAction.tsx` (Bookings rows): confirm dialogs
+  with a required reason; the refund sends `expectedRemainingMinor` as a check. `PayoutActions.tsx` gained the "pay anyway" acknowledgement
+  for a suspended influencer. `BookingsView` has the search box (`?q=`).
+
 ## Working on it
 
 ```

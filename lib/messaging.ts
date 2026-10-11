@@ -13,6 +13,7 @@ import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 import { WhatsAppNotConnectedError, markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
+import { statusesThatMayAdvanceTo, type WhatsAppStatusUpdate } from "@/lib/whatsapp-webhook";
 
 /** Template used for the booking confirmation message (must be approved in WhatsApp Business). */
 export { CONFIRMATION_TEMPLATE };
@@ -277,8 +278,26 @@ export async function sendBookingMessage(bookingId: string): Promise<SendBooking
  * first. Pair with a unique job suffix in enqueueSendMessage so BullMQ does not dedupe the new job either.
  */
 export async function rearmMessage(bookingId: string, template: string): Promise<void> {
+  // The provider id and send time go too: a delivery callback for the PREVIOUS send (it can arrive hours later) must not
+  // find this row and flip it to READ, which would make the new send look already delivered.
   await prisma.message.updateMany({
     where: { bookingId, template, channel: { in: ["WHATSAPP", "SMS"] } },
-    data: { status: "PENDING", error: null },
+    data: { status: "PENDING", error: null, providerMessageId: null, sentAt: null },
   });
+}
+
+/**
+ * Applies one WhatsApp delivery callback. It only touches the row whose providerMessageId matches AND whose status can
+ * move forward to the reported one (see statusesThatMayAdvanceTo), so a late callback can neither revive a re-armed
+ * (PENDING) row nor move a message backwards. Returns how many rows changed.
+ */
+export async function applyWhatsAppStatusUpdate(u: WhatsAppStatusUpdate): Promise<number> {
+  // Only overwrite the error column on FAILED transitions (u.error is present). On other transitions the stored error
+  // stays, so a later DELIVERED/READ callback does not wipe diagnostic context from a prior FAILED callback.
+  const data = "error" in u ? { status: u.status, error: u.error } : { status: u.status };
+  const { count } = await prisma.message.updateMany({
+    where: { providerMessageId: u.providerMessageId, status: { in: statusesThatMayAdvanceTo(u.status) } },
+    data,
+  });
+  return count;
 }

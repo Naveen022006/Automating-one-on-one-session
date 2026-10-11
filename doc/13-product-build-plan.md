@@ -7,6 +7,25 @@ Inputs read: CLAUDE.md, README.md, doc/00 to doc/08, doc/10 sections 4 and 5, do
 `lib/payouts.ts`, `lib/admin/*`, `lib/views/*`, the admin/dashboard/auth route handlers, `worker/index.ts`, the email templates, the
 earnings CSV export and the test helpers.
 
+> **Status (what happened after this plan was written).** The foundation (WP-0) and all six features are built and merged to `main`:
+> moderation (A: suspend, reinstate, approve; opt-in approval gate), admin money operations (B: CSV exports, refund, cancel on the
+> customer's behalf, booking search), the influencer activity log (C), the customer portal with receipts, export and erasure (D), the
+> reminder repair job (E) and the admin finance Reports page (F). Where the build differs from the text below, the record is
+> `doc/13-deviations.md` (the foundation, B, C and D) and `doc/13-marketplace-essentials.md` (A, E and F); those override this plan. How to
+> use the features is in `README.md`; the operational side (the `approval` value, `CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR`, retention, migrations
+> `20261105` to `20261108`) is in `doc/08-deployment.md`.
+>
+> **Deferred, and why** (details in sections 1 and 5): coupons (changes the payable amount and needs a funding policy, a fee basis and
+> checkout order invalidation); automatic refunds of flagged payments (`needsRefund` mixes real duplicates with fraud signals, so a human
+> keeps the decision; B makes it one audited click); reviews and ratings (need moderation and a fake-review policy); discovery and search of
+> influencers (the product is link-in-bio today and discovery needs ranking and content moderation); GST and tax invoices (a legal decision
+> on who is the supplier, a GSTIN and a numbering policy; the receipt is not a tax invoice); a notification center (the overview "needs
+> attention" list and e-mail alerts cover the urgent cases); influencer analytics beyond Earnings; influencer two-factor sign-in (payout
+> changes already need a recent password, admin verification and an e-mail notice, and the activity log makes a takeover visible);
+> influencer account closure (financial records and outstanding payouts must be kept; handled by hand through the admin); admin roles
+> (two admins today, four-eyes covers payouts); Sentry (needs an account; `reportError` and `ERROR_WEBHOOK_URL` exist). The final
+> cross-check by the integration owner is the "Verification" section of `doc/13-marketplace-essentials.md`.
+
 ---
 
 ## 0. Decisions in one screen

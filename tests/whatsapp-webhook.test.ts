@@ -5,6 +5,7 @@ import {
   isVerifyRequestValid,
   mapWhatsAppStatus,
   parseWhatsAppStatuses,
+  statusesThatMayAdvanceTo,
   verifyMetaSignature,
 } from "../lib/whatsapp-webhook";
 
@@ -88,6 +89,17 @@ test("verifyMetaSignature: rejects tampered body, wrong secret, missing/malforme
   );
   // Non-hex / wrong-length digest.
   assert.equal(verifyMetaSignature(body, "sha256=zz", "app-secret"), false);
+});
+
+test("statusesThatMayAdvanceTo: a callback only moves a message forward and never revives a PENDING or FAILED row", () => {
+  assert.deepEqual(statusesThatMayAdvanceTo("SENT"), ["SENT"]);
+  assert.deepEqual(statusesThatMayAdvanceTo("DELIVERED"), ["SENT"]);
+  assert.deepEqual(statusesThatMayAdvanceTo("READ"), ["SENT", "DELIVERED"]);
+  assert.deepEqual(statusesThatMayAdvanceTo("FAILED"), ["SENT", "DELIVERED"]);
+  assert.deepEqual(statusesThatMayAdvanceTo("PENDING"), []);
+  for (const next of ["SENT", "DELIVERED", "READ", "FAILED", "PENDING"] as const) {
+    assert.ok(!statusesThatMayAdvanceTo(next).includes("PENDING"), `${next} must not apply to a PENDING row`);
+  }
 });
 
 test("isVerifyRequestValid: still rejects a wrong-length token under constant-time compare", () => {

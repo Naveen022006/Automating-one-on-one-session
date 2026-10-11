@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
+import { applyWhatsAppStatusUpdate } from "@/lib/messaging";
 import {
   isVerifyRequestValid,
   parseTemplateStatusUpdates,
@@ -44,16 +44,9 @@ export async function POST(req: Request) {
     const payload = JSON.parse(raw);
     const updates = parseWhatsAppStatuses(payload);
     for (const u of updates) {
-      // Only overwrite the error column on FAILED transitions (u.error is present). On other
-      // transitions we leave the stored error intact so a later DELIVERED/READ callback does not
-      // wipe diagnostic context from a prior FAILED callback.
-      const data =
-        "error" in u ? { status: u.status, error: u.error } : { status: u.status };
-      // No-op when the provider id is unknown (e.g. an inbound message we never recorded).
-      await prisma.message.updateMany({
-        where: { providerMessageId: u.providerMessageId },
-        data,
-      });
+      // No-op when the provider id is unknown (e.g. an inbound message we never recorded) or when the row cannot move
+      // forward to this status (a re-armed message, a late callback); see applyWhatsAppStatusUpdate.
+      await applyWhatsAppStatusUpdate(u);
     }
     // Meta also tells us when an influencer's templates are approved or rejected.
     for (const t of parseTemplateStatusUpdates(payload)) await applyTemplateStatusUpdate(t);
