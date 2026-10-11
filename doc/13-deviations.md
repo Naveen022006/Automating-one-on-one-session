@@ -32,3 +32,27 @@ records its own deviations in its section of `doc/13-marketplace-essentials.md`.
    (wiring of routes, placeholders, nav, stub mounts, sweeps, schema).
 8. **No `README.md` / `CLAUDE.md` / `doc/08` / `doc/12` edits** (WP-Z owns them); `doc/13-marketplace-essentials.md` was created with the
    empty WP sections as specified.
+
+# WP-B (`mk/b-admin-money-ops`): deviations from `doc/13-product-build-plan.md`
+
+Only differences from section 2, "WP-B Admin money operations"; everything else was done as written.
+
+1. **Booking search matches the id AND the text.** The plan says a `q` that passes `isEntityId` matches the booking id exactly, else it is a
+   "contains". A name such as "asha" also passes `isEntityId`, so a name-only search would have found nothing. `q` is now an exact id match
+   (when it has the shape of one) OR a case-insensitive "contains" on the e-mail or the name (`bookingSearchWhere` in `lib/admin/data.ts`).
+2. **Refund eligibility also returns `remainingMinor` when refused**, so the row DTO (`refund: { allowed, reason, remainingMinor }`) is
+   always the same shape. The pending-payout check reads payout statuses with one extra query by id in `lib/views/admin-payments.ts`
+   (`listPayments` in `lib/admin/data.ts` is not WP-B's).
+3. **Extra audit actions** beyond the plan's, so no `*_requested` entry is left dangling: `payment.refund_refused` (lost the claim race, nothing
+   sent), `payment.refund_error` (unexpected fault after the claim), `booking.cancel_refused` (the booking changed between read and
+   cancel), `booking.cancel_error`. Audit writes AFTER the money call are best-effort (reported, never turned into a 500 that hides the
+   outcome); the write BEFORE it is awaited and stops the action if it fails.
+4. **Export range defaults:** with only `to` given, `from` defaults to the 1st of `to`'s month (the plan only defines both missing). Invalid
+   `from`/`to` text is a 400 (the earnings export treats it as open). Audit `admin.export` uses `targetType: "export"`, `targetId: <kind>`.
+5. **Export download in the browser** is a plain `<a href download>` (works without JavaScript) whose click is intercepted to `fetch` the
+   file, so a refusal ("More than 20,000 rows...") shows as a message instead of a failed download. The Refund action sits in the Payment
+   cell (visible without horizontal scrolling); Cancel has its own Actions column.
+6. **Not changed, noted risk:** `cancelBooking` (`lib/manage.ts`, not WP-B's) has no claim, so two administrators cancelling the same booking
+   in the same instant could both pass and send the customer notice twice. Money is not affected (refunds go through the claim in `refundPayment`).
+7. **Tests:** `tests/spa-admin-money.test.ts` pinned key sets updated (`refund`, `cancel`, `q`); new `tests/admin-exports.test.ts`,
+   `tests/admin-refund-cancel.test.ts`, `tests/admin-money-views.test.ts`.
