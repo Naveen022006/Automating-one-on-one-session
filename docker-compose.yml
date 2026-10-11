@@ -76,8 +76,7 @@ services:
       target: runner
       args:
         # Public branding values are compiled into the JavaScript at build time (they are not secrets). APP_LOCALE and
-        # ENABLE_DESIGN_PAGE are inputs of the React SPA bundle too. SPA_GROUPS (which pages the SPA serves) is a RUN time
-        # value: it comes from .env like every other setting.
+        # ENABLE_DESIGN_PAGE are inputs of the React app's bundle too.
         NEXT_PUBLIC_BRAND_NAME: ${NEXT_PUBLIC_BRAND_NAME:-}
         NEXT_PUBLIC_SUPPORT_EMAIL: ${NEXT_PUBLIC_SUPPORT_EMAIL:-}
         APP_LOCALE: ${APP_LOCALE:-en-IN}

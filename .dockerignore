@@ -14,7 +14,7 @@
 node_modules
 .next
 generated
-# SPA build outputs: produced inside the image by `npm run build` (Vite), never copied from the host.
+# The React app's build outputs: produced inside the image by `npm run build` (Vite), never copied from the host.
 web/dist
 public/assets
 *.tsbuildinfo
@@ -35,6 +35,11 @@ docker-compose*.yml
 scripts/mock-providers
 scripts/dev-mock.ts
 scripts/dev-mock-worker.ts
+
+# The development launchers (npm run dev, dev:hmr, dev:mock): tooling for a developer's machine.
+scripts/dev.ts
+scripts/dev-spa.ts
+scripts/dev-process.ts
 
 # Not needed at runtime.
 tests

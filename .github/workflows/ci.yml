@@ -59,12 +59,12 @@ jobs:
       # Both TypeScript projects: the Next app and the React SPA (web/).
       - run: npm run typecheck
       - run: npm test
-      # Vite build of the SPA (server-module guard, template and secret-scan checks in scripts/spa-postbuild.mjs), then next build.
+      # Vite build of the React app (server-module guard, template and secret-scan checks in scripts/spa-postbuild.mjs), then next build.
       - run: npm run build
 
   # Builds the container images and proves the web image behaves: it refuses an invalid production configuration,
-  # starts with a valid one, answers liveness, reports not-ready (no database here) without leaking details, and
-  # carries no secrets in its environment.
+  # starts with a valid one, answers liveness, reports not-ready (no database here) without leaking details, serves the
+  # React shell (smoke test), refuses to start without the shell template, and carries no secrets in its environment.
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -111,32 +111,19 @@ jobs:
           test "$status" = 503
           grep -q '"db":"fail"' ready.json
           ! grep -Eiq 'postgres|127\.0\.0\.1|password|ECONN' ready.json
-      # React SPA (doc/10-react-migration-plan.md). SPA_GROUPS is a run-time setting; the SAME image serves both ways.
-      - name: Without SPA_GROUPS the old Next pages are served and the SPA shell route is not reachable
+      # The React app (doc/12-front-end.md): the image always serves it, there is no other front end and no switch.
+      - name: The image serves the React shell on every page path and the internal shell route is not reachable
         run: |
           curl -fsS http://127.0.0.1:3000/ -o landing.html
-          if grep -q 'id="root"' landing.html; then echo "::error::the landing page is the SPA shell although SPA_GROUPS is empty"; exit 1; fi
-          grep -q 'Get paid for your time' landing.html
+          grep -q 'id="root"' landing.html
           status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/spa-shell/terms)
           test "$status" = 404
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - name: With SPA_GROUPS=all the same image serves the React shell (smoke test, no database)
-        run: |
-          docker run -d --name web-spa -p 3001:3000 \
-            -e DATABASE_URL=postgresql://app:pw@127.0.0.1:1/app \
-            -e REDIS_URL=redis://127.0.0.1:1 \
-            -e APP_URL=https://sessions.example.com \
-            -e APP_SECRET=ci-only-app-secret-0123456789-abcdefghij \
-            -e TOKEN_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
-            -e RAZORPAY_KEY_ID=rzp_test_ci -e RAZORPAY_KEY_SECRET=ci -e RAZORPAY_WEBHOOK_SECRET=ci \
-            -e EMAIL_PROVIDER=resend -e RESEND_API_KEY=re_ci -e 'EMAIL_FROM=Bookings <bookings@example.com>' \
-            -e SPA_GROUPS=all \
-            sessions-web
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3001/api/health && break; sleep 2; done
-          node scripts/spa-smoke.mjs http://127.0.0.1:3001 --no-db
-      - name: With SPA_GROUPS set but the shell template missing, the web process refuses to start
+      - name: Smoke test of the running image (no database)
+        run: node scripts/spa-smoke.mjs http://127.0.0.1:3000 --no-db
+      - name: With the shell template missing, the web process refuses to start
         run: |
           set +e
           docker run --rm --entrypoint sh \
@@ -147,14 +134,12 @@ jobs:
             -e TOKEN_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
             -e RAZORPAY_KEY_ID=rzp_test_ci -e RAZORPAY_KEY_SECRET=ci -e RAZORPAY_WEBHOOK_SECRET=ci \
             -e EMAIL_PROVIDER=resend -e RESEND_API_KEY=re_ci -e 'EMAIL_FROM=Bookings <bookings@example.com>' \
-            -e SPA_GROUPS=all \
             sessions-web -c 'rm -f web/dist/index.html && exec node server.js' > spa-refused.txt 2>&1
           code=$?
           cat spa-refused.txt
           test "$code" -eq 1
-          grep -q 'SPA_GROUPS: is set, but web/dist/index.html is missing' spa-refused.txt
+          grep -q 'web/dist/index.html is missing' spa-refused.txt
       - name: Container logs
         if: always()
         run: |
           docker logs web || true
-          docker logs web-spa || true
