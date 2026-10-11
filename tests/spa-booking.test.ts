@@ -9,6 +9,7 @@ import { after, before, mock, test } from "node:test";
 import type { BookingStatus, PaymentStatus, RefundPolicy } from "../generated/prisma/client";
 import { prisma } from "../lib/db";
 import { formatMoney, formatSessionTime } from "../lib/format";
+import { matchRouteRule } from "../lib/rate-limit/policies";
 import { describeRefundPolicy } from "../lib/refund-policy";
 import { BOOKING_PAY_PURPOSE, SELF_SERVICE_PURPOSE, verifyBookingPollToken, verifySelfServiceToken } from "../lib/self-service";
 import { signToken } from "../lib/signing";
@@ -19,6 +20,11 @@ const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
+// The variables `before` sets, with the values they had when this file started: `after` puts those back (a developer's own
+// RATE_LIMIT_STORE, APP_URL or READINESS_REQUIRED must not be deleted by a test run).
+const ENV_KEYS = ["RATE_LIMIT_STORE", "APP_URL", "READINESS_REQUIRED"] as const;
+const originalEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]])) as Record<(typeof ENV_KEYS)[number], string | undefined>;
+
 const jar = new Map<string, string>();
 type Ctx<K extends string> = { params: Promise<Record<K, string>> };
 let profileRoute: (req: Request, ctx: Ctx<"slug">) => Promise<Response>;
@@ -26,7 +32,9 @@ let payRoute: (req: Request, ctx: Ctx<"token">) => Promise<Response>;
 let manageRoute: (req: Request, ctx: Ctx<"token">) => Promise<Response>;
 let authLib: typeof import("../lib/auth/session");
 
-// Rows created by this file (all deleted in `after`).
+// Rows created by this file (all deleted in `after`). Ids are noted in `created` the moment they exist, and every slug and
+// email is known up front, so a `before` that fails half way still leaves nothing behind.
+const created = { influencers: new Set<string>(), users: new Set<string>() };
 let liveId = "";
 let ownerInfluencerId = "";
 let ownerUserId = "";
@@ -42,6 +50,7 @@ const liveSlug = `spa-live-${run}`;
 const ownerSlug = `spa-owner-${run}`;
 const otherSlug = `spa-other-${run}`;
 const liveEmail = `spa-live-${run}@example.com`;
+const accountEmail = (who: "owner" | "other") => `spa-${who}-${run}@example.com`;
 
 interface Answer {
   status: number;
@@ -131,6 +140,7 @@ before(async () => {
     data: { slug: liveSlug, name: `Spa Live ${run}`, email: liveEmail, bio: "Line one\nLine two", timezone: "Asia/Kolkata", onboardedAt: new Date() },
   });
   liveId = live.id;
+  created.influencers.add(liveId);
   await prisma.service.create({
     data: {
       influencerId: liveId,
@@ -153,25 +163,25 @@ before(async () => {
   for (const [slug, who] of [[ownerSlug, "owner"], [otherSlug, "other"]] as const) {
     const registered = await accounts.registerAccount({
       name: `Spa ${who} ${run}`,
-      email: `spa-${who}-${run}@example.com`,
+      email: accountEmail(who),
       password: "a long passphrase for the spa test",
       slug,
       timezone: "Asia/Kolkata",
       acceptTerms: true,
     });
+    created.users.add(registered.userId);
+    if (who === "owner") ownerUserId = registered.userId;
+    else otherUserId = registered.userId;
     const influencerId = (await prisma.user.findUniqueOrThrow({ where: { id: registered.userId } })).influencerId;
-    if (who === "owner") {
-      ownerUserId = registered.userId;
-      ownerInfluencerId = influencerId;
-    } else {
-      otherUserId = registered.userId;
-      otherInfluencerId = influencerId;
-    }
+    created.influencers.add(influencerId);
+    if (who === "owner") ownerInfluencerId = influencerId;
+    else otherInfluencerId = influencerId;
   }
   await prisma.service.create({ data: { influencerId: ownerInfluencerId, title: "Draft service", durationMin: 30, priceMinor: 25000 } });
 
   // The host the pay and manage tests seed bookings on.
   hostId = (await prisma.influencer.create({ data: { slug: hostSlug, name: `Spa Host ${run}`, email: `spa-host-${run}@example.com`, timezone: HOST_TZ, onboardedAt: new Date() } })).id;
+  created.influencers.add(hostId);
   const service = async (key: keyof typeof svc, data: { title: string; refundPolicy?: RefundPolicy; type?: "GROUP"; capacity?: number; prepNotes?: string }) => {
     svc[key] = (await prisma.service.create({ data: { influencerId: hostId, durationMin: 30, priceMinor: 49900, ...data } })).id;
   };
@@ -183,12 +193,20 @@ before(async () => {
 });
 
 after(async () => {
-  if (!skip) {
-    // Services, sessions, bookings and payments go with their influencer (cascade).
-    await prisma.influencer.deleteMany({ where: { id: { in: [liveId, ownerInfluencerId, otherInfluencerId, hostId].filter(Boolean) } } });
+  try {
+    if (!skip) {
+      // Services, sessions, bookings and payments go with their influencer (cascade). By slug as well as by the ids noted in
+      // `before`, and the accounts by email: whatever `before` managed to create before it failed is removed too.
+      await prisma.influencer.deleteMany({ where: { OR: [{ slug: { in: [liveSlug, ownerSlug, otherSlug, hostSlug] } }, { id: { in: [...created.influencers] } }] } });
+      await prisma.user.deleteMany({ where: { OR: [{ email: { in: [accountEmail("owner"), accountEmail("other")] } }, { id: { in: [...created.users] } }] } });
+    }
+  } finally {
+    for (const key of ENV_KEYS) {
+      if (originalEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = originalEnv[key];
+    }
+    await prisma.$disconnect();
   }
-  delete process.env.READINESS_REQUIRED;
-  await prisma.$disconnect();
 });
 
 test("P1 GET /api/public/profiles/:slug: a live page is public, with exactly the hand-picked fields and only active services", { skip }, async () => {
@@ -391,6 +409,29 @@ test("P2: the token is decoded from the URL path, exactly as the old page did", 
   assert.equal((await getPay(token)).body.state, "payable");
 });
 
+test("P2: an erased booking is `not-found` in every state, and no manage link is minted for it", { skip }, async () => {
+  const erasedAt = new Date();
+  const future = new Date(Date.now() + HOUR);
+  const cases: Array<[string, SeedOptions]> = [
+    ["paid", { status: "PAID", payment: "CAPTURED" }],
+    ["scheduled", { status: "SCHEDULED", payment: "CAPTURED" }],
+    ["requested", { status: "REQUESTED", holdExpiresAt: future }],
+    ["payable", { status: "HELD", holdExpiresAt: future }],
+    ["declined", { status: "CANCELLED" }],
+    ["lapsed", { status: "HELD", holdExpiresAt: new Date(Date.now() - 60_000) }],
+  ];
+  for (const [label, options] of cases) {
+    const b = await seed(svc.plain, { ...options, redactedAt: erasedAt, customerName: "Erased Customer" });
+    const out = await getPay(payToken(b.booking.id));
+    assert.equal(out.status, 200, label);
+    assert.deepEqual(out.body, { state: "not-found" }, `${label}: an erased booking is shown as missing`);
+    assert.ok(!JSON.stringify(out.body).includes("/manage/"), `${label}: no manage link`);
+  }
+  // The flag is the only difference: the same booking that was not erased gets its normal answer.
+  const kept = await seed(svc.plain, { status: "PAID", payment: "CAPTURED" });
+  assert.equal((await getPay(payToken(kept.booking.id))).body.state, "booked");
+});
+
 // ---- P3: GET /api/manage/:token ----
 
 const MANAGE_KEYS = [
@@ -514,4 +555,25 @@ test("P3: the meeting link falls back to the shared one of a group session, whic
   const text = JSON.stringify(out.body);
   assert.ok(!text.includes("Group Member One") && !text.includes(first.customerEmail) && !text.includes(first.whatsapp), "another attendee's data never appears");
   assertManageSafe(out, second);
+});
+
+// ---- HEAD ----
+
+// Next answers a HEAD request to a route handler that exports GET by running the GET handler and dropping the body, so HEAD reaches
+// the database like GET does and must be limited like it. The rate rules name the method. Today (foundation `policies.ts`) they list
+// GET only: HEAD then matches none of the three view rules (only the global per-IP rule counts it; on the manage path the broader
+// `self-service` rule happens to catch it), and when the foundation adds HEAD to them it has to be the SAME rule as GET. The test
+// passes both ways and fails for anything else (HEAD landing on an unrelated rule). No database is needed.
+test("HEAD on the three view routes: the rule is the one GET gets, or none yet (passes before and after the foundation lists HEAD)", () => {
+  const routes: Array<[string, string]> = [
+    ["/api/public/profiles/demo", "public-profile"],
+    ["/api/pay/some-token", "pay-view"],
+    ["/api/manage/some-token", "self-service-view"],
+  ];
+  for (const [path, rule] of routes) {
+    assert.equal(matchRouteRule("GET", path)?.name, rule, `GET ${path}`);
+    const head = matchRouteRule("HEAD", path)?.name ?? null;
+    const acceptable = [null, rule, ...(path.startsWith("/api/manage/") ? ["self-service"] : [])];
+    assert.ok(acceptable.includes(head), `HEAD ${path} matched ${head}; expected ${rule} (or nothing / the broader manage rule before HEAD is listed)`);
+  }
 });

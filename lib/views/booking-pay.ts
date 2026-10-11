@@ -40,7 +40,9 @@ export async function loadPayView(token: string): Promise<PayView> {
     where: { id: bookingId },
     include: { session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } } },
   });
-  if (!booking) return { state: "not-found" };
+  // A booking erased on request is as good as missing here too (as in the manage view): its customer asked to be forgotten, and
+  // the "already booked" answer would mint a fresh 30-day manage link for it.
+  if (!booking || booking.redactedAt) return { state: "not-found" };
   const { service } = booking.session;
   const host = service.influencer;
   const tz = booking.customerTz ?? host.timezone;

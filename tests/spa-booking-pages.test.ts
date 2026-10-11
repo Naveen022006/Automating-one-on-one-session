@@ -298,3 +298,40 @@ test("manage page: a 403 that is not the endpoint's own answer, and every other 
   const pending = await managePage("pending");
   assert.ok(pending.includes(MANAGE_TITLE) && pending.includes('aria-busy="true"'));
 });
+
+test("manage page: sets the no-referrer policy itself in every state, so a soft navigation from the pay page cannot leak the token", async () => {
+  // The Referrer-Policy header the shell sends only exists after a full page load; the pay page's "Manage your booking" link is a
+  // client-side navigation, so the page puts the policy into the head (React hoists the <meta> and removes it when the page goes).
+  const meta = '<meta name="referrer" content="no-referrer"/>';
+  const okView: ManageView = {
+    state: "ok",
+    booking: {
+      token: "tok",
+      bookingId: "bk_1",
+      serviceId: "svc_1",
+      serviceTitle: "Career Call",
+      serviceType: "ONE_TO_ONE",
+      durationMin: 30,
+      influencerName: "Demo Creator",
+      customerName: "Asha Rao",
+      status: "PAID",
+      startTime: "2026-10-12T04:30:00.000Z",
+      meetLink: null,
+      canManage: true,
+      canReschedule: true,
+      refundPolicyText: "Cancel any time before the session for a full refund.",
+      cancelRefundText: null,
+    },
+  };
+  const states: Array<[string, Held]> = [
+    ["ok", { data: okView }],
+    ["expired", { error: { status: 403, body: { state: "expired" } } }],
+    ["not-found", { error: { status: 404, body: { state: "not-found" } } }],
+    ["loading", "pending"],
+    ["failed", { error: { status: 500 } }],
+  ];
+  for (const [label, held] of states) {
+    const html = await managePage(held);
+    assert.equal(count(html, meta), 1, `${label}: exactly one referrer policy meta`);
+  }
+});
