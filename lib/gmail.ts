@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { GMAIL_SEND_SCOPE, GoogleReconnectError, GoogleRequestError, GoogleTransientError } from "@/lib/google";
+import { googleEndpoints } from "@/lib/provider-endpoints";
 
 export { GMAIL_SEND_SCOPE };
 
@@ -11,8 +12,6 @@ export { GMAIL_SEND_SCOPE };
  * test users; for everyone else Google requires verification and a security assessment before launch. Every caller
  * therefore treats Gmail as optional and falls back to the platform's email provider on any failure.
  */
-
-const SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 
 export function hasGmailSendScope(scope: string | null | undefined): boolean {
   return (scope ?? "").split(/\s+/).includes(GMAIL_SEND_SCOPE);
@@ -78,7 +77,7 @@ type FetchFn = typeof fetch;
 export async function sendGmail(accessToken: string, msg: GmailMessage, fetchImpl: FetchFn = fetch): Promise<{ id: string }> {
   let res: Response;
   try {
-    res = await fetchImpl(SEND_URL, {
+    res = await fetchImpl(googleEndpoints().gmailSend, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ raw: Buffer.from(buildMime(msg), "utf8").toString("base64url") }),

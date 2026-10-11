@@ -33,6 +33,12 @@ export interface EmbeddedSignupView {
   appId: string;
   configId: string;
   graphVersion: string;
+  /**
+   * The local mock's Facebook SDK (doc/11-provider-simulator.md). Present ONLY while the guarded mock override is active in
+   * development, copied from `embeddedSignupConfig()` and never made up here; the browser accepts it only if it is a loopback
+   * mock URL (lib/facebook-sdk.ts). Absent everywhere else, which is the normal case.
+   */
+  sdkUrl?: string;
 }
 
 export async function loadProfileView(influencerId: string): Promise<ProfileData> {
@@ -84,7 +90,7 @@ export async function loadWhatsAppView(influencerId: string): Promise<WhatsAppVi
 /** `embeddedSignupConfig()` without its prototype and anything a future version might add. */
 export function loadEmbeddedSignupView(): EmbeddedSignupView | null {
   const config = embeddedSignupConfig();
-  return config ? { appId: config.appId, configId: config.configId, graphVersion: config.graphVersion } : null;
+  return config ? { appId: config.appId, configId: config.configId, graphVersion: config.graphVersion, ...(config.sdkUrl ? { sdkUrl: config.sdkUrl } : {}) } : null;
 }
 
 export async function loadSettingsView(auth: AuthContext): Promise<DashboardSettingsView> {

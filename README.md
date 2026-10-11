@@ -289,7 +289,87 @@ dashboard overview lists it until they reconnect (Reconnect in the settings card
 
 Embedded Signup could not be exercised without an approved Meta app. The newer Graph calls (the Meta template names, token
 check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
-against a real Meta account.
+against a real Meta account. The local mock (next section) exercises the app's side only.
+
+## Try the integrations without Google or Meta accounts
+`npm run dev:mock` runs a **local mock of Google (OAuth consent, Calendar with Meet links, Gmail) and Meta (the Graph API the
+app calls, the Embedded Signup window, signed webhooks)** next to the app, so you can connect an influencer and follow a booking
+all the way to a Meet link and a WhatsApp message on one machine. It is a development tool: its code is in
+`scripts/mock-providers/`, it listens on `127.0.0.1` only, it refuses to start in production, and every fake credential and account
+in it starts with `MOCK-NOT-REAL-` or ends in `@mock-google.invalid`. (What you type into the demo, such as customer names, emails
+and phone numbers, is stored as typed in the mock's state file and in your database, so use test data.) Full specification and
+security rules: `doc/11-provider-simulator.md`.
+
+**How it works.** The app's own code runs unchanged (the same clients, OAuth cookies and callback, worker jobs, webhook route
+and settings screens). The only difference is the host it talks to: `lib/provider-endpoints.ts` is the one place that decides
+where Google and Meta calls go, and `MOCK_PROVIDERS_URL` switches it to the mock. That switch is honoured only when `NODE_ENV`
+is unset, `development` or `test`, no serverless platform is detected, `APP_URL` is `localhost` / `127.0.0.1` / `[::1]` and the
+mock URL is a plain `http://127.0.0.1:<port>`; otherwise it is ignored with a warning, and with `NODE_ENV=production` the app
+refuses to start while it is set. `npm run dev:mock` passes the variable and matching fake credentials to the processes it
+starts only: **they are never written to `.env`, so do not put them there** (tests that assert the real hosts would fail).
+
+**What you need first.** Postgres and Redis running, a migrated and seeded **development** database (`npx prisma migrate dev`,
+`npm run db:seed`; fake connections and the demo's bookings are written to whatever `DATABASE_URL` points at), `.env` with
+`DATABASE_URL`, `REDIS_URL`, `APP_SECRET` and `TOKEN_ENCRYPTION_KEY`, and **Razorpay test keys** (`rzp_test_...`) with any
+`RAZORPAY_WEBHOOK_SECRET`. Razorpay is not mocked; locally the paid order is picked up by the worker's payment recovery (orders at
+least 3 minutes old, checked every 2 minutes), so a booking turns PAID a few minutes after the test payment without any tunnel.
+
+**The worker is off by default, on purpose.** The worker's health sweeps walk *every* influencer's Google and WhatsApp
+connection in the database and ask the provider about each one. Pointed at the mock, which rejects every token it did not issue,
+they would mark every other influencer's connection broken and take their booking pages offline within minutes. The worker also
+takes whatever is queued on its Redis, and any other worker on that Redis (yours, for instance) would take the demo's jobs and
+send the mock's tokens to the real Google and Meta. So `npm run dev:mock` starts only the mock and `next dev`, which is enough
+for walk-through steps 1 to 5 (connecting, booking). For the steps that need the worker (the Meet link, the confirmation
+messages, hold expiry, payment recovery):
+
+1. **Stop your own `npm run worker`** (and make sure nobody else's worker uses the Redis below).
+2. Use a **Postgres and a Redis dedicated to the demo, on this machine**, for example
+   `docker run -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:16-alpine` and `docker run -p 6379:6379 redis:7-alpine`, then
+   `npx prisma migrate deploy` and `npm run db:seed` against them.
+3. Give the launcher their URLs (in `.env`, or in the shell, which wins) and run `npm run dev:mock -- --with-worker`.
+
+With `--with-worker` the launcher refuses to start anything unless `DATABASE_URL` and `REDIS_URL` are both `localhost`,
+`127.0.0.1` or `[::1]` **and** no other worker heartbeat is live; it says why (host names only, never credentials).
+`--allow-shared-stores` overrides that check at your own risk (see `npm run dev:mock -- --help` and the doc for the consequences).
+
+**Run it.**
+```
+npm run dev:mock                                   # mock server (4010) and next dev (3000); no worker
+npm run dev:mock -- --with-worker                  # also the worker; refused unless the database and Redis are local and no other worker runs
+npm run dev:mock -- --app-url http://localhost:3171   # another app port (next dev runs on it)
+npm run dev:mock -- --app-url http://localhost:5173 --next-port 3000   # with the SPA dev server (npm run dev:web) in front
+npm run dev:mock -- --reset --port 4110            # forget all fake state, another mock port
+npm run mock:providers                              # the mock alone; -- --print-env prints the fake variables for a manual terminal
+```
+Open the control page at http://127.0.0.1:4010/__mock: it tells the story of what happened, in order, and has a page each for
+Google (grants, calendar events, Meet links, the invitations Google *would* email), Gmail, Meta (accounts, numbers, templates,
+tokens), WhatsApp messages with their status timeline, SMS, webhooks, the request log and **Faults** (switch on an expired
+token, a rate limit, a slow Meet link, a revoked grant, a lost webhook... to see how the app copes).
+
+**Walk-through (about 30 minutes).**
+1. Log in as `demo@example.com`. In Settings, **Connect Google Calendar**: the mock consent page opens (red banner, both
+   permissions ticked, an account chooser). Allow. Settings shows "Connected as creator@mock-google.invalid". Variations from the
+   not-connected state: Cancel, untick Calendar (the app revokes the grant), untick Gmail.
+2. In Settings, WhatsApp, **Connect with WhatsApp**: the mock Embedded Signup window opens; choose the first account and number
+   and Finish. About 15 s later the templates turn Approved (a timer plays Meta's review; real review takes minutes to a day)
+   and the card says Ready. Also try **Enter details manually** with the "Manual connect kit" on the Meta page, the number that
+   has a PIN the app does not know (the "reset it for me" option), and Cancel inside the window.
+3. Book the 1:1 at `/demo` with your own name, email and phone and WhatsApp opt-in, and pay with Razorpay's test card. With the
+   worker running (the dedicated local stores above), within about 5 minutes it creates the event: the mock Google page shows it with a `/meet/mock-...` link, Gmail shows the
+   confirmation, WhatsApp shows `sa_booking_confirmation` with its sent, delivered and read statuses, and the Sessions board
+   shows the link. Use the manage link from the email to reschedule and cancel.
+4. Break things on the Faults page and the other pages: revoke the Google grant or the WhatsApp token, make Gmail fail, delay
+   Google past the app's timeout, stop the webhooks.
+
+**What this does not prove.** The mock is written from the same understanding of Google and Meta as the app, so where that is
+wrong both are wrong together. The real providers differ in these ways, among others: Google's unverified-app screen, test-user
+limits and the verification and security assessment for the restricted `gmail.send` scope (Testing-mode refresh tokens die after 7
+days); real Meet creation latency; Google really emailing the invitations; Meta's real Embedded Signup dialog, its message format
+and Tech Provider approval; template review time and outcomes; most error codes other than 190, 10, 133005 and 133008;
+messaging limits and quality ratings; webhook retries for days, batching and ordering (and Meta cannot reach `localhost`, a real
+webhook needs a public HTTPS URL); DLT and the real SMS gateways. **App-side flows are verified against the mock; the provider
+side stays unverified until it has had a pass against real accounts** (the checklist is in `doc/11-provider-simulator.md`,
+section 7.5). The control page repeats this list.
 
 ## Go-live readiness
 A booking page only takes bookings (and money) once the influencer has what the product needs. The same rules drive the

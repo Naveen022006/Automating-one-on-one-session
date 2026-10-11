@@ -10,7 +10,8 @@ import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, 
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
 import { RESET_PIN_LABEL } from "../lib/whatsapp-copy";
-import { graphBase, graphVersion } from "../lib/whatsapp-graph-config";
+import { graphBase } from "../lib/provider-endpoints";
+import { graphVersion } from "../lib/whatsapp-graph-config";
 import { DEFAULT_GRAPH_VERSION } from "../lib/whatsapp-graph-version";
 import { parseTemplateStatusUpdates } from "../lib/whatsapp-webhook";
 import {

@@ -32,6 +32,9 @@ export const LIB_ALLOWLIST: readonly string[] = [
   "lib/message-templates.ts",
   "lib/whatsapp-copy.ts",
   "lib/whatsapp-graph-version.ts",
+  // Which Facebook SDK script the same panel loads (Meta's, or the local mock's only when the server offers a loopback one).
+  // Pure: imports nothing, reads no environment, holds no secret (doc/11-provider-simulator.md, 2.6).
+  "lib/facebook-sdk.ts",
 ];
 
 // Bare built-in names ("fs", "path/posix", ...). Prefix-only ones ("node:test", "node:sqlite") are caught by the `node:` check.

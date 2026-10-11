@@ -24,8 +24,9 @@ these hold:
 - no serverless platform marker is set.
 
 Otherwise the override is ignored: in development it prints a loud warning, and in production the process refuses to
-start. `npm run dev:mock` starts the mock server, `next dev` and the worker, with the mock URL and matching **fake**
-credentials. Those values are passed through the child processes' environment only and are never written to `.env`.
+start. `npm run dev:mock` starts the mock server and `next dev` (and, only on request, the worker: see 5.3 and 7.3), with the
+mock URL and matching **fake** credentials. Those values are passed through the child processes' environment only and are
+never written to `.env`.
 
 Verdict on Embedded Signup: a **mock SDK is worth it**. It needs only a server-provided `sdkUrl`, which is a data change.
 That is less risky than a dev-only fake button, because a fake button would be a fake branch in a shipped component. It
@@ -50,7 +51,9 @@ Razorpay stays **real test mode** and is out of scope (section 1.5).
    ignored.
 4. **`scripts/mock-providers/`.** The mock server, its inbox and control UI, its persisted fake state and its webhook
    sender.
-5. **`scripts/dev-mock.ts`.** The one-command launcher (mock server, `next dev` and the worker, with the env overlay).
+5. **`scripts/dev-mock.ts`.** The one-command launcher (mock server and `next dev`, with the env overlay; a worker only with
+   `--with-worker`, and only against a local Postgres and Redis with no other worker running: 5.3). The refusal rule is the pure
+   `scripts/dev-mock-worker.ts`.
 6. **Tests.** A guard unit test, call-site inertness tests and a boundary test, contract tests that run the real lib
    clients against the mock, webhook tests that verify with the app's own verifier and parsers, security tests, and two
    database-gated integration tests.
@@ -430,8 +433,11 @@ scripts/mock-providers/
 scripts/dev-mock.ts  launcher (section 5.3)
 ```
 
-The state file lives at `os.tmpdir()/session-automation-mock-providers/state.json`, outside the repository so it can
-never be committed. It holds fake data only. `--reset` deletes it. After a reset, every token the app stored is unknown
+The state file lives at `os.tmpdir()/session-automation-mock-providers-<user id>/state.json`, outside the repository so it can
+never be committed. Every credential and account in it is fake, **but it also holds what the demo made with them: the
+customer names, email addresses, phone numbers and message bodies typed into the booking form**. So the directory is per user
+(mode 0700, the file 0600 where the OS has modes), a directory owned by someone else or a symlink in its place is refused, and
+on Windows the temp directory is already per user. `--reset` deletes it. After a reset, every token the app stored is unknown
 to the mock. The app then sees `invalid_grant` or Meta error 190 and shows its real reconnect states, which is the
 correct behaviour.
 
@@ -825,6 +831,7 @@ Every POST requires **both** of these:
 | `POST /__mock/meta/phone` | `{ phoneId, action: "set-pin" \| "clear-pin" \| "lock" \| "unlock", pin? }` | change phone state |
 | `POST /__mock/webhooks/verify` | — | runs Meta's GET handshake against the app and shows pass or fail |
 | `POST /__mock/webhooks/target` | `{ url }` | must pass the local-address rule |
+| `POST /__mock/meta/waba` | none | **for tests only**: makes a new empty account with one fresh number and random ids (what the popup's "create a new account" does) and returns `{ wabaId, phoneId }`, so database tests never reuse the fixed demo ids |
 | `POST /__mock/meta/es-code` | `{ wabaId, phoneId }` | **for tests only**: mints an Embedded Signup code without the popup (same code path as `finish`) |
 | `POST /__mock/reset` | `{ confirm: "reset" }` | reset state |
 
@@ -858,7 +865,8 @@ redacted to their last 6 characters unless `?full=1` is passed together with the
   - Gmail HTML renders only in `<iframe sandbox srcdoc="…">` with no `allow-*` tokens. If a browser's CSP blocks
     srcdoc, the text part is shown instead.
   - `sdk.js` reflects nothing from the request into code.
-- **Persistence** goes to `os.tmpdir()`, never inside the repository. It contains fake data only.
+- **Persistence** goes to a per-user, private directory under `os.tmpdir()` (3.1), never inside the repository. The credentials in it are
+  fake; the customer names, emails, phones and messages of the demo's bookings are not, so it is treated as private data.
 - **No auto-consent** (3.3). No route serves files from disk.
 - **No new dependencies.** Only Node built-ins.
 
@@ -983,28 +991,52 @@ The existing test at `tests/env.test.ts:175-183` then requires the name in `KNOW
 "dev:mock": "tsx scripts/dev-mock.ts"
 ```
 
-Also add `scripts/mock-providers` and `scripts/dev-mock.ts` to `.dockerignore` (the Dockerfile's build stage runs
+Also add `scripts/mock-providers`, `scripts/dev-mock.ts` and `scripts/dev-mock-worker.ts` to `.dockerignore` (the Dockerfile's build stage runs
 `COPY . .`). Mock code then never enters an image.
 
-### 5.3 The launcher: `npm run dev:mock [-- --app-url http://localhost:5173] [--port 4010] [--no-worker] [--reset]`
+### 5.3 The launcher: `npm run dev:mock [-- --app-url http://localhost:5173 --next-port 3000] [--port 4010] [--reset] [--with-worker [--allow-shared-stores]]`
+
+**There is no worker by default** (an earlier draft started one). The worker is not only "the demo's jobs": two of its timers
+sweep the whole database, `worker/google-health.ts` (Google, every influencer) and `worker/whatsapp-sync.ts` (Meta, every
+WhatsApp connection), and within a couple of minutes of its start they would ask the mock about every connection in that
+database. The mock answers `invalid_grant` / error 190 for every token it did not issue, so **every other influencer in a shared
+database would be marked reconnect-needed or ERROR, alerted, and their booking page taken offline.** The worker also consumes
+whatever is queued on the Redis it connects to (other users' jobs, which would get mock Meet links), and conversely any OTHER
+worker on that Redis (yours, the owner's) picks up the demo's jobs and sends `MOCK-NOT-REAL` tokens to the real Google and Meta.
+The rules (the pure function `planWorker` in `scripts/dev-mock-worker.ts`):
+
+- Without `--with-worker`: no worker. The banner says what that means (no Meet link, no confirmation messages, no hold expiry)
+  and how to run those steps safely (below).
+- With `--with-worker` the launcher **refuses to start anything** unless (a) `DATABASE_URL` and `REDIS_URL` both name this machine
+  (`localhost`, `127.0.0.1`, `[::1]`; unset or malformed does not count) and (b) no other worker heartbeat is live on that Redis
+  (read with the app's own `readHeartbeat`, lib/health.ts: younger than `HEALTH_WORKER_STALE_SECONDS`, default 180 s; a Redis that
+  cannot be read fails closed). It prints the hosts (never credentials) and why.
+- `--allow-shared-stores` overrides both checks. Its help text states the consequences above. When it overrides something the
+  startup banner carries a warning line (the sweeps can reach a shared store); with clean local stores it prints nothing extra.
+- To run the worker-dependent steps (6.6 steps 6 onwards) safely: use a Postgres and Redis dedicated to the demo (local, for
+  example `docker run -p 5432:5432 postgres:16-alpine` and `docker run -p 6379:6379 redis:7-alpine`, then
+  `npx prisma migrate deploy` and `npm run db:seed`), give their URLs to the launcher (in `.env`, or in the shell:
+  `DATABASE_URL=… REDIS_URL=… npm run dev:mock -- --with-worker`; the shell wins over `.env`), stop your own `npm run worker` and
+  make sure nobody else's worker uses that Redis.
 
 1. **Refuse to start** when any of these holds: `NODE_ENV=production`, a serverless marker is set, or the target
    `APP_URL` fails `isLocalAppUrl`. The target defaults to `http://localhost:3000`; `--app-url` changes it.
 2. **Read** (without assigning to `process.env`) `.env`, using `util.parseEnv` from Node 22.
-   - Warn loudly if `REDIS_URL` is missing: "Meet links and messages are created by the worker through Redis; without
-     it nothing after payment happens".
+   - With `--with-worker`: decide whether a worker may start (above); warn if `REDIS_URL` is missing.
    - Warn if `RAZORPAY_KEY_ID` is not `rzp_test_…`.
-   - Print the **host only** of `DATABASE_URL` and warn if it is not local: "fake connections will be written to this
-     database".
+   - Print the **host only** of `DATABASE_URL` and warn if it is not local: "fake connections and the demo's bookings will be
+     written to this database". (The web process writes there even without a worker.)
 3. **Start the mock server in-process** (`createMockServer`) on `127.0.0.1:<port>`.
 4. **Spawn the children** with `env = { ...process.env, ...mockEnvOverlay(mockUrl, appUrl) }`, so the overlay wins over
    `.env`. Neither Next nor dotenv overrides an existing variable, and `.env` stays untouched.
    - `next dev`: `process.execPath <require.resolve("next/dist/bin/next")> dev`.
-   - The worker: `process.execPath --import tsx worker/index.ts`. Skipped with `--no-worker`.
+   - The worker: `process.execPath --import tsx worker/index.ts`. Only with `--with-worker` and only when the rules above allow it.
    - Use `stdio: "pipe"` and prefix each line with `[next]`, `[worker]` or `[mock]`. This works on Windows with no shell.
 5. **Banner:** "MOCK PROVIDERS ACTIVE: Google and Meta are mocked. Control page http://127.0.0.1:4010/__mock · App <appUrl>
    · Log in as demo@example.com".
-6. **Shutdown.** Ctrl+C or any child exiting stops everything and closes the server.
+6. **Shutdown.** Ctrl+C, a closed console window (SIGHUP, and SIGBREAK on Windows), a kill, or any child exiting stops everything
+   and closes the server. The children are stopped first, synchronously (`taskkill /T /F` on Windows), so closing the window
+   does not leave `next dev` or the worker running.
 
 The overlay, from `fixtures.mockEnvOverlay`, is the **only** place these values exist:
 
@@ -1038,7 +1070,12 @@ and POSIX (`export NAME=…`) lines for manual terminals, with the warning "do n
 - `npx prisma migrate dev` and `npm run db:seed`.
 - **Razorpay test-mode keys** (`rzp_test_…`; self-serve in the Razorpay dashboard, but confirm sign-up does not block
   test keys), `RAZORPAY_WEBHOOK_SECRET` set to any value, and `PAYMENT_RECOVERY_ENABLED=true`, which is the default.
-- Use a development database. Fake connections are written to whatever `DATABASE_URL` points at.
+- Use a development database. Fake connections and the demo's bookings are written to whatever `DATABASE_URL` points at.
+- **Steps that need the worker (the Meet link, the confirmation messages, hold expiry, payment recovery) need a Postgres and a
+  Redis dedicated to the demo**, on this machine, with no other worker on that Redis (5.3). Stop your own `npm run worker`
+  first (it would take the demo's jobs and send the mock's tokens to the real Google and Meta). Never point the demo's worker at
+  a shared or production database: its sweeps would mark every other influencer's Google and WhatsApp connection broken.
+  Without such stores run the launcher without a worker (the default) and walk through steps 1 to 5 only (connecting, booking).
 
 ### 5.5 How the demo influencer gets connected
 
@@ -1264,11 +1301,14 @@ app. `APP_URL` points to it.
 
 ### 6.6 Acceptance walk-through (manual, about 30 minutes)
 
-Prerequisites from 5.4. Run `npm run dev:mock`. Open `http://127.0.0.1:4010/__mock` in one tab and
-`http://localhost:3000` in another. Expected results are in *italics*.
+Prerequisites from 5.4. Run `npm run dev:mock` for steps 1 to 5 (no worker), and `npm run dev:mock -- --with-worker` against a
+dedicated local Postgres and Redis for steps 6 onwards (5.3: the launcher refuses a worker otherwise). Open
+`http://127.0.0.1:4010/__mock` in one tab and `http://localhost:3000` in another. Expected results are in *italics*.
 
-1. **Start.** *The banner prints. The web log shows the `[env] warning (web): MOCK_PROVIDERS_URL: ACTIVE…` line and so
-   does the worker log. The mock overview is empty.*
+1. **Start.** *The banner prints (and says the worker is NOT started, or that it is). The web log shows the `[env] warning
+   (web): MOCK_PROVIDERS_URL: ACTIVE…` line, and so does the worker log when there is a worker. The mock overview is empty.*
+   Also check the refusal: `npm run dev:mock -- --with-worker` with a non-local `DATABASE_URL` or `REDIS_URL` (or while your
+   own worker runs). *It exits 1 before starting anything and names the host, never the credentials.*
 2. **Production refusal (the inert check).**
    - `NODE_ENV=production MOCK_PROVIDERS_URL=http://127.0.0.1:4010 npx tsx -e "require('./lib/env').initEnvOrExit('check')"`
      (or the PowerShell equivalent). *It exits 1 with `MOCK_PROVIDERS_URL: must not be set in production` and the value
@@ -1300,7 +1340,8 @@ Prerequisites from 5.4. Run `npm run dev:mock`. Open `http://127.0.0.1:4010/__mo
      Leave the account connected to 1001 / 2001 at the end.
 5. **Book and pay.** Open `http://localhost:3000/demo`, book the 1:1 with your own test name and email, any valid +91
    mobile, and WhatsApp opt-in ticked. Pay in the Razorpay **test** checkout with a Razorpay-documented test card.
-6. **Within about 5 minutes** (recovery: orders at least 3 minutes old, every 2 minutes):
+6. **Within about 5 minutes** (needs the worker, so the dedicated local stores and `--with-worker`; recovery: orders at least 3
+   minutes old, every 2 minutes):
    - *The worker logs payment recovery and then `[create-meeting] booking … scheduled`.*
    - *The mock Calendar shows the event with you as attendee and a `/meet/mock-…` link. The invite log shows "Google
      would email an invite".*
@@ -1412,6 +1453,17 @@ Prerequisites from 5.4. Run `npm run dev:mock`. Open `http://127.0.0.1:4010/__mo
   database `DATABASE_URL` points at. The launcher warns about a non-local host. Real connections later replace them
   through the normal connect flows. Mock tokens sent to real Google fail with `invalid_grant`, which shows "Reconnect
   needed", which is self-healing.
+- **The worker's sweeps (the serious one).** `worker/google-health.ts` and `worker/whatsapp-sync.ts` walk **every**
+  influencer's connections in the database and ask the provider about each. With the app pointed at the mock, the mock
+  rejects every token it did not issue (`invalid_grant`, error 190), so a worker running against a shared database marks every
+  other influencer's connection reconnect-needed or ERROR, alerts them and takes their booking page offline, within minutes of
+  its start. The worker also consumes whatever is queued on its Redis (other users' jobs would get mock Meet links), and any
+  OTHER worker on that Redis (yours, the owner's) picks up the demo's jobs and sends the mock's tokens to the real Google and
+  Meta. Therefore: **no worker by default**; `--with-worker` is refused unless both stores are on this machine and no other
+  worker heartbeat is live (`lib/health.ts`); `--allow-shared-stores` overrides it, with the consequences in its help text and a
+  banner warning; to run the worker-dependent steps, stop your own worker and use a dedicated local Postgres and Redis (5.3).
+- **Leftover personal data.** The mock's state file holds the customer names, emails, phones and messages typed into the demo.
+  It lives in a per-user directory (0700, file 0600) in the OS temp directory; delete it with `--reset` when done.
 - **Mock SDK under CSP.** It relies on `'strict-dynamic'` propagation (`proxy.ts:116`). A browser without CSP3
   `strict-dynamic` support falls back to the host allow-list and blocks `127.0.0.1`. The fix then is to use manual
   connect, **not** to widen the CSP without review. The implementer checks for console CSP violations in Chrome during

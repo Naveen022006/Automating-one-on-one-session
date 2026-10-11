@@ -7,9 +7,7 @@
  *  - GoogleRequestError:   Google rejected this specific request. Retrying will not help.
  */
 
-const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const CALENDAR_URL = "https://www.googleapis.com/calendar/v3";
+import { googleEndpoints } from "@/lib/provider-endpoints";
 
 /** Narrowest scope that allows creating/updating/deleting events (Phase 5 needs update + delete). */
 /** Permission to send email as the influencer (restricted scope; see lib/gmail.ts). */
@@ -119,7 +117,7 @@ export function buildAuthUrl(state: string, loginHint?: string, opts: { gmail?: 
     prompt: "consent",
     state,
   });
-  return `${AUTH_URL}?${params}`;
+  return `${googleEndpoints().auth}?${params}`;
 }
 
 interface GoogleApiErrorBody {
@@ -196,6 +194,8 @@ function toCalendarEvent(raw: RawEvent): CalendarEvent {
 }
 
 export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClient {
+  // Resolved on every call, not once here: the module-level `google` below is created at import time.
+  const cal = () => googleEndpoints().calendar;
   const call = async (url: string, init: RequestInit): Promise<Response> => {
     try {
       return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
@@ -206,7 +206,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
   return {
     async refreshAccessToken(refreshToken) {
-      const res = await call(TOKEN_URL, {
+      const res = await call(googleEndpoints().token, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -229,7 +229,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
     },
 
     async insertEvent(accessToken, event) {
-      const res = await call(`${CALENDAR_URL}/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all`, {
+      const res = await call(`${cal()}/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all`, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -259,7 +259,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
     },
 
     async getEvent(accessToken, eventId) {
-      const res = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+      const res = await call(`${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (res.status === 404 || res.status === 410) return null;
@@ -276,7 +276,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
       // attendees joining or leaving at once, a plain read-modify-write would silently drop one of the changes, so
       // a concurrent edit answers 412 and we read again.
       for (let attempt = 0; attempt < ATTENDEE_WRITE_ATTEMPTS; attempt++) {
-        const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+        const getRes = await call(`${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (getRes.status === 404 || getRes.status === 410) {
@@ -301,7 +301,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
         }
         const attendees = [...existing, { email: attendee.email, displayName: attendee.displayName }];
         const patchRes = await call(
-          `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
+          `${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
           {
             method: "PATCH",
             headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...ifMatch(raw) },
@@ -323,7 +323,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
     async updateEvent(accessToken, eventId, times) {
       const res = await call(
-        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
+        `${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
         {
           method: "PATCH",
           headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
@@ -347,7 +347,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
       const target = email.toLowerCase();
       // Read, drop the attendee, write back with If-Match; a concurrent edit answers 412 and we read again (see addAttendee).
       for (let attempt = 0; attempt < ATTENDEE_WRITE_ATTEMPTS; attempt++) {
-        const getRes = await call(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+        const getRes = await call(`${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (getRes.status === 404 || getRes.status === 410) {
@@ -366,7 +366,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
           return { remaining: existing.length };
         }
         const patchRes = await call(
-          `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
+          `${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=all`,
           {
             method: "PATCH",
             headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...ifMatch(raw) },
@@ -386,7 +386,7 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
     async deleteEvent(accessToken, eventId) {
       const res = await call(
-        `${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+        `${cal()}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
         { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
       );
       // 404/410 => already deleted. 204/200 => deleted now. Both are success (idempotent).
@@ -406,7 +406,7 @@ export async function exchangeCode(
 ): Promise<{ refreshToken: string; scope: string; email: string | null }> {
   let res: Response;
   try {
-    res = await fetchImpl(TOKEN_URL, {
+    res = await fetchImpl(googleEndpoints().token, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -455,7 +455,7 @@ export function emailFromIdToken(idToken: string | undefined): string | null {
 /** Revokes a refresh token at Google (used by "Disconnect"). Best-effort: a dead token is already revoked. */
 export async function revokeToken(token: string, fetchImpl: typeof fetch = fetch): Promise<void> {
   try {
-    await fetchImpl(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
+    await fetchImpl(`${googleEndpoints().revoke}?token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       signal: AbortSignal.timeout(10_000),

@@ -325,7 +325,7 @@ test("toPayoutAccountData copies the eight fields the form shows; the masked val
 
 test("loadEmbeddedSignupView: null unless the Meta app is configured; then exactly the public ids, never the app secret", async () => {
   const { loadEmbeddedSignupView } = await import("../lib/views/dashboard-settings");
-  const names = ["META_APP_ID", "META_ES_CONFIG_ID", "META_APP_SECRET", "WHATSAPP_APP_SECRET", "WHATSAPP_GRAPH_VERSION"] as const;
+  const names = ["META_APP_ID", "META_ES_CONFIG_ID", "META_APP_SECRET", "WHATSAPP_APP_SECRET", "WHATSAPP_GRAPH_VERSION", "MOCK_PROVIDERS_URL", "APP_URL", "NODE_ENV", "VERCEL"] as const;
   const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
   try {
     for (const n of names) delete process.env[n];
@@ -340,10 +340,27 @@ test("loadEmbeddedSignupView: null unless the Meta app is configured; then exact
     assert.equal(view?.configId, "9876543210");
     assert.match(view?.graphVersion ?? "", /^v\d+\.\d+$/);
     assert.ok(!JSON.stringify(view).includes(secrets.metaSecret));
+    assert.ok(!("sdkUrl" in (view as object)), "no sdkUrl unless the local mock override is active");
+
+    // With the guarded local mock override active the view carries the mock's SDK URL (copied from embeddedSignupConfig, never made
+    // up here). Production, a serverless platform and a non-local APP_URL all leave it out.
+    process.env.APP_URL = "http://localhost:3000";
+    process.env.MOCK_PROVIDERS_URL = "http://127.0.0.1:4010";
+    assert.deepEqual(keys(loadEmbeddedSignupView()), ["appId", "configId", "graphVersion", "sdkUrl"]);
+    assert.equal(loadEmbeddedSignupView()?.sdkUrl, "http://127.0.0.1:4010/meta/en_US/sdk.js");
+    assert.ok(!JSON.stringify(loadEmbeddedSignupView()).includes(secrets.metaSecret));
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    assert.deepEqual(keys(loadEmbeddedSignupView()), ["appId", "configId", "graphVersion"]);
+    delete (process.env as Record<string, string | undefined>).NODE_ENV;
+    process.env.VERCEL = "1";
+    assert.deepEqual(keys(loadEmbeddedSignupView()), ["appId", "configId", "graphVersion"]);
+    delete process.env.VERCEL;
+    process.env.APP_URL = "https://app.example.com";
+    assert.deepEqual(keys(loadEmbeddedSignupView()), ["appId", "configId", "graphVersion"]);
   } finally {
     for (const n of names) {
       if (saved[n] === undefined) delete process.env[n];
-      else process.env[n] = saved[n];
+      else (process.env as Record<string, string | undefined>)[n] = saved[n];
     }
   }
 });
@@ -591,7 +608,7 @@ test("D8 GET /api/dashboard/payouts: masked details only, the owner's history, t
 /* ---------- D9 ---------- */
 
 test("D9 GET /api/dashboard/settings: profile, the three Google states, WhatsApp connected / broken / absent, never a stored token or an id", { skip }, async () => {
-  const names = ["META_APP_ID", "META_ES_CONFIG_ID", "META_APP_SECRET", "WHATSAPP_APP_SECRET"] as const;
+  const names = ["META_APP_ID", "META_ES_CONFIG_ID", "META_APP_SECRET", "WHATSAPP_APP_SECRET", "MOCK_PROVIDERS_URL", "APP_URL", "NODE_ENV", "VERCEL"] as const;
   const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
   try {
     for (const n of names) delete process.env[n];
@@ -646,13 +663,28 @@ test("D9 GET /api/dashboard/settings: profile, the three Google states, WhatsApp
     process.env.META_ES_CONFIG_ID = `meta-config-${run}`;
     process.env.META_APP_SECRET = secrets.metaSecret;
     const configured = await ask(routes.settings, A.cookie);
-    assert.deepEqual(keys(configured.body.embedded), ["appId", "configId", "graphVersion"]);
+    assert.deepEqual(keys(configured.body.embedded), ["appId", "configId", "graphVersion"], "no sdkUrl without the local mock override");
     assert.equal((configured.body.embedded as { appId: string }).appId, `meta-app-${run}`);
     assertOnlyOwn(configured.body, A, B, C);
+
+    // The local mock override (doc/11-provider-simulator.md) is on: the settings AND the onboarding endpoint carry the mock's SDK
+    // URL, otherwise the page would load Meta's real SDK with the fake app id. Not otherwise, and never invented.
+    process.env.APP_URL = "http://localhost:3000";
+    process.env.MOCK_PROVIDERS_URL = "http://127.0.0.1:4010";
+    const mocked = await ask(routes.settings, A.cookie);
+    assert.deepEqual(keys(mocked.body.embedded), ["appId", "configId", "graphVersion", "sdkUrl"]);
+    assert.equal((mocked.body.embedded as { sdkUrl: string }).sdkUrl, "http://127.0.0.1:4010/meta/en_US/sdk.js");
+    assert.deepEqual((await ask(routes.onboarding, A.cookie)).body.embedded, mocked.body.embedded, "onboarding sends the same Embedded Signup block");
+    assertOnlyOwn(mocked.body, A, B, C);
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    assert.deepEqual(keys((await ask(routes.settings, A.cookie)).body.embedded), ["appId", "configId", "graphVersion"], "production ignores the override");
+    delete (process.env as Record<string, string | undefined>).NODE_ENV;
+    process.env.APP_URL = "https://app.example.com";
+    assert.deepEqual(keys((await ask(routes.onboarding, A.cookie)).body.embedded), ["appId", "configId", "graphVersion"], "a non-local APP_URL ignores it too");
   } finally {
     for (const n of names) {
       if (saved[n] === undefined) delete process.env[n];
-      else process.env[n] = saved[n];
+      else (process.env as Record<string, string | undefined>)[n] = saved[n];
     }
   }
 });

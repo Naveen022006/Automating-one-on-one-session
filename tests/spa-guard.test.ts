@@ -24,7 +24,7 @@ test("specifiers: Node built-ins, server-side Next APIs and server-only packages
 test("resolved repository files: only the allowlisted lib modules, never routes, the worker, the generated client or scripts", () => {
   for (const ok of LIB_ALLOWLIST) assert.equal(repoPathProblem(ok), null, ok);
   assert.deepEqual([...LIB_ALLOWLIST].sort(), [
-    "lib/auth/slug.ts", "lib/brand.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/message-templates.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts",
+    "lib/auth/slug.ts", "lib/brand.ts", "lib/facebook-sdk.ts", "lib/format.ts", "lib/intake.ts", "lib/jsonify.ts", "lib/message-templates.ts", "lib/refund-policy.ts", "lib/safe-next-path.ts",
     "lib/spa/routes.ts", "lib/whatsapp-copy.ts", "lib/whatsapp-graph-version.ts",
   ]);
   // The rule in web/vite-server-guard.ts: an allowlisted module reads no environment beyond the names the Vite config

@@ -243,6 +243,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production. Also a **build** input: the SPA only includes the page when built with `true`. **Use the same value at build and at run time**: the SPA decides at build time, the server (the shell's status code and the old Next page) at run time. Built `false` and run `true` serves the shell with status 200 but the SPA shows its 404 screen; built `true` and run `false` answers 404 while the SPA still draws the catalogue |
 | `SPA_GROUPS` | no | empty | Page groups served by the React SPA: empty (none, the old Next pages), `all`, or a comma list of `public,auth,booking,dashboard,admin`. Run time; unknown names are a start-up warning; with a group enabled the web process needs `web/dist/index.html` (section 3.2) |
 | `SPA_API_TARGET` | no | `http://localhost:3000` | **Dev only**: where the Vite dev server (`npm run dev:web`) proxies `/api` |
+| `MOCK_PROVIDERS_URL` | no | none | **Dev only**: points Google and Meta at the local mock (`npm run dev:mock`). Refused in production; ignored unless `APP_URL` is local |
 | `ADMIN_PASSWORD` | no | generated | Read by `npm run admin:create` only |
 | `SEED_DEMO_PASSWORD` | no | built-in | **Dev**: `npm run db:seed`. Never seed a production database |
 
@@ -275,6 +276,10 @@ from the top of `worker/index.ts`. The pure function `validateEnv(env)` is unit-
     names the variable and never shows the value.
   * Flags such as `RATE_LIMIT_ENABLED` must be spelled exactly `true`/`false`, because the code compares strings
     (`"False"` would leave limits on while looking like it turned them off).
+  * **No `MOCK_PROVIDERS_URL`** (it points Google and Meta calls at a local mock server, doc/11-provider-simulator.md), and no
+    variable holding a `MOCK-NOT-REAL` placeholder value. Not even `ALLOW_INSECURE_LOCAL_RUN` tolerates it: the Docker image
+    always runs in production mode, so the mock is never available there, by design. The mock's code is also excluded from
+    the build context (`.dockerignore`).
 * **Anything else** (development, test): the same kind of problem is printed as a warning and the process carries on.
   Production-only strictness is not applied.
 * **Warnings in production** (the process still starts): `CLIENT_IP_HEADER` or `ERROR_WEBHOOK_URL` unset, Razorpay test key,
