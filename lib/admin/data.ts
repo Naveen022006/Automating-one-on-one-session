@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { isEntityId } from "@/lib/http";
 import { CONNECTION_KEYS, evaluateReadiness, readinessInput, type ReadinessInput } from "@/lib/readiness";
 
 export const PAGE_SIZE = 25;
@@ -249,9 +250,31 @@ export async function paymentViewCounts() {
   return { all, needsRefund, mismatch, captured, unpaid, unreconciled };
 }
 
-export async function listBookings(page: number, status?: string) {
+/** Longest booking search text taken from a URL. */
+export const BOOKING_SEARCH_MAX = 120;
+
+/**
+ * The search part of the Bookings page: `q` (trimmed, at most 120 characters) matches a booking id exactly when it has the shape of one,
+ * and in every case it is a case-insensitive "contains" on the customer's e-mail or name. Empty: no search.
+ */
+export function bookingSearchWhere(q: string | undefined): Prisma.BookingWhereInput | null {
+  const term = q?.trim().slice(0, BOOKING_SEARCH_MAX);
+  if (!term) return null;
+  return {
+    OR: [
+      ...(isEntityId(term) ? [{ id: term }] : []),
+      { customerEmail: { contains: term.toLowerCase(), mode: "insensitive" as const } },
+      { customerName: { contains: term, mode: "insensitive" as const } },
+    ],
+  };
+}
+
+export async function listBookings(page: number, status?: string, q?: string) {
   const valid = ["REQUESTED", "HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "EXPIRED", "CANCELLED", "FAILED"];
-  const where: Prisma.BookingWhereInput = status && valid.includes(status) ? { status: status as never } : {};
+  const where: Prisma.BookingWhereInput = {
+    ...(status && valid.includes(status) ? { status: status as never } : {}),
+    ...(bookingSearchWhere(q) ?? {}),
+  };
   const [total, rows] = await Promise.all([
     prisma.booking.count({ where }),
     prisma.booking.findMany({

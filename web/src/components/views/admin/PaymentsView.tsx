@@ -1,5 +1,7 @@
 import { AppLink } from "@web/lib/link";
 import { ReconcileButton, UnreconcileButton } from "@web/components/admin/PayoutActions";
+import { ExportControls } from "@web/components/admin/ExportControls";
+import { RefundAction } from "@web/components/admin/RefundAction";
 import { PageHead } from "@web/components/app/AppShell";
 import { IconCard } from "@web/components/icons";
 import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
@@ -47,6 +49,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
         Reconciling asks Razorpay for each payment and checks the id, order, amount and status match. Only reconciled
         payments are included when you create a payout.
       </Alert>
+      <ExportControls kind="payments" />
       <LinkTabs items={VIEWS.map((v) => ({ label: v.label, href: `/admin/payments?view=${v.key}`, current: view === v.key, count: countFor[v.key] }))} />
       <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
@@ -68,6 +71,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                   <th scope="col" className="num">Amount</th>
                   <th scope="col">Reconciled</th>
                   <th scope="col">Razorpay</th>
+                  <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -112,6 +116,20 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                       </td>
                       <td data-label="Razorpay" className="subtle" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
                         {p.razorpayId}
+                      </td>
+                      <td data-label="Actions">
+                        {p.refund.allowed ? (
+                          <RefundAction
+                            paymentId={p.id}
+                            remainingMinor={p.refund.remainingMinor}
+                            currency={p.currency}
+                            customerName={p.booking.customerName}
+                            influencerName={p.influencer.name}
+                            inPayout={p.inPayout}
+                          />
+                        ) : p.needsRefund && p.status === "CAPTURED" && p.refund.reason ? (
+                          <span className="subtle">{p.refund.reason}</span>
+                        ) : null}
                       </td>
                     </tr>
                   );

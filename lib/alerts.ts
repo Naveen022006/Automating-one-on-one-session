@@ -9,7 +9,8 @@ export type InfluencerAlertKind =
   | "refund-needed"
   | "refund-failed"
   | "booking-request"
-  | "whatsapp-reconnect-needed";
+  | "whatsapp-reconnect-needed"
+  | "platform-cancelled";
 
 export interface InfluencerAlert {
   kind: InfluencerAlertKind;
@@ -39,6 +40,7 @@ const TITLES: Record<InfluencerAlertKind, { title: string; action: string }> = {
   "refund-failed": { title: "A refund failed", action: "Review the refund" },
   "booking-request": { title: "New booking request", action: "Review the request" },
   "whatsapp-reconnect-needed": { title: "Reconnect WhatsApp", action: "Reconnect WhatsApp" },
+  "platform-cancelled": { title: "A booking was cancelled by the platform", action: "Open the session" },
 };
 
 export function defaultActionUrl(alert: InfluencerAlert): string {
