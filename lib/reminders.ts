@@ -1,7 +1,9 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
+import { RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
 import { sendMessageForBooking } from "@/lib/messaging";
-import { ensureReminder, type EnsureReminderOutcome, type ReminderKind } from "@/lib/queue";
+import { REMINDER_OFFSETS_MS, ensureReminder, type EnsureReminderOutcome, type ReminderKind } from "@/lib/queue";
 
 export type ReminderOutcome = "sent" | "already-sent" | "skipped";
 
@@ -9,8 +11,10 @@ export type ReminderOutcome = "sent" | "already-sent" | "skipped";
 export const REMINDER_24H_MIN_LEAD_MS = 12 * 60 * 60 * 1_000;
 /** The repair job only looks at sessions starting within this window (the 24-hour reminder's fire time plus an hour of slack). */
 export const REPAIR_WINDOW_MS = 25 * 60 * 60 * 1_000;
-/** Most bookings one repair run looks at, so a run is one small query however many sessions are booked. */
-export const REPAIR_MAX_BOOKINGS = 500;
+/** Bookings read per query (keyset pages), so no single query is large however many seats a group session holds. */
+export const REPAIR_BATCH_SIZE = 250;
+/** Most bookings one repair run looks at; a run that hits it hands its position to the next run. */
+export const REPAIR_MAX_BOOKINGS = 2_000;
 /** Consecutive Redis failures after which a repair run stops instead of waiting out a timeout per booking. */
 export const REPAIR_MAX_CONSECUTIVE_FAILURES = 3;
 
@@ -136,6 +140,12 @@ export interface RepairBooking {
   id: string;
   status: string;
   startTime: Date;
+  /**
+   * When this booking's reminders were last scheduled: its creation, or the last reschedule if later. enqueueReminders
+   * deliberately skips a reminder whose fire time had already passed at that moment (a booking made 20 h before the
+   * start never gets a "tomorrow" reminder), so a missing job for such a reminder is not a lost one.
+   */
+  armedAt: Date;
 }
 
 export interface SentReminder {
@@ -149,10 +159,17 @@ export interface ReminderRepair {
   startTime: Date;
 }
 
+/** Keyset position in the repair scan: the soonest session first, then the booking id. */
+export interface RepairCursor {
+  startTime: Date;
+  id: string;
+}
+
 /**
  * Which reminder jobs should exist right now. Pure. A SCHEDULED booking starting within REPAIR_WINDOW_MS wants a
- * "24h" job while at least 12 h are left and a "15m" job until it starts. A (booking, template) that already has a
- * Message row on any channel is never wanted again, so a reminder that went out (or was attempted) is not repeated.
+ * "24h" job while at least 12 h are left and a "15m" job until it starts, except a reminder whose fire time (start minus
+ * its offset) is earlier than `armedAt`: that one was never scheduled on purpose. A (booking, template) that already has a
+ * delivered Message row (see findSent) is never wanted again, so a reminder that went out is not repeated.
  */
 export function planReminderRepairs(
   bookings: readonly RepairBooking[],
@@ -168,6 +185,7 @@ export function planReminderRepairs(
     if (left <= 0 || left > REPAIR_WINDOW_MS) continue;
     for (const kind of ["24h", "15m"] as ReminderKind[]) {
       if (staleReminderReason(kind, b.startTime, now)) continue;
+      if (b.startTime.getTime() - REMINDER_OFFSETS_MS[kind] < b.armedAt.getTime()) continue;
       if (done.has(`${b.id}:${REMINDER_TEMPLATES[kind]}`)) continue;
       plan.push({ bookingId: b.id, kind, startTime: b.startTime });
     }
@@ -175,37 +193,110 @@ export function planReminderRepairs(
   return plan;
 }
 
-export interface ReconcileDeps {
-  /** SCHEDULED, not erased, starting within the repair window, soonest first, at most `limit`. */
-  findUpcoming: (now: Date, limit: number) => Promise<RepairBooking[]>;
-  /** Message rows (any channel, any status) that exist for these bookings' reminder templates. One query. */
-  findSent: (bookingIds: string[]) => Promise<SentReminder[]>;
-  ensure: (kind: ReminderKind, bookingId: string, startTime: Date, now: Date) => Promise<EnsureReminderOutcome>;
+export interface UpcomingQuery {
+  now: Date;
+  limit: number;
+  /** Continue after this position (rows are ordered by session start, then id). */
+  after?: RepairCursor;
+  /** Restrict the scan to these bookings. Used by tests so they do not depend on what else is in the database. */
+  bookingIds?: string[];
 }
 
+export interface ReconcileDeps {
+  /** SCHEDULED, not erased, starting within the repair window, soonest first, at most `limit`. */
+  findUpcoming: (query: UpcomingQuery) => Promise<RepairBooking[]>;
+  /** Delivered reminder Message rows (any channel) for these bookings. One query per batch. */
+  findSent: (bookingIds: string[]) => Promise<SentReminder[]>;
+  /** The booking's CURRENT session start, or null when it is no longer SCHEDULED. Re-read right before a job is touched. */
+  readStart: (bookingId: string) => Promise<Date | null>;
+  ensure: (
+    kind: ReminderKind,
+    bookingId: string,
+    startTime: Date,
+    now: Date,
+    stillCurrent: () => Promise<boolean>,
+  ) => Promise<EnsureReminderOutcome>;
+}
+
+/** Message statuses that mean the customer was sent the message (the same set sendMessageForBooking dedupes on). */
+const DELIVERED_STATUSES = ["SENT", "DELIVERED", "READ"] as const;
+
 const defaultReconcileDeps: ReconcileDeps = {
-  findUpcoming: async (now, limit) => {
-    const rows = await prisma.booking.findMany({
-      where: {
-        status: "SCHEDULED",
-        redactedAt: null,
-        session: { startTime: { gt: now, lte: new Date(now.getTime() + REPAIR_WINDOW_MS) } },
-      },
-      orderBy: { session: { startTime: "asc" } },
-      take: limit,
-      select: { id: true, status: true, session: { select: { startTime: true } } },
+  findUpcoming: async ({ now, limit, after, bookingIds }) => {
+    const delivered = (template: string): Prisma.BookingWhereInput => ({
+      messages: { some: { template, status: { in: [...DELIVERED_STATUSES] } } },
     });
-    return rows.map((r) => ({ id: r.id, status: r.status, startTime: r.session.startTime }));
+    const where: Prisma.BookingWhereInput = {
+      status: "SCHEDULED",
+      redactedAt: null,
+      session: { startTime: { gt: now, lte: new Date(now.getTime() + REPAIR_WINDOW_MS) } },
+      // A booking whose two reminders both went out has nothing to repair.
+      NOT: { AND: [delivered(REMINDER_TEMPLATES["24h"]), delivered(REMINDER_TEMPLATES["15m"])] },
+      ...(bookingIds ? { id: { in: bookingIds } } : {}),
+      ...(after
+        ? {
+            AND: [
+              {
+                OR: [
+                  { session: { startTime: { gt: after.startTime } } },
+                  { session: { startTime: after.startTime }, id: { gt: after.id } },
+                ],
+              },
+            ],
+          }
+        : {}),
+    };
+    const rows = await prisma.booking.findMany({
+      where,
+      orderBy: [{ session: { startTime: "asc" } }, { id: "asc" }],
+      take: limit,
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        session: { select: { startTime: true } },
+        // A reschedule re-arms the reminders for the new time; its notice row is the only trace of when that happened.
+        messages: { where: { template: RESCHEDULE_TEMPLATE }, select: { updatedAt: true } },
+      },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      startTime: r.session.startTime,
+      armedAt: new Date(Math.max(r.createdAt.getTime(), ...r.messages.map((m) => m.updatedAt.getTime()))),
+    }));
   },
   findSent: (bookingIds) =>
     bookingIds.length === 0
       ? Promise.resolve([])
       : prisma.message.findMany({
-          where: { bookingId: { in: bookingIds }, template: { in: Object.values(REMINDER_TEMPLATES) } },
+          where: {
+            bookingId: { in: bookingIds },
+            template: { in: Object.values(REMINDER_TEMPLATES) },
+            status: { in: [...DELIVERED_STATUSES] },
+          },
           select: { bookingId: true, template: true },
         }),
-  ensure: (kind, bookingId, startTime, now) => ensureReminder(kind, bookingId, startTime, now),
+  readStart: async (bookingId) => {
+    const row = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { status: true, session: { select: { startTime: true } } },
+    });
+    return row && row.status === "SCHEDULED" ? row.session.startTime : null;
+  },
+  ensure: (kind, bookingId, startTime, now, stillCurrent) => ensureReminder(kind, bookingId, startTime, now, undefined, stillCurrent),
 };
+
+export interface ReconcileOptions {
+  /** Bookings read per query (default REPAIR_BATCH_SIZE). */
+  batchSize?: number;
+  /** Bookings looked at per run (default REPAIR_MAX_BOOKINGS). */
+  maxBookings?: number;
+  /** Resume after this position (the `next` of a run that hit its cap). */
+  after?: RepairCursor;
+  /** Test scope: only these bookings. */
+  bookingIds?: string[];
+}
 
 export interface ReconcileSummary {
   /** Bookings looked at. */
@@ -214,37 +305,66 @@ export interface ReconcileSummary {
   repaired: number;
   /** Reminder jobs that could not be checked (Redis error); the next run tries again. */
   failed: number;
+  /** Where to resume when the run stopped at its cap with bookings left, otherwise null. */
+  next: RepairCursor | null;
 }
 
 /**
  * Re-creates the reminder jobs that should exist but do not (Redis lost its data, an enqueue was lost). Idempotent:
- * jobs have deterministic ids, a job that exists for the right time is left alone, and a reminder already recorded in
- * `messages` is not planned. Bounded: one booking query (REPAIR_MAX_BOOKINGS), one message query, no transaction, and it
- * stops after REPAIR_MAX_CONSECUTIVE_FAILURES Redis errors in a row rather than waiting out a timeout per booking.
- * An overdue "15m" reminder is added with no delay; sendReminderForBooking re-checks the clock when it runs.
+ * jobs have deterministic ids, a job that exists for the right time is left alone, and a reminder already delivered
+ * is not planned. Bounded: the window is read in keyset batches (session start, then id) of REPAIR_BATCH_SIZE up to
+ * REPAIR_MAX_BOOKINGS per run, one message query per batch, no transaction. When the cap is hit the summary's `next`
+ * says where the next run resumes. It stops after REPAIR_MAX_CONSECUTIVE_FAILURES Redis errors in a row rather than
+ * waiting out a timeout per booking. An overdue "15m" reminder is added with no delay; sendReminderForBooking
+ * re-checks the clock when it runs. The booking is re-read right before a job is touched, so a reschedule or cancel
+ * that lands during the run is not undone.
  */
-export async function reconcileReminders(now: Date, overrides: Partial<ReconcileDeps> = {}): Promise<ReconcileSummary> {
+export async function reconcileReminders(
+  now: Date,
+  overrides: Partial<ReconcileDeps> = {},
+  options: ReconcileOptions = {},
+): Promise<ReconcileSummary> {
   const deps = { ...defaultReconcileDeps, ...overrides };
-  const bookings = await deps.findUpcoming(now, REPAIR_MAX_BOOKINGS);
-  const sent = await deps.findSent(bookings.map((b) => b.id));
-  const plan = planReminderRepairs(bookings, sent, now);
+  const batchSize = options.batchSize ?? REPAIR_BATCH_SIZE;
+  const maxBookings = options.maxBookings ?? REPAIR_MAX_BOOKINGS;
 
-  const summary: ReconcileSummary = { checked: bookings.length, repaired: 0, failed: 0 };
+  const summary: ReconcileSummary = { checked: 0, repaired: 0, failed: 0, next: null };
   let consecutive = 0;
   let lastError: unknown;
-  for (const step of plan) {
-    try {
-      const outcome = await deps.ensure(step.kind, step.bookingId, step.startTime, now);
-      consecutive = 0;
-      if (outcome === "added" || outcome === "replaced") summary.repaired++;
-    } catch (e) {
-      summary.failed++;
-      lastError = e;
-      if (++consecutive >= REPAIR_MAX_CONSECUTIVE_FAILURES) break;
+  let after = options.after;
+  scan: while (summary.checked < maxBookings) {
+    const limit = Math.min(batchSize, maxBookings - summary.checked);
+    const bookings = await deps.findUpcoming({ now, limit, after, bookingIds: options.bookingIds });
+    if (bookings.length === 0) break;
+    summary.checked += bookings.length;
+    const last = bookings[bookings.length - 1];
+    after = { startTime: last.startTime, id: last.id };
+
+    const sent = await deps.findSent(bookings.map((b) => b.id));
+    for (const step of planReminderRepairs(bookings, sent, now)) {
+      try {
+        const stillCurrent = async () => {
+          const current = await deps.readStart(step.bookingId);
+          return current !== null && current.getTime() === step.startTime.getTime();
+        };
+        const outcome = await deps.ensure(step.kind, step.bookingId, step.startTime, now, stillCurrent);
+        consecutive = 0;
+        if (outcome === "added" || outcome === "replaced") summary.repaired++;
+      } catch (e) {
+        summary.failed++;
+        lastError = e;
+        if (++consecutive >= REPAIR_MAX_CONSECUTIVE_FAILURES) break scan;
+      }
     }
+    if (bookings.length < limit) break; // the window is exhausted
+    if (summary.checked >= maxBookings) summary.next = after;
   }
+
   if (summary.repaired > 0) {
     console.log(`[reminder-repair] checked ${summary.checked} booking(s), repaired ${summary.repaired} reminder job(s)`);
+  }
+  if (summary.next) {
+    console.warn(`[reminder-repair] stopped at the cap of ${maxBookings} booking(s); the next run resumes after ${summary.next.startTime.toISOString()}`);
   }
   if (consecutive >= REPAIR_MAX_CONSECUTIVE_FAILURES) {
     const reason = lastError instanceof Error ? lastError.message : String(lastError);

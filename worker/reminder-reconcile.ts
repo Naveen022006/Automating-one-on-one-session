@@ -1,4 +1,4 @@
-import { reconcileReminders } from "../lib/reminders";
+import { reconcileReminders, type RepairCursor } from "../lib/reminders";
 import { singleFlight } from "./monitoring";
 
 /**
@@ -16,7 +16,7 @@ export const RECONCILE_FIRST_RUN_MS = 60_000;
 
 export interface ReconcileOptions {
   /** One repair pass; injectable for tests. */
-  run?: (now: Date) => Promise<unknown>;
+  run?: (now: Date, after?: RepairCursor) => Promise<unknown>;
   firstRunMs?: number;
   everyMs?: number;
   /** Where a failed pass is reported (default: reportError through singleFlight). */
@@ -29,8 +29,14 @@ export function startReminderReconcile(opts: ReconcileOptions = {}): () => void 
     console.warn("[worker] reminder repair is off: REDIS_URL is not set");
     return () => {};
   }
-  const pass = opts.run ?? ((now: Date) => reconcileReminders(now));
-  const run = singleFlight(() => pass(new Date()), {
+  const pass = opts.run ?? ((now: Date, after?: RepairCursor) => reconcileReminders(now, {}, { after }));
+  // A pass that stopped at its cap hands over where it got to; the next pass resumes there, and the one after a
+  // complete pass starts from the soonest booking again.
+  let resumeAfter: RepairCursor | undefined;
+  const run = singleFlight(async () => {
+    const result = await pass(new Date(), resumeAfter);
+    resumeAfter = (result as { next?: RepairCursor | null } | undefined)?.next ?? undefined;
+  }, {
     name: "reminder-reconcile",
     onSkip: () => console.warn("[worker] reminder repair is still running; skipping this tick"),
     onError: opts.onError,
