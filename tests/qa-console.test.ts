@@ -434,5 +434,32 @@ test("C18/C8: the card reloads after a refused refresh, and a number that is not
   const refresh = src.slice(src.indexOf("async function refresh()"), src.indexOf("// The ways to connect"));
   assert.match(refresh, /if \(!r\.ok\) \{[\s\S]*router\.refresh\(\);[\s\S]*return;[\s\S]*\}/, "a failure also asks the page to reload its data");
   assert.doesNotMatch(src, /Required to message by WhatsApp/);
-  assert.match(src, /Not connected <Badge>Recommended<\/Badge>/, "the go-live checklist already calls it Recommended");
+  assert.match(src, /Not connected \{required \? <Badge tone="warning">Required<\/Badge> : <Badge>Recommended<\/Badge>\}/, "Recommended unless the go-live checklist requires it (N7)");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// N7: the WhatsApp card says what the go-live checklist says (READINESS_REQUIRED can include whatsapp).
+test("N7: the not-connected WhatsApp card says Required when the checklist requires it, Recommended otherwise", async () => {
+  mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
+  const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?n7=${Math.random()}`);
+  const card = (required?: boolean) => renderToStaticMarkup(createElement(WhatsAppConnect, { connection: null, embedded: null, ...(required === undefined ? {} : { required }) }));
+  const optional = card();
+  assert.match(optional, /Not connected <span class="pill">Recommended<\/span>/);
+  assert.match(optional, /Without it, they are sent by SMS\./);
+  assert.match(card(false), /Recommended/);
+  const mandatory = card(true);
+  assert.match(mandatory, /Not connected <span class="pill pill--warning">Required<\/span>/);
+  assert.doesNotMatch(mandatory, /Recommended|sent by SMS/);
+  assert.match(mandatory, /Your booking page cannot go live until it is connected\./);
+
+  // The flag comes from the same rule as the checklist and the public filter, and reaches the card on both screens.
+  const { requiredConnections } = await import("../lib/readiness");
+  assert.equal(requiredConnections({ NODE_ENV: "test", READINESS_REQUIRED: "google,whatsapp,payout" }).includes("whatsapp"), true);
+  assert.equal(requiredConnections({ NODE_ENV: "test" }).includes("whatsapp"), false, "not required by default");
+  assert.match(read("lib/views/dashboard-settings.ts"), /whatsappRequired: requiredConnections\(\)\.includes\("whatsapp"\)/);
+  assert.match(read("components/views/dashboard/SettingsView.tsx"), /required=\{data\.whatsappRequired\}/);
+  const wizard = read("components/app/OnboardingWizard.tsx");
+  assert.match(wizard, /const whatsappRequired = d\.checklist\.some\(\(c\) => c\.key === "whatsapp" && c\.required\);/);
+  assert.match(wizard, /<WhatsAppConnect connection=\{d\.whatsapp\} embedded=\{d\.embedded\} required=\{whatsappRequired\} \/>/);
+  mock.reset();
 });

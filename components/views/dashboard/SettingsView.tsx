@@ -25,7 +25,7 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
         <GoogleConnect status={data.google} returnTo="/dashboard/settings#google" outcome={outcome} />
       </Card>
       <Card title={<h2 className="card__title" id="whatsapp">WhatsApp</h2>}>
-        <WhatsAppConnect connection={data.whatsapp} embedded={data.embedded} />
+        <WhatsAppConnect connection={data.whatsapp} embedded={data.embedded} required={data.whatsappRequired} />
       </Card>
       <Card title="Notifications">
         <NotificationPrefs notifyByEmail={data.profile.notifyByEmail} />

@@ -72,7 +72,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * "Connect your WhatsApp number". Meta Embedded Signup when the platform is a configured Meta Tech Provider,
  * otherwise (or additionally) by entering the account ids and a permanent token.
  */
-export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null }) {
+export function WhatsAppConnect({
+  connection,
+  embedded,
+  required = false,
+}: {
+  connection: WhatsAppView | null;
+  embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null;
+  /** Whether the go-live checklist requires this connection (READINESS_REQUIRED includes whatsapp). The default is recommended-only. */
+  required?: boolean;
+}) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
@@ -437,11 +446,11 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
         </span>
         <div>
           <p style={{ fontWeight: 600 }}>
-            Not connected <Badge>Recommended</Badge>
+            Not connected {required ? <Badge tone="warning">Required</Badge> : <Badge>Recommended</Badge>}
           </p>
           <p className="subtle">
-            Connect your own WhatsApp Business number so confirmations and reminders reach customers from you. Without it, they
-            are sent by SMS.
+            Connect your own WhatsApp Business number so confirmations and reminders reach customers from you.{" "}
+            {required ? "Your booking page cannot go live until it is connected." : "Without it, they are sent by SMS."}
           </p>
         </div>
       </div>

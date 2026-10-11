@@ -58,6 +58,8 @@ function Wizard(d: OnboardingData) {
   }
 
   const canContinue = step === 1 ? d.services.some((s) => s.active) : step === 2 ? d.rules.length > 0 : true;
+  // The go-live checklist decides (READINESS_REQUIRED), so the step and the checklist at the end always agree.
+  const whatsappRequired = d.checklist.some((c) => c.key === "whatsapp" && c.required);
 
   async function finish() {
     setBusy(true);
@@ -115,9 +117,16 @@ function Wizard(d: OnboardingData) {
           )}
 
           {step === 4 && (
-            <Section title="Connect your WhatsApp number" lede="Customers get their link and reminders from your own number. Recommended, not required: without it they are messaged by SMS.">
+            <Section
+              title="Connect your WhatsApp number"
+              lede={
+                whatsappRequired
+                  ? "Customers get their link and reminders from your own number. Required: your booking page cannot go live until it is connected."
+                  : "Customers get their link and reminders from your own number. Recommended, not required: without it they are messaged by SMS."
+              }
+            >
               <Card>
-                <WhatsAppConnect connection={d.whatsapp} embedded={d.embedded} />
+                <WhatsAppConnect connection={d.whatsapp} embedded={d.embedded} required={whatsappRequired} />
               </Card>
             </Section>
           )}
