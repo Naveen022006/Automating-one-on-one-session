@@ -355,6 +355,19 @@ test("P2: `requested`, `declined` and `expired` carry only the names and the slu
   assert.deepEqual(d.body, { state: "declined", hostName: `Spa Host ${run}`, hostSlug });
   assertNoCustomer(d, declined);
 
+  // QA-6: a booking that WAS paid and was cancelled afterwards is not a declined request: "you have not been charged" would be wrong.
+  for (const payment of ["CAPTURED", "REFUNDED"] as const) {
+    const paidThenCancelled = await seed(svc.plain, { status: "CANCELLED", payment });
+    const c = await getPay(payToken(paidThenCancelled.booking.id));
+    assert.deepEqual(c.body, { state: "cancelled", hostName: `Spa Host ${run}`, hostSlug }, payment);
+    assertNoCustomer(c, paidThenCancelled);
+  }
+  // an unpaid attempt (payment still CREATED or FAILED) stays "declined"
+  for (const payment of ["CREATED", "FAILED"] as const) {
+    const unpaid = await seed(svc.plain, { status: "CANCELLED", payment });
+    assert.equal((await getPay(payToken(unpaid.booking.id))).body.state, "declined", payment);
+  }
+
   // Everything that is neither paid, requested, cancelled nor still inside its hold is `expired`.
   const past = new Date(Date.now() - 60_000);
   const future = new Date(Date.now() + HOUR);

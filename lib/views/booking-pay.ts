@@ -18,6 +18,8 @@ export type PayView =
   | { state: "booked"; serviceTitle: string; hostName: string; whenText: string; manageUrl: string | null }
   | { state: "requested"; hostName: string; serviceTitle: string }
   | { state: "declined"; hostName: string; hostSlug: string }
+  /** A booking that WAS paid and was cancelled afterwards (by the customer, from the manage link): not the same as a declined request. */
+  | { state: "cancelled"; hostName: string; hostSlug: string }
   | { state: "expired"; hostSlug: string }
   | {
       state: "payable";
@@ -38,7 +40,10 @@ export async function loadPayView(token: string): Promise<PayView> {
   if (!bookingId) return { state: "invalid" };
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } } },
+    include: {
+      payments: { select: { status: true } },
+      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } },
+    },
   });
   // A booking erased on request is as good as missing here too (as in the manage view): its customer asked to be forgotten, and
   // the "already booked" answer would mint a fresh 30-day manage link for it.
@@ -59,7 +64,12 @@ export async function loadPayView(token: string): Promise<PayView> {
     return { state: "booked", serviceTitle: service.title, hostName: host.name, whenText: when, manageUrl };
   }
   if (booking.status === "REQUESTED") return { state: "requested", hostName: host.name, serviceTitle: service.title };
-  if (booking.status === "CANCELLED") return { state: "declined", hostName: host.name, hostSlug: host.slug };
+  if (booking.status === "CANCELLED") {
+    // The host declined the request (nothing was ever charged), or a booking that WAS paid was cancelled afterwards, from the manage
+    // link, while this payment link was still valid. "You have not been charged" would be wrong for the second one.
+    const paid = booking.payments.some((p) => p.status === "CAPTURED" || p.status === "REFUNDED");
+    return { state: paid ? "cancelled" : "declined", hostName: host.name, hostSlug: host.slug };
+  }
   const payable = (booking.status === "HELD" || booking.status === "PENDING_PAYMENT") && booking.holdExpiresAt !== null && booking.holdExpiresAt > now;
   if (!payable) return { state: "expired", hostSlug: host.slug };
 

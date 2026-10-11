@@ -199,6 +199,8 @@ test("pay page: every state of the booking is a screen with the old page's words
     ],
     [{ state: "requested", hostName: "Demo Creator", serviceTitle: "Career Call" }, "Still waiting for approval", ["Demo Creator has not answered your request for Career Call yet."]],
     [{ state: "declined", hostName: "Demo Creator", hostSlug: "demo" }, "This request was not accepted", ["Demo Creator could not accept this request.", 'href="/demo/book"', "Choose another time"]],
+    // QA-6: paid, then cancelled: must NOT say "You have not been charged"
+    [{ state: "cancelled", hostName: "Demo Creator", hostSlug: "demo" }, "This booking was cancelled", ["cancelled after it was paid", "cancellation policy", 'href="/demo/book"', "Book another time"]],
     [{ state: "expired", hostSlug: "demo" }, "The time to pay has passed", ["The held time was released.", 'href="/demo/book"', "Request the session again"]],
   ];
   for (const [data, heading, texts] of states) {
