@@ -27,8 +27,8 @@ export const LIB_ALLOWLIST: readonly string[] = [
   "lib/spa/routes.ts",
   "lib/jsonify.ts",
   "lib/safe-next-path.ts",
-  // The WhatsApp connection panel (components/app/WhatsAppConnect.tsx) shows these; all three import nothing, and
-  // whatsapp-graph-version's process.env default parameters are tree-shaken (only DEFAULT_GRAPH_VERSION is used).
+  // The WhatsApp connection panel (components/app/WhatsAppConnect.tsx) shows these; all three import nothing and read no
+  // environment (the env-reading graphVersion/graphBase live in the server-only lib/whatsapp-graph-config.ts).
   "lib/message-templates.ts",
   "lib/whatsapp-copy.ts",
   "lib/whatsapp-graph-version.ts",

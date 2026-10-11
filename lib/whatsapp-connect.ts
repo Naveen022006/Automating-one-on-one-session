@@ -1,5 +1,5 @@
 import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, templateConflict, type TemplateSpec } from "@/lib/message-templates";
-import { graphBase, graphVersion } from "@/lib/whatsapp-graph-version";
+import { graphBase, graphVersion } from "@/lib/whatsapp-graph-config";
 
 /**
  * Meta Graph API calls for connecting an influencer's own WhatsApp Business number: checking credentials, reading and
