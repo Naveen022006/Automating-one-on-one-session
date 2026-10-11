@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { daysWithSlots, loadBookableService, openSlots } from "@/lib/availability";
+import { isEntityId } from "@/lib/http";
 import { dayBoundsUtc, isValidTimezone } from "@/lib/slots";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export async function GET(req: Request) {
   const from = params.get("from");
   const to = params.get("to");
   const DAY = /^\d{4}-\d{2}-\d{2}$/;
-  if (!serviceId || !from || !to || !DAY.test(from) || !DAY.test(to)) {
+  if (!isEntityId(serviceId) || !from || !to || !DAY.test(from) || !DAY.test(to)) {
     return NextResponse.json({ error: "serviceId, from and to (YYYY-MM-DD) are required" }, { status: 400 });
   }
   const viewer = await getAuth().catch(() => null);

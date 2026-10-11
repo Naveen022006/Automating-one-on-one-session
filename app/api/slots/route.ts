@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { loadBookableService, openSlots } from "@/lib/availability";
+import { isEntityId } from "@/lib/http";
 import { dayBoundsUtc, isValidTimezone } from "@/lib/slots";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,8 @@ export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const serviceId = params.get("serviceId");
   const date = params.get("date");
-  if (!serviceId || !date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isEntityId(serviceId) || !date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    // serviceId must look like an id before it reaches a query (a `%00` in it is refused by Postgres: a 500).
     return NextResponse.json({ error: "serviceId and date (YYYY-MM-DD) are required" }, { status: 400 });
   }
 

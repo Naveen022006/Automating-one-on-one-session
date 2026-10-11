@@ -31,7 +31,13 @@ export function Component() {
     <>
       <meta name="referrer" content="no-referrer" />
       <PageTitle title="Manage your booking" />
-      {refused ? <ManageView data={refused} /> : <QueryGate query={query}>{(data) => <ManageView data={data} />}</QueryGate>}
+      {refused ? (
+        <ManageView data={refused} />
+      ) : (
+        <QueryGate query={query} framed>
+          {(data) => <ManageView data={data} />}
+        </QueryGate>
+      )}
     </>
   );
 }

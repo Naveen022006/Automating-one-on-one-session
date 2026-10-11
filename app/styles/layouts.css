@@ -246,6 +246,11 @@
 .feature--flip > :first-child {
   order: 2;
 }
+/* A grid item is never narrower than its content's min-content width, so the table inside the dashboard mock (.frame) made the
+   single column (<= 900px) wider than a 375px screen and the landing page scrolled sideways. */
+.feature > * {
+  min-width: 0;
+}
 .feature h3 {
   font-family: var(--font-serif);
   font-weight: 500;

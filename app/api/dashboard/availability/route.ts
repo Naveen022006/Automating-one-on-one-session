@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { z } from "zod";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const influencerId = auth.influencerId;
-  const parsed = createSchema.safeParse(await req.json().catch(() => null));
+  const parsed = createSchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
@@ -70,7 +71,7 @@ export async function PATCH(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const influencerId = auth.influencerId;
-  const parsed = updateSchema.safeParse(await req.json().catch(() => null));
+  const parsed = updateSchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }
@@ -98,7 +99,7 @@ export async function DELETE(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const influencerId = auth.influencerId;
-  const parsed = deleteSchema.safeParse(await req.json().catch(() => null));
+  const parsed = deleteSchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }

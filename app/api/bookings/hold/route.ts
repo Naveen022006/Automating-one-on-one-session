@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ID_PATTERN, readJson } from "@/lib/http";
 import { z } from "zod";
 import { notifyRequestCreated } from "@/lib/booking-approval";
 import { windowProblem } from "@/lib/booking-window";
@@ -18,7 +19,7 @@ import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
 import { blockedDaySet, isSlotStart, isValidTimezone } from "@/lib/slots";
 
 const bodySchema = z.object({
-  serviceId: z.string().min(1),
+  serviceId: z.string().regex(ID_PATTERN),
   startTime: z.iso.datetime(),
   name: z.string().trim().min(1).max(100),
   email: z.email().max(200),
@@ -38,7 +39,7 @@ function safePollToken(bookingId: string): string | null {
 }
 
 export async function POST(req: Request) {
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+  const parsed = bodySchema.safeParse(await readJson(req));
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", details: z.flattenError(parsed.error) }, { status: 400 });
   }

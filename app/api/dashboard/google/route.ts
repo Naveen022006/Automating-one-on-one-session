@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { readJson } from "@/lib/http";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { revokeToken } from "@/lib/google";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
@@ -17,7 +18,7 @@ export async function DELETE(req: Request) {
   // Disconnecting strands the Calendar events that already exist on this Google account, just like switching does, so
   // with upcoming bookings that have events it needs the explicit `{ "confirm": true }` the dialog sends. The server
   // asks for it itself; the dialog is only the explanation.
-  const body = (await req.json().catch(() => null)) as { confirm?: unknown } | null;
+  const body = (await readJson(req)) as { confirm?: unknown } | null;
   const liveEvents = await countLiveCalendarEvents(auth.influencerId);
   if (switchNeedsConfirmation({ liveEvents, confirmed: body?.confirm === true })) {
     return NextResponse.json(
