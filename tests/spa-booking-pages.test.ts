@@ -140,10 +140,16 @@ test("profile page: loading keeps the server's title, 404 is the not-found scree
   // QA-1: the loading state sits in the public frame (brand header, one `main#main` for the skip link and the focus move),
   // not bare in the corner of the window.
   assert.ok(pending.includes('class="site-header"') && count(pending, '<main id="main"') === 1 && pending.includes("container--narrow"));
+  // M1: that frame's `main` is a PLACEHOLDER: FocusOnNavigate skips it (web/src/lib/focus-main.ts), because the real page replaces it and
+  // a focused placeholder would drop the focus to <body>. The real page and the 404 screen are not placeholders.
+  assert.match(pending, /<main id="main"[^>]*data-placeholder=""/);
+  const loaded = await render(pages.profile, "/:slug", "/demo", key, { data: profile() });
+  assert.ok(!loaded.includes("data-placeholder"), "the real page's main can be focused");
 
   const notFound = await render(pages.profile, "/:slug", "/demo", key, { error: { status: 404, body: { error: "Not found" } } });
   assert.ok(notFound.includes("<title>Not found · Session Automation</title>"));
   assert.ok(notFound.includes("This page does not exist") && count(notFound, '<main id="main"') === 1);
+  assert.ok(!notFound.includes("data-placeholder"), "the 404 screen is a real page: it takes the focus");
 
   const failed = await render(pages.profile, "/:slug", "/demo", key, { error: { status: 500 } });
   assert.ok(failed.includes("Something went wrong") && failed.includes("Try again"));
@@ -199,18 +205,25 @@ test("pay page: every state of the booking is a screen with the old page's words
     ],
     [{ state: "requested", hostName: "Demo Creator", serviceTitle: "Career Call" }, "Still waiting for approval", ["Demo Creator has not answered your request for Career Call yet."]],
     [{ state: "declined", hostName: "Demo Creator", hostSlug: "demo" }, "This request was not accepted", ["Demo Creator could not accept this request.", 'href="/demo/book"', "Choose another time"]],
-    // QA-6: paid, then cancelled: must NOT say "You have not been charged"
-    [{ state: "cancelled", hostName: "Demo Creator", hostSlug: "demo" }, "This booking was cancelled", ["cancelled after it was paid", "cancellation policy", 'href="/demo/book"', "Book another time"]],
+    // QA-6 / M2: money behind the booking: never "You have not been charged", never "request the session again", never a pay button
+    [{ state: "cancelled", hostName: "Demo Creator", hostSlug: "demo", refund: "on-its-way" }, "This booking was cancelled", ["A refund is on its way to your original payment method.", 'href="/demo/book"', "Book another time"]],
+    [{ state: "cancelled", hostName: "Demo Creator", hostSlug: "demo", refund: "issued" }, "This booking was cancelled", ["your payment has been refunded to your original payment method"]],
+    [{ state: "cancelled", hostName: "Demo Creator", hostSlug: "demo", refund: "none" }, "This booking was cancelled", ["Under its cancellation policy no refund is due"]],
+    [{ state: "not-completed" }, "Payment received, but your booking could not be completed", ["you will be refunded. Please do not pay again."]],
     [{ state: "expired", hostSlug: "demo" }, "The time to pay has passed", ["The held time was released.", 'href="/demo/book"', "Request the session again"]],
   ];
   for (const [data, heading, texts] of states) {
     const html = await payPage("tok", { data });
     assert.ok(html.includes(PAY_TITLE), data.state);
     assert.equal(count(html, '<main id="main"'), 1, data.state);
+    assert.ok(!html.includes("data-placeholder"), `${data.state}: a real state takes the focus`);
     assert.equal(count(html, "<h1"), 1, data.state);
     assert.ok(html.includes(`${heading}</h1>`), `${data.state}: ${heading}`);
     for (const t of texts) assert.ok(html.includes(t), `${data.state}: ${t}`);
     assert.equal(propsOf(html, "PayNow"), null, `${data.state}: no payment button`);
+    if (data.state === "cancelled" || data.state === "not-completed") {
+      for (const wrong of ["not been charged", "Request the session again", "time to pay has passed", "not accepted"]) assert.ok(!html.includes(wrong), `${data.state}: must not say "${wrong}"`);
+    }
   }
   const noLink = await payPage("tok", { data: { state: "booked", serviceTitle: "Career Call", hostName: "Demo Creator", whenText: "Mon", manageUrl: null } });
   assert.ok(noLink.includes("Career Call with Demo Creator, Mon.") && !noLink.includes("Manage your booking"), "no link when none could be built");
@@ -251,7 +264,7 @@ test("pay page: loading and failures keep the page title; a token with special c
   const failed = await payPage("tok", { error: { status: 500 } });
   assert.ok(failed.includes(PAY_TITLE) && failed.includes("Something went wrong") && failed.includes("Try again"));
   // QA-1: both states are drawn inside the public frame (header and one `main#main`), not bare in the corner of the window.
-  for (const html of [pending, failed]) assert.ok(html.includes('class="site-header"') && count(html, '<main id="main"') === 1);
+  for (const html of [pending, failed]) assert.ok(html.includes('class="site-header"') && count(html, '<main id="main"') === 1 && html.includes("data-placeholder"));
   // `%2E` in the URL is `.` for the page: the query key (and so the request) is built from the decoded token.
   const token = "abc.def-ghi_jkl";
   const router = rr.createMemoryRouter([{ path: "/pay/:token", Component: pages.pay }], { initialEntries: ["/pay/abc%2Edef-ghi_jkl"] });

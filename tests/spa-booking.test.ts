@@ -83,6 +83,9 @@ interface SeedOptions {
   sessionMeetLink?: string | null;
   refundPolicy?: RefundPolicy | null;
   payment?: PaymentStatus;
+  /** The payment is flagged for a refund (a late capture, or a cancellation the policy refunds). */
+  needsRefund?: boolean;
+  refundedMinor?: number;
   customerName?: string;
   /** Attach to an existing session (group sessions) instead of creating one. */
   sessionId?: string;
@@ -111,7 +114,17 @@ async function seed(serviceId: string, o: SeedOptions) {
     },
   });
   if (o.payment) {
-    await prisma.payment.create({ data: { bookingId: booking.id, providerOrderId: `order_spa_${run}_${n}`, amountMinor: 49900, currency: "INR", status: o.payment } });
+    await prisma.payment.create({
+      data: {
+        bookingId: booking.id,
+        providerOrderId: `order_spa_${run}_${n}`,
+        amountMinor: 49900,
+        currency: "INR",
+        status: o.payment,
+        needsRefund: o.needsRefund ?? false,
+        refundAmountMinor: o.refundedMinor ?? null,
+      },
+    });
   }
   return { booking, session, start: session.startTime, customerEmail: booking.customerEmail, customerName: booking.customerName, whatsapp: booking.whatsappE164 };
 }
@@ -355,18 +368,46 @@ test("P2: `requested`, `declined` and `expired` carry only the names and the slu
   assert.deepEqual(d.body, { state: "declined", hostName: `Spa Host ${run}`, hostSlug });
   assertNoCustomer(d, declined);
 
-  // QA-6: a booking that WAS paid and was cancelled afterwards is not a declined request: "you have not been charged" would be wrong.
-  for (const payment of ["CAPTURED", "REFUNDED"] as const) {
-    const paidThenCancelled = await seed(svc.plain, { status: "CANCELLED", payment });
-    const c = await getPay(payToken(paidThenCancelled.booking.id));
-    assert.deepEqual(c.body, { state: "cancelled", hostName: `Spa Host ${run}`, hostSlug }, payment);
-    assertNoCustomer(c, paidThenCancelled);
+  // QA-6 / M2: a booking with money behind it is never "declined, you have not been charged", and never "expired, request again".
+  const cancelledCases: Array<[string, SeedOptions, "issued" | "on-its-way" | "none"]> = [
+    // a payment that arrived after the booking was cancelled: flagged for a full refund
+    ["CANCELLED + late capture (flagged)", { status: "CANCELLED", payment: "CAPTURED", needsRefund: true }, "on-its-way"],
+    // the customer cancelled from the manage link and the policy refunds: flagged, or already partly refunded
+    ["CANCELLED + refund pending (partial)", { status: "CANCELLED", payment: "CAPTURED", refundedMinor: 10000 }, "on-its-way"],
+    ["CANCELLED + refunded", { status: "CANCELLED", payment: "REFUNDED" }, "issued"],
+    // the policy gives no refund: neither flagged nor refunded
+    ["CANCELLED + captured, policy refunds nothing", { status: "CANCELLED", payment: "CAPTURED" }, "none"],
+  ];
+  for (const [label, options, refund] of cancelledCases) {
+    const b = await seed(svc.plain, options);
+    const c = await getPay(payToken(b.booking.id));
+    assert.deepEqual(c.body, { state: "cancelled", hostName: `Spa Host ${run}`, hostSlug, refund }, label);
+    assertNoCustomer(c, b);
   }
   // an unpaid attempt (payment still CREATED or FAILED) stays "declined"
   for (const payment of ["CREATED", "FAILED"] as const) {
     const unpaid = await seed(svc.plain, { status: "CANCELLED", payment });
     assert.equal((await getPay(payToken(unpaid.booking.id))).body.state, "declined", payment);
   }
+  // M2: money taken, booking FAILED (amount mismatch, paid after the hold ended and the slot was taken, paid after the session started,
+  // calendar rejected the event): own state, no ids, no pay button data, never "expired".
+  for (const [label, options] of [
+    ["FAILED + captured and flagged (refuseAndFail)", { status: "FAILED", payment: "CAPTURED", needsRefund: true }],
+    ["FAILED + captured, not flagged (calendar rejection of a PAID booking)", { status: "FAILED", payment: "CAPTURED" }],
+    ["FAILED + refunded", { status: "FAILED", payment: "REFUNDED" }],
+    ["FAILED + captured, hold time still in the future", { status: "FAILED", payment: "CAPTURED", needsRefund: true, holdExpiresAt: new Date(Date.now() + HOUR) }],
+  ] as Array<[string, SeedOptions]>) {
+    const b = await seed(svc.plain, options);
+    const out = await getPay(payToken(b.booking.id));
+    assert.deepEqual(out.body, { state: "not-completed" }, label);
+    assertNoCustomer(out, b);
+  }
+  // ... and the same booking without a captured payment is still just `expired`
+  const failedUnpaid = await seed(svc.plain, { status: "FAILED", payment: "CREATED" });
+  assert.deepEqual((await getPay(payToken(failedUnpaid.booking.id))).body, { state: "expired", hostSlug });
+  // A booking that is paid is `booked`, whatever else is true of its payment row.
+  const paidAndFlagged = await seed(svc.plain, { status: "PAID", payment: "CAPTURED", needsRefund: true });
+  assert.equal((await getPay(payToken(paidAndFlagged.booking.id))).body.state, "booked");
 
   // Everything that is neither paid, requested, cancelled nor still inside its hold is `expired`.
   const past = new Date(Date.now() - 60_000);
