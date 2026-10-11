@@ -293,6 +293,7 @@ test("manage page: an ok answer renders the booking component with the whole boo
     canReschedule: true,
     refundPolicyText: "Cancel any time before the session for a full refund.",
     cancelRefundText: "If you cancel now, you will be refunded in full to your original payment method.",
+    receipt: null,
   };
   const ok: ManageView = { state: "ok", booking };
   const html = await managePage({ data: ok });
@@ -347,6 +348,7 @@ test("manage page: sets the no-referrer policy itself in every state, so a soft 
       canReschedule: true,
       refundPolicyText: "Cancel any time before the session for a full refund.",
       cancelRefundText: null,
+      receipt: null,
     },
   };
   const states: Array<[string, Held]> = [

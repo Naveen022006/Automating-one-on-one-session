@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { describeRefundPolicy, refundDecision } from "@/lib/refund-policy";
+import { buildReceipt, type ReceiptView } from "@/lib/receipts";
 import { verifySelfServiceToken } from "@/lib/self-service";
 
 /** What the manage page's client component (web/src/pages/booking/ManageBooking.tsx) shows and acts on. */
@@ -21,6 +22,8 @@ export interface ManageBookingData {
   canReschedule: boolean;
   refundPolicyText: string;
   cancelRefundText: string | null;
+  /** The printable receipt, once the booking has a captured payment (also after a refund); null for a booking that was never paid. */
+  receipt: ReceiptView | null;
 }
 
 /**
@@ -36,7 +39,7 @@ export async function loadManageView(token: string): Promise<ManageView> {
   if (!bookingId) return { state: "expired" };
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: { select: { name: true } } } } } }, payments: { where: { status: "CAPTURED" } } },
+    include: { session: { include: { service: { include: { influencer: { select: { name: true } } } } } }, payments: { where: { status: { in: ["CAPTURED", "REFUNDED"] } } } },
   });
   if (!booking || booking.redactedAt) return { state: "not-found" };
 
@@ -62,12 +65,13 @@ export async function loadManageView(token: string): Promise<ManageView> {
       canReschedule: service.type !== "GROUP" && !(policy === "NOTICE_24H" && msToStart < 24 * 3_600_000),
       refundPolicyText: describeRefundPolicy(policy),
       cancelRefundText:
-        booking.payments.length === 0
+        !booking.payments.some((p) => p.status === "CAPTURED")
           ? null
           : decision.refund
             ? "If you cancel now, you will be refunded in full to your original payment method."
             : "If you cancel now, no refund is due under this session's policy.",
       bookingId: booking.id,
+      receipt: buildReceipt({ id: booking.id, customerName: booking.customerName, session }, booking.payments),
     },
   };
 }
