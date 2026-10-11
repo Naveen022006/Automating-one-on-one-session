@@ -501,7 +501,11 @@ const ids: Record<string, string> = {};
 interface MakeOptions {
   status?: string;
   redactedAt?: Date;
-  createdAt?: Date;
+  /** Both createdAt and updatedAt are set this long ago (a booking armed long before the test). Default: now. */
+  armedAgoMs?: number;
+  /** createdAt only, when it should be older than updatedAt (a request that waited for approval). */
+  createdAgoMs?: number;
+  decidedAt?: Date;
   service?: 0 | 1;
   startAt?: Date;
 }
@@ -521,7 +525,10 @@ async function makeBooking(key: string, startsInMs: number, data: MakeOptions = 
       whatsappE164: "+910000000000",
       whatsappOptIn: true,
       redactedAt: data.redactedAt,
-      createdAt: data.createdAt,
+      decidedAt: data.decidedAt,
+      ...(data.armedAgoMs !== undefined
+        ? { createdAt: new Date(Date.now() - (data.createdAgoMs ?? data.armedAgoMs)), updatedAt: new Date(Date.now() - data.armedAgoMs) }
+        : {}),
     },
   });
   ids[key] = created.id;
@@ -607,7 +614,7 @@ test("DB: only a delivered reminder blocks the repair; a failed or re-armed (pen
 });
 
 test("DB: a booking whose reminders were both delivered is left out of the scan in SQL", { skip }, async () => {
-  const { id } = await makeBooking("done", 20 * HOUR, { createdAt: new Date(Date.now() - 3 * 86_400_000) });
+  const { id } = await makeBooking("done", 20 * HOUR, { armedAgoMs: 3 * 86_400_000 });
   await prisma.message.create({ data: { bookingId: id, channel: "WHATSAPP", template: "reminder-24h", status: "DELIVERED" } });
   assert.equal((await repair([id])).summary.checked, 1, "one delivered: still read");
   await prisma.message.create({ data: { bookingId: id, channel: "WHATSAPP", template: "reminder-15m", status: "READ" } });
@@ -618,7 +625,7 @@ test("DB: a booking whose reminders were both delivered is left out of the scan 
 
 test("DB: a booking made 20 h before the start never gets the 24h reminder; one made days ahead does (E1)", { skip }, async () => {
   const fresh = await makeBooking("fresh20", 20 * HOUR); // created now
-  const old = await makeBooking("old20", 20 * HOUR + MIN, { createdAt: new Date(Date.now() - 3 * 86_400_000) });
+  const old = await makeBooking("old20", 20 * HOUR + MIN, { armedAgoMs: 3 * 86_400_000 });
   const freshJobs = [...(await repair([fresh.id])).jobs.keys()];
   assert.deepEqual(freshJobs, [reminderJobId("15m", fresh.id)]);
   const oldJobs = [...(await repair([old.id])).jobs.keys()].sort();
@@ -627,18 +634,90 @@ test("DB: a booking made 20 h before the start never gets the 24h reminder; one 
 
 test("DB: a booking confirmed 10 minutes before the start gets no 'starts in 15 minutes' afterwards (E1)", { skip }, async () => {
   const lastMinute = await makeBooking("lastmin", 10 * MIN); // created now, starts in 10 min
-  const lost = await makeBooking("lostjob", 10 * MIN + 1_000, { createdAt: new Date(Date.now() - 2 * HOUR) });
+  const lost = await makeBooking("lostjob", 10 * MIN + 1_000, { armedAgoMs: 2 * HOUR });
   assert.deepEqual([...(await repair([lastMinute.id])).jobs.keys()], []);
   assert.deepEqual([...(await repair([lost.id])).jobs.keys()], [reminderJobId("15m", lost.id)]);
 });
 
 test("DB: a reschedule re-arms the reminders, so a 24h that fell before the reschedule is not 'lost' (E1/E5)", { skip }, async () => {
-  const plain = await makeBooking("plain", 14 * HOUR, { createdAt: new Date(Date.now() - 5 * 86_400_000) });
-  const moved = await makeBooking("moved", 14 * HOUR + MIN, { createdAt: new Date(Date.now() - 5 * 86_400_000) });
-  // The reschedule notice row is written at the moment of the reschedule.
-  await prisma.message.create({ data: { bookingId: moved.id, channel: "WHATSAPP", template: "reschedule", status: "SENT" } });
+  const plain = await makeBooking("plain", 14 * HOUR, { armedAgoMs: 5 * 86_400_000 });
+  const moved = await makeBooking("moved", 14 * HOUR + MIN, { armedAgoMs: 5 * 86_400_000 });
+  // lib/manage.ts stamps the booking row at the moment of the reschedule (nothing else about the booking changes).
+  await prisma.booking.update({ where: { id: moved.id }, data: { updatedAt: new Date() } });
   assert.deepEqual([...(await repair([plain.id])).jobs.keys()].sort(), [reminderJobId("15m", plain.id), reminderJobId("24h", plain.id)].sort());
   assert.deepEqual([...(await repair([moved.id])).jobs.keys()], [reminderJobId("15m", moved.id)]);
+});
+
+test("DB: armedAt does not move when delivery callbacks touch Message rows (R1)", { skip }, async () => {
+  // Armed 5 days ago, 14 h to go: both reminders are wanted. A reschedule-notice row that a late WhatsApp callback has
+  // just updated (and a reminder row too) must not turn the 24h reminder into "skipped on purpose".
+  const { id } = await makeBooking("stable", 14 * HOUR, { armedAgoMs: 5 * 86_400_000 });
+  const notice = await prisma.message.create({
+    data: { bookingId: id, channel: "WHATSAPP", template: "reschedule", status: "SENT", providerMessageId: `wamid.stable.${run}` },
+  });
+  await prisma.message.update({ where: { id: notice.id }, data: { status: "READ" } }); // a callback: updatedAt moves to now
+  assert.deepEqual(
+    [...(await repair([id])).jobs.keys()].sort(),
+    [reminderJobId("15m", id), reminderJobId("24h", id)].sort(),
+  );
+});
+
+test("DB: an approval request approved 18 h before the start gets no 24h reminder, a booking confirmed days ahead does (R2)", { skip }, async () => {
+  const startsIn = 17 * HOUR;
+  // Requested 5 days ago, approved (and paid, meeting created) one hour ago: the 24h fire time (7 h ago) is long before that.
+  const approved = await makeBooking("approved", startsIn, {
+    armedAgoMs: HOUR,
+    createdAgoMs: 5 * 86_400_000,
+    decidedAt: new Date(Date.now() - HOUR),
+  });
+  // Same shape, but the row was only ever touched at creation, 5 days ago.
+  const early = await makeBooking("early", startsIn + MIN, { armedAgoMs: 5 * 86_400_000 });
+  assert.deepEqual([...(await repair([approved.id])).jobs.keys()], [reminderJobId("15m", approved.id)]);
+  assert.deepEqual(
+    [...(await repair([early.id])).jobs.keys()].sort(),
+    [reminderJobId("15m", early.id), reminderJobId("24h", early.id)].sort(),
+  );
+  // decidedAt alone is also a lower bound, even if updatedAt were older.
+  const decidedOnly = await makeBooking("decided", startsIn + 2 * MIN, { armedAgoMs: 5 * 86_400_000, decidedAt: new Date(Date.now() - HOUR) });
+  assert.deepEqual([...(await repair([decidedOnly.id])).jobs.keys()], [reminderJobId("15m", decidedOnly.id)]);
+});
+
+test("DB: a late delivery callback for the OLD reminder cannot make the re-armed one look sent (R1)", { skip }, async () => {
+  const { rearmMessage, applyWhatsAppStatusUpdate } = await import("../lib/messaging");
+  const { id } = await makeBooking("late", 5 * HOUR, { armedAgoMs: 2 * 86_400_000 });
+  const row = () =>
+    prisma.message.findUniqueOrThrow({ where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "reminder-15m" } } });
+  const oldId = `wamid.old.${run}`;
+  const newId = `wamid.new.${run}`;
+  await prisma.message.create({
+    data: { bookingId: id, channel: "WHATSAPP", template: "reminder-15m", status: "SENT", providerMessageId: oldId, sentAt: new Date() },
+  });
+
+  // The session is rescheduled: the sent reminder is re-armed, losing its provider id and send time.
+  await rearmMessage(id, "reminder-15m");
+  const rearmed = await row();
+  assert.equal(rearmed.status, "PENDING");
+  assert.equal(rearmed.providerMessageId, null);
+  assert.equal(rearmed.sentAt, null);
+
+  // Hours later WhatsApp reports the old message as delivered and read: nothing may change.
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: oldId, status: "DELIVERED" }), 0);
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: oldId, status: "READ" }), 0);
+  assert.equal((await row()).status, "PENDING");
+  assert.deepEqual([...(await repair([id])).jobs.keys()], [reminderJobId("15m", id)], "the repair still wants the new reminder");
+
+  // The new reminder goes out; only callbacks for ITS id apply, and only forward.
+  await prisma.message.update({
+    where: { bookingId_channel_template: { bookingId: id, channel: "WHATSAPP", template: "reminder-15m" } },
+    data: { status: "SENT", providerMessageId: newId, sentAt: new Date() },
+  });
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: oldId, status: "READ" }), 0);
+  assert.equal((await row()).status, "SENT");
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: newId, status: "DELIVERED" }), 1);
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: newId, status: "READ" }), 1);
+  assert.equal(await applyWhatsAppStatusUpdate({ providerMessageId: newId, status: "DELIVERED" }), 0, "READ is never pulled back");
+  assert.equal((await row()).status, "READ");
+  assert.deepEqual([...(await repair([id])).jobs.keys()], [], "now it really is delivered");
 });
 
 test("DB: the keyset scan reads every booking once, including two sessions that start at the same instant (E4)", { skip }, async () => {

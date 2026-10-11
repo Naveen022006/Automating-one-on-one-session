@@ -1,7 +1,6 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
-import { RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
 import { sendMessageForBooking } from "@/lib/messaging";
 import { REMINDER_OFFSETS_MS, ensureReminder, type EnsureReminderOutcome, type ReminderKind } from "@/lib/queue";
 
@@ -141,7 +140,8 @@ export interface RepairBooking {
   status: string;
   startTime: Date;
   /**
-   * When this booking's reminders were last scheduled: its creation, or the last reschedule if later. enqueueReminders
+   * When this booking's reminders were last scheduled: when it became SCHEDULED (meeting created, after payment or an
+   * approval) or was last rescheduled, never earlier than its creation or decision. enqueueReminders
    * deliberately skips a reminder whose fire time had already passed at that moment (a booking made 20 h before the
    * start never gets a "tomorrow" reminder), so a missing job for such a reminder is not a lost one.
    */
@@ -254,16 +254,20 @@ const defaultReconcileDeps: ReconcileDeps = {
         id: true,
         status: true,
         createdAt: true,
+        decidedAt: true,
+        updatedAt: true,
         session: { select: { startTime: true } },
-        // A reschedule re-arms the reminders for the new time; its notice row is the only trace of when that happened.
-        messages: { where: { template: RESCHEDULE_TEMPLATE }, select: { updatedAt: true } },
       },
     });
+    // Reminders are first queued when the meeting is created, which is the write that makes the booking SCHEDULED
+    // (bumping updatedAt), and are queued again by a reschedule (lib/manage.ts stamps updatedAt for that). So updatedAt
+    // is the arming time; createdAt and decidedAt are lower bounds. Only the booking row is used: Message rows are
+    // touched by delivery callbacks, so they make an unstable clock.
     return rows.map((r) => ({
       id: r.id,
       status: r.status,
       startTime: r.session.startTime,
-      armedAt: new Date(Math.max(r.createdAt.getTime(), ...r.messages.map((m) => m.updatedAt.getTime()))),
+      armedAt: new Date(Math.max(r.createdAt.getTime(), r.decidedAt?.getTime() ?? 0, r.updatedAt.getTime())),
     }));
   },
   findSent: (bookingIds) =>
