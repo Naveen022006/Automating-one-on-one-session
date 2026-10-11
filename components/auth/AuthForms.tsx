@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconAlertCircle, IconCheckCircle } from "@/components/icons";
+import { focusFirstInvalid } from "@/components/ui/focus";
 import { Alert, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 
 type Errors = Record<string, string | undefined>;
@@ -34,9 +35,9 @@ function useFocusFirstInvalid() {
   const formRef = useRef<HTMLFormElement>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (tick > 0) formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    if (tick > 0) focusFirstInvalid(formRef.current);
   }, [tick]);
-  return { formRef, focusFirstInvalid: () => setTick((n) => n + 1) };
+  return { formRef, focusOnError: () => setTick((n) => n + 1) };
 }
 
 export function LoginForm({ next, notice }: { next?: string; notice?: string }) {
@@ -111,7 +112,7 @@ export function RegisterForm() {
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const origin = typeof window !== "undefined" ? window.location.host : "";
-  const { formRef, focusFirstInvalid } = useFocusFirstInvalid();
+  const { formRef, focusOnError } = useFocusFirstInvalid();
 
   useEffect(() => {
     if (!slugTouched) setSlug(suggest(name));
@@ -138,7 +139,7 @@ export function RegisterForm() {
     if (!terms) local.acceptTerms = "Please accept the Terms and Privacy Policy.";
     if (slugStatus && !slugStatus.available) local.slug = slugStatus.problem ?? "Choose another address.";
     setErrors(local);
-    if (Object.keys(local).length) return focusFirstInvalid();
+    if (Object.keys(local).length) return focusOnError();
     setBusy(true);
     setFormError(null);
     const r = await post("/api/auth/register", { name, email, password, slug, timezone, acceptTerms: terms });
@@ -146,7 +147,7 @@ export function RegisterForm() {
       setBusy(false);
       const fe = fieldErrors(r.data);
       setErrors(fe);
-      if (Object.keys(fe).length) focusFirstInvalid();
+      if (Object.keys(fe).length) focusOnError();
       else setFormError(r.data.error ?? "Could not create your account.");
       return;
     }

@@ -4,6 +4,7 @@ import { Wordmark } from "@/components/site/SiteChrome";
 import { NotFoundView } from "@/components/views/system/NotFoundView";
 import { Alert, Button, Skeleton } from "@/components/ui/primitives";
 import type { ApiError } from "./api";
+import { PLACEHOLDER_ATTR } from "./focus-main";
 
 /**
  * Loading, error and not-found states of a page that reads data (doc/10-react-migration-plan.md, section 2.7), so every
@@ -51,8 +52,10 @@ export function PageError({ error, onRetry }: { error: ApiError | Error; onRetry
 /**
  * A public page's frame (brand header and the `main` landmark) around a state that has no page of its own yet: what a customer
  * sees while a profile or a booking is loading, or when loading it failed. Without it the skeleton and the error alert sit bare in
- * the top-left corner of the window (no margins, no header, and no `#main` for the skip link and for the focus move after a
- * navigation to land on).
+ * the top-left corner of the window (no margins, no header, and no `#main` for the skip link to land on).
+ *
+ * Its `main` is a PLACEHOLDER (`data-placeholder`): the real page replaces it when the data arrives, so FocusOnNavigate must not
+ * focus it (the focused element would disappear and the focus fall to <body>); it keeps watching for the real `main` instead.
  */
 export function PublicPageFrame({ children }: { children: ReactNode }) {
   return (
@@ -62,7 +65,7 @@ export function PublicPageFrame({ children }: { children: ReactNode }) {
           <Wordmark />
         </div>
       </header>
-      <main id="main" className="container container--narrow">
+      <main id="main" className="container container--narrow" {...{ [PLACEHOLDER_ATTR]: "" }}>
         {children}
       </main>
     </>

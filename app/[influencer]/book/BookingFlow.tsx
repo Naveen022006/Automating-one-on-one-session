@@ -24,6 +24,7 @@ import {
   ymd,
   type SlotOption,
 } from "@/components/ui/scheduling";
+import { focusFirstInvalid, headingToFocus } from "@/components/ui/focus";
 import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@/components/ui/primitives";
 import type { IntakeQuestion } from "@/lib/intake";
 
@@ -188,15 +189,13 @@ export function BookingFlow({
   }, [service, date, tz]);
 
   // After a step change, move focus to the new step's heading: the button that was pressed is gone, and without this the keyboard
-  // focus falls back to the top of the document (and a screen reader reads nothing about the new step). Not on the first render.
-  const stepHeadingId = ["pick-service", "pick-time", "your-details", "pay-title", requested ? "requested-title" : "done-title"][step];
-  const stepMounted = useRef(false);
+  // focus falls back to the top of the document (and a screen reader reads nothing about the new step). Only when the step really
+  // changed since the last one seen (components/ui/focus.ts): never on the page load, also not in StrictMode's second effect pass.
+  const lastStep = useRef(step);
   useEffect(() => {
-    if (!stepMounted.current) {
-      stepMounted.current = true;
-      return;
-    }
-    document.getElementById(stepHeadingId)?.focus();
+    const id = headingToFocus(lastStep.current, step, requested !== null);
+    lastStep.current = step;
+    if (id) document.getElementById(id)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change of step moves focus
   }, [step]);
 
@@ -204,7 +203,7 @@ export function BookingFlow({
   const detailsForm = useRef<HTMLFormElement>(null);
   const [focusErrors, setFocusErrors] = useState(0);
   useEffect(() => {
-    if (focusErrors > 0) detailsForm.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    if (focusErrors > 0) focusFirstInvalid(detailsForm.current);
   }, [focusErrors]);
 
   // Hold countdown.
