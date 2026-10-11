@@ -537,6 +537,30 @@ test("C7: a page that still shows data after a failed refetch says so, offers Re
   assert.match(REFRESH_FAILED_TEXT, /^Couldn't refresh\./);
   assert.match(REFRESH_RETRYING_TEXT, /Refreshing/);
 
+  // The real query library, not a stand-in: after data, a failing refetch keeps the data and sets isError; Retry flips isFetching.
+  const { QueryClient, QueryObserver } = await import("@tanstack/react-query");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+  let failing = false;
+  const observer = new QueryObserver(client, { queryKey: ["c7"], queryFn: async () => { if (failing) throw new Error("boom"); return { v: 1 }; } });
+  const stop = observer.subscribe(() => {});
+  try {
+    await observer.refetch();
+    assert.equal(refreshNotice(observer.getCurrentResult()), "none");
+    failing = true;
+    await observer.refetch();
+    const after = observer.getCurrentResult();
+    assert.deepEqual(after.data, { v: 1 }, "the page keeps its data");
+    assert.equal(refreshNotice(after), "failed");
+    failing = false;
+    const again = observer.refetch();
+    assert.equal(refreshNotice(observer.getCurrentResult()), "retrying");
+    await again;
+    assert.equal(refreshNotice(observer.getCurrentResult()), "none", "and the notice goes away once a refetch works");
+  } finally {
+    stop();
+    client.clear();
+  }
+
   // The bar: a polite status with a Retry button, or nothing at all. (web/ files are compiled with the classic JSX transform here.)
   (globalThis as { React?: unknown }).React = ReactNs;
   const { RefreshNoticeBar } = await import("../web/src/lib/states");
