@@ -35,6 +35,8 @@ const pages: Record<SpaRouteId, LazyPage> = {
   // booking
   pay: () => import("./pages/booking/Pay"),
   manage: () => import("./pages/booking/Manage"),
+  "customer-bookings": () => import("./pages/booking/FindBookings"),
+  "customer-portal": () => import("./pages/booking/CustomerPortal"),
   book: () => import("./pages/booking/Book"),
   profile: () => import("./pages/booking/Profile"),
   // dashboard
@@ -55,6 +57,7 @@ const pages: Record<SpaRouteId, LazyPage> = {
   "admin-influencer": () => import("./pages/admin/InfluencerDetail"),
   "admin-payments": () => import("./pages/admin/Payments"),
   "admin-payouts": () => import("./pages/admin/Payouts"),
+  "admin-reports": () => import("./pages/admin/Reports"),
   "admin-bookings": () => import("./pages/admin/Bookings"),
   "admin-health": () => import("./pages/admin/Health"),
   "admin-audit": () => import("./pages/admin/Audit"),
@@ -93,9 +96,11 @@ const routes: RouteObject[] = [
       leaf("reset-password"),
       leaf("verify-email"),
 
-      // --- booking. pay/manage come before the `:slug` routes (a static first segment wins, as in Next).
+      // --- booking. pay/manage/bookings come before the `:slug` routes (a static first segment wins, as in Next).
       leaf("pay"),
       leaf("manage"),
+      leaf("customer-bookings"),
+      leaf("customer-portal"),
       leaf("book"),
       leaf("profile"),
 
@@ -127,6 +132,7 @@ const routes: RouteObject[] = [
           leaf("admin-influencer"),
           leaf("admin-payments"),
           leaf("admin-payouts"),
+          leaf("admin-reports"),
           leaf("admin-bookings"),
           leaf("admin-health"),
           leaf("admin-audit"),

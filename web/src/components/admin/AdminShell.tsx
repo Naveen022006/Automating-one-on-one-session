@@ -2,6 +2,7 @@ import { AppLink } from "@web/lib/link";
 import { usePathname } from "@web/lib/navigate";
 import type { ReactNode } from "react";
 import {
+  IconBarChart,
   IconCalendar,
   IconCard,
   IconLayout,
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/admin/influencers", label: "Influencers", icon: IconUsers },
   { href: "/admin/payments", label: "Payments", icon: IconCard },
   { href: "/admin/payouts", label: "Payouts", icon: IconWallet },
+  { href: "/admin/reports", label: "Reports", icon: IconBarChart },
   { href: "/admin/bookings", label: "Bookings", icon: IconCalendar },
   { href: "/admin/health", label: "System health", icon: IconSparkline },
   { href: "/admin/audit", label: "Audit log", icon: IconShield },

@@ -66,6 +66,8 @@ const SAMPLES = [
   { path: "/no-such-slug-xyz", status: NO_DB ? [503] : [404], db: true, robots: "noindex" },
   { path: "/pay/bad", status: [200], robots: "noindex, nofollow" },
   { path: "/manage/bad", status: [200], robots: "noindex", noReferrer: true },
+  { path: "/bookings", status: [200], robots: "noindex" },
+  { path: "/bookings/not-a-token", status: [200], robots: "noindex, nofollow", noReferrer: true },
   { path: "/a/b/c", status: [404], robots: "noindex" },
   { path: "/admin/login", status: [200], robots: "noindex, nofollow" },
 ];
@@ -126,7 +128,7 @@ async function main() {
   }
 
   // --- the guards that stay on the server
-  for (const [path, login] of [["/dashboard", "/login?next=%2Fdashboard"], ["/admin", "/admin/login?next=%2Fadmin"]]) {
+  for (const [path, login] of [["/dashboard", "/login?next=%2Fdashboard"], ["/admin", "/admin/login?next=%2Fadmin"], ["/admin/reports", "/admin/login?next=%2Fadmin%2Freports"]]) {
     const r = await get(path);
     check(`${path} without cookies redirects to the login page`, r.status === 307 && header(r, "location").endsWith(login), `${r.status} ${header(r, "location")}`);
   }

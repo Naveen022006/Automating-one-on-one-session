@@ -234,3 +234,4 @@ export const IconSearch = make("IconSearch", (
   </>
 ));
 export const IconSparkline = make("IconSparkline", <path d="M3 3v18h18M7 14l4-4 4 4 5-5" />);
+export const IconBarChart = make("IconBarChart", <path d="M3 3v16a2 2 0 0 0 2 2h16M18 17V9M13 17V5M8 17v-3" />);

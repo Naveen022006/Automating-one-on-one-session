@@ -38,6 +38,7 @@ test("private areas, token pages and the API are closed to crawlers, with and wi
     "/admin", "/admin/login", "/admin/influencers/abc", "/admin?next=%2Fadmin",
     "/onboarding", "/onboarding?step=2", "/onboarding/x",
     "/manage/tok", "/pay/tok",
+    "/bookings", "/bookings?x=1", "/bookings/x", "/api/customer/portal/tok",
     "/design", "/design?x=1", "/design/x",
     "/reset-password", "/reset-password?token=x", "/verify-email", "/verify-email?token=x",
     "/api/auth/session", "/api/dashboard/shell", "/api/pay/tok", "/api/slots?serviceId=x",
@@ -49,6 +50,7 @@ test("private areas, token pages and the API are closed to crawlers, with and wi
 test("M6: real profiles whose slug merely STARTS with a reserved word, and the pages the SPA needs, stay crawlable", () => {
   for (const open of [
     "/design-with-asha", "/design-with-asha/book", "/admin-academy", "/admin-academy/book", "/dashboard-tips", "/onboarding-coach",
+    "/bookings-with-asha", "/bookings-with-asha/book",
     "/reset-password-help", "/verify-email-pro", "/payments", "/pay-me", "/manage-my-time", "/designer", "/adminer",
     "/", "/terms", "/privacy", "/refund-policy", "/contact", "/register", "/demo", "/demo/book", "/demo/book?service=svc_1",
     "/api/public/profiles/demo", "/assets/index-abc.js", "/sitemap.xml", "/opengraph-image",

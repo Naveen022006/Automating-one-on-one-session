@@ -79,6 +79,7 @@ export function SiteFooter() {
             <h2>Contact</h2>
             <ul>
               <li><AppLink href="/contact">Contact us</AppLink></li>
+              <li><AppLink href="/bookings">Find your booking</AppLink></li>
               <li><a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a></li>
             </ul>
           </div>
@@ -107,7 +108,7 @@ export function FocusedLayout({ children, footer }: { children: React.ReactNode;
       <footer className="focused__footer">
         {footer ?? (
           <span>
-            <AppLink href="/terms">Terms</AppLink> · <AppLink href="/privacy">Privacy</AppLink> · <AppLink href="/contact">Help</AppLink>
+            <AppLink href="/terms">Terms</AppLink> · <AppLink href="/privacy">Privacy</AppLink> · <AppLink href="/contact">Help</AppLink> · <AppLink href="/bookings">Your bookings</AppLink>
           </span>
         )}
       </footer>

@@ -58,7 +58,14 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "admin-payout-account", pattern: /^\/api\/admin\/influencers\/[^/]+\/payout-account$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   // Reconciliation calls Razorpay once per payment; payouts and fees move money. Tight, low-volume limits.
   { name: "admin-reconcile", pattern: /^\/api\/admin\/payments\/reconcile$/, methods: ["POST"], limit: 20, windowMs: HOUR, by: "ip" },
-  { name: "admin-money", pattern: /^\/api\/admin\/(payouts\/|influencers\/[^/]+\/(payouts|fee)$|payments\/[^/]+\/unreconcile$)/, methods: ["POST", "PATCH"], limit: 60, windowMs: HOUR, by: "ip" },
+  // Payouts and fees, plus the admin refund of a captured payment and the platform-side cancellation of a booking.
+  { name: "admin-money", pattern: /^\/api\/admin\/(payouts\/|influencers\/[^/]+\/(payouts|fee)$|payments\/[^/]+\/(unreconcile|refund)$|bookings\/[^/]+\/cancel$)/, methods: ["POST", "PATCH"], limit: 60, windowMs: HOUR, by: "ip" },
+  // Suspending, reinstating and approving an influencer (the status endpoint also answers GET, which stays under `admin`).
+  { name: "admin-moderation", pattern: /^\/api\/admin\/influencers\/[^/]+\/status$/, methods: ["POST"], limit: 60, windowMs: HOUR, by: "ip" },
+  // CSV exports carry personal data and run wide queries; the finance report aggregates the whole database. HEAD is answered by
+  // the GET handler (it would run the same query), so it shares the rule, like the other view endpoints below.
+  { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
+  { name: "admin-reports", pattern: /^\/api\/admin\/reports$/, methods: ["GET", "HEAD"], limit: 30, windowMs: 10 * MIN, by: "ip" },
   { name: "admin", pattern: /^\/api\/admin\//, limit: 120, windowMs: MIN, by: "ip" },
 
   // --- Public booking flow. Holds reserve a seat, so they are tightly limited to stop seat squatting.
@@ -69,6 +76,12 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "booking-status", pattern: /^\/api\/bookings\/[^/]+(\/ics)?$/, methods: ["GET"], limit: 120, windowMs: 5 * MIN, by: "ip" },
   { name: "booking-actions", pattern: /^\/api\/bookings\/[^/]+\/(cancel|reschedule)$/, limit: 30, windowMs: 10 * MIN, by: "session-or-ip" },
   { name: "slots", pattern: /^\/api\/slots(\/days)?$/, limit: 120, windowMs: MIN, by: "ip" },
+  // Customer portal ("find your bookings"): the e-mail request is a spam/enumeration target, the token routes read or erase one
+  // address's data. The erase and export rules are listed before the portal view, which only matches the bare token path.
+  { name: "customer-access", pattern: /^\/api\/customer\/access$/, methods: ["POST"], limit: 5, windowMs: HOUR, by: "ip" },
+  { name: "customer-erase", pattern: /^\/api\/customer\/portal\/[^/]+\/erase$/, methods: ["POST"], limit: 5, windowMs: HOUR, by: "ip" },
+  { name: "customer-export", pattern: /^\/api\/customer\/portal\/[^/]+\/export$/, methods: ["GET", "HEAD"], limit: 10, windowMs: HOUR, by: "ip" },
+  { name: "customer-portal", pattern: /^\/api\/customer\/portal\/[^/]+$/, methods: ["GET", "HEAD"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   // Page loads of the SPA's customer screens (these GET endpoints are what the server-rendered pages used to do inline).
   // Keyed by IP, with headroom for a popular booking page behind a shared NAT; RATE_LIMIT_MULTIPLIER is the lever.
   { name: "public-profile", pattern: /^\/api\/public\/profiles\/[^/]+$/, methods: ["GET", "HEAD"], limit: 120, windowMs: MIN, by: "ip" },
@@ -120,6 +133,8 @@ export const IDENTITY_RULES = {
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },
   bookingResend: { name: "booking-resend-id", limit: 3, windowMs: HOUR },
+  /** "Find your bookings": per e-mail address, so one inbox cannot be mail-bombed from many addresses. */
+  customerAccessEmail: { name: "customer-access-email", limit: 3, windowMs: HOUR },
 } satisfies Record<string, RateLimitRule>;
 
 export function scaled(rule: RateLimitRule, multiplier: number): RateLimitRule {

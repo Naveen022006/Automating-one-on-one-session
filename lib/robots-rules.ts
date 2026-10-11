@@ -4,7 +4,7 @@
  * A Disallow value is a PREFIX of the path plus query string, so `/design` would also hide the profile `/design-with-asha`, and `/admin`
  * the profile `/admin-academy` (only the exact words are reserved slugs). A page (`/dashboard`) is therefore matched exactly with `$`
  * (nothing after it) or with `?` (its query string, for the pages that have one), and its sub-pages with `/`. Only `/api/`, `/manage/`
- * and `/pay/` are prefixes on purpose (they end in a slash).
+ * and `/pay/` are prefixes on purpose (they end in a slash); `/bookings` is a page with token sub-pages, so it is handled like `/dashboard`.
  */
 export const ROBOTS_ALLOW = ["/", "/api/public/"];
 
@@ -15,6 +15,7 @@ export const ROBOTS_DISALLOW = [
   "/onboarding$", "/onboarding/", "/onboarding?",
   "/manage/",
   "/pay/",
+  "/bookings$", "/bookings/", "/bookings?",
   "/design$", "/design/", "/design?",
   "/reset-password$", "/reset-password?",
   "/verify-email$", "/verify-email?",
