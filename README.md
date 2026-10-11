@@ -29,17 +29,18 @@ Needs Node 22.12 or newer (Vite 8), a Postgres and a Redis.
 
 **Hot module reload (`npm run dev:hmr`).** Starts the same two processes plus Vite's dev server on port **5173**, and that port
 becomes the browser origin: open http://localhost:5173. Pages update without a rebuild wait. Caveats, all because the origin is not
-port 3000: (1) the launcher starts Next with `APP_URL=http://localhost:5173` (it overrides `.env` for that process; sign-in and every
-POST are refused from any other origin) and e-mailed links use it; (2) the Google redirect URI and the Razorpay webhook tunnel in
+port 3000: (1) the launcher starts Next with `APP_URL=http://localhost:5173` (it overrides `.env` for that process; e-mailed links and redirects
+use it, and the Origin check of POSTs accepts the page's own origin as well as `APP_URL`, so sign-in works on either port); (2) the Google redirect URI and the Razorpay webhook tunnel in
 `.env` still point at port 3000, so the return from Google lands on http://localhost:3000, which serves the last build of the app
 (the session cookie is shared between ports of `localhost`, it just is not hot there); (3) `--vite-port 5174` moves Vite, and
 `npm run dev:web` is the Vite half alone (`SPA_API_TARGET` names the Next it proxies `/api` and the metadata routes to) for when you
 start Next yourself, for example two copies of the repository on different ports.
 
-**Production-like check** (the CSP, the HTML shell, the hashed assets, the template check): `npm run build`, then `npm start` (Next on
-port 3000 serves the API, the built assets and the shell), then `node scripts/spa-smoke.mjs http://localhost:3000` (`--no-db` when the
-server has no database). Run it with `APP_URL=http://localhost:3000 ALLOW_INSECURE_LOCAL_RUN=true` and `READINESS_REQUIRED=payout` so
-the seeded demo page is live in production mode. The development server applies a looser CSP, so CSP behaviour is only verified here.
+**Production-like check** (the CSP, the HTML shell, the hashed assets, the template check). Two terminals, because `npm start` does not
+return. Terminal 1: `npm run build`, then `npm start` (Next on port 3000 serves the API, the built assets and the shell) with
+`APP_URL=http://localhost:3000 ALLOW_INSECURE_LOCAL_RUN=true` set (production mode refuses an `http://` `APP_URL` otherwise) and
+`READINESS_REQUIRED=payout` so the seeded demo page is live. Terminal 2: `node scripts/spa-smoke.mjs http://localhost:3000` (`--no-db` when
+the server has no database). The development server applies a looser CSP, so CSP behaviour is only verified here.
 
 CI (`.github/workflows/ci.yml`) runs install, `prisma generate`, migrations, typecheck, tests, `npm run build` and an advisory
 `npm audit` against Postgres and Redis service containers, and builds the Docker images with a start-up and smoke test.

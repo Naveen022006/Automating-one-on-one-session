@@ -97,9 +97,19 @@ use the same value at build and run time). Anything else that looks like a secre
 
 ```
 npm run dev        # http://localhost:3000, rebuilds web/src on every change (about a second), reload the page
-npm run dev:hmr    # http://localhost:5173 with hot module reload (APP_URL must be that origin; see README, "Run it locally")
+npm run dev:hmr    # http://localhost:5173 with hot module reload; Next gets APP_URL=http://localhost:5173 (see README, "Run it locally")
 npm run typecheck  # both TypeScript projects (the root project also reads the web/ files the tests import)
-npm run build && npm start && node scripts/spa-smoke.mjs http://localhost:3000    # the production-like check, with the real CSP
+```
+
+The production-like check (the real CSP, the template check, the hashed assets) needs two terminals, because `npm start` does not return.
+Production mode refuses an `http://` `APP_URL`, so the local run says so explicitly (the same variables as the README, "Run it locally"):
+
+```
+# terminal 1
+npm run build
+APP_URL=http://localhost:3000 ALLOW_INSECURE_LOCAL_RUN=true READINESS_REQUIRED=payout npm start    # PowerShell: set $env:... first
+# terminal 2
+node scripts/spa-smoke.mjs http://localhost:3000        # add --no-db when the server has no database
 ```
 
 Adding a page: add a row to `lib/spa/routes.ts`, create `web/src/pages/<area>/<Page>.tsx` (the router will not compile without it), a view

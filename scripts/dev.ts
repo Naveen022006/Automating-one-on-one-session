@@ -19,7 +19,8 @@ import { startSpaWatch, type SpaWatch } from "./dev-spa";
  * at, so the default workflow keeps it. Ctrl+C, a closed console window and a plain kill stop both processes.
  *
  * `--hmr` adds Vite's dev server on port 5173 (module hot reload, no rebuild wait) and makes THAT the browser origin: Next is
- * started with APP_URL=http://localhost:5173 so the Origin check and e-mailed links follow. Caveats are in the banner and the README.
+ * started with APP_URL=http://localhost:5173 so e-mailed links and redirects follow. (The Origin check accepts the request's own origin as
+ * well as APP_URL, so POSTs work from either port.) Caveats are in the banner and the README.
  */
 
 const root = process.cwd();
@@ -119,7 +120,7 @@ async function main() {
     const lines = HMR
       ? [
           ` Open          ${viteOrigin}   <- the browser origin (Vite, hot reload); /api is proxied to ${nextOrigin}`,
-          ` APP_URL       ${viteOrigin} for the Next process (overrides .env); sign-in and POSTs only work from this origin`,
+          ` APP_URL       ${viteOrigin} for the Next process (overrides .env): e-mailed links and redirects use it`,
           ` Caveats       Google's redirect URI and the Razorpay tunnel in .env point at port ${nextPort}: the return from Google lands on`,
           `               ${nextOrigin}, which serves the last build of the app (the session cookie is shared, it just is not hot).`,
           "               E-mailed links use APP_URL. Details: README.md, 'Run it locally'.",
@@ -130,7 +131,7 @@ async function main() {
           " .env          NEXT_PUBLIC_*, APP_LOCALE and ENABLE_DESIGN_PAGE are read by the build: restart this command after changing them.",
         ];
     if (!HMR && !sameOrigin(appUrl, nextOrigin)) {
-      lines.push(` WARNING       APP_URL is ${appUrl} but the app listens on ${nextOrigin}. Open APP_URL, or POSTs fail the cross-site check.`);
+      lines.push(` WARNING       APP_URL is ${appUrl} but the app listens on ${nextOrigin}: set APP_URL to ${nextOrigin} (e-mailed links and OAuth/Razorpay returns use it).`);
     }
     console.log(["", "=".repeat(110), ` Development server (no worker is started; \`npm run worker\` is a separate process)`, ...lines, " Stop          Ctrl+C (stops everything started here)", "=".repeat(110), ""].join("\n"));
   };

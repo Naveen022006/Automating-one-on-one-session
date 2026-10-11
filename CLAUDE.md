@@ -137,8 +137,10 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
 - Windows + Git Bash: `.gitattributes` keeps Dockerfiles LF; other files are CRLF in the working tree (autocrlf). `git mv` for moves.
 - Turbopack (`next dev`, `next build`) cannot use a `node_modules` junction that points outside the project ("Symlink node_modules could
   not be resolved"): a worktree needs a real copy of `node_modules` (`robocopy`), then `npx prisma generate`.
-- Browsers share cookies between ports of one host, but the proxy's Origin check compares with `APP_URL`; Next rewrites `127.x.x.x` and
-  `::1` request URLs to `localhost`, so use `http://localhost:<port>` (or exactly `APP_URL`) in the browser.
+- Browsers share cookies between ports of one host. The proxy's Origin check accepts a POST whose `Origin` equals the request's own
+  origin or `APP_URL` (`allowedOrigins`, `lib/auth/csrf.ts`); a mismatched `APP_URL` breaks e-mailed links and the Google/Razorpay returns,
+  not POSTs. Next rewrites `127.x.x.x` and `::1` request URLs to `localhost`, so a browser at `http://127.0.0.7:<port>` matches neither
+  unless `APP_URL` is exactly that origin: use `http://localhost:<port>`.
 - Nothing is frozen any more (the migration's freeze rule on `web/src/lib`, `lib/spa`, `proxy.ts`... is lifted). Tests that pin a
   behaviour (the guard allowlist, the DTO key sets, the proxy rules) are changed deliberately, with the reason in the commit.
 - Lead times that are not code: WhatsApp template approval, DLT registration and Google OAuth verification take days to weeks.
