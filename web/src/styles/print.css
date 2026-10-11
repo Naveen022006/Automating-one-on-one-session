@@ -1,5 +1,100 @@
 /*
- * Print styles. Empty on purpose: the foundation branch only reserves this file so that the customer portal work package
- * (receipts, doc/13-product-build-plan.md WP-D) can fill it without touching globals.css. Planned content: hide the header,
- * footer and buttons and show only the expanded receipt.
+ * Receipts (doc/13-product-build-plan.md, WP-D): how the receipt looks on screen, and print rules that leave only it on paper.
+ * `.receipt` is the ReceiptCard (components/views/booking/ReceiptCard.tsx). In the customer portal the page root carries
+ * `portal--receipt-open` while a receipt is expanded and that booking's list item carries `portal__item--open`; on the manage page the
+ * page root carries `print-receipt-only`. Anything marked `no-print` (buttons, links, the data card) is left out of a printout.
  */
+
+.receipt {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  background: var(--surface);
+}
+.receipt__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.receipt__title {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: var(--text-xl);
+}
+.receipt__seller {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.receipt__note {
+  margin-top: var(--space-4);
+}
+.receipt__actions {
+  margin-top: var(--space-4);
+}
+.portal__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.portal__heading {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media print {
+  .no-print,
+  .focused__header,
+  .focused__footer,
+  .site-header,
+  .site-footer,
+  dialog {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .focused,
+  .focused__main {
+    display: block;
+    padding: 0;
+    min-height: 0;
+  }
+  .focused__card {
+    max-width: none;
+  }
+
+  /* Customer portal, a receipt expanded: only that booking's receipt. */
+  .portal--receipt-open .portal__chrome,
+  .portal--receipt-open .portal__heading,
+  .portal--receipt-open .portal__item:not(.portal__item--open) {
+    display: none !important;
+  }
+  .portal--receipt-open .portal__item--open .card {
+    border: 0;
+    box-shadow: none;
+  }
+  .portal--receipt-open .portal__item--open .card__body {
+    padding: 0;
+  }
+  .portal--receipt-open .portal__item--open .card__body > .stack > :not(.receipt) {
+    display: none !important;
+  }
+
+  /* Manage page of a paid booking: only the receipt. */
+  .print-receipt-only > :not(.receipt) {
+    display: none !important;
+  }
+
+  .receipt {
+    border: 1px solid #000;
+    break-inside: avoid;
+  }
+}

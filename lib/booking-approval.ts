@@ -39,10 +39,11 @@ interface Loaded {
   customerName: string;
   customerEmail: string;
   customerTz: string | null;
+  redactedAt: Date | null;
   session: { startTime: Date; service: { id: string; title: string; priceMinor: number; currency: string; influencer: { id: string; name: string; timezone: string } } };
 }
 
-function emailData(b: Loaded): RequestEmailData {
+function emailData(b: Pick<Loaded, "customerName" | "customerTz" | "session">): RequestEmailData {
   return {
     customerName: b.customerName,
     serviceTitle: b.session.service.title,
@@ -62,6 +63,7 @@ async function loadOwned(db: Pick<typeof prisma, "booking">, influencerId: strin
       customerName: true,
       customerEmail: true,
       customerTz: true,
+      redactedAt: true,
       session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true, timezone: true } } } } } },
     },
   });
@@ -104,6 +106,8 @@ export async function notifyRequestCreated(bookingId: string): Promise<void> {
 export async function approveRequest(influencerId: string, bookingId: string, now = new Date()) {
   const b = await loadOwned(prisma, influencerId, bookingId);
   if (b.status !== "REQUESTED") throw new ApprovalError(b.status === "HELD" ? "This request is already approved." : "This booking is not a pending request.");
+  // The customer's data was erased on request: there is no one to send a payment link to. Decline it instead.
+  if (b.redactedAt) throw new ApprovalError("The customer's details were erased at their request, so this request cannot be approved. Decline it.");
   if (!b.holdExpiresAt || b.holdExpiresAt <= now) throw new ApprovalError("This request expired before you answered. The customer can request again.");
   const payBy = paymentDeadline(now, b.session.startTime);
   if (!payBy) throw new ApprovalError("This session starts too soon for the customer to pay. Decline it and ask them to pick another time.");

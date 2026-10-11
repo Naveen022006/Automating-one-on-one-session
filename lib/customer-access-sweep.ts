@@ -1,9 +1,10 @@
+import { prisma } from "@/lib/db";
+
 /**
- * STUB from the foundation branch (mk/00-foundation); owned by the customer portal work package (doc/13-product-build-plan.md, WP-D).
- * It will delete expired `customer_access_tokens` rows. Already wired into `sweepExpiredAuthRows` (lib/auth/sweep.ts), which
- * the worker runs; the stub deletes nothing.
+ * Deletes expired customer portal access tokens (`customer_access_tokens`, valid for one hour). Wired into `sweepExpiredAuthRows`
+ * (lib/auth/sweep.ts), which the worker runs. An expired row is already refused by `resolvePortalToken`; this only keeps the table small.
  */
 export async function sweepExpiredCustomerAccess(now: Date = new Date()): Promise<number> {
-  void now;
-  return 0;
+  const { count } = await prisma.customerAccessToken.deleteMany({ where: { expiresAt: { lt: now } } });
+  return count;
 }

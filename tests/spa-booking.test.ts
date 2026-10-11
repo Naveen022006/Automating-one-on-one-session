@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { after, before, mock, test } from "node:test";
 import type { BookingStatus, PaymentStatus, RefundPolicy } from "../generated/prisma/client";
 import { prisma } from "../lib/db";
+import { BRAND_NAME } from "../lib/brand";
 import { formatMoney, formatSessionTime } from "../lib/format";
 import { matchRouteRule } from "../lib/rate-limit/policies";
 import { describeRefundPolicy } from "../lib/refund-policy";
@@ -490,7 +491,7 @@ test("P2: an erased booking is `not-found` in every state, and no manage link is
 
 const MANAGE_KEYS = [
   "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "influencerName", "meetLink",
-  "refundPolicyText", "serviceId", "serviceTitle", "serviceType", "startTime", "status", "token",
+  "receipt", "refundPolicyText", "serviceId", "serviceTitle", "serviceType", "startTime", "status", "token",
 ];
 
 /** The answer is the booking's owner's own page: their name is theirs to see, their email and number never are sent back. */
@@ -538,7 +539,25 @@ test("P3: a paid booking is `ok` with exactly the fields the manage page needs",
   assert.equal(out.body.state, "ok");
   const booking = out.body.booking as Record<string, unknown>;
   assert.deepEqual(keys(booking), MANAGE_KEYS);
-  assert.deepEqual(booking, {
+  // The receipt of a paid booking (WP-D): pinned field by field here; lib/receipts.ts has the pure cases.
+  const { receipt, ...rest } = booking;
+  assert.deepEqual(keys(receipt), ["amountMinor", "currency", "hostName", "issuedTo", "paidAt", "paymentReference", "reference", "refundedMinor", "seller", "serviceTitle", "sessionStart", "statusText"]);
+  assert.deepEqual(receipt, {
+    reference: b.booking.id,
+    issuedTo: "Asha Rao",
+    seller: BRAND_NAME,
+    hostName: `Spa Host ${run}`,
+    serviceTitle: "Full refund session",
+    sessionStart: b.start.toISOString(),
+    paidAt: (receipt as { paidAt: string }).paidAt,
+    amountMinor: 49900,
+    currency: "INR",
+    paymentReference: null,
+    refundedMinor: 0,
+    statusText: "Paid",
+  });
+  assert.ok(!Number.isNaN(Date.parse((receipt as { paidAt: string }).paidAt)));
+  assert.deepEqual(rest, {
     token,
     bookingId: b.booking.id,
     serviceId: svc.full,
@@ -583,6 +602,7 @@ test("P3: what the customer may do follows the policy, the type of session and t
   // Only captured money counts: with no captured payment there is nothing to say about a refund.
   const unpaid = await seed(svc.plain, { status: "PAID", payment: "CREATED" });
   assert.equal(((await getManage(selfServiceToken(unpaid.booking.id))).body.booking as Record<string, unknown>).cancelRefundText, null);
+  assert.equal(((await getManage(selfServiceToken(unpaid.booking.id))).body.booking as Record<string, unknown>).receipt, null, "no receipt for a payment that was never captured");
 
   // Finished or cancelled bookings are shown but cannot be changed.
   const past = await seed(svc.plain, { status: "COMPLETED", payment: "CAPTURED", startIn: -2 * HOUR });
@@ -594,6 +614,7 @@ test("P3: what the customer may do follows the policy, the type of session and t
   assert.equal(cancelledOut.status, 200);
   assert.equal((cancelledOut.body.booking as Record<string, unknown>).status, "CANCELLED");
   assert.equal((cancelledOut.body.booking as Record<string, unknown>).canManage, false);
+  assert.equal(((cancelledOut.body.booking as Record<string, unknown>).receipt as { statusText: string }).statusText, "Refunded", "the receipt of a refunded booking says so");
 });
 
 test("P3: the meeting link falls back to the shared one of a group session, which never shows another attendee", { skip }, async () => {
