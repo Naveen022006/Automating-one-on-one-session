@@ -46,7 +46,10 @@ const defaultLinkDeps: PortalLinkDeps = { send: sendAccountEmail, now: () => new
 /** Most portal e-mails the whole platform sends per hour, whoever asks (CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR; default 300). */
 export const DEFAULT_PORTAL_MAIL_CAP_PER_HOUR = 300;
 export function portalMailCapPerHour(): number {
-  const n = Number(process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR);
+  const raw = process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR?.trim();
+  // An empty value (the `.env.example` style `NAME=`) is "not set", not 0: Number("") is 0 and would stop all portal e-mail.
+  if (!raw) return DEFAULT_PORTAL_MAIL_CAP_PER_HOUR;
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_PORTAL_MAIL_CAP_PER_HOUR;
 }
 

@@ -862,3 +862,19 @@ test("nothing the portal flow logs contains a token or an address", { skip }, as
   assert.ok(link);
   assert.ok(!output.includes(link!) && !output.includes(known) && !output.includes(unknown), output);
 });
+
+test("portalMailCapPerHour: empty or invalid means the default, an explicit 0 stays 0", async () => {
+  const { portalMailCapPerHour, DEFAULT_PORTAL_MAIL_CAP_PER_HOUR } = await import("../lib/customer-portal");
+  const before = process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR;
+  try {
+    for (const [value, want] of [["", DEFAULT_PORTAL_MAIL_CAP_PER_HOUR], ["  ", DEFAULT_PORTAL_MAIL_CAP_PER_HOUR], ["abc", DEFAULT_PORTAL_MAIL_CAP_PER_HOUR], ["-5", DEFAULT_PORTAL_MAIL_CAP_PER_HOUR], ["50", 50], ["0", 0]] as const) {
+      process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR = value;
+      assert.equal(portalMailCapPerHour(), want, JSON.stringify(value));
+    }
+    delete process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR;
+    assert.equal(portalMailCapPerHour(), DEFAULT_PORTAL_MAIL_CAP_PER_HOUR);
+  } finally {
+    if (before === undefined) delete process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR;
+    else process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR = before;
+  }
+});
