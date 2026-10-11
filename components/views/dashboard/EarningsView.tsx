@@ -42,7 +42,7 @@ export function EarningsView({ data, busy }: { data: Jsonify<DashboardEarningsVi
           <Button type="submit">Show</Button>
         </GetForm>
       </Card>
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.truncated && (
           <Alert tone="warning" title="Only part of this range is counted">

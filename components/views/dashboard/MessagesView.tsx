@@ -41,7 +41,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
     <div className="stack stack--lg">
       <PageHead title="Messages" description="Every confirmation, reminder and notice sent to customers, with its delivery status." />
       <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/dashboard/messages${f.value ? `?status=${f.value}` : ""}`, current: f.value === status }))} />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.messages.length === 0 ? (
           <EmptyState icon={<IconMessage />} title={status ? "Nothing here" : "No messages yet"}>
@@ -50,6 +50,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
         ) : (
           <div className="table-wrap">
             <table className="table table--stack">
+              <caption className="sr-only">Messages</caption>
               <thead>
                 <tr>
                   <th scope="col">Message</th>

@@ -107,7 +107,7 @@ const DATA: Record<PageName, Record<string, unknown>> = {
   services: { services: [{ id: "s1", title: "Career chat" }] },
   availability: { timezone: "Asia/Kolkata", rules: [], blocked: [] },
   payouts: { account: null, summary: { currencies: [], history: [] }, feePercentText: "10%" },
-  settings: { profile: { name: "Pat", slug: "pat" }, google: { state: "not-connected" }, whatsapp: null, embedded: null, origin: "example.com", email: "pat@example.com", emailVerified: true },
+  settings: { profile: { name: "Pat", slug: "pat" }, google: { state: "not-connected" }, whatsapp: null, embedded: null, whatsappRequired: false, origin: "example.com", email: "pat@example.com", emailVerified: true },
   onboarding: { profile: { name: "Pat", slug: "pat" }, services: [], rules: [], blocked: [], google: { state: "not-connected" }, whatsapp: null, embedded: null, payout: null, checklist: [], publicUrl: "https://example.com/pat", email: "pat@example.com", emailVerified: false },
 };
 

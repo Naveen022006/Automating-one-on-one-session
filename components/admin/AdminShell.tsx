@@ -16,6 +16,7 @@ import {
   IconWallet,
 } from "@/components/icons";
 import { Wordmark } from "@/components/site/SiteChrome";
+import { MobileNav } from "@/components/ui/MobileNav";
 import { Menu, ToastProvider } from "@/components/ui/overlays";
 import { Badge } from "@/components/ui/primitives";
 
@@ -30,6 +31,9 @@ const NAV = [
   { href: "/admin/security", label: "Security", icon: IconLock },
   { href: "/admin/settings", label: "Settings", icon: IconSettings },
 ];
+
+// The bottom bar of a phone has four slots plus "More", which holds the other sections (components/ui/MobileNav.tsx).
+const MOBILE_PRIMARY = ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"];
 
 function isActive(pathname: string, href: string, exact?: boolean) {
   return exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
@@ -106,14 +110,7 @@ export function AdminShell({
             {children}
           </main>
         </div>
-        <nav className="mobile-nav" aria-label="Sections">
-          {NAV.filter((n) => ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts", "/admin/settings"].includes(n.href)).map((n) => (
-            <Link key={n.href} href={n.href} aria-current={isActive(pathname, n.href, n.exact) ? "page" : undefined}>
-              <n.icon size={20} />
-              {n.label}
-            </Link>
-          ))}
-        </nav>
+        <MobileNav pathname={pathname} primary={NAV.filter((n) => MOBILE_PRIMARY.includes(n.href))} more={NAV.filter((n) => !MOBILE_PRIMARY.includes(n.href))} />
       </div>
     </ToastProvider>
   );

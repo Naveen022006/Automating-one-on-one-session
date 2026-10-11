@@ -22,10 +22,10 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
         <SlugForm slug={data.profile.slug} origin={data.origin} />
       </Card>
       <Card title={<h2 className="card__title" id="google">Google Calendar</h2>}>
-        <GoogleConnect status={data.google} returnTo="/dashboard/settings" outcome={outcome} />
+        <GoogleConnect status={data.google} returnTo="/dashboard/settings#google" outcome={outcome} />
       </Card>
       <Card title={<h2 className="card__title" id="whatsapp">WhatsApp</h2>}>
-        <WhatsAppConnect connection={data.whatsapp} embedded={data.embedded} />
+        <WhatsAppConnect connection={data.whatsapp} embedded={data.embedded} required={data.whatsappRequired} />
       </Card>
       <Card title="Notifications">
         <NotificationPrefs notifyByEmail={data.profile.notifyByEmail} />

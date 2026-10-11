@@ -3,7 +3,7 @@ import { readJson } from "@/lib/http";
 import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { revokeToken } from "@/lib/google";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
-import { countLiveCalendarEvents, deleteGoogleToken, getGoogleAccountOfRecord, getGoogleStatus, googleAccountSharedWithOthers } from "@/lib/google-tokens";
+import { countLiveCalendarEvents, deleteGoogleToken, getGoogleAccountRecord, getGoogleStatus, googleAccountSharedWithOthers } from "@/lib/google-tokens";
 
 // GET: connection state for the dashboard. DELETE: disconnect (revokes the grant at Google too).
 export async function GET() {
@@ -32,8 +32,8 @@ export async function DELETE(req: Request) {
   }
   // Google's revoke ends the app's access for the whole Google account, so skip it when another influencer profile is
   // connected with the same account: it would disconnect that profile too. (Our own copy of the token is deleted either way.)
-  const { email } = await getGoogleAccountOfRecord(auth.influencerId);
-  const shared = await googleAccountSharedWithOthers(auth.influencerId, email);
+  const { email, sub } = await getGoogleAccountRecord(auth.influencerId);
+  const shared = await googleAccountSharedWithOthers(auth.influencerId, email, sub);
   const refreshToken = await deleteGoogleToken(auth.influencerId);
   if (refreshToken && !shared) await revokeToken(refreshToken);
   return NextResponse.json({ ok: true });

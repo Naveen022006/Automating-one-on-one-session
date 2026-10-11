@@ -36,7 +36,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
         </Alert>
       )}
       <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/admin/payouts?status=${f.key}`, current: status === f.key, count: counts[f.key] }))} />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {rows.length === 0 ? (
           <EmptyState icon={<IconWallet />} title="No payouts here">

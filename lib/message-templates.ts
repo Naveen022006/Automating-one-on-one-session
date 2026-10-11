@@ -127,6 +127,16 @@ export function templateState(statuses: string[]): TemplateState {
   return statuses.every((s) => isSendableStatus(s)) ? "ready" : "pending";
 }
 
+/** What the settings card calls each template (by key). Used wherever a template is named to an influencer, never the key. */
+export const TEMPLATE_LABELS: Record<string, string> = {
+  "booking-confirmation": "Booking confirmation",
+  "reminder-24h": "Reminder, 24 hours before",
+  "reminder-15m": "Reminder, 15 minutes before",
+  reschedule: "Session rescheduled",
+  cancellation: "Session cancelled",
+};
+export const templateLabel = (key: string): string => TEMPLATE_LABELS[key] ?? key;
+
 /** The label (and colour) the settings card shows for each template status, so none is shown as something it is not. */
 export const TEMPLATE_STATUS_LABELS: Record<string, { label: string; tone?: "success" | "warning" | "danger" }> = {
   APPROVED: { label: "Approved", tone: "success" },
@@ -161,6 +171,40 @@ export const TEMPLATE_STATE_NOTICE: Record<Exclude<TemplateState, "ready">, { ti
     body: "Some message templates were never sent to Meta for review. Customers get those messages by SMS until you press Check template status.",
   },
 };
+
+/**
+ * Meta's documented reasons for rejecting a message template (`rejected_reason` in the template list, `reason` in the status
+ * webhook), in words an influencer can read. Anything else Meta might send is handled by templateReasonText.
+ */
+export const TEMPLATE_REJECTION_REASONS: Record<string, string> = {
+  ABUSIVE_CONTENT: "Meta thought the wording was abusive or threatening.",
+  INCORRECT_CATEGORY: "Meta decided the category this message was filed under does not fit what it says.",
+  INVALID_FORMAT: "Meta did not accept the layout of the message, for example how its variables are placed.",
+  PROMOTIONAL: "Meta read the message as promotional, which its category does not allow.",
+  SCAM: "Meta suspected the wording of being a scam.",
+  TAG_CONTENT_MISMATCH: "The wording did not match the category it was submitted under.",
+};
+
+/** What to do about a rejected template: it is our wording, not the influencer's, and nothing here resubmits it. */
+export const TEMPLATE_REJECTION_NEXT_STEP =
+  "The wording is ours, so you cannot change it here: contact support and we will look at it. Until it is approved, customers get this message by SMS.";
+
+/**
+ * The line shown under a template on the settings card. Meta's reason codes (INVALID_FORMAT, ...) become a sentence, and a
+ * rejected template also says what happens next (TEMPLATE_REJECTION_NEXT_STEP: this platform does not resubmit a template Meta
+ * rejected, so someone has to look at it). A reason that is already a sentence (our "name already used" text) is shown as it
+ * is, and a status with no reason shows nothing, except a rejection, which says Meta gave none. Pure, and shared with the card.
+ */
+export function templateReasonText(status: string, reason: string | null | undefined): string | null {
+  const raw = (reason ?? "").trim();
+  const none = raw === "" || raw === "NONE";
+  const code = /^[A-Z][A-Z0-9_]*$/.test(raw) ? raw : null;
+  const rejected = status === "REJECTED";
+  if (none) return rejected ? `Meta did not say why it rejected this message. ${TEMPLATE_REJECTION_NEXT_STEP}` : null;
+  if (!code) return raw;
+  const sentence = TEMPLATE_REJECTION_REASONS[code] ?? `Meta gave this reason: ${code.toLowerCase().replace(/_/g, " ")}.`;
+  return rejected ? `${sentence} ${TEMPLATE_REJECTION_NEXT_STEP}` : sentence;
+}
 
 /** Back from Meta's name (as seen in the template list and status webhooks) to our key, or null if it is not one of ours. */
 export function templateKeyFromMetaName(name: string): string | null {

@@ -447,9 +447,12 @@
 }
 
 /* ---------- App shell (dashboard) ---------- */
+/* `minmax(0, 1fr)`, not `1fr`: a plain `1fr` track cannot shrink below the min-content width of what it holds, so one row of
+   nowrap tabs (Payments has six) or a wide table made the whole page scroll sideways on a phone. With 0 the column stays
+   as wide as the screen and `.tabs` / `.table-wrap` scroll inside it. */
 .shell {
   display: grid;
-  grid-template-columns: var(--sidebar) 1fr;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
   min-height: 100dvh;
 }
 .sidebar {
@@ -529,6 +532,11 @@
   max-width: 1160px;
   width: 100%;
 }
+/* A link that points at a part of a page (#google, #whatsapp from the checklist and from the Google round trip) scrolls it to the
+   top of the window, which is where the sticky .topbar (64px) is: the heading it points at was hidden behind the bar. */
+.app-main [id] {
+  scroll-margin-top: calc(64px + var(--space-6));
+}
 .page-head {
   display: flex;
   align-items: flex-end;
@@ -546,7 +554,7 @@
 }
 @media (max-width: 900px) {
   .shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .sidebar {
     display: none;
@@ -569,7 +577,8 @@
     border-top: 1px solid var(--border);
     padding-bottom: env(safe-area-inset-bottom);
   }
-  .mobile-nav a {
+  .mobile-nav a,
+  .mobile-nav__more {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -580,7 +589,51 @@
     font-size: 11px;
     text-decoration: none;
   }
-  .mobile-nav a[aria-current="page"] {
+  .mobile-nav__more {
+    border: 0;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .mobile-nav a[aria-current="page"],
+  .mobile-nav__more[aria-current="page"] {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  /* The "More" list: above the bar, on the right, one link per row. */
+  .mobile-more {
+    position: fixed;
+    right: var(--space-2);
+    bottom: calc(56px + env(safe-area-inset-bottom) + var(--space-2));
+    min-width: 200px;
+    margin: 0;
+    padding: var(--space-2);
+    list-style: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+  }
+  /* `.mobile-nav .mobile-more a`: the bar's own `.mobile-nav a` rule (a column of icon over label) would otherwise win. */
+  .mobile-nav .mobile-more a {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: 44px;
+    padding: 0 var(--space-3);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .mobile-nav .mobile-more a:hover {
+    background: var(--surface-muted);
+  }
+  .mobile-nav .mobile-more a[aria-current="page"] {
+    background: var(--accent-soft);
     color: var(--accent);
     font-weight: 600;
   }

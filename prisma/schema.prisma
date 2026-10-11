@@ -185,6 +185,10 @@ model GoogleToken {
   reconnectNeededAt DateTime?         @map("reconnect_needed_at")
   // The Google account the calendar belongs to (from the OpenID email claim), shown as "Connected as ...".
   googleEmail       String?           @map("google_email")
+  // The stable account id (the OpenID `sub` claim). An address can change (a Workspace rename) while the account stays the
+  // same, so "is this a different Google account?" is decided by this when both sides have one. Null on rows connected before
+  // it was recorded: they are compared by email only and never trigger a revoke. Server-side only, never sent to the browser.
+  googleSub         String?           @map("google_sub")
   connectedAt       DateTime          @default(now()) @map("connected_at")
   updatedAt         DateTime          @updatedAt @map("updated_at")
 

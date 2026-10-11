@@ -4,7 +4,7 @@
  * Client overlays built on the native <dialog> element (focus trapping, Escape to close and inert background come
  * from the browser), plus dropdown menu, toast and switch.
  */
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { IconCheckCircle, IconAlertCircle, IconX } from "@/components/icons";
 import { Button, cx } from "./primitives";
 
@@ -52,6 +52,7 @@ export function Dialog({
           </div>
           {children && <div className="dialog__body">{children}</div>}
           {footer && <div className="dialog__footer">{footer}</div>}
+          <ToastViewport />
         </>
       )}
     </dialog>
@@ -153,6 +154,7 @@ export function Drawer({
           </header>
           <div className="drawer__body">{children}</div>
           {footer && <footer className="drawer__footer">{footer}</footer>}
+          <ToastViewport />
         </>
       )}
     </dialog>
@@ -238,35 +240,65 @@ interface ToastItem {
   message: string;
   tone: "success" | "error";
 }
-const ToastContext = createContext<(message: string, tone?: "success" | "error") => void>(() => {});
+type PushToast = (message: string, tone?: "success" | "error") => void;
+interface ToastList {
+  items: ToastItem[];
+  dismiss: (id: number) => void;
+}
+/**
+ * Two contexts on purpose. Showing a toast needs one function that never changes; the list changes every time a toast
+ * appears or expires. With both in one value every component that merely calls `useToast()` (forms, panels, the whole
+ * page) re-rendered each time a toast came or went. Now only the viewports read the list.
+ */
+const ToastPushContext = createContext<PushToast>(() => {});
+const ToastListContext = createContext<ToastList>({ items: [], dismiss: () => {} });
+
+/**
+ * The toast stack. The provider renders one at the end of the page, and every open Dialog and Drawer renders another one
+ * inside itself: a modal <dialog> sits in the browser's top layer and makes the rest of the page inert, so a stack that
+ * lives only in the page is painted underneath the modal and is neither visible nor announced to a screen reader while it is
+ * open (at 375 px the drawer covers the whole screen, so "Link sent again." and every error from inside it vanished).
+ * Both stacks show the same list; only the one that is not inert is seen and announced.
+ */
+function ToastViewport() {
+  const { items, dismiss } = useContext(ToastListContext);
+  return (
+    <div className="toasts" aria-live="polite" aria-atomic="false">
+      {items.map((t) => (
+        <div key={t.id} className={cx("toast", t.tone === "error" && "toast--error")} role={t.tone === "error" ? "alert" : "status"}>
+          {t.tone === "error" ? <IconAlertCircle size={18} /> : <IconCheckCircle size={18} />}
+          <span>{t.message}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => dismiss(t.id)}>
+            <IconX size={16} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
-  const push = useCallback((message: string, tone: "success" | "error" = "success") => {
+  const push = useCallback<PushToast>((message, tone = "success") => {
     const id = Date.now() + Math.random();
     setItems((xs) => [...xs, { id, message, tone }]);
     setTimeout(() => setItems((xs) => xs.filter((t) => t.id !== id)), tone === "error" ? 8000 : 4500);
   }, []);
+  const dismiss = useCallback((id: number) => setItems((xs) => xs.filter((x) => x.id !== id)), []);
+  const list = useMemo(() => ({ items, dismiss }), [items, dismiss]);
+  // `children` is the same element on every render of this component, so only the viewport below re-renders when the list changes.
   return (
-    <ToastContext.Provider value={push}>
-      {children}
-      <div className="toasts" aria-live="polite" aria-atomic="false">
-        {items.map((t) => (
-          <div key={t.id} className={cx("toast", t.tone === "error" && "toast--error")} role={t.tone === "error" ? "alert" : "status"}>
-            {t.tone === "error" ? <IconAlertCircle size={18} /> : <IconCheckCircle size={18} />}
-            <span>{t.message}</span>
-            <button type="button" aria-label="Dismiss" onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}>
-              <IconX size={16} />
-            </button>
-          </div>
-        ))}
-      </div>
-    </ToastContext.Provider>
+    <ToastPushContext.Provider value={push}>
+      <ToastListContext.Provider value={list}>
+        {children}
+        <ToastViewport />
+      </ToastListContext.Provider>
+    </ToastPushContext.Provider>
   );
 }
 
-export function useToast() {
-  return useContext<(message: string, tone?: "success" | "error") => void>(ToastContext);
+export function useToast(): PushToast {
+  return useContext(ToastPushContext);
 }
 
 /* ---------- Switch ---------- */

@@ -3,7 +3,7 @@ import { alertInfluencer } from "@/lib/alerts";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
-import { TEMPLATE_SPECS, isSendableStatus, templateKeyFromMetaName, templateState, type TemplateState } from "@/lib/message-templates";
+import { TEMPLATE_SPECS, isSendableStatus, templateKeyFromMetaName, templateLabel, templateState, type TemplateState } from "@/lib/message-templates";
 import {
   WhatsAppGraphError,
   ensureTemplates,
@@ -390,7 +390,7 @@ async function persist(
     tokenEnc: encryptSecret(c.token, aad(influencerId)),
     source: c.source,
     status: "ACTIVE" as const,
-    lastError: sync && sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null,
+    lastError: sync && sync.failed.length ? `Could not submit: ${sync.failed.map((f) => templateLabel(f.name)).join(", ")}` : null,
     ...(sync ? { templates: sync.templates, templatesSyncedAt: new Date() } : {}),
     ...webhook,
   };
@@ -552,7 +552,7 @@ export async function refreshTemplates(influencerId: string, deps: ConnectDeps =
         templates: sync.templates,
         templatesSyncedAt: new Date(),
         // An errored connection keeps the reason it errored.
-        ...(row.status === "ACTIVE" ? { lastError: sync.failed.length ? `Could not submit: ${sync.failed.map((f) => f.name).join(", ")}` : null } : {}),
+        ...(row.status === "ACTIVE" ? { lastError: sync.failed.length ? `Could not submit: ${sync.failed.map((f) => templateLabel(f.name)).join(", ")}` : null } : {}),
         ...webhook,
       },
     });
@@ -563,7 +563,12 @@ export async function refreshTemplates(influencerId: string, deps: ConnectDeps =
     // template sync reports it (worker/whatsapp-sync.ts) because it is not a WhatsAppConnectError.
     if (e instanceof WhatsAppConnectError) throw e;
     if (!(e instanceof WhatsAppGraphError)) throw e;
-    if (e.invalidToken) await markTokenInvalid(influencerId, e.message);
+    if (e.invalidToken) {
+      await markTokenInvalid(influencerId, e.message);
+      // Not friendly(e): that sentence is for the connect form ("Check it is a permanent token...") and nobody pasted a token here.
+      // The saved one stopped working, which the card now shows as "Reconnect needed".
+      throw new WhatsAppConnectError("WhatsApp stopped accepting the connection (Meta rejected the saved access token). Use Reconnect to connect it again.", 400);
+    }
     throw friendly(e);
   }
 }

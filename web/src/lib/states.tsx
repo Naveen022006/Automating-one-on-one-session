@@ -5,12 +5,14 @@ import { NotFoundView } from "@/components/views/system/NotFoundView";
 import { Alert, Button, Skeleton } from "@/components/ui/primitives";
 import type { ApiError } from "./api";
 import { PLACEHOLDER_ATTR } from "./focus-main";
+import { REFRESH_FAILED_TEXT, REFRESH_RETRYING_TEXT, refreshNotice, type RefreshNotice } from "./refresh-notice";
 
 /**
  * Loading, error and not-found states of a page that reads data (doc/10-react-migration-plan.md, section 2.7), so every
  * page handles a failed query the same way:
  *
- *   pending (no data yet)  -> a skeleton. (A background refetch keeps showing the data it already has.)
+ *   pending (no data yet)  -> a skeleton. (A background refetch keeps showing the data it already has; if that refetch FAILS,
+ *                             a small "Couldn't refresh. Retry" notice appears above the page, see ./refresh-notice.ts.)
  *   404                    -> the shared "This page does not exist" screen
  *   429                    -> an alert with the server's own "Too many requests" message
  *   anything else          -> an alert with "Try again" (refetch)
@@ -72,6 +74,30 @@ export function PublicPageFrame({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * "Couldn't refresh. Retry": shown above a page whose last refetch failed while it still shows the data it had. Not an alert
+ * (the screen is usable), a polite status. Renders nothing otherwise, but keeps its slot so the page below never remounts.
+ */
+export function RefreshNoticeBar({ state, onRetry }: { state: RefreshNotice; onRetry: () => void }) {
+  if (state === "none") return null;
+  return (
+    <div style={{ marginBottom: "var(--space-4, 16px)" }}>
+      {/* The same button in both states (disabled with a spinner while retrying), so focus is not dropped on press. */}
+      <Alert
+        tone="warning"
+        role="status"
+        action={
+          <Button size="sm" onClick={onRetry} loading={state === "retrying"}>
+            Retry
+          </Button>
+        }
+      >
+        {state === "failed" ? REFRESH_FAILED_TEXT : REFRESH_RETRYING_TEXT}
+      </Alert>
+    </div>
+  );
+}
+
 export function QueryGate<T>({
   query,
   children,
@@ -88,7 +114,15 @@ export function QueryGate<T>({
   loading?: ReactNode;
 }) {
   const frame = (node: ReactNode) => (framed ? <PublicPageFrame>{node}</PublicPageFrame> : node);
-  if (query.data !== undefined) return <>{children(query.data)}</>;
+  if (query.data !== undefined) {
+    // The notice is a sibling in a fixed slot above the page, so the page never unmounts when it comes and goes.
+    return (
+      <>
+        <RefreshNoticeBar state={refreshNotice(query, { framed })} onRetry={() => void query.refetch()} />
+        {children(query.data)}
+      </>
+    );
+  }
   if (query.isPending) return <>{frame(loading ?? <PageLoading />)}</>;
   const error = query.error;
   if (error?.status === 404) return <NotFoundView embedded={embedded} />;

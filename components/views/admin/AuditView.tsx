@@ -15,7 +15,7 @@ export function AuditView({ data, busy }: { data: Jsonify<AdminAuditView>; busy?
   return (
     <div className="stack stack--lg">
       <PageHead title="Audit log" description="Every sensitive thing an administrator did. Entries cannot be edited." />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.rows.length === 0 ? (
           <EmptyState icon={<IconShield />} title="No activity yet" />

@@ -1,3 +1,4 @@
+import { keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { InfluencersView } from "@/components/views/admin/InfluencersView";
 import type { AdminInfluencersView } from "@/lib/views/admin-influencer";
@@ -16,12 +17,16 @@ export function Component() {
   if (page) qs.set("page", page);
   if (q) qs.set("q", q);
   const search = qs.toString();
-  const query = useApiQuery<Jsonify<AdminInfluencersView>>(queryKeys.admin("influencers", { page, q }), `/api/admin/influencers${search ? `?${search}` : ""}`);
+  // keepPreviousData: a new search or page keeps the list and the search box on screen (marked busy) while it loads, instead of
+  // swapping the whole page for a skeleton (same as the other list pages).
+  const query = useApiQuery<Jsonify<AdminInfluencersView>>(queryKeys.admin("influencers", { page, q }), `/api/admin/influencers${search ? `?${search}` : ""}`, {
+    placeholderData: keepPreviousData,
+  });
   return (
     <>
       <PageTitle title="Influencers" template="admin" />
       <QueryGate query={query} embedded>
-        {(data) => <InfluencersView data={data} q={q || undefined} />}
+        {(data) => <InfluencersView data={data} q={q || undefined} busy={query.isPlaceholderData} />}
       </QueryGate>
     </>
   );

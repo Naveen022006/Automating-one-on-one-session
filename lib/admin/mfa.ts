@@ -192,7 +192,9 @@ export function codeFailureMessage(reason: CodeFailure | "not-enabled" | "locked
     const mins = lockedUntil ? Math.max(1, Math.ceil((lockedUntil.getTime() - now) / 60_000)) : null;
     return `Too many incorrect codes. Authenticator codes are locked${mins ? ` for about ${mins} minute${mins === 1 ? "" : "s"}` : " for a while"}. You can still use a recovery code.`;
   }
-  return "That code is not correct. Check the code in your authenticator app, or use a recovery code.";
+  // One sentence for every place a code is typed: while turning two-factor on (no recovery codes exist yet), at sign-in with an
+  // authenticator code and at sign-in with a recovery code. It must be true in all three, so it names neither app nor code kind.
+  return "That code is not correct. Check it and try again.";
 }
 
 /* ---------- Enrollment ---------- */

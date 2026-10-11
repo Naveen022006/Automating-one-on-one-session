@@ -416,6 +416,7 @@ test("SettingsView renders every panel from JSON: anchors for #google and #whats
     google: { state: "connected", email: "pat@gmail.com", connectedAt: when, gmailSend: true, liveEvents: 0, gmailFailing: false },
     whatsapp: { displayPhone: "+91 98765 43210", verifiedName: "Pat Studio", source: "manual", status: "ACTIVE", lastError: null, templates: [{ name: "reschedule", status: "APPROVED", reason: null }], ready: false },
     embedded: null,
+    whatsappRequired: false,
     origin: "example.com",
     email: "pat@example.com",
     emailVerified: false,
@@ -616,7 +617,7 @@ test("D9 GET /api/dashboard/settings: profile, the three Google states, WhatsApp
     assert.equal(out.status, 200);
     assert.equal(out.headers.get("cache-control"), "private, no-store");
     assert.equal(out.headers.get("access-control-allow-origin"), null);
-    assert.deepEqual(keys(out.body), ["email", "emailVerified", "embedded", "google", "origin", "profile", "whatsapp"]);
+    assert.deepEqual(keys(out.body), ["email", "emailVerified", "embedded", "google", "origin", "profile", "whatsapp", "whatsappRequired"]);
     assert.deepEqual(out.body.profile, {
       name: A.name,
       bio: `Alpha bio ${run}`,

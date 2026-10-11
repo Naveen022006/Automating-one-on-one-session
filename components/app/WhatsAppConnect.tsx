@@ -6,7 +6,7 @@ import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 import { chooseFacebookSdkUrl } from "@/lib/facebook-sdk";
-import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateState } from "@/lib/message-templates";
+import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateLabel, templateReasonText, templateState } from "@/lib/message-templates";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
@@ -20,14 +20,6 @@ export interface WhatsAppView {
   templates: { name: string; status: string; reason: string | null }[];
   ready: boolean;
 }
-
-const TEMPLATE_LABEL: Record<string, string> = {
-  "booking-confirmation": "Booking confirmation",
-  "reminder-24h": "Reminder, 24 hours before",
-  "reminder-15m": "Reminder, 15 minutes before",
-  reschedule: "Session rescheduled",
-  cancellation: "Session cancelled",
-};
 
 function TemplateBadge({ status }: { status: string }) {
   const known = TEMPLATE_STATUS_LABELS[status];
@@ -80,7 +72,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * "Connect your WhatsApp number". Meta Embedded Signup when the platform is a configured Meta Tech Provider,
  * otherwise (or additionally) by entering the account ids and a permanent token.
  */
-export function WhatsAppConnect({ connection, embedded }: { connection: WhatsAppView | null; embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null }) {
+export function WhatsAppConnect({
+  connection,
+  embedded,
+  required = false,
+}: {
+  connection: WhatsAppView | null;
+  embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null;
+  /** Whether the go-live checklist requires this connection (READINESS_REQUIRED includes whatsapp). The default is recommended-only. */
+  required?: boolean;
+}) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
@@ -251,7 +252,13 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
     setBusy("refresh");
     const r = await api<{ submitted?: string[] }>("/api/dashboard/whatsapp", { method: "POST", body: { action: "refresh" } });
     setBusy(null);
-    if (!r.ok) return toast(r.data.error ?? "Could not refresh.", "error");
+    if (!r.ok) {
+      toast(r.data.error ?? "Could not refresh.", "error");
+      // A refusal can change what the card must show: Meta rejecting the saved token makes the server mark the connection as
+      // needing a reconnect, and without this the card kept saying "Ready" until the page was reloaded.
+      router.refresh();
+      return;
+    }
     toast(r.data.submitted?.length ? `Submitted ${r.data.submitted.length} template(s) to Meta.` : "Template statuses are up to date.");
     router.refresh();
   }
@@ -388,17 +395,20 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
               </tr>
             </thead>
             <tbody>
-              {connection.templates.map((t) => (
+              {connection.templates.map((t) => {
+                const why = templateReasonText(t.status, t.reason);
+                return (
                 <tr key={t.name}>
                   <td>
-                    {TEMPLATE_LABEL[t.name] ?? t.name}
-                    {t.reason && <div className="subtle">{t.reason}</div>}
+                    {templateLabel(t.name)}
+                    {why && <div className="subtle">{why}</div>}
                   </td>
                   <td>
                     <TemplateBadge status={t.status} />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -439,11 +449,11 @@ export function WhatsAppConnect({ connection, embedded }: { connection: WhatsApp
         </span>
         <div>
           <p style={{ fontWeight: 600 }}>
-            Not connected <Badge tone="warning">Required to message by WhatsApp</Badge>
+            Not connected {required ? <Badge tone="warning">Required</Badge> : <Badge>Recommended</Badge>}
           </p>
           <p className="subtle">
-            Connect your own WhatsApp Business number so confirmations and reminders reach customers from you. Without it, they
-            are sent by SMS.
+            Connect your own WhatsApp Business number so confirmations and reminders reach customers from you.{" "}
+            {required ? "Your booking page cannot go live until it is connected." : "Without it, they are sent by SMS."}
           </p>
         </div>
       </div>

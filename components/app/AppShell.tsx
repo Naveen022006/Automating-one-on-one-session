@@ -18,6 +18,7 @@ import {
   IconVideo,
 } from "@/components/icons";
 import { Wordmark } from "@/components/site/SiteChrome";
+import { MobileNav } from "@/components/ui/MobileNav";
 import { Menu, ToastProvider } from "@/components/ui/overlays";
 import { Avatar } from "@/components/ui/primitives";
 import { ApiProvider } from "./ApiProvider";
@@ -33,7 +34,8 @@ const NAV = [
   { href: "/dashboard/messages", label: "Messages", icon: IconMessage },
   { href: "/dashboard/settings", label: "Settings", icon: IconSettings },
 ];
-const MOBILE = ["/dashboard", "/dashboard/sessions", "/dashboard/services", "/dashboard/availability", "/dashboard/settings"];
+// The bottom bar of a phone has four slots plus "More", which holds the other sections (components/ui/MobileNav.tsx).
+const MOBILE_PRIMARY = ["/dashboard", "/dashboard/sessions", "/dashboard/services", "/dashboard/availability"];
 
 function isActive(pathname: string, href: string, exact?: boolean) {
   return exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
@@ -107,14 +109,7 @@ export function AppShell({
               {children}
             </main>
           </div>
-          <nav className="mobile-nav" aria-label="Sections">
-            {NAV.filter((n) => MOBILE.includes(n.href)).map((n) => (
-              <Link key={n.href} href={n.href} aria-current={isActive(pathname, n.href, n.exact) ? "page" : undefined}>
-                <n.icon size={20} />
-                {n.label}
-              </Link>
-            ))}
-          </nav>
+          <MobileNav pathname={pathname} primary={NAV.filter((n) => MOBILE_PRIMARY.includes(n.href))} more={NAV.filter((n) => !MOBILE_PRIMARY.includes(n.href))} />
         </div>
       </ApiProvider>
     </ToastProvider>

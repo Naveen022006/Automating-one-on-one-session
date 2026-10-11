@@ -35,7 +35,8 @@ export function CustomersView({ data, busy }: { data: Jsonify<DashboardCustomers
           <IconSearch size={16} /> Search
         </Button>
       </GetForm>
-      <p role="status" className="sr-only">{found}</p>
+      {/* While the previous result stays on screen the next one is loading: say that instead of the old list with the new search text. */}
+      <p role="status" className="sr-only">{busy ? "Searching…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {customers.length === 0 ? (
           <EmptyState icon={<IconUsers />} title={q ? "No customers match" : "No customers yet"}>
@@ -44,6 +45,7 @@ export function CustomersView({ data, busy }: { data: Jsonify<DashboardCustomers
         ) : (
           <div className="table-wrap">
             <table className="table table--stack">
+              <caption className="sr-only">Customers</caption>
               <thead>
                 <tr>
                   <th scope="col">Customer</th>

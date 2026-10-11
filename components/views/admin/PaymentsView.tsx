@@ -48,7 +48,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
         payments are included when you create a payout.
       </Alert>
       <LinkTabs items={VIEWS.map((v) => ({ label: v.label, href: `/admin/payments?view=${v.key}`, current: view === v.key, count: countFor[v.key] }))} />
-      <p role="status" className="sr-only">{found}</p>
+      <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.rows.length === 0 ? (
           <EmptyState icon={<IconCard />} title="No payments here">

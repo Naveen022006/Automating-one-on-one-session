@@ -70,8 +70,11 @@ const defaultSender: AlertSender = async (to, alert) => {
 };
 
 let sender: AlertSender = defaultSender;
-export function setAlertSender(next: AlertSender): void {
+/** Replaces the delivery hook and returns the one it replaced, so a test can put it back (`finally { setAlertSender(previous) }`). */
+export function setAlertSender(next: AlertSender): AlertSender {
+  const previous = sender;
   sender = next;
+  return previous;
 }
 
 /** Never throws: a broken alert channel must not fail or retry the job that raised the alert. */

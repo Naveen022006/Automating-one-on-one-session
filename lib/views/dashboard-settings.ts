@@ -5,6 +5,7 @@ import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
+import { requiredConnections } from "@/lib/readiness";
 import { getConnectionView, type WhatsAppConnectionView } from "@/lib/whatsapp-connection";
 import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 
@@ -23,6 +24,8 @@ export interface DashboardSettingsView {
   whatsapp: WhatsAppView | null;
   /** The Meta app and Embedded Signup configuration ids the Facebook SDK needs in the browser (public by design), or null when not configured. */
   embedded: EmbeddedSignupView | null;
+  /** Whether the go-live checklist requires WhatsApp (READINESS_REQUIRED), so its card says "Required" instead of "Recommended". */
+  whatsappRequired: boolean;
   /** The site address without the scheme, as the booking-page-address field prints it ("example.com"). */
   origin: string;
   email: string;
@@ -100,6 +103,7 @@ export async function loadSettingsView(auth: AuthContext): Promise<DashboardSett
     google,
     whatsapp,
     embedded: loadEmbeddedSignupView(),
+    whatsappRequired: requiredConnections().includes("whatsapp"),
     origin: appUrl().replace(/^https?:\/\//, ""),
     email: auth.email,
     emailVerified: auth.emailVerified,

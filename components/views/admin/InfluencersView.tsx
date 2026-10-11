@@ -7,9 +7,14 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { AdminInfluencersView } from "@/lib/views/admin-influencer";
 import { InfluencerSearchForm } from "./InfluencerSearchForm";
 
-/** The admin console's Influencers list. `q` is the search text from the URL (the data already is the matching page). */
-export function InfluencersView({ data, q }: { data: Jsonify<AdminInfluencersView>; q?: string }) {
+/**
+ * The admin console's Influencers list. `q` is the search text from the URL (the data already is the matching page). `busy` is
+ * set by the SPA page while it still shows the previous search and the next one is loading (the old page leaves it undefined).
+ */
+export function InfluencersView({ data, q, busy }: { data: Jsonify<AdminInfluencersView>; q?: string; busy?: boolean }) {
   const href = (p: number) => `/admin/influencers?page=${p}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+  // The search is a link-less soft navigation, which a screen reader does not announce: this line (a live region whose text changes) does.
+  const found = `${data.total === 0 ? "No accounts" : `${data.total} ${data.total === 1 ? "account" : "accounts"}`}${q ? ` for “${q}”` : ""}, page ${data.page} of ${data.pageCount}.`;
 
   return (
     <div className="stack stack--lg">
@@ -17,12 +22,14 @@ export function InfluencersView({ data, q }: { data: Jsonify<AdminInfluencersVie
       <Card>
         <InfluencerSearchForm q={q} />
       </Card>
+      {/* While the previous results stay on screen the new ones are loading: say that instead of the old total with the new search text. */}
+      <p role="status" className="sr-only">{busy ? "Searching…" : found}</p>
       {data.rows.length === 0 ? (
         <EmptyState icon={<IconUsers />} title="No influencers found">
           {q ? "Try a different search." : "Accounts appear here as people register."}
         </EmptyState>
       ) : (
-        <div className="table-wrap">
+        <div className="table-wrap" aria-busy={busy || undefined}>
           <table className="table table--stack">
             <caption className="sr-only">Influencers</caption>
             <thead>
