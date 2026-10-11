@@ -12,6 +12,7 @@ import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeetin
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
+import { startReminderReconcile } from "./reminder-reconcile";
 import { startWhatsAppSync } from "./whatsapp-sync";
 
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
@@ -122,6 +123,7 @@ if (!process.env.REDIS_URL) {
 startMonitoring();
 // --- end payment recovery + health monitoring ---
 startWhatsAppSync(); // template status backup for Meta's webhook (worker/whatsapp-sync.ts)
+startReminderReconcile(); // re-creates missing reminder jobs after a Redis/worker outage (worker/reminder-reconcile.ts)
 
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
