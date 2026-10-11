@@ -1,5 +1,30 @@
-import { NotBuiltYet } from "../NotBuiltYet";
+import { keepPreviousData } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
+import { BookingsView } from "@/components/views/admin/BookingsView";
+import type { AdminBookingsView } from "@/lib/views/admin-bookings";
+import { useApiQuery } from "../../lib/api";
+import { PageTitle } from "../../lib/head";
+import type { Jsonify } from "../../lib/jsonify";
+import { queryKeys } from "../../lib/query";
+import { QueryGate } from "../../lib/states";
 
-// PLACEHOLDER from spa/00-foundation. Branch spa/41-admin-money replaces this file with the real page
-// (guard and layout come from the router; render <PageTitle>, fetch with useApiQuery, render the view; doc/10 section 1.5).
-export const Component = NotBuiltYet;
+/** /admin/bookings?status&page. Tabs and pagination are links, so the URL is the state (keepPreviousData: see dashboard Sessions). */
+export function Component() {
+  const [search] = useSearchParams();
+  const status = search.get("status");
+  const page = search.get("page");
+  const params = new URLSearchParams();
+  if (status !== null) params.set("status", status);
+  if (page !== null) params.set("page", page);
+  const query = useApiQuery<Jsonify<AdminBookingsView>>(queryKeys.admin("bookings", { status, page }), `/api/admin/bookings?${params}`, {
+    placeholderData: keepPreviousData,
+  });
+  return (
+    <>
+      <PageTitle title="Bookings" template="admin" />
+      <QueryGate query={query} embedded>
+        {(data) => <BookingsView data={data} busy={query.isPlaceholderData} />}
+      </QueryGate>
+    </>
+  );
+}
