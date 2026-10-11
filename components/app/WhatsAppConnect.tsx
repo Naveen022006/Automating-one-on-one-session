@@ -6,7 +6,7 @@ import { IconCheckCircle, IconMessage } from "@/components/icons";
 import { ConfirmDialog, useToast } from "@/components/ui/overlays";
 import { Alert, Badge, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 import { chooseFacebookSdkUrl } from "@/lib/facebook-sdk";
-import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateLabel, templateState } from "@/lib/message-templates";
+import { TEMPLATE_STATE_NOTICE, TEMPLATE_STATUS_LABELS, templateLabel, templateReasonText, templateState } from "@/lib/message-templates";
 import { RESET_PIN_LABEL } from "@/lib/whatsapp-copy";
 import { DEFAULT_GRAPH_VERSION } from "@/lib/whatsapp-graph-version";
 import { useApi } from "./ApiProvider";
@@ -395,17 +395,20 @@ export function WhatsAppConnect({
               </tr>
             </thead>
             <tbody>
-              {connection.templates.map((t) => (
+              {connection.templates.map((t) => {
+                const why = templateReasonText(t.status, t.reason);
+                return (
                 <tr key={t.name}>
                   <td>
                     {templateLabel(t.name)}
-                    {t.reason && <div className="subtle">{t.reason}</div>}
+                    {why && <div className="subtle">{why}</div>}
                   </td>
                   <td>
                     <TemplateBadge status={t.status} />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { before, mock, test } from "node:test";
+import * as ReactNs from "react";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { razorpayErrorText } from "../lib/payments";
@@ -460,6 +461,102 @@ test("N8: useToast reads a context whose value never changes; only the viewports
   assert.equal(count(html, 'class="toasts"'), 1);
   renderToStaticMarkup(createElement(Consumer));
   assert.doesNotThrow(() => (seen as (m: string) => void)("outside a provider"));
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C17 (N10): a rejected WhatsApp template shows a sentence, not Meta's reason code.
+test("C17: Meta's documented rejection reasons become plain sentences with what happens next; our own sentences and other statuses are left alone", async () => {
+  const { templateReasonText, TEMPLATE_REJECTION_REASONS, TEMPLATE_REJECTION_NEXT_STEP } = await import("../lib/message-templates");
+  const documented = ["ABUSIVE_CONTENT", "INCORRECT_CATEGORY", "INVALID_FORMAT", "PROMOTIONAL", "SCAM", "TAG_CONTENT_MISMATCH"];
+  assert.deepEqual(Object.keys(TEMPLATE_REJECTION_REASONS).sort(), documented, "every documented reason has a sentence");
+  for (const code of documented) {
+    const text = templateReasonText("REJECTED", code);
+    assert.equal(text, `${TEMPLATE_REJECTION_REASONS[code]} ${TEMPLATE_REJECTION_NEXT_STEP}`);
+    assert.doesNotMatch(text ?? "", new RegExp(code), `${code} is not shown raw`);
+    assert.doesNotMatch(TEMPLATE_REJECTION_REASONS[code], /_/);
+  }
+  assert.match(TEMPLATE_REJECTION_NEXT_STEP, /contact support/);
+  assert.match(TEMPLATE_REJECTION_NEXT_STEP, /SMS/, "and the customer is not left without the message meanwhile");
+
+  // NONE, nothing, or a code we have never seen.
+  for (const none of ["NONE", "", null, undefined, "  "]) {
+    assert.match(templateReasonText("REJECTED", none) ?? "", /^Meta did not say why it rejected this message\. /);
+    assert.equal(templateReasonText("PAUSED", none), null, "no reason and not a rejection: nothing to add");
+    assert.equal(templateReasonText("APPROVED", none), null);
+  }
+  assert.equal(templateReasonText("REJECTED", "BRAND_NEW_REASON"), `Meta gave this reason: brand new reason. ${TEMPLATE_REJECTION_NEXT_STEP}`);
+  assert.equal(templateReasonText("PAUSED", "BRAND_NEW_REASON"), "Meta gave this reason: brand new reason.", "no 'cannot change it' line for a status that is not a rejection");
+
+  // Already a sentence (our name-conflict text, or free text from Meta): shown as it is.
+  const ours = 'A template named "x" already exists on your WhatsApp account and is not ours: body differs. Rename or delete it.';
+  assert.equal(templateReasonText("CONFLICT", ours), ours);
+
+  // The card uses it for every row.
+  assert.match(read("components/app/WhatsAppConnect.tsx"), /const why = templateReasonText\(t\.status, t\.reason\);[\s\S]*\{why && <div className="subtle">\{why\}<\/div>\}/);
+  assert.doesNotMatch(read("components/app/WhatsAppConnect.tsx"), /\{t\.reason && /, "the raw reason is no longer printed");
+});
+
+test("C17: the card prints the sentence under a rejected template", async () => {
+  mock.module("next/navigation", { namedExports: { useRouter: () => ({ refresh() {}, push() {}, replace() {} }), usePathname: () => "/dashboard/settings", useSearchParams: () => new URLSearchParams() } });
+  try {
+    const { WhatsAppConnect } = await import(`../components/app/WhatsAppConnect?c17=${Math.random()}`);
+    const connection = {
+      displayPhone: "+91 98765 43210",
+      verifiedName: "Pat",
+      source: "manual",
+      status: "ACTIVE",
+      lastError: null,
+      ready: false,
+      templates: [
+        { name: "booking-confirmation", status: "REJECTED", reason: "INVALID_FORMAT" },
+        { name: "reminder-24h", status: "APPROVED", reason: null },
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(WhatsAppConnect, { connection, embedded: null }));
+    assert.match(html, /Booking confirmation<div class="subtle">Meta did not accept the layout of the message/);
+    assert.doesNotMatch(html, /INVALID_FORMAT/);
+    assert.doesNotMatch(html, /Reminder, 24 hours before<div class="subtle">/, "an approved template has no line");
+  } finally {
+    mock.reset();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// C7 (N10): a failed background refetch is no longer silent.
+test("C7: a page that still shows data after a failed refetch says so, offers Retry and never unmounts; nothing else changes", async () => {
+  const { refreshNotice, REFRESH_FAILED_TEXT, REFRESH_RETRYING_TEXT } = await import("../web/src/lib/refresh-notice");
+  const q = (over: Partial<{ data: unknown; isError: boolean; isFetching: boolean }>) => ({ data: { a: 1 }, isError: false, isFetching: false, ...over });
+  assert.equal(refreshNotice(q({})), "none", "a healthy page says nothing");
+  assert.equal(refreshNotice(q({ isFetching: true })), "none", "a background refetch that has not failed says nothing");
+  assert.equal(refreshNotice(q({ isError: true })), "failed", "data on screen, the last refetch failed");
+  assert.equal(refreshNotice(q({ isError: true, isFetching: true })), "retrying", "Retry was pressed");
+  assert.equal(refreshNotice(q({ data: undefined, isError: true })), "none", "no data: the existing error alert handles it, not this");
+  assert.equal(refreshNotice(q({ data: undefined })), "none");
+  assert.equal(refreshNotice(q({ data: null, isError: true })), "failed", "null is data (a view may legitimately be null)");
+  assert.equal(refreshNotice(q({ isError: true }), { framed: true }), "none", "a public customer page does not show it");
+  assert.match(REFRESH_FAILED_TEXT, /^Couldn't refresh\./);
+  assert.match(REFRESH_RETRYING_TEXT, /Refreshing/);
+
+  // The bar: a polite status with a Retry button, or nothing at all. (web/ files are compiled with the classic JSX transform here.)
+  (globalThis as { React?: unknown }).React = ReactNs;
+  const { RefreshNoticeBar } = await import("../web/src/lib/states");
+  const bar = (state: "none" | "failed" | "retrying") => renderToStaticMarkup(createElement(RefreshNoticeBar, { state, onRetry: () => {} }));
+  assert.equal(bar("none"), "");
+  const failed = bar("failed");
+  assert.match(failed, /role="status"/);
+  assert.match(failed, /Couldn&#x27;t refresh\. What you see may be out of date\./);
+  assert.match(failed, /<button[^>]*>Retry<\/button>/);
+  assert.doesNotMatch(failed, /disabled/);
+  const retrying = bar("retrying");
+  assert.match(retrying, /Refreshing…/);
+  assert.match(retrying, /<button[^>]*disabled=""[^>]*aria-busy="true"|<button[^>]*aria-busy="true"[^>]*disabled=""/, "the same button, busy, so focus is not dropped");
+
+  // Wiring: the notice sits in a fixed slot above the page, and the existing rules around it are untouched.
+  const states = read("web/src/lib/states.tsx");
+  assert.match(states, /<RefreshNoticeBar state=\{refreshNotice\(query, \{ framed \}\)\} onRetry=\{\(\) => void query\.refetch\(\)\} \/>\s*\{children\(query\.data\)\}/);
+  assert.match(states, /if \(query\.isPending\) return <>\{frame\(loading \?\? <PageLoading \/>\)\}<\/>;/, "the skeleton rule is unchanged");
+  assert.match(states, /if \(error\?\.status === 404\) return <NotFoundView embedded=\{embedded\} \/>;/, "the 404 rule is unchanged");
+  assert.doesNotMatch(read("web/src/lib/guard-decisions.ts"), /refresh-notice|RefreshNotice/, "the guard decisions know nothing about it");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------
