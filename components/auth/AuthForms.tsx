@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconCheckCircle } from "@/components/icons";
+import { IconAlertCircle, IconCheckCircle } from "@/components/icons";
 import { Alert, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 
 type Errors = Record<string, string | undefined>;
@@ -22,6 +22,15 @@ function fieldErrors(data: { error?: string; field?: string; details?: { fieldEr
   for (const [k, v] of Object.entries(data.details?.fieldErrors ?? {})) out[k] = v?.[0];
   if (data.field && data.error) out[data.field] = data.error;
   return out;
+}
+
+/**
+ * After a failed submit, once the error texts are rendered, put the keyboard (and a screen reader) on the first field that has one.
+ * Without it the focus stays on the submit button while the message sits above the fold, which on a phone looks like "nothing
+ * happened".
+ */
+function focusFirstInvalid(form: HTMLFormElement | null) {
+  requestAnimationFrame(() => form?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
 }
 
 export function LoginForm({ next, notice }: { next?: string; notice?: string }) {
@@ -115,6 +124,7 @@ export function RegisterForm() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
     const local: Errors = {};
     if (!name.trim()) local.name = "Enter your name.";
     if (!/^\S+@\S+\.\S+$/.test(email)) local.email = "Enter a valid email address.";
@@ -122,7 +132,7 @@ export function RegisterForm() {
     if (!terms) local.acceptTerms = "Please accept the Terms and Privacy Policy.";
     if (slugStatus && !slugStatus.available) local.slug = slugStatus.problem ?? "Choose another address.";
     setErrors(local);
-    if (Object.keys(local).length) return;
+    if (Object.keys(local).length) return focusFirstInvalid(form);
     setBusy(true);
     setFormError(null);
     const r = await post("/api/auth/register", { name, email, password, slug, timezone, acceptTerms: terms });
@@ -130,11 +140,15 @@ export function RegisterForm() {
       setBusy(false);
       const fe = fieldErrors(r.data);
       setErrors(fe);
-      if (!Object.keys(fe).length) setFormError(r.data.error ?? "Could not create your account.");
+      if (Object.keys(fe).length) focusFirstInvalid(form);
+      else setFormError(r.data.error ?? "Could not create your account.");
       return;
     }
     window.location.assign(r.data.redirect ?? "/onboarding");
   }
+
+  // The live "taken / reserved" answer counts as an error of the field too: the input is marked invalid and tied to the message.
+  const slugError = errors.slug ?? (slugStatus && !slugStatus.available ? slugStatus.problem : null);
 
   return (
     <form className="stack" onSubmit={submit} noValidate>
@@ -151,13 +165,13 @@ export function RegisterForm() {
       <Field
         id="reg-slug"
         label="Booking page address"
-        error={errors.slug ?? (slugStatus && !slugStatus.available ? slugStatus.problem : null)}
+        error={slugError}
         help={slugStatus?.available ? "Available." : "Lowercase letters, numbers and hyphens. You can change it later."}
       >
         <div className="input-group">
           <span className="input-group__addon">{origin || "yoursite"}/</span>
           <Input
-            {...describedBy("reg-slug", { error: errors.slug, help: true })}
+            {...describedBy("reg-slug", { error: slugError, help: true })}
             value={slug}
             autoComplete="off"
             spellCheck={false}
@@ -173,6 +187,7 @@ export function RegisterForm() {
           checked={terms}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTerms(e.target.checked)}
           aria-invalid={errors.acceptTerms ? true : undefined}
+          aria-describedby={errors.acceptTerms ? "reg-terms-error" : undefined}
           label={
             <>
               I agree to the <Link href="/terms" target="_blank">Terms of Service</Link> and{" "}
@@ -180,7 +195,12 @@ export function RegisterForm() {
             </>
           }
         />
-        {errors.acceptTerms && <p className="field__error">{errors.acceptTerms}</p>}
+        {errors.acceptTerms && (
+          <p className="field__error" id="reg-terms-error" role="alert">
+            <IconAlertCircle size={16} />
+            {errors.acceptTerms}
+          </p>
+        )}
       </div>
       <Button type="submit" variant="primary" size="lg" block loading={busy}>
         Create account
