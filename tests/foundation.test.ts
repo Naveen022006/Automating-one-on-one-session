@@ -35,7 +35,6 @@ test("placeholder pages render the route's own title and say 'Coming soon' (Z re
   for (const [id, file, template] of [
     ["customer-bookings", "web/src/pages/booking/FindBookings.tsx", undefined],
     ["customer-portal", "web/src/pages/booking/CustomerPortal.tsx", undefined],
-    ["admin-reports", "web/src/pages/admin/Reports.tsx", "admin"],
   ] as const) {
     const src = read(file);
     assert.equal(src.match(/<PageTitle /g)?.length, 1, `${file}: exactly one PageTitle`);

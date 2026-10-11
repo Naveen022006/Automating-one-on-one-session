@@ -418,7 +418,12 @@ export async function rescheduleBooking(
     if (b.status === "CANCELLED" || b.status === "FAILED" || b.status === "EXPIRED") continue;
     await step("replace reminders", async () => {
       await deps.cancelReminders(b.id);
-      if (b.status === "SCHEDULED") await deps.enqueueReminders(b.id, newStart);
+      if (b.status !== "SCHEDULED") return;
+      // A reminder already sent for the OLD time would otherwise make the new one "already-sent" (and hide it from the repair job).
+      await step("re-arm reminders", async () => {
+        for (const template of ["reminder-24h", "reminder-15m"]) await deps.rearmMessage(b.id, template);
+      });
+      await deps.enqueueReminders(b.id, newStart);
     });
     await deps.sendBookingEmail(b.id, "booking-rescheduled");
     await step("re-arm reschedule notice", () => deps.rearmMessage(b.id, RESCHEDULE_TEMPLATE));
