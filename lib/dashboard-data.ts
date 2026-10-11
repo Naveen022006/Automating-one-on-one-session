@@ -1,6 +1,7 @@
 import { parseAnswers } from "@/lib/intake";
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { PLATFORM_CANCEL_PREFIX } from "@/lib/refunds";
 import { aggregateEarnings, type EarningsPaymentInput, type EarningsSummary } from "@/lib/dashboard";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
 
@@ -377,7 +378,8 @@ export async function getBookingDetail(influencerId: string, bookingId: string) 
       currency: p.currency,
       needsRefund: p.needsRefund,
       providerPaymentId: p.providerPaymentId,
-      failureReason: p.failureReason,
+      // The system marker of a platform cancel is not for the host to read.
+      failureReason: p.failureReason?.startsWith(PLATFORM_CANCEL_PREFIX) ? p.failureReason.slice(PLATFORM_CANCEL_PREFIX.length) : p.failureReason,
       refundStatus: p.refundStatus,
       refundAmountMinor: p.refundAmountMinor,
       refundedAt: p.refundedAt?.toISOString() ?? null,

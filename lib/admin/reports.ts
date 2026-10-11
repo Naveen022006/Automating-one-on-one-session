@@ -19,8 +19,9 @@ import { prisma } from "@/lib/db";
  *   - a booking "holds" a payment when it is PAID, SCHEDULED or COMPLETED.
  * Money is an integer in minor units; a currency is never added to another.
  *
- * Every paid payment is in exactly one place (this is what makes the reconciliation identity hold; payoutBlocker does not look at
- * `needs_refund`, so a flagged payment can be reconciled and paid out, and the report has to cope):
+ * Every paid payment is in exactly one place (this is what makes the reconciliation identity hold; payoutBlocker and the approve / mark-paid check
+ * refuse a flagged payment, but a payment can be flagged AFTER its payout was created or paid (a refund that failed by webhook, a duplicate found
+ * later), and the report has to cope):
  *   1. in a PAID payout                                      -> paid out (and `flaggedPaidOutMinor` when it is also flagged)
  *   2. otherwise flagged `needs_refund`                      -> owed to customers (also when it sits in a PENDING payout)
  *   3. otherwise in a PENDING payout                         -> held (whatever its booking says now)

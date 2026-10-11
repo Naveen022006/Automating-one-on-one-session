@@ -174,3 +174,16 @@ Not a work package; fixes found by the two Opus reviews. Everything is additive 
    `failureReason`; `refundPayment` keeps `needsRefund` through a partial refund only when it is present (`startsWith`; a host's own reason can only come after
    "booking ..."). No column, no migration.
 6. The old `/api/bookings/[id]/cancel|reschedule` routes and their rate rule were deleted (unused, no activity trail).
+
+# Money fixes, round 3 (`mk/z-money-fixes-2`)
+
+1. A cancel (host or platform) checks for a PENDING payout holding the payment BEFORE the refund and alert steps, with automatic refunds on or off:
+   the payment stays flagged (Payments lists it, the Payouts page shows "Contains a flagged payment"), the host gets the "waiting for a payout" alert
+   instead of "issue the refund yourself", and the customer note says the platform will process it. When a booking has several payments the customer
+   note names the held one first (never "issued" alone). The host-side refund error no longer says to retry.
+2. `cancelPayout` returns the flagged payments it released (`flaggedPaymentIds`); the console toast says they are not payable until refunded and opens Payments > Needs refund.
+   The `flagged-payment` message says what to do. `createPayout`'s claim re-checks `needsRefund = false` and the booking status. The host dashboard no longer shows
+   the `[platform-cancel]` marker.
+3. **Decision, no backfill:** platform cancels made before `PLATFORM_CANCEL_PREFIX` existed carry no marker (they were created on an unreleased development
+   build only), so a partial refund of such a payment clears `needsRefund`. Nothing in production has them.
+4. **Deploy note:** PENDING payouts that already contain flagged payments cannot be approved or paid after this release; cancel and recreate them (doc/08 section 16, item 7).

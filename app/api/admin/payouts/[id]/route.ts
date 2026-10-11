@@ -71,9 +71,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       );
       return NextResponse.json({ ok: true });
     }
-    await cancelPayout(id, body.note ?? null);
-    await recordAudit(actor, { action: "payout.cancelled", targetType: "payout", targetId: id, detail: { note: body.note ?? null }, ip });
-    return NextResponse.json({ ok: true });
+    const { flaggedPaymentIds } = await cancelPayout(id, body.note ?? null);
+    await recordAudit(actor, { action: "payout.cancelled", targetType: "payout", targetId: id, detail: { note: body.note ?? null, flaggedPayments: flaggedPaymentIds.length }, ip });
+    // The flagged payments are released but are NOT payable again until refunded: the console says which and where to go.
+    return NextResponse.json({ ok: true, flaggedPaymentIds });
   } catch (e) {
     if (e instanceof PayoutError) return jsonError(e.message, e.status, e.code ? { code: e.code } : {});
     throw e;

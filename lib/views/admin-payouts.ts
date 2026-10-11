@@ -1,6 +1,6 @@
 import { activeAdminCount, PAGE_SIZE, parsePage } from "@/lib/admin/data";
 import { prisma } from "@/lib/db";
-import { fourEyesEnabled, formatFeePercent, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor } from "@/lib/payouts";
+import { fourEyesEnabled, flaggedPaymentCounts, formatFeePercent, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor } from "@/lib/payouts";
 
 /**
  * The admin Payouts page's data, for GET /api/admin/payouts. The caller has already passed the admin
@@ -37,6 +37,8 @@ export interface AdminPayoutRow {
   reference: string | null;
   /** Refunded since it was paid: money the influencer received that should come back. 0 for anything but a paid payout. */
   owedMinor: number;
+  /** A PENDING payout that contains a payment flagged for a refund (or on a cancelled booking): it cannot be approved or paid; cancel and recreate it. */
+  hasFlaggedPayment: boolean;
   /** What the viewing administrator may do with it (see the note at the top of the file). */
   approval: {
     required: boolean;
@@ -73,6 +75,7 @@ export async function loadAdminPayoutsView(
   ]);
   const owed = new Map(await Promise.all(rows.filter((r) => r.status === "PAID").map(async (r) => [r.id, await postPayoutRefunds(r.id)] as const)));
   const recentUnapproved = await recentUnapprovedFor(rows);
+  const flagged = await flaggedPaymentCounts(rows.filter((r) => r.status === "PENDING").map((r) => r.id));
   const countOf = (k: string) => (k === "all" ? counts.reduce((n, c) => n + c._count._all, 0) : (counts.find((c) => c.status === k)?._count._all ?? 0));
   const onlyOneAdmin = fourEyesEnabled() && (await activeAdminCount()) < 2;
 
@@ -97,6 +100,7 @@ export async function loadAdminPayoutsView(
         status: p.status,
         reference: p.reference,
         owedMinor: owed.get(p.id) ?? 0,
+        hasFlaggedPayment: (flagged.get(p.id) ?? 0) > 0,
         approval: {
           required: approval.required,
           approved: approval.approved,

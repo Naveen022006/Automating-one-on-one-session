@@ -185,6 +185,21 @@ export function payoutApprovalView(
 
 /* ---------- Pure rules (unit-tested) ---------- */
 
+/** The booking statuses whose payment is the influencer's to be paid (the same set createPayout's claim, approve and mark-paid check). */
+export const PAYABLE_BOOKING_STATUSES = ["PAID", "SCHEDULED", "COMPLETED"] as const;
+
+/** A payment that must not be in a payout: flagged for a refund, or its booking was cancelled / failed / expired. */
+const flaggedPaymentWhere: Prisma.PaymentWhereInput = {
+  OR: [{ needsRefund: true }, { booking: { status: { notIn: [...PAYABLE_BOOKING_STATUSES] } } }],
+};
+
+/** How many payments of each payout are flagged (for the console: "contains a flagged payment: cancel and recreate"). */
+export async function flaggedPaymentCounts(payoutIds: string[]): Promise<Map<string, number>> {
+  if (payoutIds.length === 0) return new Map();
+  const rows = await prisma.payment.groupBy({ by: ["payoutId"], where: { payoutId: { in: payoutIds }, ...flaggedPaymentWhere }, _count: { _all: true } });
+  return new Map(rows.filter((r) => r.payoutId !== null).map((r) => [r.payoutId as string, r._count._all]));
+}
+
 export interface PayablePayment {
   id: string;
   status: string;
@@ -481,6 +496,9 @@ export async function createPayout(
       const claimed = await tx.payment.updateMany({
         where: {
           payoutId: null,
+          // Re-checked here: a cancel or a flag that landed between the read and this claim keeps the payment out (the count check below turns it into a 409).
+          needsRefund: false,
+          booking: { status: { in: [...PAYABLE_BOOKING_STATUSES] } },
           OR: rows.map((r) => ({
             id: r.id,
             AND: [
@@ -514,9 +532,9 @@ async function assertRefundsSettled(tx: Prisma.TransactionClient, payoutId: stri
     SELECT p.refund_status, p.refund_amount_minor, p.needs_refund, b.status::text AS booking_status
     FROM payments p JOIN bookings b ON b.id = p.booking_id
     WHERE p.payout_id = ${payoutId} FOR UPDATE OF p`;
-  if (rows.some((r) => r.needs_refund || !["PAID", "SCHEDULED", "COMPLETED"].includes(r.booking_status))) {
+  if (rows.some((r) => r.needs_refund || !(PAYABLE_BOOKING_STATUSES as readonly string[]).includes(r.booking_status))) {
     throw new PayoutError(
-      "A payment in this payout is flagged for a refund, or its booking was cancelled, after the payout was created. Cancel this payout and create it again.",
+      "A payment in this payout is flagged for a refund, or its booking was cancelled, after the payout was created. Cancel this payout, refund the flagged payment from Payments (Needs refund tab), then create the payout again.",
       409,
       "flagged-payment",
     );
@@ -616,7 +634,10 @@ export async function cancelPayout(payoutId: string, note: string | null, hooks:
       const { count } = await tx.payout.updateMany({ where: { id: payoutId, status: "PENDING" }, data: { status: "CANCELLED", note: note?.slice(0, 300) ?? null } });
       if (count === 0) throw new PayoutError("Only a pending payout can be cancelled.", 409);
       await hooks.afterPayoutLocked?.(tx); // tests only: holds the payout row lock before the payments are released
+      // The flagged ones are released too but are NOT payable again until they are refunded: the caller tells the administrator which they are.
+      const flagged = await tx.payment.findMany({ where: { payoutId, ...flaggedPaymentWhere }, select: { id: true } });
       await tx.payment.updateMany({ where: { payoutId }, data: { payoutId: null } });
+      return { flaggedPaymentIds: flagged.map((f) => f.id) };
     }),
   );
 }

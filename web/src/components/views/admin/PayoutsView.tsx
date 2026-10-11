@@ -79,6 +79,9 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
                     <td data-label="Status">
                       <PayoutStatusBadges status={p.status} approval={p.approval} />
                       {p.reference && <div className="subtle">UTR {p.reference}</div>}
+                      {p.status === "PENDING" && p.hasFlaggedPayment && (
+                        <div><Badge tone="danger">Contains a flagged payment: cancel this payout, refund it from Payments, then recreate</Badge></div>
+                      )}
                       {p.owedMinor > 0 && <div><Badge tone="danger">Refunded since: {formatMoney(p.owedMinor, p.currency)} to recover</Badge></div>}
                     </td>
                     <td data-label="Actions"><PayoutRowActions payoutId={p.id} status={p.status} approval={p.approval} influencerSuspended={p.influencer.suspended} /></td>
