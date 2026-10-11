@@ -14,8 +14,11 @@ type Booking = Ok["bookings"][number];
 const when = (iso: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" }).format(new Date(iso));
 const clock = (iso: string) => new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(new Date(iso));
 
+/** Sessions that have not finished: shown first. "In progress" has started but is not over, so an erasure keeps it. */
+const isOpen = (b: Booking) => b.statusText === "Upcoming" || b.statusText === "In progress";
+
 function tone(b: Booking): Tone {
-  if (b.statusText === "Upcoming") return "success";
+  if (isOpen(b)) return "success";
   if (b.status === "CANCELLED") return "danger";
   if (b.statusText === "Completed") return "neutral";
   return "warning";
@@ -104,8 +107,8 @@ export function CustomerPortalView({ data, token, onChanged }: { data: Jsonify<C
     );
   }
 
-  const upcoming = data.bookings.filter((b) => b.statusText === "Upcoming").sort((a, b) => a.startTime.localeCompare(b.startTime));
-  const past = data.bookings.filter((b) => b.statusText !== "Upcoming");
+  const upcoming = data.bookings.filter(isOpen).sort((a, b) => a.startTime.localeCompare(b.startTime));
+  const past = data.bookings.filter((b) => !isOpen(b));
   const open = data.bookings.some((b) => b.reference === openReceipt);
 
   function item(b: Booking) {

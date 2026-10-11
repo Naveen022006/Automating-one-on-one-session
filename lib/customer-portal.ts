@@ -5,9 +5,9 @@ import { prisma } from "@/lib/db";
 import { sendAccountEmail } from "@/lib/email";
 import { portalErasedMessage, portalLinkMessage } from "@/lib/email/customer-portal";
 import { reportError } from "@/lib/observability";
-import { eraseCustomerData } from "@/lib/privacy";
+import { eraseCustomerData, isKeptBooking } from "@/lib/privacy";
 import { hit, IDENTITY_RULES } from "@/lib/rate-limit";
-import { buildReceipt, refundedMinorOf, type ReceiptView } from "@/lib/receipts";
+import { buildReceipt, pickReceiptPayment, refundedMinorOf, type ReceiptView } from "@/lib/receipts";
 import { buildSelfServiceUrl } from "@/lib/self-service";
 
 /**
@@ -25,8 +25,6 @@ const EXPORT_MAX = 1_000;
 const COUNT_MAX = 5_000;
 const PAID_STATUSES = ["PAID", "SCHEDULED", "COMPLETED"] as const;
 const MONEY_STATUSES = ["CAPTURED", "REFUNDED"] as const;
-/** The statuses lib/privacy.ts treats as "still live" (not erasable until the session is over). Keep in step with eraseCustomerData. */
-const LIVE_STATUSES = ["HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED"];
 
 export function normalisePortalEmail(input: string): string {
   return input.trim().toLowerCase();
@@ -39,9 +37,18 @@ export function normalisePortalEmail(input: string): string {
 export interface PortalLinkDeps {
   send: typeof sendAccountEmail;
   now: () => Date;
+  /** The bucket of the global cap (tests use their own so they do not share the process-wide one). */
+  globalKey: string;
 }
 
-const defaultLinkDeps: PortalLinkDeps = { send: sendAccountEmail, now: () => new Date() };
+const defaultLinkDeps: PortalLinkDeps = { send: sendAccountEmail, now: () => new Date(), globalKey: "all" };
+
+/** Most portal e-mails the whole platform sends per hour, whoever asks (CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR; default 300). */
+export const DEFAULT_PORTAL_MAIL_CAP_PER_HOUR = 300;
+export function portalMailCapPerHour(): number {
+  const n = Number(process.env.CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_PORTAL_MAIL_CAP_PER_HOUR;
+}
 
 /**
  * Starts the "find your bookings" flow. The caller answers the same thing whatever happens here, so it must not wait for `done`:
@@ -56,12 +63,17 @@ export function requestPortalLink(emailInput: string, overrides: Partial<PortalL
   const done = (async () => {
     try {
       const email = normalisePortalEmail(emailInput);
-      // Limit per address. The key is a hash so the rate-limit store does not collect customers' e-mail addresses. Over the limit:
-      // do nothing, silently (a visible refusal would tell a stranger that the address was asked for before).
-      const limited = await hit(IDENTITY_RULES.customerAccessEmail, hashToken(email));
-      if (limited && !limited.allowed) return;
+      // Existence first: an address with no bookings uses up nothing (so asking about addresses cannot fill anyone's allowance).
       const known = await prisma.booking.findFirst({ where: { customerEmail: email, redactedAt: null }, select: { id: true } });
       if (!known) return;
+      // Then the limit per address. The key is a hash so the rate-limit store does not collect customers' e-mail addresses. Over the
+      // limit: do nothing, silently (a visible refusal would tell a stranger that the address was asked for before).
+      const limited = await hit(IDENTITY_RULES.customerAccessEmail, hashToken(email));
+      if (limited && !limited.allowed) return;
+      // Last, the cap on all portal mail together, so the form cannot be used to send a flood through our provider (and our
+      // sender reputation) even from many addresses and many IPs. Also silent.
+      const cap = await hit({ name: "customer-access-global", limit: portalMailCapPerHour(), windowMs: PORTAL_TOKEN_TTL_MS }, deps.globalKey);
+      if (cap && !cap.allowed) return;
       const now = deps.now();
       const token = randomToken();
       await prisma.customerAccessToken.deleteMany({ where: { email, expiresAt: { lt: now } } });
@@ -114,27 +126,26 @@ export interface PortalBookings {
   blocked: number;
 }
 
-/** Pure: the sentence under a booking's title. `moneyKept` = a captured payment that has not been given back in full. */
+/**
+ * Pure: the sentence under a booking's title. `upcoming` = the session has not started; `inProgress` = it has started and is not over
+ * (the end time is what the erase rule uses, so a session that is running reads "In progress", not "Completed", and is kept by an erasure).
+ */
 export function portalStatusText(args: {
   status: string;
   upcoming: boolean;
+  inProgress?: boolean;
   paid: { amountMinor: number; refundedMinor: number; needsRefund: boolean; refundInFlight: boolean } | null;
 }): string {
-  const { status, upcoming, paid } = args;
+  const { status, upcoming, inProgress = false, paid } = args;
   if (status === "CANCELLED") {
     if (!paid) return "Cancelled";
     if (paid.refundedMinor >= paid.amountMinor) return paid.refundInFlight ? "Cancelled, refund on its way" : "Cancelled and refunded";
     if (paid.refundedMinor > 0) return "Cancelled, partly refunded";
     return paid.needsRefund ? "Cancelled, refund due" : "Cancelled, no refund due";
   }
-  if (status === "PAID" || status === "SCHEDULED") return upcoming ? "Upcoming" : "Completed";
+  if (status === "PAID" || status === "SCHEDULED") return upcoming ? "Upcoming" : inProgress ? "In progress" : "Completed";
   if (status === "COMPLETED") return "Completed";
   return paid && paid.refundedMinor < paid.amountMinor ? "Paid, session not confirmed. Contact the host" : "Not completed";
-}
-
-/** Same rule as `eraseCustomerData`: live (HELD, PENDING_PAYMENT, PAID, SCHEDULED) and not over yet = kept. */
-function isLive(b: { status: string; session: { endTime: Date } }, now: Date): boolean {
-  return LIVE_STATUSES.includes(b.status) && b.session.endTime > now;
 }
 
 async function erasureCounts(email: string, now: Date): Promise<{ erasable: number; blocked: number }> {
@@ -143,7 +154,8 @@ async function erasureCounts(email: string, now: Date): Promise<{ erasable: numb
     select: { status: true, session: { select: { endTime: true } } },
     take: COUNT_MAX,
   });
-  const blocked = rows.filter((b) => isLive(b, now)).length;
+  // The very function eraseCustomerData uses (lib/privacy.ts), so the dialog and the button cannot disagree.
+  const blocked = rows.filter((b) => isKeptBooking(b, now)).length;
   return { erasable: rows.length - blocked, blocked };
 }
 
@@ -176,7 +188,8 @@ export async function loadPortalBookings(email: string, now: Date = new Date()):
 
   const bookings = rows.map((b): PortalBooking => {
     const upcoming = b.session.startTime > now;
-    const first = [...b.payments].sort((x, y) => x.createdAt.getTime() - y.createdAt.getTime())[0];
+    const inProgress = !upcoming && b.session.endTime > now;
+    const first = pickReceiptPayment(b.payments);
     const paid = first
       ? {
           amountMinor: first.amountMinor,
@@ -200,7 +213,7 @@ export async function loadPortalBookings(email: string, now: Date = new Date()):
       startTime: b.session.startTime.toISOString(),
       durationMin: b.session.service.durationMin,
       status: b.status,
-      statusText: portalStatusText({ status: b.status, upcoming, paid }),
+      statusText: portalStatusText({ status: b.status, upcoming, inProgress, paid }),
       manageUrl,
       receipt: buildReceipt(
         { id: b.id, customerName: b.customerName, session: { startTime: b.session.startTime, service: { title: b.session.service.title, influencer: b.session.service.influencer } } },
@@ -320,12 +333,25 @@ export interface PortalErasure {
  * emptied cannot be opened again; while upcoming bookings remain they stay valid so the customer can cancel and finish the job.
  *
  * Records one system audit row without the address, and e-mails the customer a confirmation, only when something was erased.
+ * Two simultaneous calls for one address (two tabs) in this process share one run, so they report, audit and e-mail once; across
+ * processes the per-booking update is conditional on the booking not being erased yet (lib/privacy.ts), so nothing is erased or
+ * counted twice either (a split run can still write two audit rows, each for the bookings it changed).
  */
-export async function erasePortalData(
+const erasing = new Map<string, Promise<PortalErasure>>();
+
+export function erasePortalData(
   email: string,
   now: Date = new Date(),
   deps: { send: typeof sendAccountEmail } = { send: sendAccountEmail },
 ): Promise<PortalErasure> {
+  const running = erasing.get(email);
+  if (running) return running;
+  const run = runErasure(email, now, deps).finally(() => erasing.delete(email));
+  erasing.set(email, run);
+  return run;
+}
+
+async function runErasure(email: string, now: Date, deps: { send: typeof sendAccountEmail }): Promise<PortalErasure> {
   const rows = await prisma.booking.findMany({
     where: { customerEmail: email, redactedAt: null },
     select: { session: { select: { service: { select: { influencerId: true } } } } },

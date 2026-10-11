@@ -37,6 +37,8 @@ export interface ReceiptPayment {
   createdAt: Date;
   providerPaymentId: string | null;
   refundAmountMinor: number | null;
+  /** Set on a payment that could not be honoured (a duplicate or a late capture): it is not the one that bought the session. */
+  needsRefund?: boolean;
 }
 
 /** How much of a payment has been given back (pending refunds count: the money is on its way). */
@@ -46,13 +48,22 @@ export function refundedMinorOf(p: Pick<ReceiptPayment, "status" | "amountMinor"
 }
 
 /**
- * The receipt for a booking, or null when it never had a captured payment. With more than one payment (a double payment is
- * flagged for a refund) the first one is the receipt: it is the payment that bought the session.
+ * The payment that describes the booking: among the captured or refunded ones, a payment that is neither flagged for a refund nor
+ * refunded in full comes first (so a refunded or flagged duplicate never makes a paid session read "Refunded"), then the earliest.
+ */
+export function pickReceiptPayment<T extends Pick<ReceiptPayment, "status" | "amountMinor" | "refundAmountMinor" | "createdAt" | "needsRefund">>(payments: readonly T[]): T | undefined {
+  const rank = (p: T) => (!p.needsRefund && refundedMinorOf(p) < p.amountMinor ? 0 : 1);
+  return payments
+    .filter((p) => p.status === "CAPTURED" || p.status === "REFUNDED")
+    .sort((a, b) => rank(a) - rank(b) || a.createdAt.getTime() - b.createdAt.getTime())[0];
+}
+
+/**
+ * The receipt for a booking, or null when it never had a captured payment. With more than one payment, see pickReceiptPayment.
  * `paidAt` is the payment row's creation time, like the earnings export's `paid_at` (no capture time is stored).
  */
 export function buildReceipt(booking: ReceiptBooking, payments: readonly ReceiptPayment[]): ReceiptView | null {
-  const paid = payments.filter((p) => p.status === "CAPTURED" || p.status === "REFUNDED").sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  const payment = paid[0];
+  const payment = pickReceiptPayment(payments);
   if (!payment) return null;
   const refundedMinor = refundedMinorOf(payment);
   return {

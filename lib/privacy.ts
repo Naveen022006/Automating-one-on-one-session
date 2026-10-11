@@ -2,6 +2,18 @@ import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /**
+ * The ONE definition of "this booking still has a session to deliver": its status holds a seat (a pending request, a hold, a payment
+ * in progress, a paid or scheduled session) and the session is not over yet. Such a booking is NOT erased (the session would break; the
+ * customer or host cancels it first). The customer portal (lib/customer-portal.ts) imports this list, so the host's Erase button and the
+ * customer's cannot disagree; tests/customer-portal.test.ts pins that.
+ */
+export const KEPT_BOOKING_STATUSES: readonly string[] = ["REQUESTED", "HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED"];
+
+export function isKeptBooking(b: { status: string; session: { endTime: Date } }, now: Date): boolean {
+  return KEPT_BOOKING_STATUSES.includes(b.status) && b.session.endTime > now;
+}
+
+/**
  * Erases a customer's personal data (name, email, phone, timezone) from one influencer's bookings, on the
  * customer's request. Payment rows are kept (amounts, provider ids) because they are accounting records; the
  * booking keeps its id, status and times so earnings stay correct. Bookings that are still upcoming and live are
@@ -20,14 +32,15 @@ export async function eraseCustomerData(
     where: { customerEmail: email, redactedAt: null, session: { service: { influencerId } } },
     select: { id: true, status: true, session: { select: { endTime: true } } },
   });
-  const live = (b: (typeof bookings)[number]) =>
-    ["HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED"].includes(b.status) && b.session.endTime > now;
-  const erasable = bookings.filter((b) => !live(b));
+  const erasable = bookings.filter((b) => !isKeptBooking(b, now));
 
+  let erased = 0;
   for (const b of erasable) {
-    await prisma.$transaction([
-      prisma.booking.update({
-        where: { id: b.id },
+    // Conditional on the booking still being un-erased, and counted only when this call changed it: two simultaneous erasures
+    // (two tabs, or the host and the customer) never both report, audit or e-mail the same booking.
+    const changed = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.booking.updateMany({
+        where: { id: b.id, redactedAt: null },
         data: {
           customerName: "Erased customer",
           customerEmail: `erased+${b.id}@invalid.invalid`,
@@ -38,9 +51,12 @@ export async function eraseCustomerData(
           intakeAnswers: Prisma.DbNull,
           redactedAt: now,
         },
-      }),
-      prisma.message.updateMany({ where: { bookingId: b.id }, data: { error: null } }),
-    ]);
+      });
+      if (count === 0) return 0;
+      await tx.message.updateMany({ where: { bookingId: b.id }, data: { error: null } });
+      return count;
+    });
+    erased += changed;
   }
-  return { found: bookings.length, erased: erasable.length, blocked: bookings.length - erasable.length };
+  return { found: bookings.length, erased, blocked: bookings.length - erasable.length };
 }
