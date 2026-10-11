@@ -18,6 +18,19 @@ export type PayView =
   | { state: "booked"; serviceTitle: string; hostName: string; whenText: string; manageUrl: string | null }
   | { state: "requested"; hostName: string; serviceTitle: string }
   | { state: "declined"; hostName: string; hostSlug: string }
+  /**
+   * A booking with money behind it that was cancelled: by the customer from the manage link (the policy decides the refund), or because
+   * a payment arrived after it was cancelled (a full refund is flagged). Never the "declined request, nothing was charged" screen.
+   * `refund`: `issued` = the payment is refunded, `on-its-way` = a refund is flagged, pending or partly paid, `none` = the policy
+   * gives none.
+   */
+  | { state: "cancelled"; hostName: string; hostSlug: string; refund: "issued" | "on-its-way" | "none" }
+  /**
+   * The customer's payment was captured but the booking could not be honoured (amount mismatch, paid after the hold ended and the slot
+   * was taken, paid after the session started, the calendar rejected the event: status FAILED). Not "the time to pay has passed":
+   * that invites a second payment. No pay button, ever.
+   */
+  | { state: "not-completed" }
   | { state: "expired"; hostSlug: string }
   | {
       state: "payable";
@@ -38,7 +51,10 @@ export async function loadPayView(token: string): Promise<PayView> {
   if (!bookingId) return { state: "invalid" };
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } } },
+    include: {
+      payments: { select: { status: true, needsRefund: true, refundAmountMinor: true } },
+      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true } } } } } },
+    },
   });
   // A booking erased on request is as good as missing here too (as in the manage view): its customer asked to be forgotten, and
   // the "already booked" answer would mint a fresh 30-day manage link for it.
@@ -58,8 +74,20 @@ export async function loadPayView(token: string): Promise<PayView> {
     }
     return { state: "booked", serviceTitle: service.title, hostName: host.name, whenText: when, manageUrl };
   }
+  // Money first: whatever the status, a booking with a captured (or refunded) payment is never "declined, you have not been charged",
+  // never "the time to pay has passed" (which invites a second payment), and never gets a pay button.
+  const paid = booking.payments.some((p) => p.status === "CAPTURED" || p.status === "REFUNDED");
+  if (booking.status === "CANCELLED") {
+    if (!paid) return { state: "declined", hostName: host.name, hostSlug: host.slug };
+    const refund = booking.payments.some((p) => p.status === "REFUNDED")
+      ? "issued"
+      : booking.payments.some((p) => p.needsRefund || (p.refundAmountMinor ?? 0) > 0)
+        ? "on-its-way"
+        : "none";
+    return { state: "cancelled", hostName: host.name, hostSlug: host.slug, refund };
+  }
+  if (paid) return { state: "not-completed" };
   if (booking.status === "REQUESTED") return { state: "requested", hostName: host.name, serviceTitle: service.title };
-  if (booking.status === "CANCELLED") return { state: "declined", hostName: host.name, hostSlug: host.slug };
   const payable = (booking.status === "HELD" || booking.status === "PENDING_PAYMENT") && booking.holdExpiresAt !== null && booking.holdExpiresAt > now;
   if (!payable) return { state: "expired", hostSlug: host.slug };
 

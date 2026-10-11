@@ -52,6 +52,23 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
           {data.hostName} could not accept this request. You have not been charged. <Link href={`/${data.hostSlug}/book`}>Choose another time</Link>.
         </Notice>
       );
+    case "cancelled":
+      return (
+        <Notice title="This booking was cancelled" tone="warning">
+          {data.refund === "issued"
+            ? "This booking was cancelled and your payment has been refunded to your original payment method."
+            : data.refund === "on-its-way"
+              ? "This booking was cancelled. A refund is on its way to your original payment method."
+              : "This booking was cancelled. Under its cancellation policy no refund is due; the cancellation email has the details."}{" "}
+          <Link href={`/${data.hostSlug}/book`}>Book another time</Link>.
+        </Notice>
+      );
+    case "not-completed":
+      return (
+        <Notice title="Payment received, but your booking could not be completed" tone="warning">
+          We could not complete this booking, so you will be refunded. Please do not pay again.
+        </Notice>
+      );
     case "expired":
       return (
         <Notice title="The time to pay has passed" tone="danger">

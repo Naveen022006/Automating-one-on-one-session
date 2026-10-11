@@ -17,7 +17,9 @@ export function Component() {
   return (
     <>
       <PageTitle title="Complete your booking" />
-      <QueryGate query={query}>{(data) => <PayView data={data} />}</QueryGate>
+      <QueryGate query={query} framed>
+        {(data) => <PayView data={data} />}
+      </QueryGate>
     </>
   );
 }

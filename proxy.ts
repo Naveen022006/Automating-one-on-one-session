@@ -190,7 +190,25 @@ function handlePage(req: NextRequest): NextResponse {
   return res;
 }
 
+/**
+ * A path that is not valid percent-encoding (`/%E0%A4%A`), or that decodes to a NUL byte (`/api/public/profiles/%00`), is never a
+ * URL of this app. Left alone, Next answers 500 for the first on every dynamic route (pages, `/api/pay/:token`, `/api/manage/:token`,
+ * `/api/public/profiles/:slug`...), and the second reaches Postgres, which refuses a NUL in text and also ends in a 500. A 400 here
+ * is cheap, and keeps these probes out of the error monitoring.
+ */
+function isMalformedPath(pathname: string): boolean {
+  try {
+    return decodeURIComponent(pathname).includes("\u0000");
+  } catch {
+    return true;
+  }
+}
+
+/** `%00` anywhere in a query string (`?serviceId=%00`, `?q=%00`) decodes to a NUL byte: the same Postgres error, the same 400. */
+const NUL_IN_QUERY = /%00/i;
+
 export async function proxy(req: NextRequest): Promise<NextResponse> {
+  if (isMalformedPath(req.nextUrl.pathname) || NUL_IN_QUERY.test(req.nextUrl.search)) return new NextResponse("Bad request", { status: 400, headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
   if (req.nextUrl.pathname.startsWith("/api/")) return handleApi(req);
   return handlePage(req);
 }

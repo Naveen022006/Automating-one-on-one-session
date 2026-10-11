@@ -51,8 +51,12 @@ test("it refuses to start in production, for an app that is not local, on a serv
     for (const appUrl of ["https://app.example.com", "http://192.168.1.5:3000", "http://localhost.evil.com", "http://localhost@evil.com", ""]) {
       await assert.rejects(createMockServer({ port: 0, appUrl, stateFile }), /local address/, appUrl);
     }
-    await assert.rejects(createMockServer({ port: 0, appUrl: "http://localhost:3000", stateFile: path.join(process.cwd(), "mock-state.json") }), /temp directory/);
-    assert.equal(existsSync(path.join(process.cwd(), "mock-state.json")), false);
+    // A path that is outside the OS temp directory wherever the repository is checked out (the working directory itself may be
+    // inside the temp directory, for example in a scratch clone): the root of the temp directory's drive.
+    const outside = path.join(path.parse(tmpdir()).root, "mock-providers-outside-tmp", "mock-state.json");
+    await assert.rejects(createMockServer({ port: 0, appUrl: "http://localhost:3000", stateFile: outside }), /temp directory/);
+    assert.equal(existsSync(outside), false);
+    assert.equal(existsSync(path.dirname(outside)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

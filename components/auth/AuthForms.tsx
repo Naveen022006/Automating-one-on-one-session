@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconCheckCircle } from "@/components/icons";
+import { IconAlertCircle, IconCheckCircle } from "@/components/icons";
+import { focusFirstInvalid } from "@/components/ui/focus";
 import { Alert, Button, Checkbox, Field, Input, describedBy } from "@/components/ui/primitives";
 
 type Errors = Record<string, string | undefined>;
@@ -22,6 +23,21 @@ function fieldErrors(data: { error?: string; field?: string; details?: { fieldEr
   for (const [k, v] of Object.entries(data.details?.fieldErrors ?? {})) out[k] = v?.[0];
   if (data.field && data.error) out[data.field] = data.error;
   return out;
+}
+
+/**
+ * After a failed submit, once the error texts are rendered, put the keyboard (and a screen reader) on the first field that has one.
+ * Without it the focus stays on the submit button while the message sits above the fold, which on a phone looks like "nothing
+ * happened". Bump the returned counter in the same batch as the state that holds the errors: the effect then runs after they have
+ * been committed to the DOM, also when the errors come from a server answer (a timer or an animation frame could run before React).
+ */
+function useFocusFirstInvalid() {
+  const formRef = useRef<HTMLFormElement>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (tick > 0) focusFirstInvalid(formRef.current);
+  }, [tick]);
+  return { formRef, focusOnError: () => setTick((n) => n + 1) };
 }
 
 export function LoginForm({ next, notice }: { next?: string; notice?: string }) {
@@ -96,6 +112,7 @@ export function RegisterForm() {
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const origin = typeof window !== "undefined" ? window.location.host : "";
+  const { formRef, focusOnError } = useFocusFirstInvalid();
 
   useEffect(() => {
     if (!slugTouched) setSlug(suggest(name));
@@ -122,7 +139,7 @@ export function RegisterForm() {
     if (!terms) local.acceptTerms = "Please accept the Terms and Privacy Policy.";
     if (slugStatus && !slugStatus.available) local.slug = slugStatus.problem ?? "Choose another address.";
     setErrors(local);
-    if (Object.keys(local).length) return;
+    if (Object.keys(local).length) return focusOnError();
     setBusy(true);
     setFormError(null);
     const r = await post("/api/auth/register", { name, email, password, slug, timezone, acceptTerms: terms });
@@ -130,14 +147,18 @@ export function RegisterForm() {
       setBusy(false);
       const fe = fieldErrors(r.data);
       setErrors(fe);
-      if (!Object.keys(fe).length) setFormError(r.data.error ?? "Could not create your account.");
+      if (Object.keys(fe).length) focusOnError();
+      else setFormError(r.data.error ?? "Could not create your account.");
       return;
     }
     window.location.assign(r.data.redirect ?? "/onboarding");
   }
 
+  // The live "taken / reserved" answer counts as an error of the field too: the input is marked invalid and tied to the message.
+  const slugError = errors.slug ?? (slugStatus && !slugStatus.available ? slugStatus.problem : null);
+
   return (
-    <form className="stack" onSubmit={submit} noValidate>
+    <form ref={formRef} className="stack" onSubmit={submit} noValidate>
       {formError && <Alert tone="danger">{formError}</Alert>}
       <Field id="reg-name" label="Your name" error={errors.name}>
         <Input {...describedBy("reg-name", { error: errors.name })} autoComplete="name" required value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
@@ -151,13 +172,13 @@ export function RegisterForm() {
       <Field
         id="reg-slug"
         label="Booking page address"
-        error={errors.slug ?? (slugStatus && !slugStatus.available ? slugStatus.problem : null)}
+        error={slugError}
         help={slugStatus?.available ? "Available." : "Lowercase letters, numbers and hyphens. You can change it later."}
       >
         <div className="input-group">
           <span className="input-group__addon">{origin || "yoursite"}/</span>
           <Input
-            {...describedBy("reg-slug", { error: errors.slug, help: true })}
+            {...describedBy("reg-slug", { error: slugError, help: true })}
             value={slug}
             autoComplete="off"
             spellCheck={false}
@@ -173,6 +194,7 @@ export function RegisterForm() {
           checked={terms}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTerms(e.target.checked)}
           aria-invalid={errors.acceptTerms ? true : undefined}
+          aria-describedby={errors.acceptTerms ? "reg-terms-error" : undefined}
           label={
             <>
               I agree to the <Link href="/terms" target="_blank">Terms of Service</Link> and{" "}
@@ -180,7 +202,12 @@ export function RegisterForm() {
             </>
           }
         />
-        {errors.acceptTerms && <p className="field__error">{errors.acceptTerms}</p>}
+        {errors.acceptTerms && (
+          <p className="field__error" id="reg-terms-error" role="alert">
+            <IconAlertCircle size={16} />
+            {errors.acceptTerms}
+          </p>
+        )}
       </div>
       <Button type="submit" variant="primary" size="lg" block loading={busy}>
         Create account

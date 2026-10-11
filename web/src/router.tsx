@@ -71,8 +71,13 @@ const routes: RouteObject[] = [
   {
     element: <RootLayout />,
     errorElement: <ErrorPage />,
-    // Shown while the first route's code is loading (a lazy route cannot render before its module is in).
-    hydrateFallbackElement: <PageLoading />,
+    // Shown while the first route's code is loading (a lazy route cannot render before its module is in). Inside a container,
+    // so the skeleton has the page's margins instead of sitting against the left edge of the window.
+    hydrateFallbackElement: (
+      <div className="container container--narrow">
+        <PageLoading />
+      </div>
+    ),
     children: [
       // --- public
       leaf("landing"),

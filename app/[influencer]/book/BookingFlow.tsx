@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  IconAlertCircle,
   IconCalendar,
   IconCheckCircle,
   IconChevronLeft,
@@ -23,6 +24,7 @@ import {
   ymd,
   type SlotOption,
 } from "@/components/ui/scheduling";
+import { focusFirstInvalid, headingToFocus } from "@/components/ui/focus";
 import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@/components/ui/primitives";
 import type { IntakeQuestion } from "@/lib/intake";
 
@@ -186,6 +188,24 @@ export function BookingFlow({
     };
   }, [service, date, tz]);
 
+  // After a step change, move focus to the new step's heading: the button that was pressed is gone, and without this the keyboard
+  // focus falls back to the top of the document (and a screen reader reads nothing about the new step). Only when the step really
+  // changed since the last one seen (components/ui/focus.ts): never on the page load, also not in StrictMode's second effect pass.
+  const lastStep = useRef(step);
+  useEffect(() => {
+    const id = headingToFocus(lastStep.current, step, requested !== null);
+    lastStep.current = step;
+    if (id) document.getElementById(id)?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change of step moves focus
+  }, [step]);
+
+  // A failed submit: focus the first field marked invalid. Bumped in the same batch as the errors, so this runs after they are in the DOM.
+  const detailsForm = useRef<HTMLFormElement>(null);
+  const [focusErrors, setFocusErrors] = useState(0);
+  useEffect(() => {
+    if (focusErrors > 0) focusFirstInvalid(detailsForm.current);
+  }, [focusErrors]);
+
   // Hold countdown.
   useEffect(() => {
     if (!hold || step !== 3) return;
@@ -252,7 +272,12 @@ export function BookingFlow({
       if (q.required && !(answers[q.id] ?? "").trim()) local[`q:${q.id}`] = "Please answer this question.";
     }
     setErrors(local);
-    if (Object.keys(local).length) return;
+    if (Object.keys(local).length) {
+      // Put the keyboard (and a screen reader) on the first field that has an error once the texts are rendered (the effect below),
+      // so a failed submit is never silent when the message is above the fold.
+      setFocusErrors((n) => n + 1);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -269,7 +294,10 @@ export function BookingFlow({
           setDate((d) => d);
           setStep(1);
         } else {
-          if (data.answerErrors) setErrors(Object.fromEntries(Object.entries(data.answerErrors as Record<string, string>).map(([k, v]) => [`q:${k}`, v])));
+          if (data.answerErrors) {
+            setErrors(Object.fromEntries(Object.entries(data.answerErrors as Record<string, string>).map(([k, v]) => [`q:${k}`, v])));
+            setFocusErrors((n) => n + 1);
+          }
           setError(data.error ?? "Could not hold that time.");
         }
         return;
@@ -402,7 +430,7 @@ export function BookingFlow({
 
           {step === 0 && (
             <section aria-labelledby="pick-service" className="stack">
-              <h2 id="pick-service" className="section-title">
+              <h2 id="pick-service" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                 Choose a session
               </h2>
               {services.length === 0 && <p className="muted">There are no sessions to book right now.</p>}
@@ -426,7 +454,7 @@ export function BookingFlow({
           {step === 1 && service && (
             <section aria-labelledby="pick-time" className="stack">
               <div className="row row--between">
-                <h2 id="pick-time" className="section-title">
+                <h2 id="pick-time" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                   Pick a date and time
                 </h2>
                 {services.length > 1 && (
@@ -508,9 +536,9 @@ export function BookingFlow({
 
           {step === 2 && service && slot && (
             <section aria-labelledby="your-details">
-              <form className="stack" onSubmit={submitDetails} noValidate>
+              <form ref={detailsForm} className="stack" onSubmit={submitDetails} noValidate>
                 <div className="row row--between">
-                  <h2 id="your-details" className="section-title">
+                  <h2 id="your-details" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                     Your details
                   </h2>
                   <Button variant="ghost" size="sm" onClick={() => setStep(1)}>
@@ -533,9 +561,15 @@ export function BookingFlow({
                         checked={optIn}
                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOptIn(e.target.checked)}
                         aria-invalid={errors.optIn ? true : undefined}
+                        aria-describedby={errors.optIn ? "optin-error" : undefined}
                         label="Send my meeting link and reminders on WhatsApp (SMS if WhatsApp fails)."
                       />
-                      {errors.optIn && <p className="field__error">{errors.optIn}</p>}
+                      {errors.optIn && (
+                        <p className="field__error" id="optin-error" role="alert">
+                          <IconAlertCircle size={16} />
+                          {errors.optIn}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </Card>
@@ -591,7 +625,7 @@ export function BookingFlow({
 
           {step === 3 && service && slot && hold && (
             <section aria-labelledby="pay-title" className="stack">
-              <h2 id="pay-title" className="section-title">
+              <h2 id="pay-title" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                 {expired ? "Your hold has ended" : payState === "confirming" ? "Confirming your payment" : "Pay to confirm"}
               </h2>
               <Card>
@@ -643,7 +677,7 @@ export function BookingFlow({
               </Alert>
               <Card>
                 <div className="stack">
-                  <h2 id="requested-title" className="section-title">
+                  <h2 id="requested-title" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                     What happens next
                   </h2>
                   <ol className="stack stack--sm text-sm" style={{ paddingLeft: 20, margin: 0 }}>
@@ -680,7 +714,7 @@ export function BookingFlow({
               )}
               <Card>
                 <div className="stack">
-                  <h2 id="done-title" className="section-title">
+                  <h2 id="done-title" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                     What happens next
                   </h2>
                   {meetLink ? (
