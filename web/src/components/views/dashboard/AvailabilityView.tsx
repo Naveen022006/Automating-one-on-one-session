@@ -3,7 +3,7 @@ import { BlockedDays, WeeklyHours } from "@web/components/app/AvailabilityEditor
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardAvailabilityView } from "@/lib/views/dashboard-availability";
 
-/** The Availability page body. Rendered by the old Next page and by the SPA page from the same JSON. */
+/** The Availability page body. Rendered by the SPA page from the endpoint's JSON. */
 export function AvailabilityView({ data }: { data: Jsonify<DashboardAvailabilityView> }) {
   return (
     <div className="stack stack--lg">

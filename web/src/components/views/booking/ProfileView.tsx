@@ -7,7 +7,7 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { PublicProfile } from "@/lib/public-profile";
 
 /**
- * An influencer's public page (`/:slug`). Rendered by the old Next page and by the SPA page from the same JSON
+ * An influencer's public page (`/:slug`). Rendered by the SPA page from the endpoint's JSON
  * (GET /api/public/profiles/:slug). `data.preview` is true when the owner looks at a page that is not live yet.
  */
 export function ProfileView({ data: profile }: { data: Jsonify<PublicProfile> }) {

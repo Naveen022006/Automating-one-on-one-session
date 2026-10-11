@@ -1,7 +1,7 @@
 import { LegalPage } from "@web/components/site/LegalPage";
 import { SUPPORT_EMAIL } from "@/lib/brand";
 
-/** The Refund and Cancellation Policy text. The only copy: the old Next page and the SPA page both render this view. */
+/** The Refund and Cancellation Policy text. The only copy of the text. */
 export function RefundPolicyView() {
   return (
     <LegalPage title="Refund and Cancellation Policy" updated="October 2026">

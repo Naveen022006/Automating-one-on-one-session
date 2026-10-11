@@ -28,8 +28,8 @@ function at(iso: string) {
 }
 
 /**
- * The Messages page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA page
- * while it still shows the previous filter or page and the next one is loading (the old page leaves it undefined).
+ * The Messages page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA page
+ * while it still shows the previous filter or page and the next one is loading.
  */
 export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesView>; busy?: boolean }) {
   const { status } = data;

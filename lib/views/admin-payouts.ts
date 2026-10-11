@@ -3,8 +3,8 @@ import { prisma } from "@/lib/db";
 import { fourEyesEnabled, formatFeePercent, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor } from "@/lib/payouts";
 
 /**
- * The admin Payouts page's data, for the old Next page and GET /api/admin/payouts. The caller has already passed the admin
- * gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin Payouts page's data, for GET /api/admin/payouts. The caller has already passed the admin
+ * gate (`requireAdminMfa()`).
  *
  * The approval fields of every row are computed HERE, for the administrator who is asking (`viewerEmail`): the creator of a
  * payout cannot approve it, a second administrator can. The browser never decides that; it only shows what it is given.

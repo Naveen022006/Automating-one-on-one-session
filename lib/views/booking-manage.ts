@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { describeRefundPolicy, refundDecision } from "@/lib/refund-policy";
 import { verifySelfServiceToken } from "@/lib/self-service";
 
-/** What the manage page's client component (app/manage/[token]/ManageBooking.tsx) shows and acts on. */
+/** What the manage page's client component (web/src/pages/booking/ManageBooking.tsx) shows and acts on. */
 export interface ManageBookingData {
   /** The self-service token from the URL: the component posts its actions to /api/manage/<token>. */
   token: string;
@@ -26,8 +26,8 @@ export interface ManageBookingData {
 /**
  * Public customer self-service page. The signed token in the path is verified before any booking is loaded or shown;
  * an invalid or expired token is `expired`, a valid one for a missing or erased booking is `not-found`. A valid token
- * lets the customer reschedule or cancel their own booking. One function, two callers: the old Next page and
- * GET /api/manage/:token (403 / 404 / 200), so they cannot disagree.
+ * lets the customer reschedule or cancel their own booking. Served by
+ * GET /api/manage/:token (403 / 404 / 200).
  */
 export type ManageView = { state: "expired" } | { state: "not-found" } | { state: "ok"; booking: ManageBookingData };
 

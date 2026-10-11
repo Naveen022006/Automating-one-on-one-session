@@ -19,7 +19,7 @@ export function setFieldValues(form: { elements: { namedItem(name: string): unkn
 /**
  * A filter form (search box, date range). Without JavaScript it is a plain GET form: the browser loads `action?field=value`.
  * Once the page is interactive it navigates to that same URL through the router instead, so the SPA changes page without a
- * full reload and the old Next page does a soft navigation. Submitting the URL you are already on looks again.
+ * full reload. Submitting the URL you are already on looks again.
  *
  * The fields are uncontrolled (`defaultValue`). `values` is what the page was actually loaded for (the server trims a search
  * and fills in default dates); when it changes after the first render, for example on browser Back, the fields are set to it,

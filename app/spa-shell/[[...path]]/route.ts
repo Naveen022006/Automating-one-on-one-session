@@ -31,7 +31,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const nonce = req.headers.get("x-nonce");
   if (!nonce) return plain(404, "Not found");
 
-  // A request that carries Next's RSC / prefetch headers (a stale tab from before the old pages were removed, or a crawler
+  // A request that carries Next's RSC / prefetch headers (a stale tab from before the Next pages were removed, or a crawler
   // replaying one) is not a page load. Next strips its flight headers from the request the PROXY sees, so the proxy cannot
   // tell; this handler can. Answer with an empty 204 (no profile lookup, no template): a non-RSC answer makes Next's client
   // fall back to a normal full page load, which then requests this URL again WITHOUT the header and gets the real shell.

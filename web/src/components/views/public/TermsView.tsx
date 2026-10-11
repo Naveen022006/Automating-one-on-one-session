@@ -1,7 +1,7 @@
 import { LegalPage } from "@web/components/site/LegalPage";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
 
-/** The Terms of Service text. The only copy: the old Next page and the SPA page both render this view. */
+/** The Terms of Service text. The only copy of the text. */
 export function TermsView() {
   return (
     <LegalPage title="Terms of Service" updated="October 2026">

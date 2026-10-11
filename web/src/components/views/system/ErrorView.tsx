@@ -3,7 +3,7 @@ import { FocusedLayout } from "@web/components/site/SiteChrome";
 import { Button, ButtonLink } from "@web/components/ui/primitives";
 
 /**
- * The "something went wrong" screen. Rendered by the old Next `app/error.tsx` and by the SPA's route `errorElement`
+ * The "something went wrong" screen. Rendered by the SPA's route `errorElement`
  * (web/src/pages/ErrorPage.tsx), with the same copy. Logs `[ui:error]` once per error, like the old boundary did.
  */
 export function ErrorView({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {

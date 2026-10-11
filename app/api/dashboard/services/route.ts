@@ -62,7 +62,7 @@ function meetLimitWarning(type: string | undefined, durationMin: number | undefi
     : null;
 }
 
-// The Services page's data for the SPA (the old Next page renders from the same loadServicesView): this influencer's
+// The Services page's data for the SPA (loadServicesView is the one source): this influencer's
 // services only, hidden ones included.
 export async function GET() {
   const auth = await requireApiAuth();

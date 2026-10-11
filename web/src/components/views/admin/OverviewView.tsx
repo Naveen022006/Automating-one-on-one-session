@@ -12,7 +12,7 @@ function money(list: Money) {
   return list.map((m) => formatMoney(m.amountMinor, m.currency)).join(" · ");
 }
 
-/** The admin console's Overview page. Rendered by the old Next page and by the SPA page from the same JSON. */
+/** The admin console's Overview page. Rendered by the SPA page from the endpoint's JSON. */
 export function OverviewView({ data }: { data: Jsonify<AdminOverviewView> }) {
   const { overview: o, recentAudit, health } = data;
   const b = o.bookingsByStatus;

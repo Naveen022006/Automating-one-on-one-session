@@ -12,8 +12,8 @@ function day(iso: string | null) {
 }
 
 /**
- * The Customers page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA page
- * while it still shows the previous result and the next one is loading (the old page leaves it undefined).
+ * The Customers page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA page
+ * while it still shows the previous result and the next one is loading.
  */
 export function CustomersView({ data, busy }: { data: Jsonify<DashboardCustomersView>; busy?: boolean }) {
   const { q, customers } = data;

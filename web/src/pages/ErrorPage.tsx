@@ -4,8 +4,8 @@ import { PageTitle } from "../lib/head";
 import { NotFound } from "./NotFound";
 
 /**
- * The router's `errorElement`: what app/error.tsx was. A crash while rendering a route (or loading its code) lands here
- * instead of a blank page. Same copy as the Next page (shared ErrorView, which logs `[ui:error]`); "Try again" reloads the
+ * The router's `errorElement`. A crash while rendering a route (or loading its code) lands here
+ * instead of a blank page. The screen is the shared ErrorView (it logs `[ui:error]`); "Try again" reloads the
  * page, which is the reliable reset for a broken route. A crash OUTSIDE the router is caught by GlobalError.
  */
 export function ErrorPage() {

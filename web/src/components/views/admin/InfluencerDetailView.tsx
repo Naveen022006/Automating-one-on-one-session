@@ -7,7 +7,7 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { AdminInfluencerView } from "@/lib/views/admin-influencer";
 
 /**
- * The admin console's Influencer page. Rendered by the old Next page and by the SPA page from the same JSON. The payout
+ * The admin console's Influencer page. Rendered by the SPA page from the endpoint's JSON. The payout
  * details it shows are the MASKED ones; the full number only appears after the audited "Reveal full details" action
  * (PayoutPanel), and the approval buttons of each payout are the VIEWING administrator's (computed on the server).
  */

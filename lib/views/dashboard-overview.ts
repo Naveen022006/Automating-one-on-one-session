@@ -5,8 +5,8 @@ import type { CurrencyEarnings } from "@/lib/dashboard";
 import { CONNECTION_KEYS, loadReadiness, type Readiness } from "@/lib/readiness";
 
 /**
- * The dashboard Overview's data. One function, two callers: the old Next page (app/dashboard/page.tsx) and
- * GET /api/dashboard/overview for the SPA. The caller has already authenticated (`requirePageAuth` / `requireApiAuth`).
+ * The dashboard Overview's data. Served by
+ * GET /api/dashboard/overview. The caller has already authenticated (`requireApiAuth`).
  *
  * The DTO holds what the page renders and nothing else: getOverview() also returns the Google connection status and a
  * per-service earnings breakdown, which this page never showed, so they are not sent.

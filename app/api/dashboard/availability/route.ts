@@ -31,7 +31,7 @@ const updateSchema = z.object({
 
 const deleteSchema = z.object({ ruleId: z.string().min(1) });
 
-// The Availability page's data for the SPA (the old Next page renders from the same loadAvailabilityView): the
+// The Availability page's data for the SPA (loadAvailabilityView is the one source): the
 // influencer's time zone, weekly rules and blocked days.
 export async function GET() {
   const auth = await requireApiAuth();

@@ -9,7 +9,7 @@ import type { GoogleStatusView, OnboardingData, ProfileData, WhatsAppView } from
 
 /**
  * Everything the onboarding wizard needs, except what lives in the URL: the step (`?step=`) and the Google outcome
- * (`?google=`) are the page's props. Shared by the old Next page (app/onboarding/page.tsx) and GET
+ * (`?google=`) are the page's props. Served by GET
  * /api/dashboard/onboarding. Composed from the same loaders as the Services, Availability, Payouts and Settings pages,
  * so the wizard shows exactly what those pages show.
  *

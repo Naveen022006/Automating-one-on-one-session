@@ -1,8 +1,8 @@
 import { listAudit, parsePage } from "@/lib/admin/data";
 
 /**
- * The admin Audit log page's data, for the old Next page and GET /api/admin/audit. The caller has already passed the admin
- * gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin Audit log page's data, for GET /api/admin/audit. The caller has already passed the admin
+ * gate (`requireAdminMfa()`).
  *
  * One page of `PAGE_SIZE` (25) entries per request, newest first, and the page number is bounded by `parsePage` (a whole
  * number below 10,000, else 1): there is no way to read the whole log in one call. The free-form `detail` column is never

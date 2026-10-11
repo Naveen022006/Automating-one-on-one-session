@@ -4,7 +4,7 @@ import { PageTitle } from "../../lib/head";
 
 /**
  * Under the GuestOnly layout route: a signed-in visitor never sees this form (the guard sends them on to a validated `next`).
- * `next` and `reset` go to the view as the raw query values, like the old page's `searchParams`.
+ * `next` and `reset` go to the view as the raw query values, as the form needs them.
  */
 export function Component() {
   const [params] = useSearchParams();

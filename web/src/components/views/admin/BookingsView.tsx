@@ -20,8 +20,8 @@ const LABEL: Record<BookingStatusFilter, string> = {
 };
 
 /**
- * The admin Bookings page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA
- * page while it still shows the previous filter or page and the next one is loading (the old page leaves it undefined).
+ * The admin Bookings page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA
+ * page while it still shows the previous filter or page and the next one is loading.
  */
 export function BookingsView({ data, busy }: { data: Jsonify<AdminBookingsView>; busy?: boolean }) {
   const { status } = data;

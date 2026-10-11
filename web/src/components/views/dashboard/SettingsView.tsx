@@ -7,7 +7,7 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardSettingsView } from "@/lib/views/dashboard-settings";
 
 /**
- * The Settings page body. Rendered by the old Next page and by the SPA page from the same JSON. `outcome` is the
+ * The Settings page body. Rendered by the SPA page from the endpoint's JSON. `outcome` is the
  * `?google=` value Google's return trip put in the URL (a banner above the Google panel).
  */
 export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSettingsView>; outcome: string | null }) {

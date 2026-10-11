@@ -58,8 +58,8 @@ const FAQ = [
 ];
 
 /**
- * The landing page body (header, sections, footer). Rendered by the old Next page (app/page.tsx, which adds the
- * Organization JSON-LD) and by the SPA page; `loggedIn` only switches the header buttons.
+ * The landing page body (header, sections, footer). Rendered by the SPA page (the Organization JSON-LD is
+ * written into the shell's head by the server); `loggedIn` only switches the header buttons.
  */
 export function LandingView({ loggedIn }: { loggedIn: boolean }) {
   return (

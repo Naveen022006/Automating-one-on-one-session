@@ -6,7 +6,7 @@ import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardPayoutsView } from "@/lib/views/dashboard-payouts";
 
-/** The Payouts page body. Rendered by the old Next page and by the SPA page from the same JSON. */
+/** The Payouts page body. Rendered by the SPA page from the endpoint's JSON. */
 export function PayoutsView({ data }: { data: Jsonify<DashboardPayoutsView> }) {
   const { account, summary, feePercentText } = data;
 

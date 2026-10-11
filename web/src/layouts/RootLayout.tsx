@@ -3,8 +3,8 @@ import { FocusOnNavigate, HashScroller, RouteAnnouncer } from "../lib/a11y";
 import { scrollRestorationKey } from "../lib/scroll";
 
 /**
- * The root of every route: what app/layout.tsx's <body> contained (the skip link) plus the route-change behaviour Next
- * provided (scroll restoration, announcements, focus, #hash targets; see lib/a11y.tsx).
+ * The root of every route: the skip link plus the route-change behaviour a page navigation needs
+ * (scroll restoration, announcements, focus, #hash targets; see lib/a11y.tsx).
  */
 export function RootLayout() {
   return (

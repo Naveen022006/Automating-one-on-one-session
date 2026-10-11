@@ -47,7 +47,7 @@
   --text-subtle: var(--gray-500);
   --focus-ring: 0 0 0 3px var(--accent-ring);
 
-  /* Type: serif display + sans UI (loaded with next/font in app/layout.tsx) */
+  /* Type: serif display + sans UI (@fontsource-variable, see styles.css and spa.css) */
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: var(--font-newsreader), Georgia, "Times New Roman", serif;
   /* Modular scale, ratio 1.2 from 16px */

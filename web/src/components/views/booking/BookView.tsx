@@ -7,7 +7,7 @@ import type { PublicProfile } from "@/lib/public-profile";
 
 /**
  * The booking flow page (`/:slug/book`). `initialServiceId` is the `?service=` search parameter, passed in by the page
- * (the old Next page and the SPA page each read the URL themselves). The flow is keyed by the host, so a client-side
+ * (the SPA page reads the URL itself). The flow is keyed by the host, so a client-side
  * move from one host's booking page to another's can never carry half a booking over.
  */
 export function BookView({ data: profile, initialServiceId }: { data: Jsonify<PublicProfile>; initialServiceId: string | null }) {

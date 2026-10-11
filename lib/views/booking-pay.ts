@@ -4,8 +4,8 @@ import { buildSelfServiceUrl, signBookingPollToken, verifyPayToken } from "@/lib
 import { decodeSpaParam } from "@/lib/spa/routes";
 
 /**
- * The page behind the payment link emailed after an influencer approves a booking request. One function, two callers:
- * the old Next page (app/pay/[token]/page.tsx) and GET /api/pay/:token for the SPA, so they cannot disagree.
+ * The page behind the payment link emailed after an influencer approves a booking request. Served by
+ * GET /api/pay/:token.
  *
  * The signed link only identifies the booking; what can be done depends on the booking's state when the page loads, so
  * the answer is a union by `state` and is always a normal 200 (an invalid link is a screen, not an HTTP error). The

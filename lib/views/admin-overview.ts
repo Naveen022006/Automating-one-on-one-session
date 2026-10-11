@@ -2,9 +2,9 @@ import { getOverview, listAudit, type MoneyByCurrency } from "@/lib/admin/data";
 import { getHealthReport, type HealthCondition } from "@/lib/health";
 
 /**
- * The admin console's Overview page (everything across all influencers). One function, two callers: the old Next page
- * (app/admin/(console)/page.tsx) and GET /api/admin/overview for the SPA. The caller has already passed the admin gate
- * (`requireAdminPage` / `requireAdminMfa()`). Hand-picked fields only: what the page renders and nothing else (no audit
+ * The admin console's Overview page (everything across all influencers). Served by
+ * GET /api/admin/overview. The caller has already passed the admin gate
+ * (`requireAdminMfa()`). Hand-picked fields only: what the page renders and nothing else (no audit
  * `detail`, no IP addresses, no ids of other records).
  */
 export interface AdminOverviewView {

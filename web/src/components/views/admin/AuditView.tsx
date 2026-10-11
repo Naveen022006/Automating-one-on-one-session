@@ -5,8 +5,8 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { AdminAuditView } from "@/lib/views/admin-audit";
 
 /**
- * The admin Audit log page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA
- * page while it still shows the previous page and the next one is loading (the old page leaves it undefined).
+ * The admin Audit log page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA
+ * page while it still shows the previous page and the next one is loading.
  */
 export function AuditView({ data, busy }: { data: Jsonify<AdminAuditView>; busy?: boolean }) {
   // Pagination is made of links that no longer reload the page, so nothing announces the new page: this line does (a live region whose text changes).

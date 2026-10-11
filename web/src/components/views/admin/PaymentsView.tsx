@@ -17,8 +17,8 @@ const VIEWS: { key: PaymentViewKey; label: string }[] = [
 ];
 
 /**
- * The admin Payments page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA
- * page while it still shows the previous tab or page and the next one is loading (the old page leaves it undefined).
+ * The admin Payments page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA
+ * page while it still shows the previous tab or page and the next one is loading.
  */
 export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>; busy?: boolean }) {
   const { view, counts } = data;

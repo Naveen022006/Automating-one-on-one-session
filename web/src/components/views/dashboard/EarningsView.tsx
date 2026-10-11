@@ -7,8 +7,8 @@ import type { DashboardEarningsView } from "@/lib/views/dashboard-earnings";
 import { GetForm } from "./GetForm";
 
 /**
- * The Earnings page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the SPA page
- * while it still shows the previous range and the next one is loading (the old page leaves it undefined).
+ * The Earnings page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA page
+ * while it still shows the previous range and the next one is loading.
  */
 export function EarningsView({ data, busy }: { data: Jsonify<DashboardEarningsView>; busy?: boolean }) {
   const { from, to, summary } = data;

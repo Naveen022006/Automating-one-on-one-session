@@ -9,7 +9,7 @@ import { InfluencerSearchForm } from "./InfluencerSearchForm";
 
 /**
  * The admin console's Influencers list. `q` is the search text from the URL (the data already is the matching page). `busy` is
- * set by the SPA page while it still shows the previous search and the next one is loading (the old page leaves it undefined).
+ * set by the SPA page while it still shows the previous search and the next one is loading.
  */
 export function InfluencersView({ data, q, busy }: { data: Jsonify<AdminInfluencersView>; q?: string; busy?: boolean }) {
   const href = (p: number) => `/admin/influencers?page=${p}${q ? `&q=${encodeURIComponent(q)}` : ""}`;

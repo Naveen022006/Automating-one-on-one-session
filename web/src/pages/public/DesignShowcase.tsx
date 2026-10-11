@@ -70,7 +70,7 @@ function Showcase() {
           <Badge tone="warning">Development only</Badge>
         </div>
         <h1 className="display" style={{ fontSize: "var(--text-3xl)" }}>Design system</h1>
-        <p className="muted prose">Every component and state, built from the tokens in app/styles/tokens.css.</p>
+        <p className="muted prose">Every component and state, built from the tokens in web/src/styles/tokens.css.</p>
 
         <Section title="Colour">
           <div className="row" style={{ alignItems: "flex-start" }}>

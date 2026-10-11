@@ -15,7 +15,7 @@ const FILTERS: { key: PayoutFilter; label: string }[] = [
 ];
 
 /**
- * The admin Payouts page body. Rendered by the old Next page and by the SPA page from the same JSON; the approval buttons of
+ * The admin Payouts page body. Rendered by the SPA page from the endpoint's JSON; the approval buttons of
  * each row come from the server, worked out for the administrator who is looking (the creator of a payout cannot approve it).
  * `busy` is set by the SPA page while it still shows the previous tab or page and the next one is loading.
  */

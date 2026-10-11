@@ -16,7 +16,7 @@ const VIEWS: { value: SessionView; label: string; empty: [string, string] }[] = 
 /**
  * The Sessions page body. `bookingId` is the `?booking=` URL parameter: it opens that booking's drawer when the board first
  * appears (a link from the Messages page). `busy` is set by the SPA page while it still shows the previous tab or page and the
- * next one is loading (the old page leaves it undefined).
+ * next one is loading.
  */
 export function SessionsView({ data, bookingId = null, busy }: { data: Jsonify<DashboardSessionsView>; bookingId?: string | null; busy?: boolean }) {
   const current = VIEWS.find((v) => v.value === data.view) ?? VIEWS[0];

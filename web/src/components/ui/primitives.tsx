@@ -1,6 +1,6 @@
 /**
  * Server-safe design-system primitives (no hooks). Client-only components live next to this file.
- * Styling comes from app/styles/components.css; every value traces back to app/styles/tokens.css.
+ * Styling comes from styles/components.css; every value traces back to styles/tokens.css.
  */
 import { AppLink } from "@web/lib/link";
 import type { ReactNode } from "react";

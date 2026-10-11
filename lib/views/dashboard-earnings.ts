@@ -3,7 +3,7 @@ import { earningsPayments } from "@/lib/dashboard-data";
 import { EARNINGS_ROW_CAP, parseReportDay } from "./dashboard-params";
 
 /**
- * The Earnings page's data, for the old Next page and GET /api/dashboard/earnings. Scoped to the influencer id from the
+ * The Earnings page's data, for GET /api/dashboard/earnings. Scoped to the influencer id from the
  * login session. Days are UTC calendar days ("by the date the payment was made (UTC)").
  */
 

@@ -1,7 +1,7 @@
 import { LegalPage } from "@web/components/site/LegalPage";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
 
-/** The Privacy Policy text. The only copy: the old Next page and the SPA page both render this view. */
+/** The Privacy Policy text. The only copy of the text. */
 export function PrivacyView() {
   return (
     <LegalPage title="Privacy Policy" updated="October 2026">

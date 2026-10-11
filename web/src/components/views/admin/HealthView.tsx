@@ -18,8 +18,8 @@ const STATUS: Record<ConditionStatus, { label: string; tone: Tone }> = {
 const when = (d: string | number) => new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" });
 
 /**
- * The admin System health page body. Rendered by the old Next page and by the SPA page from the same JSON. `busy` is set by the
- * SPA page while a refresh is running (the old page reloads instead and leaves it undefined).
+ * The admin System health page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the
+ * SPA page while a refresh is running (otherwise undefined).
  */
 export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; busy?: boolean }) {
   const { report, thresholds, worker, recovery, queues, recovered, failed } = data;
@@ -36,7 +36,7 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
             variant="secondary"
             size="sm"
             // While a measurement runs the control is inert (a click, with the mouse or the keyboard, would start another one on top of it:
-            // the SPA's link component refetches on a click on the current page). The old page reloads instead and never sets `busy`.
+            // the SPA's link component refetches on a click on the current page).
             {...(busy ? { "aria-disabled": true, style: { pointerEvents: "none" as const }, onClick: (e: { preventDefault(): void }) => e.preventDefault() } : {})}
           >
             {busy ? "Refreshing…" : "Refresh"}

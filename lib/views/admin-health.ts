@@ -3,8 +3,8 @@ import { collectSnapshot, evaluateHealth, formatAge, thresholdsFromEnv, type Con
 import { QUEUE_NAMES } from "@/lib/queue";
 
 /**
- * The admin System health page's data, for the old Next page and GET /api/admin/health. The caller has already passed the
- * admin gate (`requireAdminPage` / `requireAdminMfa()`).
+ * The admin System health page's data, for GET /api/admin/health. The caller has already passed the
+ * admin gate (`requireAdminMfa()`).
  *
  * It sends the judged conditions and the numbers the page shows, never the raw environment: of the thresholds only the four
  * the page prints, and every free-text field that can carry an error message goes through scrubHealthText().

@@ -9,7 +9,7 @@ import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardOverviewView } from "@/lib/views/dashboard-overview";
 
-/** The dashboard Overview body. Rendered by the old Next page and by the SPA page from the same JSON. */
+/** The dashboard Overview body. Rendered by the SPA page from the endpoint's JSON. */
 export function OverviewView({ data }: { data: Jsonify<DashboardOverviewView> }) {
   const { overview, readiness, live, publicUrl } = data;
   const monthName = new Intl.DateTimeFormat(undefined, { month: "long" }).format(new Date());

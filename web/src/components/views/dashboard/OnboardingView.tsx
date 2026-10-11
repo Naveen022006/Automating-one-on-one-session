@@ -3,7 +3,7 @@ import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardOnboardingView } from "@/lib/views/dashboard-onboarding";
 
 /**
- * The onboarding wizard. Rendered by the old Next page and by the SPA page from the same JSON. `step` (`?step=`) and
+ * The onboarding wizard. Rendered by the SPA page from the endpoint's JSON. `step` (`?step=`) and
  * `outcome` (`?google=`, the result of Google's return trip) come from the URL; the wizard keeps its own step after
  * the first render and rewrites `?step=` itself.
  */

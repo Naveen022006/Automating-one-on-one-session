@@ -3,7 +3,7 @@ import { FocusedLayout } from "@web/components/site/SiteChrome";
 import { ButtonLink } from "@web/components/ui/primitives";
 
 /**
- * The "404" screen. Rendered by the old Next `app/not-found.tsx` and by the SPA's NotFound page, so both look and read
+ * The "404" screen. Rendered by the SPA's NotFound page
  * the same (doc/10-react-migration-plan.md, F8).
  *
  * `embedded`: render only the card content, for a not-found route that lives INSIDE the dashboard or admin frame (which
