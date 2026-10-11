@@ -9,7 +9,7 @@ import { before, mock, test } from "node:test";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { razorpayErrorText } from "../lib/payments";
-import { Dialog, Drawer, ToastProvider } from "../components/ui/overlays";
+import { Dialog, Drawer, ToastProvider, useToast } from "../components/ui/overlays";
 import { MobileNav, escapeReturnsFocus, focusLeavesBar, isInside, isNavActive, type MobileNavItem } from "../components/ui/MobileNav";
 import nextConfig from "../next.config";
 
@@ -157,6 +157,10 @@ test("C1: every /api/dashboard, /api/admin and /api/auth answer is private, no-s
     "/api/admin/influencers/abc",
     "/api/admin/payments/reconcile",
     "/api/admin/session",
+    // N9: the booking the confirmation page polls carries the Meet link and the self-service link.
+    "/api/bookings/abc",
+    "/api/bookings/abc/ics",
+    "/api/bookings/hold",
   ]) assert.equal(noStore(p), true, `${p} must not be cacheable`);
   for (const p of ["/api/public/profiles/demo", "/api/slots", "/api/slots/days", "/api/health", "/api/webhooks/payment", "/assets/index-abc.js", "/dashboard", "/admin", "/api/manage/token"]) {
     assert.equal(noStore(p), false, `${p} is not covered by the signed-in rule`);
@@ -435,6 +439,27 @@ test("C18/C8: the card reloads after a refused refresh, and a number that is not
   assert.match(refresh, /if \(!r\.ok\) \{[\s\S]*router\.refresh\(\);[\s\S]*return;[\s\S]*\}/, "a failure also asks the page to reload its data");
   assert.doesNotMatch(src, /Required to message by WhatsApp/);
   assert.match(src, /Not connected \{required \? <Badge tone="warning">Required<\/Badge> : <Badge>Recommended<\/Badge>\}/, "Recommended unless the go-live checklist requires it (N7)");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// N8: showing a toast must not re-render every component that can show one.
+test("N8: useToast reads a context whose value never changes; only the viewports read the list that does", () => {
+  const src = read("components/ui/overlays.tsx");
+  assert.match(src, /const ToastPushContext = createContext<PushToast>\(/);
+  assert.match(src, /const ToastListContext = createContext<ToastList>\(/);
+  assert.match(src, /<ToastPushContext\.Provider value=\{push\}>/, "the value is the useCallback([]) function itself, not an object holding the list");
+  assert.match(src, /const push = useCallback<PushToast>\([\s\S]*?\}, \[\]\);/, "and that callback has no dependencies");
+  assert.match(src, /export function useToast\(\): PushToast \{\s*return useContext\(ToastPushContext\);\s*\}/);
+  assert.equal(count(src, "useContext(ToastListContext)"), 1, "ToastViewport is the only reader of the list");
+
+  // Behaviour that did not change: a consumer gets a function, a provider renders its (empty) stack, and outside a provider the call is a harmless no-op.
+  let seen: unknown;
+  const Consumer = () => ((seen = useToast()), null);
+  const html = renderToStaticMarkup(createElement(ToastProvider, null, createElement(Consumer)));
+  assert.equal(typeof seen, "function");
+  assert.equal(count(html, 'class="toasts"'), 1);
+  renderToStaticMarkup(createElement(Consumer));
+  assert.doesNotThrow(() => (seen as (m: string) => void)("outside a provider"));
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------

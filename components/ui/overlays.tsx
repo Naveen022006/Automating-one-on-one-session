@@ -240,12 +240,18 @@ interface ToastItem {
   message: string;
   tone: "success" | "error";
 }
-interface ToastApi {
-  push: (message: string, tone?: "success" | "error") => void;
+type PushToast = (message: string, tone?: "success" | "error") => void;
+interface ToastList {
   items: ToastItem[];
   dismiss: (id: number) => void;
 }
-const ToastContext = createContext<ToastApi>({ push: () => {}, items: [], dismiss: () => {} });
+/**
+ * Two contexts on purpose. Showing a toast needs one function that never changes; the list changes every time a toast
+ * appears or expires. With both in one value every component that merely calls `useToast()` (forms, panels, the whole
+ * page) re-rendered each time a toast came or went. Now only the viewports read the list.
+ */
+const ToastPushContext = createContext<PushToast>(() => {});
+const ToastListContext = createContext<ToastList>({ items: [], dismiss: () => {} });
 
 /**
  * The toast stack. The provider renders one at the end of the page, and every open Dialog and Drawer renders another one
@@ -255,7 +261,7 @@ const ToastContext = createContext<ToastApi>({ push: () => {}, items: [], dismis
  * Both stacks show the same list; only the one that is not inert is seen and announced.
  */
 function ToastViewport() {
-  const { items, dismiss } = useContext(ToastContext);
+  const { items, dismiss } = useContext(ToastListContext);
   return (
     <div className="toasts" aria-live="polite" aria-atomic="false">
       {items.map((t) => (
@@ -273,23 +279,26 @@ function ToastViewport() {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
-  const push = useCallback((message: string, tone: "success" | "error" = "success") => {
+  const push = useCallback<PushToast>((message, tone = "success") => {
     const id = Date.now() + Math.random();
     setItems((xs) => [...xs, { id, message, tone }]);
     setTimeout(() => setItems((xs) => xs.filter((t) => t.id !== id)), tone === "error" ? 8000 : 4500);
   }, []);
   const dismiss = useCallback((id: number) => setItems((xs) => xs.filter((x) => x.id !== id)), []);
-  const value = useMemo(() => ({ push, items, dismiss }), [push, items, dismiss]);
+  const list = useMemo(() => ({ items, dismiss }), [items, dismiss]);
+  // `children` is the same element on every render of this component, so only the viewport below re-renders when the list changes.
   return (
-    <ToastContext.Provider value={value}>
-      {children}
-      <ToastViewport />
-    </ToastContext.Provider>
+    <ToastPushContext.Provider value={push}>
+      <ToastListContext.Provider value={list}>
+        {children}
+        <ToastViewport />
+      </ToastListContext.Provider>
+    </ToastPushContext.Provider>
   );
 }
 
-export function useToast() {
-  return useContext(ToastContext).push;
+export function useToast(): PushToast {
+  return useContext(ToastPushContext);
 }
 
 /* ---------- Switch ---------- */
