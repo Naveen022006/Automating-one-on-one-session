@@ -1,5 +1,5 @@
-// Branch spa/41-admin-money: the admin Payments, Payouts, Bookings, Health and Audit pages are shared views that BOTH the old Next
-// page and the SPA page render, fed by five GET endpoints:
+// The admin Payments, Payouts, Bookings, Health and Audit pages are views (web/src/components/views/admin) that the SPA pages render,
+// fed by five GET endpoints:
 //   M5 GET /api/admin/payments   M6 GET /api/admin/payouts   M7 GET /api/admin/bookings   M8 GET /api/admin/health   M9 GET /api/admin/audit
 // The database part (needs DATABASE_URL, TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise) calls the real route handlers with only
 // `next/headers` replaced (the cookies of a request are chosen per call): every endpoint must refuse a signed-out caller (401), an

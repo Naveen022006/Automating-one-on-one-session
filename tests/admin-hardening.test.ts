@@ -1,5 +1,5 @@
-// Pure tests (no database) for the review fixes: fail-closed rate limits, security emails, the x-pathname header the
-// proxy sets, and the split-payout threshold rule.
+// Pure tests (no database) for the review fixes: fail-closed rate limits, security emails, the proxy's admin redirect, and the
+// split-payout threshold rule.
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { NextRequest } from "next/server";
@@ -101,17 +101,11 @@ test("security emails escape everything they interpolate and describe each event
   assert.match(adminSecurityMessage("Ana", "2fa-disabled", { at }).text, /other sessions were signed out/i);
 });
 
-test("the proxy sets x-pathname itself: a client-sent value never reaches the page", async () => {
+test("the proxy decides the admin redirect and the rewrite from the real URL, whatever x-pathname a client sends (nothing reads that header any more)", async () => {
   const { proxy } = await import("../proxy");
-  const forged = new NextRequest("http://localhost:3000/admin/payouts?tab=1", {
-    headers: { "x-pathname": "/admin/security", cookie: "sa_admin=anything" },
-  });
-  const res = await proxy(forged);
-  assert.equal(res.headers.get("x-middleware-request-x-pathname"), "/admin/payouts", "overwritten with the real pathname (no query)");
-  assert.match(res.headers.get("x-middleware-override-headers") ?? "", /x-pathname/);
-
-  const plain = await proxy(new NextRequest("http://localhost:3000/login", { headers: { "x-pathname": "/admin/security" } }));
-  assert.equal(plain.headers.get("x-middleware-request-x-pathname"), "/login");
+  // With an admin cookie the page goes to the shell for ITS path; a forged header changes nothing.
+  const forged = await proxy(new NextRequest("http://localhost:3000/admin/payouts?tab=1", { headers: { "x-pathname": "/admin/security", cookie: "sa_admin=anything" } }));
+  assert.ok((forged.headers.get("x-middleware-rewrite") ?? "").endsWith("/spa-shell/admin/payouts?tab=1"), forged.headers.get("x-middleware-rewrite") ?? String(forged.status));
 
   // Without any admin cookie the admin area redirects to the login before anything else.
   const anon = await proxy(new NextRequest("http://localhost:3000/admin/security", { headers: { "x-pathname": "/admin/login" } }));

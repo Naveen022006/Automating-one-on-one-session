@@ -1,0 +1,149 @@
+# CLAUDE.md
+
+Guidance for Claude Code (and any newcomer) working in this repository. Everything here was checked against the code at the
+`spa/90-cleanup` branch; when code and this file disagree, the code wins, then fix this file.
+
+## What this is
+
+Paid 1:1 and small-group sessions for creators. A customer picks a time on an influencer's page, pays with Razorpay, and a
+Google Meet link is created on the influencer's own calendar and sent by WhatsApp (SMS fallback) and email, with reminders.
+Influencers have accounts and a dashboard; the platform owner has a separate admin console. All seven phases in `doc/` are
+implemented (`doc/00-overview.md` is the map). The front end is a React single-page app in `web/`; Next.js is the backend.
+
+## Commands
+
+```
+npm run dev              # ONE command, one origin: Vite watch build of web/ + next dev on http://localhost:3000 (no worker)
+npm run dev:hmr          # Vite hot reload on :5173 in front of next dev on :3000; APP_URL becomes :5173 (see README caveats)
+npm run dev:web          # only Vite's dev server (when you start Next yourself; SPA_API_TARGET names that Next)
+npm run dev:mock         # local mock of Google and Meta + next dev + web build; no worker (doc/11, README)
+npm run build            # vite build -> scripts/spa-postbuild.mjs (checks + copy to public/assets) -> next build
+npm start                # next start: Next serves the API, the built assets and the shell from one port
+npm run typecheck        # tsc for the root project AND for web/tsconfig.json
+npm test                 # tsx --test --experimental-test-module-mocks tests/*.test.ts (see "Tests" for the safe way)
+npm run worker           # BullMQ worker + hold expiry (expire-holds is an alias)
+npm run db:seed          # demo influencer "demo" with a 1:1 and a group service; npx prisma migrate dev | db:deploy
+npm run admin:create -- --email you@x.com --name "You" [--reset | --reset-2fa]   # administrators (no public registration)
+npm run dev:logins       # random test logins for demo + two admins -> dev-logins.local.md (gitignored; refuses non-local APP_URL)
+npm run keys:verify | keys:rotate     # TOKEN_ENCRYPTION_KEY rotation, see doc/08 section 9
+node scripts/spa-smoke.mjs <url> [--no-db]   # HTTP smoke test of a built server (CI runs it against the Docker image)
+```
+
+Setup: `cp .env.example .env`, `npm install`, `npx prisma generate` (client goes to `generated/`, gitignored), migrate, seed.
+Node 22.12+. There is no lint script. Never print or commit `.env` (it holds real secrets on the owner's machine).
+
+## Architecture
+
+**Two programs, one origin.** `web/` is the browser app (Vite + React 19 + React Router 7 in data mode + TanStack Query 5).
+The Next.js app (`app/`, `lib/`, `proxy.ts`) is the backend: JSON API under `app/api/**`, webhooks, metadata routes
+(`robots`, `sitemap`, icon, `opengraph-image`), the worker and the shell route. Next renders no page of its own. Read
+`doc/12-front-end.md` before touching `web/`; the history is `doc/10-react-migration-*.md` (deviations override the plan).
+
+**Page request path.** `proxy.ts` (the Next 16 "middleware") handles every request: pages get a per-request CSP nonce
+(`strict-dynamic`), the cookie-presence redirects (`/dashboard`, `/onboarding` -> `/login?next=`, `/admin` -> `/admin/login?next=`),
+and a rewrite to the internal route `app/spa-shell/[[...path]]`, which answers only when the proxy handed it `x-nonce`. That route
+reads `web/dist/index.html` (Vite output, cached in production, re-read per request in development), puts the nonce into every tag
+and writes the route's `<head>` (`lib/spa/head.ts`: title, robots, canonical, Open Graph, JSON-LD; profile pages get a real 404).
+`lib/spa/routes.ts` is the one route table (pure; the proxy, the head and the web router all read it). Hashed JS/CSS/fonts are plain
+files in `public/assets` (copied by the post-build step) with `immutable` caching. `/api/*` requests get rate limits
+(`lib/rate-limit/policies.ts`, Redis with Postgres fallback) and the CSRF Origin check (webhooks exempt, signature-verified).
+
+**Data for pages = JSON endpoints built from view functions.** A page's data loader lives in `lib/views/<group>-<page>.ts` and
+returns an explicit DTO built field by field (never a spread Prisma row, never a token, hash or id the screen does not show). The
+endpoint wraps it in `jsonView()` (`private, no-store`, object body, no CORS). Auth: influencer reads `requireApiAuth()`, admin
+reads `requireAdminMfa()` (NOT `requireAdminApi`, which lets a password-only session of a 2FA admin through). Every endpoint test
+calls `assertNoSecretKeys` (`tests/helpers`). The browser types the answer as `Jsonify<XView>` (Dates become strings). Types that
+both sides share live in `lib/` as plain `.ts` (for example `lib/views/dashboard-types.ts`), never in a component file.
+
+**Browser rules.** Browser code may import only the `lib/` modules on the allowlist in `web/vite-server-guard.ts` (pure, no
+environment beyond four build-time names) plus `import type` from anything; no `next/*` at all; nothing under `app/`. The guard fails
+the build and `tests/spa-guard.test.ts` pins the list. `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL`, `APP_LOCALE`,
+`ENABLE_DESIGN_PAGE` are the only environment values the bundle can see; the post-build step fails if any other `process.env` or any
+secret-looking value is in `web/dist`. Guards in the SPA (RequireInfluencer, RequireAdmin, ...) are UX; every endpoint enforces.
+
+**Stack details.** Prisma 7 with the `@prisma/adapter-pg` driver adapter: the connection URL is in `prisma.config.ts`, not in
+`schema.prisma`; the client is `@/generated/prisma/client`; keep `prisma` and `@prisma/client` on one version. Raw SQL uses the
+`@@map` table names (`sessions`, `bookings`, `webhook_events`, ...). `lib/db.ts` pools with `DATABASE_POOL_MAX` (default 10),
+statement and connect timeouts. Path aliases: `@/` = repo root, `@web/` = `web/src`.
+
+**Booking and capacity (read `lib/holds.ts` first).** A `Session` is one occurrence of a service at one UTC instant (unique on
+`(serviceId, startTime)`), created lazily by `INSERT ... ON CONFLICT DO NOTHING`; many `Booking`s hang off it (a 1:1 is capacity 1).
+`createHold` locks the session row (`SELECT ... FOR UPDATE`) and counts seat-occupying bookings. `activeSeatWhere(now)` is the single
+definition of "occupies a seat" (`PAID/SCHEDULED/COMPLETED` always; `HELD/PENDING_PAYMENT` only while `holdExpiresAt > now`), so
+availability is right even when the worker is down. Status machine: `HELD -> PENDING_PAYMENT -> PAID -> SCHEDULED -> COMPLETED`;
+exits `EXPIRED / CANCELLED / FAILED`. Slots (`lib/slots.ts`): weekly rules, ISO weekday, wall-clock `HH:mm` in the rule's zone
+(luxon handles DST), all stored times UTC; the hold endpoint re-validates that the requested start is a generated slot.
+
+**Payments.** `POST /api/checkout` (`lib/checkout.ts`) locks the booking, extends the hold to the payment window, creates ONE
+Razorpay order (second call reuses it); the amount always comes from the `Service` row. `POST /api/webhooks/payment` verifies the
+HMAC of the raw body, then `handleRazorpayEvent` does the idempotency insert (`webhook_events`), status changes and the BullMQ enqueue
+in ONE transaction; any failure rolls back and returns 500 so Razorpay retries. Only the webhook marks a booking paid. Late or
+mismatched payments become `Payment.needsRefund`. The worker's payment recovery re-checks old orders (`lib/payment-recovery.ts`).
+Refunds `lib/refunds.ts`; influencer payouts and reconciliation `lib/payouts.ts` (admin-approved, four-eyes, see below).
+
+**Worker and queues.** `worker/index.ts` runs hold expiry every 30 s, housekeeping, Google token health, WhatsApp sync, monitoring and
+three BullMQ workers (`meetings`, `messages`, `reminders`; ids are deterministic, jobs idempotent and read current state, up to 5
+attempts with backoff). Do not start a second worker against a database and Redis that already have one: it takes the other worker's jobs, and a worker pointed at the mock sweeps every influencer's Google and WhatsApp connection and marks them broken.
+
+**Readiness gating (`lib/readiness.ts`).** A booking page takes money only when the influencer has a verified email, a service,
+availability and (by default) a working Google connection and verified payout details (`READINESS_REQUIRED`, `READINESS_BYPASS`
+outside production). An owner sees a preview with the blockers; a stranger gets a 404. `/api/ready` (database + Redis) is for load
+balancers, `/api/health` is liveness only.
+
+**Admin plane (`lib/admin/*`, `/admin`).** Separate accounts, cookie (`__Host-sa_admin`, SameSite=Strict, 12 h absolute), TOTP
+two-factor with recovery codes and lockout (`ADMIN_REQUIRE_2FA` defaults on in production), an append-only audit log, payout creation
+and four-eyes approval (`PAYOUT_FOUR_EYES`: the creator cannot approve), reconciliation, system health. The MFA gate has three
+outcomes (`ok`, `enroll`, `verify`) in `mfaGateStatus`; `GET /api/admin/session` reports it to the SPA.
+
+**Provider simulator (doc/11).** `scripts/mock-providers` fakes Google (OAuth, Calendar/Meet, Gmail) and Meta (Graph, templates,
+Embedded Signup). `MOCK_PROVIDERS_URL` is honoured only in development with a local `APP_URL` (`lib/provider-endpoints.ts` decides
+every host); production refuses to start with it. It proves the app's side only.
+
+**Key rotation.** Secrets at rest (Google refresh tokens, payout account numbers, WhatsApp tokens, TOTP secrets) are encrypted with
+`TOKEN_ENCRYPTION_KEY` (`lib/crypto.ts`). Rotation uses `TOKEN_ENCRYPTION_KEY_PREVIOUS` plus `keys:verify` / `keys:rotate`
+(`lib/key-rotation*.ts`, dry run by default, `--apply` needs the new key's fingerprint). Procedure: `doc/08-deployment.md`.
+
+**Start-up validation (`lib/env.ts`, `instrumentation.ts`).** `KNOWN_ENV_VARS` is kept in step with `.env.example` by a test. In
+production a bad configuration exits 1 with one secret-free message; the web process also refuses to start without
+`web/dist/index.html` or with `HOSTNAME=127.0.0.1`/`::1` (warnings on Vercel-like platforms). `ALLOW_INSECURE_LOCAL_RUN=true` lets the
+production build run on `http://localhost` for local checks.
+
+## Tests
+
+Node's built-in runner through tsx. Files in `tests/*.test.ts`; several need the database, and skip themselves when `DATABASE_URL`
+is unset (they create timestamped rows and delete them in `after`). The database is a small shared Postgres: run files ONE AT A TIME:
+
+```
+DATABASE_POOL_MAX=2 npx tsx --test --experimental-test-module-mocks --test-concurrency=1 tests/<file>.test.ts
+npx tsx --test --experimental-test-module-mocks --test-name-pattern="exactly one" tests/holds.test.ts   # one test by name
+```
+
+`--experimental-test-module-mocks` is required (tests replace `next/headers` and, for server-rendered views, `@web/lib/navigate`
+with `mock.module`, which only affects modules imported afterwards: import inside `before`). The "concurrent holds" test needs a pool
+bigger than 2 and fails on a small one. A DB file can time out once on the shared database; retry before debugging. A test that can
+reach `getHealthReport()` must `delete process.env.REDIS_URL` in `before`, otherwise BullMQ keeps the process alive. View tests render
+with `react-dom/server`; `tests/helpers/fake-navigate.ts` stands in for the router hooks, `AppLink` renders a plain `<a>` without a
+router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch Redis.
+
+## Conventions and pitfalls
+
+- Money is integer minor units. All stored times are UTC; display uses the viewer's time zone, `APP_LOCALE` for formats.
+- Never trust a client time, amount or id: slots are re-validated, prices come from the `Service` row, ids are checked for shape
+  (`isEntityId`), bodies go through `readJson` (rejects NUL bytes; the proxy returns 400 for broken percent escapes and `%00`).
+- Jobs are idempotent with deterministic ids and read current state when they run (`doc/05`).
+- Security properties to keep: Origin/CSRF check, CSP nonce, rate limits, DTO field lists, escaping of anything written into the
+  shell head (`escapeHtml`), token handling (logs never contain tokens; `loggablePath` redacts), the Vite guard, `Referrer-Policy:
+  no-referrer` on token pages, `Cache-Control: private, no-store` on `/api/dashboard|admin|auth|bookings`.
+- Windows + Git Bash: `.gitattributes` keeps Dockerfiles LF; other files are CRLF in the working tree (autocrlf). `git mv` for moves.
+- Turbopack (`next dev`, `next build`) cannot use a `node_modules` junction that points outside the project ("Symlink node_modules could
+  not be resolved"): a worktree needs a real copy of `node_modules` (`robocopy`), then `npx prisma generate`.
+- Browsers share cookies between ports of one host, but the proxy's Origin check compares with `APP_URL`; Next rewrites `127.x.x.x` and
+  `::1` request URLs to `localhost`, so use `http://localhost:<port>` (or exactly `APP_URL`) in the browser.
+- Nothing is frozen any more (the migration's freeze rule on `web/src/lib`, `lib/spa`, `proxy.ts`... is lifted). Tests that pin a
+  behaviour (the guard allowlist, the DTO key sets, the proxy rules) are changed deliberately, with the reason in the commit.
+- Lead times that are not code: WhatsApp template approval, DLT registration and Google OAuth verification take days to weeks.
+
+## Where to read next
+
+`README.md` (run, integrations, admin, readiness, payment recovery), `doc/08-deployment.md` (Docker, env table, rollouts, key
+rotation, backups), `doc/12-front-end.md` (the web app), `doc/07-...` (accounts, UI, integrations), `doc/11-provider-simulator.md`.

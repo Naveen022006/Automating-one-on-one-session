@@ -388,7 +388,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   assert.deepEqual(keys(payouts[0].approval), ["approved", "approvedByEmail", "canApprove", "canMarkPaid", "createdByViewer", "required"]);
   assert.ok(!text.includes(emailZ) && !text.includes(emailX), "other administrators do not appear, except as the approver of a payout");
 
-  // The old page renders from exactly this JSON: the view function and the endpoint cannot disagree.
+  // The endpoint sends exactly the view function's JSON: the two cannot disagree.
   const direct = jsonifyLib.jsonify(await viewLib.loadAdminInfluencerView(influencerId, emailY));
   assert.deepEqual(res.body, direct);
 });

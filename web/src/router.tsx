@@ -8,12 +8,12 @@ import { ErrorPage } from "./pages/ErrorPage";
 import { NotFound } from "./pages/NotFound";
 
 /**
- * The route tree (doc/10-react-migration-plan.md, F9). Paths come from the ONE route table the server also uses
+ * The route tree (doc/12-front-end.md). Paths come from the ONE route table the server also uses
  * (lib/spa/routes.ts), so the proxy, the shell head and this router cannot disagree about which URL is which page.
  *
  * `pages` has one lazy module per route id and is typed `Record<SpaRouteId, ...>`: adding a route to the table without
  * a page module here (or the other way round) is a TypeScript error. Each module is a separate chunk loaded on demand and
- * exports `Component`. Group branches replace the placeholder files in web/src/pages/<group>/ and never edit this file.
+ * exports `Component`.
  */
 
 type LazyPage = () => Promise<{ Component: ComponentType }>;

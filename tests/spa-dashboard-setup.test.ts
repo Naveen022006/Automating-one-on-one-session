@@ -1,10 +1,10 @@
-// Branch spa/31-dashboard-setup: the Services, Availability, Payouts, Settings and Onboarding pages are shared view components
-// that BOTH the old Next page and the SPA page render, fed by view functions that the endpoints
+// The Services, Availability, Payouts, Settings and Onboarding pages are view components (web/src/components/views/dashboard)
+// that the SPA pages render, fed by view functions that the endpoints
 //   D6 GET /api/dashboard/services   D7 GET /api/dashboard/availability   D8 GET /api/dashboard/payouts
 //   D9 GET /api/dashboard/settings   D10 GET /api/dashboard/onboarding
 // also answer with. Three parts:
 //   1. pure tests (no database): the field-by-field copies drop everything the panels do not show; the views render from JSON
-//      fixtures; the old pages and the SPA pages render the same views; titles match the route table.
+//      fixtures; each SPA page renders its view from its endpoint; titles match the route table.
 //   2. endpoint tests (need DATABASE_URL, TOKEN_ENCRYPTION_KEY, APP_SECRET; skipped otherwise): three influencers ("Alpha",
 //      "Bravo", "Charlie" who has nothing and has not finished onboarding). Every endpoint must show a signed-in influencer
 //      their own rows and never the other's, never a stored token, and answer 401 without a session.
@@ -741,7 +741,7 @@ test("D10 GET /api/dashboard/onboarding: any signed-in influencer, finished or n
   assertOnlyOwn((await ask(routes.onboarding, B.cookie)).body, B, A, C);
 });
 
-test("a view function and the jsonify round trip agree: what the old page renders from is exactly what the endpoint sends", { skip }, async () => {
+test("a view function and the jsonify round trip agree: what the view function returns is exactly what the endpoint sends", { skip }, async () => {
   const auth = { influencerId: A.influencerId, email: A.email, emailVerified: false, userId: A.userId } as Parameters<typeof viewsLib.settings.loadSettingsView>[0];
   const direct = jsonify(await viewsLib.settings.loadSettingsView(auth));
   assert.deepEqual(direct, (await ask(routes.settings, A.cookie)).body);

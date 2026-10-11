@@ -1,5 +1,13 @@
 # Front-end migration plan: Next.js-rendered UI -> standalone React SPA
 
+> **Status: complete.** Every page group was migrated, reviewed and QA'd in production mode (`doc/10-react-migration-qa-customer.md`,
+> `doc/10-react-migration-qa-console.md`), and the cleanup branch `spa/90-cleanup` (section 6.9) has landed: the old Next pages and layouts
+> are deleted, the shared components live in `web/src/components`, the shims and the `SPA_GROUPS` switch (sections 0, 1.4, 1.7, 6.8, 7.5) are
+> gone, `x-pathname` and `requirePageAuth` / `requireAdminPage` are removed, and `npm run dev` runs the whole app on port 3000. The text
+> below is kept as the record of the plan and is NOT rewritten: where it describes the transition (side-by-side old and new pages, per-group
+> cut-over and rollback, frozen files) it no longer applies. The current structure is `doc/12-front-end.md`; the deviations of the cleanup
+> branch are D83 onward in `doc/10-react-migration-deviations.md`.
+
 Project: `E:\Automating one-on-one session` (Next.js 16 App Router, Prisma 7, BullMQ). Owner decision (fixed): the whole
 UI becomes a standalone React single-page app (Vite + React + React Router, TypeScript). The Next.js project keeps the
 JSON API, the webhooks, the metadata routes and the worker. The browser sees **one origin**.
