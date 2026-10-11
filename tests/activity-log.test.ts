@@ -16,7 +16,6 @@ import { ACTIVITY_WRITE_TIMEOUT_MS, recordActivity } from "../lib/activity";
 import { hashPassword } from "../lib/auth/password";
 import { hashToken, randomToken } from "../lib/auth/tokens";
 import { prisma } from "../lib/db";
-import { setErrorReporter } from "../lib/observability";
 import { ACTIVITY_MAX_PAGE, ACTIVITY_PAGE_SIZE, parseActivityPage } from "../lib/views/dashboard-activity";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
 
@@ -26,6 +25,19 @@ const PASSWORD = "a long passphrase for the activity test";
 const ADMIN_PASSWORD = "correct-horse-battery-9";
 const CHROME_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const keys = (o: unknown) => Object.keys(o as object).sort();
+
+/** Runs `fn` with console.warn collected: a failed log write leaves exactly one JSON warning line (the cause, no input). */
+async function warnings(fn: () => Promise<void>): Promise<{ where?: string; action?: string; level?: string; message?: string }[]> {
+  const real = console.warn;
+  const lines: string[] = [];
+  console.warn = (line: unknown) => void lines.push(String(line));
+  try {
+    await fn();
+  } finally {
+    console.warn = real;
+  }
+  return lines.map((l) => JSON.parse(l));
+}
 
 /* ------------------------------------------------------------------------------------------------------------------------------- */
 /* 1. No database                                                                                                                  */
@@ -124,33 +136,24 @@ test("parseActivityPage accepts 1 to 400 only", () => {
   }
 });
 
-test("recordActivity never throws: a failing, rejecting or unknown-influencer insert is reported and swallowed", async () => {
-  const reported: { where?: unknown; action?: unknown }[] = [];
-  setErrorReporter((_error, context) => void reported.push(context));
-  try {
+test("recordActivity never throws: a failing, rejecting or unknown-action insert leaves one warning line and is swallowed", async () => {
+  const logged = await warnings(async () => {
     await recordActivity({ influencerId: "inf1", action: "auth.login" }, { influencerActivity: { create: (() => { throw new Error("sync boom"); }) as never } });
     await recordActivity({ influencerId: "inf1", action: "auth.login" }, { influencerActivity: { create: (() => Promise.reject(new Error("async boom"))) as never } });
     await recordActivity({ influencerId: "inf1", action: "not.an.action" as ActivityAction }, { influencerActivity: { create: (async () => ({})) as never } });
-    assert.equal(reported.length, 3);
-    assert.ok(reported.every((c) => c.where === "activity-log"));
-    assert.equal(reported[0].action, "auth.login");
-  } finally {
-    setErrorReporter((error, context) => console.error(JSON.stringify({ ...context, error: String(error) })));
-  }
+  });
+  assert.equal(logged.length, 3);
+  assert.ok(logged.every((c) => c.where === "activity-log" && c.level === "warn"));
+  assert.deepEqual(logged.map((c) => c.message), ["sync boom", "async boom", "unknown activity action not.an.action"]);
+  assert.equal(logged[0].action, "auth.login");
 });
 
 test("recordActivity stops waiting after its timeout (a saturated pool cannot slow an action down)", async () => {
-  const reported: unknown[] = [];
-  setErrorReporter((error) => void reported.push(error));
-  try {
-    const started = Date.now();
-    await recordActivity({ influencerId: "inf1", action: "auth.login" }, { influencerActivity: { create: (() => new Promise(() => {})) as never } });
-    const took = Date.now() - started;
-    assert.ok(took >= ACTIVITY_WRITE_TIMEOUT_MS - 50 && took < ACTIVITY_WRITE_TIMEOUT_MS + 1500, `waited ${took} ms`);
-    assert.equal(reported.length, 1);
-  } finally {
-    setErrorReporter((error, context) => console.error(JSON.stringify({ ...context, error: String(error) })));
-  }
+  const started = Date.now();
+  const logged = await warnings(() => recordActivity({ influencerId: "inf1", action: "auth.login" }, { influencerActivity: { create: (() => new Promise(() => {})) as never } }));
+  const took = Date.now() - started;
+  assert.ok(took >= ACTIVITY_WRITE_TIMEOUT_MS - 50 && took < ACTIVITY_WRITE_TIMEOUT_MS + 1500, `waited ${took} ms`);
+  assert.equal(logged.length, 1);
 });
 
 test("recordActivity stores the allowlisted detail, the client IP and a cut user agent, and nothing else", async () => {
@@ -358,22 +361,18 @@ after(async () => {
   }
 });
 
-test("recordActivity with a real database: a good influencer id is stored, an unknown one is swallowed and reported", { skip }, async () => {
-  const reported: unknown[] = [];
-  setErrorReporter((_error, context) => void reported.push(context));
-  try {
-    await recordActivity({ influencerId: A.influencerId, action: "auth.reauthenticated", req: new Request("http://localhost/x", { headers: { "x-forwarded-for": "198.51.100.8", "user-agent": CHROME_WINDOWS } }) });
-    const rows = await rowsOf(A.influencerId, "auth.reauthenticated");
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].ip, "198.51.100.8");
-    assert.equal(rows[0].actor, "influencer");
-    await recordActivity({ influencerId: `no-such-influencer-${run}`, action: "auth.login" });
-    assert.equal(reported.length, 1, "the foreign-key failure was reported once");
-    assert.equal((reported[0] as { where: string }).where, "activity-log");
-    await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId } });
-  } finally {
-    setErrorReporter((error, context) => console.error(JSON.stringify({ ...context, error: String(error) })));
-  }
+test("recordActivity with a real database: a good influencer id is stored, an unknown one is swallowed with one warning", { skip }, async () => {
+  await recordActivity({ influencerId: A.influencerId, action: "auth.reauthenticated", req: new Request("http://localhost/x", { headers: { "x-forwarded-for": "198.51.100.8", "user-agent": CHROME_WINDOWS } }) });
+  const rows = await rowsOf(A.influencerId, "auth.reauthenticated");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].ip, "198.51.100.8");
+  assert.equal(rows[0].actor, "influencer");
+  const logged = await warnings(() => recordActivity({ influencerId: `no-such-influencer-${run}`, action: "auth.login" }));
+  assert.equal(logged.length, 1, "the foreign-key failure was logged once");
+  assert.equal(logged[0].where, "activity-log");
+  assert.ok(!JSON.stringify(logged).includes("no-such-influencer"), "the log line carries the cause, not the input");
+  assert.equal(await prisma.influencerActivity.count({ where: { influencerId: `no-such-influencer-${run}` } }), 0);
+  await prisma.influencerActivity.deleteMany({ where: { influencerId: A.influencerId } });
 });
 
 test("GET /api/dashboard/activity: 401 without a session, own rows only, exact key set, no secret-looking key, paging", { skip }, async () => {

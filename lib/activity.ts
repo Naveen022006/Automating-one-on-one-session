@@ -1,7 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { ACTIVITY_ACTIONS, describeDevice, sanitiseActivityDetail, type ActivityAction, type ActivityDetail } from "@/lib/activity-actions";
 import { prisma } from "@/lib/db";
-import { reportError } from "@/lib/observability";
 import { clientIp } from "@/lib/rate-limit/client-ip";
 import { within } from "@/lib/timeout";
 
@@ -14,7 +13,7 @@ export { describeDevice };
  *
  * Best effort, by design: it is written AFTER the action succeeded, outside the action's transaction, and it NEVER throws and never
  * changes the outcome or the response of the action (the admin audit log keeps its stricter rule, lib/admin/audit.ts, because
- * administrators move money). A failed insert is reported with one log line and swallowed; a write that is slower than
+ * administrators move money). A failed insert leaves one warning line in the log and is swallowed; a write that is slower than
  * ACTIVITY_WRITE_TIMEOUT_MS stops being waited for (the insert itself carries on in the background), so a saturated pool cannot slow
  * an action down. It uses the app's one pool: no extra connection.
  *
@@ -37,6 +36,16 @@ export interface ActivityInput {
 }
 
 type ActivityDb = { influencerActivity: Pick<typeof prisma.influencerActivity, "create"> };
+
+/**
+ * The one log line a failed write leaves (stderr is for real errors and the error webhook is for things somebody must act on; a missing
+ * log entry is neither, so this is a warning without a webhook). The cause only: the last line of the database message, never the
+ * input.
+ */
+function logFailure(error: unknown, action: string): void {
+  const message = (error instanceof Error ? error.message : String(error)).split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "unknown error";
+  console.warn(JSON.stringify({ level: "warn", at: new Date().toISOString(), where: "activity-log", action, message: message.slice(0, 200) }));
+}
 
 /** Records one entry. Never throws. */
 export async function recordActivity(input: ActivityInput, db: ActivityDb = prisma): Promise<void> {
@@ -65,7 +74,7 @@ export async function recordActivity(input: ActivityInput, db: ActivityDb = pris
     );
   } catch (e) {
     try {
-      reportError(e, { where: "activity-log", action: input.action, influencerId: input.influencerId });
+      logFailure(e, input.action);
     } catch {
       /* logging must never break the caller */
     }
@@ -81,7 +90,7 @@ export async function recordActivityForUser(userId: string, input: Omit<Activity
     const user = await within(db.user.findUnique({ where: { id: userId }, select: { influencerId: true } }), ACTIVITY_WRITE_TIMEOUT_MS, "activity log lookup");
     if (user) await recordActivity({ ...input, influencerId: user.influencerId });
   } catch (e) {
-    reportError(e, { where: "activity-log", action: input.action });
+    logFailure(e, input.action);
   }
 }
 
@@ -96,7 +105,7 @@ export function recordFailedLogin(email: string, req: Request): void {
       const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() }, select: { influencerId: true } });
       if (user) await recordActivity({ influencerId: user.influencerId, action: "auth.login_failed", req });
     } catch (e) {
-      reportError(e, { where: "activity-log", action: "auth.login_failed" });
+      logFailure(e, "auth.login_failed");
     }
   })();
 }
