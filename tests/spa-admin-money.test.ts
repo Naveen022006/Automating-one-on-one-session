@@ -467,7 +467,7 @@ test("payment, payout and booking URL rules: an unknown tab is the default one, 
 
 /* ---------- M6 payouts ---------- */
 
-const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeMinor", "feePercentText", "grossAfterRefundsMinor", "id", "influencer", "netMinor", "owedMinor", "reference", "status"];
+const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeMinor", "feePercentText", "grossAfterRefundsMinor", "hasFlaggedPayment", "id", "influencer", "netMinor", "owedMinor", "reference", "status"];
 type PayoutRow = Jsonify<AdminPayoutsView>["rows"][number];
 
 test("M6 GET /api/admin/payouts: the tabs and their counts, the destination masked, 'refunded since' on a paid payout, exactly the hand-picked fields", { skip }, async () => {
@@ -969,7 +969,7 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
   const approval = { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false };
   const row = (over: Record<string, unknown> = {}) => ({
     id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer", suspended: false }, destination: "UPI ****1234", grossAfterRefundsMinor: 90000,
-    feeMinor: 9000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, approval, ...over,
+    feeMinor: 9000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, hasFlaggedPayment: false, approval, ...over,
   });
   const data = (over: Record<string, unknown> = {}) =>
     jsonify({ status: "PENDING" as const, page: 1, pageCount: 1, counts: { PENDING: 2, PAID: 1, CANCELLED: 0, all: 3 }, onlyOneAdmin: false, rows: [row(), row({ id: "po2", status: "PAID", reference: "UTR123456", owedMinor: 30000, approval: { ...approval, canApprove: false, required: false, canMarkPaid: false } })], ...over });

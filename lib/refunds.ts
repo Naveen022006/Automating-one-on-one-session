@@ -172,7 +172,7 @@ export async function refundPayment(
       if (blockPayout && now?.payout?.status === "PENDING") {
         throw new RefundBlockedByPayoutError(
           opts.influencerId
-            ? "This payment is part of a payout being prepared. Try again once that payout is paid or cancelled."
+            ? "This payment is part of a payout the platform is preparing, so it cannot be refunded from here right now. If the booking was cancelled, the platform will process the refund once that payout is settled; you do not need to retry."
             : "This payment is in a pending payout. Cancel that payout first.",
         );
       }

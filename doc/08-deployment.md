@@ -688,3 +688,9 @@ Read this before deploying this version to an installation that is already runni
    `READINESS_REQUIRED` is opt-in (see the table in section 4). Deploy the worker as part of the release: the activity and token sweeps and
    the reminder repair run there. Customers get a new public page, `/bookings`, linked from the footer; it is rate limited and answers the same
    to every address, so it needs no extra configuration beyond a working `EMAIL_PROVIDER`.
+7. **Payouts: PENDING payouts that already contain a flagged payment.** A payment flagged for a refund (`needs_refund`), or on a booking that is
+   no longer PAID / SCHEDULED / COMPLETED, can no longer be put into a payout, and a payout that contains one can no longer be approved or
+   marked paid (409 `flagged-payment`; also 409 `refund-in-flight` when a refund touched a payment after the payout was created). After
+   deploying, open Admin > Payouts: a PENDING payout that shows "Contains a flagged payment" has to be cancelled (the cancel message lists how
+   many flagged payments it released), the flagged payment refunded from Payments > Needs refund, and the payout created again. PAID payouts
+   are not touched. No migration.

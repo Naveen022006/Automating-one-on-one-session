@@ -480,8 +480,8 @@ test("the balances right now: held, in pending payouts, owed to customers, to re
   const zero = { flaggedPaidOutMinor: 0, refundsNotCompletedMinor: 0 };
   assert.deepEqual(b1, { currency: C1, heldForInfluencersMinor: 20600, inPendingPayoutsMinor: 7200, owedToCustomersMinor: 6000, toRecoverMinor: 1000, unallocatedMinor: 2500, ...zero });
   assert.deepEqual(one(body.balances, C2), { currency: C2, heldForInfluencersMinor: 1000, inPendingPayoutsMinor: 0, owedToCustomersMinor: 0, toRecoverMinor: 0, unallocatedMinor: 0, ...zero });
-  // C3 (fee override 0): a flagged duplicate payment on a booking was reconciled and paid out with the payment it duplicates (the payout code does not
-  // look at the flag): it is NOT owed money any more (the influencer has it), it is its own figure. A 300 refund counted in a payout and failed afterwards
+  // C3 (fee override 0): a duplicate payment on a booking was reconciled and paid out with the payment it duplicates and flagged AFTER that (a flagged payment
+  // is not payable, but a payout can already hold it when the flag lands): it is NOT owed money any more (the influencer has it), it is its own figure. A 300 refund counted in a payout and failed afterwards
   // re-flags the payment (1000 left, also its own figure) and is reported, not clipped: 300 that did not complete.
   assert.deepEqual(one(body.balances, C3), { currency: C3, heldForInfluencersMinor: 0, inPendingPayoutsMinor: 0, owedToCustomersMinor: 0, toRecoverMinor: 0, unallocatedMinor: 0, flaggedPaidOutMinor: 2000, refundsNotCompletedMinor: 300 });
   // C4: e5 3000 held; e1 1000 flagged and free, e2 2000 flagged and in a pending payout: both owed (e2 is NOT in held, although its payout is pending: 1860 after

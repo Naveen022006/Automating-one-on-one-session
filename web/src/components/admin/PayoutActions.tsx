@@ -117,13 +117,18 @@ export function PayoutRowActions({
       if (r.data.code === "influencer-suspended") setSuspended(true); // show the "pay anyway" prompt and let the administrator decide
       return toast(r.data.error ?? "Could not update the payout.", "error");
     }
+    const flagged = Array.isArray(r.data.flaggedPaymentIds) ? (r.data.flaggedPaymentIds as string[]).length : 0;
     toast(
       open === "approve"
         ? "Payout approved. It can now be marked as paid once the money is sent."
         : open === "paid"
           ? "Marked as paid. The influencer was notified."
-          : "Payout cancelled. Its payments are payable again.",
+          : flagged > 0
+            ? `Payout cancelled. ${flagged} of its payments ${flagged === 1 ? "is" : "are"} flagged for a refund and not payable: refund ${flagged === 1 ? "it" : "them"} from Payments (Needs refund tab), then create the payout again. The others are payable again.`
+            : "Payout cancelled. Its payments are payable again.",
     );
+    // Take the administrator to the flagged payments: that is the next step.
+    if (open === "cancel" && flagged > 0) router.push("/admin/payments?view=needs-refund");
     setOpen(null);
     router.refresh();
   }

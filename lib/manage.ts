@@ -237,67 +237,87 @@ export async function cancelBooking(
 
   // 4) Refund: issue it automatically if configured, otherwise flag it for the influencer.
   let issued: CancelResult["refund"]["issued"] = "no";
-  // The payment is in a payout that is being prepared: the refund waits (it stays flagged, so the Payments page lists it for the administrator).
+  // A payment that sits in a payout that is being prepared cannot be refunded now (that payout would pay the host money owed back, so it can no
+  // longer be approved or paid): the refund waits for the platform. It stays flagged, so the Payments page lists it and the payout page says
+  // "contains a flagged payment". The host cannot unblock this, and a host-side "issue the refund yourself" would be false, so this is checked
+  // BEFORE the refund and alert steps and applies with automatic refunds on or off.
   let blockedByPayout = false;
+  let hostMustRefund = false;
   if (decision.refund && hasCapturedPayment) {
-    if (autoRefundOnCancel()) {
-      for (const p of booking.payments) {
-        try {
-          await deps.refundPayment(p.id, { reason: decision.reason });
-          if (issued === "no") issued = "yes";
-        } catch (e) {
-          if (e instanceof RefundPendingError) {
-            issued = "pending";
-            continue;
-          }
-          if (e instanceof RefundBlockedByPayoutError) {
-            blockedByPayout = true;
-            reportNotice("warn", "automatic refund on cancel waits for a pending payout", { bookingId: booking.id, paymentId: p.id });
-            // The host cannot cancel a payout, so no "cancel that payout" message: only what is true. A platform cancel needs no host message at all.
-            if (!opts.byPlatform) {
-              await deps.alert(influencerId, {
-                kind: "refund-needed",
-                title: "A refund is waiting for a payout",
-                detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason} and is due a full refund. A payout that includes this payment is being prepared, so the platform will process the refund once that payout is settled. You do not need to do anything.`,
-                bookingId: booking.id,
-              });
-            }
-            continue;
-          }
-          // A platform cancel leaves the payment flagged for the administrator, who is the one refunding: the host is not asked to act.
-          if (!opts.byPlatform) {
-            await deps.alert(influencerId, {
-              kind: "refund-failed",
-              detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
-              bookingId: booking.id,
-            });
-          }
+    const inPendingPayout = new Set(
+      (await prisma.payment.findMany({ where: { bookingId: booking.id, status: "CAPTURED", payout: { status: "PENDING" } }, select: { id: true } })).map((r) => r.id),
+    );
+    for (const p of booking.payments) {
+      if (inPendingPayout.has(p.id)) {
+        blockedByPayout = true;
+        reportNotice("warn", "refund on cancel waits for a pending payout", { bookingId: booking.id, paymentId: p.id });
+        continue;
+      }
+      if (!autoRefundOnCancel()) {
+        hostMustRefund = true;
+        continue;
+      }
+      try {
+        await deps.refundPayment(p.id, { reason: decision.reason });
+        if (issued === "no") issued = "yes";
+      } catch (e) {
+        if (e instanceof RefundPendingError) {
+          issued = "pending";
+          continue;
+        }
+        if (e instanceof RefundBlockedByPayoutError) {
+          // A payout took the payment between the check above and the refund.
+          blockedByPayout = true;
+          reportNotice("warn", "automatic refund on cancel waits for a pending payout", { bookingId: booking.id, paymentId: p.id });
+          continue;
+        }
+        // A platform cancel leaves the payment flagged for the administrator, who is the one refunding: the host is not asked to act.
+        if (!opts.byPlatform) {
+          await deps.alert(influencerId, {
+            kind: "refund-failed",
+            detail: `Automatic refund failed: ${e instanceof Error ? e.message : String(e)}`,
+            bookingId: booking.id,
+          });
         }
       }
-    } else if (!opts.byPlatform) {
-      await deps.alert(influencerId, {
-        kind: "refund-needed",
-        detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason}. Issue the refund from the Sessions page.`,
-        bookingId: booking.id,
-      });
+    }
+    if (!opts.byPlatform) {
+      if (blockedByPayout) {
+        await deps.alert(influencerId, {
+          kind: "refund-needed",
+          title: "A refund is waiting for a payout",
+          detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason} and is due a full refund. A payout that includes this payment is being prepared, so the platform will process the refund once that payout is settled. You do not need to do anything.`,
+          bookingId: booking.id,
+        });
+      }
+      if (hostMustRefund) {
+        await deps.alert(influencerId, {
+          kind: "refund-needed",
+          detail: `${booking.customerName}'s booking for ${service.title} was ${decision.reason}. Issue the refund from the Sessions page.`,
+          bookingId: booking.id,
+        });
+      }
     }
   }
 
   // 5) Tell the customer what actually happened to their money. The cancellation template is the one message
-  //    allowed for a CANCELLED booking.
+  //    allowed for a CANCELLED booking. A payment held back by a payout is said first: "issued" may describe only another payment of the booking.
+  const waitsForPayout = "The platform will process it to your original payment method as soon as the host's pending payout is settled.";
   const refundNote = !hasCapturedPayment
     ? null
     : !decision.refund
       ? `No refund is due under this session's policy: ${describeRefundPolicy(policy)}`
-      : issued === "yes"
-        ? "Your refund has been issued to your original payment method. It usually arrives within 5-7 working days."
-        : issued === "pending"
-          ? "Your refund is being processed to your original payment method. It usually arrives within 5-7 working days."
-          : blockedByPayout
-            ? "You are due a full refund. The platform will process it to your original payment method as soon as the host's pending payout is settled."
-          : opts.byPlatform
-            ? "You are due a full refund. We will issue it to your original payment method."
-            : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
+      : blockedByPayout
+        ? issued === "no"
+          ? `You are due a full refund. ${waitsForPayout}`
+          : `Part of your refund has been sent to your original payment method. The rest is due as well. ${waitsForPayout}`
+        : issued === "yes"
+          ? "Your refund has been issued to your original payment method. It usually arrives within 5-7 working days."
+          : issued === "pending"
+            ? "Your refund is being processed to your original payment method. It usually arrives within 5-7 working days."
+            : opts.byPlatform
+              ? "You are due a full refund. We will issue it to your original payment method."
+              : "You are due a full refund. The host has been notified and will issue it to your original payment method.";
   await deps.sendBookingEmail(booking.id, "booking-cancelled", { refundNote });
   await createMessage({ bookingId: booking.id, channel: "whatsapp", template: CANCELLATION_TEMPLATE, status: "queued" });
   await step("enqueue cancellation", () => deps.enqueueSendMessage(booking.id, CANCELLATION_TEMPLATE));
