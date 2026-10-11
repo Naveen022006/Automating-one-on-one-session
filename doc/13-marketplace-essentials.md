@@ -107,8 +107,7 @@ Changes after review (same day):
 
 6. **A reminder skipped on purpose is not "lost" (E1).** `enqueueReminders` never schedules a reminder whose fire time had already
    passed when the booking was made. The repair now skips a reminder whose fire time (start minus offset) is earlier than the booking's
-   `armedAt`: its `createdAt`, or the update time of its `reschedule` notice row when later (a reschedule re-arms the reminders and
-   leaves no other trace). `planReminderRepairs` takes `armedAt` on each booking.
+   `armedAt` (see change 13). `planReminderRepairs` takes `armedAt` on each booking.
 7. **Replace a leftover for another time in any state but `active` (E2).** A completed or failed job for the old time (a reschedule
    while Redis was unreachable) is removed and re-added; only a running job is left alone.
 8. **Re-check before touching the queue (E3).** `ensureReminder(..., stillCurrent)` asks `reconcileReminders` to re-read the booking
@@ -124,6 +123,19 @@ Changes after review (same day):
     can be sent for the new one. `tests/manage-calendar-problems.test.ts` asserts it.
 12. **Tests scope themselves (E6).** `reconcileReminders(now, deps, { bookingIds })` restricts the scan; the database tests pass only
     their own booking ids.
+
+Integration fixes (branch `mk/z-reminder-fixes`, after the Opus review of `main`):
+
+13. **`armedAt` is read from the booking row only (R1, R2).** It is the latest of `createdAt`, `decidedAt` and `updatedAt`. `updatedAt` is
+    written when the meeting job makes the booking SCHEDULED (the moment reminders are first queued, so an approval request approved
+    18 h before the start no longer gets a repaired 24h reminder) and is stamped by `lib/manage.ts` on every reschedule. It replaces the
+    reschedule-notice `Message` row from change 6, which delivery callbacks also move. Known limit: any later write to the booking
+    row (for example `lastError` after a failed message) moves it forward, which can only make the repair more cautious.
+14. **A late delivery callback cannot revive a re-armed message (R1).** `rearmMessage` now clears `providerMessageId` and `sentAt`; the
+    WhatsApp webhook applies a status through `applyWhatsAppStatusUpdate` (`lib/messaging.ts`), which matches the provider id AND only
+    moves a row forward from SENT or DELIVERED (`statusesThatMayAdvanceTo`, `lib/whatsapp-webhook.ts`). It never touches PENDING,
+    and READ is never pulled back. Shared files touched (small): `app/api/webhooks/whatsapp/route.ts`, `lib/messaging.ts`,
+    `lib/whatsapp-webhook.ts`, `lib/manage.ts` (one `step`).
 
 Not checked: the acceptance walk-through with a real worker and Redis (the brief forbids starting a worker against the shared Redis);
 the behaviour is covered with injected queues and fake timers instead.

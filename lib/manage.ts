@@ -429,6 +429,9 @@ export async function rescheduleBooking(
     await step("replace reminders", async () => {
       await deps.cancelReminders(b.id);
       if (b.status !== "SCHEDULED") return;
+      // The moment these reminders are (re)armed, kept on the booking row: the repair job (lib/reminders.ts) will not
+      // re-create a reminder whose fire time is before it. A Message row cannot carry it; delivery callbacks keep touching those.
+      await step("stamp reminder time", () => prisma.booking.update({ where: { id: b.id }, data: { updatedAt: new Date() } }));
       // A reminder already sent for the OLD time would otherwise make the new one "already-sent" (and hide it from the repair job).
       await step("re-arm reminders", async () => {
         for (const template of ["reminder-24h", "reminder-15m"]) await deps.rearmMessage(b.id, template);

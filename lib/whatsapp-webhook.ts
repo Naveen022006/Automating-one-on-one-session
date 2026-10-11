@@ -59,6 +59,24 @@ export function isVerifyRequestValid(
   return mode === "subscribe" && !!expectedToken && !!token && safeEqual(token, expectedToken);
 }
 
+/**
+ * The row statuses a delivery callback may move a message FROM. A status only ever moves forward from SENT or DELIVERED:
+ * a PENDING row (never sent, or re-armed for a re-send / a reschedule) is never revived by a callback, a READ row is
+ * never pulled back to DELIVERED by a late callback, and a FAILED row stays as the sender left it.
+ */
+export function statusesThatMayAdvanceTo(next: MessageStatus): MessageStatus[] {
+  switch (next) {
+    case "SENT":
+    case "DELIVERED":
+      return ["SENT"];
+    case "READ":
+    case "FAILED":
+      return ["SENT", "DELIVERED"];
+    default:
+      return [];
+  }
+}
+
 /** Length-checked constant-time string compare (UTF-8 bytes). */
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, "utf8");

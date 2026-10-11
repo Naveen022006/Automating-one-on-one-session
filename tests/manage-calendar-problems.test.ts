@@ -276,6 +276,8 @@ test("a reschedule that finds a revoked grant flags the connection, still replac
   assert.deepEqual(log.remindersEnqueued, ["b1"]);
   // A reminder already sent for the old time must not block the one for the new time (WP-E).
   assert.ok(log.rearmed.includes("b1:reminder-24h") && log.rearmed.includes("b1:reminder-15m"), log.rearmed.join(","));
+  // ...and the booking row carries the re-arm time the repair job reads (R1: not a Message row).
+  assert.ok(f.booking.updatedAt instanceof Date && Date.now() - (f.booking.updatedAt as Date).getTime() < 60_000);
   assert.deepEqual(log.emails, [{ bookingId: "b1", kind: "booking-rescheduled" }]);
   mock.reset();
 });
