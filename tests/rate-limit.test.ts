@@ -112,7 +112,6 @@ test("every API family has a route rule, auth endpoints are strict", () => {
     ["GET", "/api/bookings/abc", "booking-status"],
     ["GET", "/api/bookings/abc/ics", "booking-status"],
     ["POST", "/api/bookings/abc/resend", "booking-resend"],
-    ["POST", "/api/bookings/abc/cancel", "booking-actions"],
     ["GET", "/api/slots", "slots"],
     ["GET", "/api/slots/days", "slots"],
     ["POST", "/api/manage/tok", "self-service"],
@@ -244,7 +243,7 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
 
   // The old rules those new paths could have been mistaken for.
   assert.equal(matchRouteRule("GET", "/api/bookings/x")?.name, "booking-status");
-  assert.equal(matchRouteRule("POST", "/api/bookings/x/cancel")?.name, "booking-actions");
+  assert.equal(matchRouteRule("POST", "/api/bookings/x/cancel"), null, "the old signed-in cancel / reschedule routes (and their rule) are gone");
   assert.equal(matchRouteRule("POST", "/api/admin/payments/x/unreconcile")?.name, "admin-money");
   assert.equal(matchRouteRule("POST", "/api/admin/influencers/x/payouts")?.name, "admin-money");
   assert.equal(matchRouteRule("POST", "/api/admin/influencers/x/fee")?.name, "admin-money");

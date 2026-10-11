@@ -16,6 +16,9 @@ export class RefundAmountChangedError extends Error {}
  */
 export class RefundPendingError extends Error {}
 
+/** The text `adminCancelBooking` puts at the start of the cancel reason; cancelBooking records it in the payment's `failureReason`. */
+export const PLATFORM_CANCEL_MARK = "Cancelled by the platform:";
+
 /** How long an unconfirmed "requested" claim blocks new refunds before it is reconciled against Razorpay. */
 export const CLAIM_STALE_MS = 10 * 60_000;
 
@@ -95,7 +98,10 @@ export async function refundPayment(
     influencerId?: string;
     amountMinor?: number;
     reason?: string;
-    /** Admin console only: the claim also fails while the payment is locked in a PENDING payout (that payout's snapshot would be wrong). */
+    /**
+     * The claim fails while the payment is locked in a PENDING payout (that payout's figures would be stale: the influencer would be overpaid).
+     * ON for every caller; pass `false` only for an internal caller that must refund regardless (none today).
+     */
     blockPendingPayout?: boolean;
     /**
      * Admin console only: a CHECK, never the amount. The refund is refused (RefundAmountChangedError) unless what is left of the payment is
@@ -142,22 +148,27 @@ export async function refundPayment(
   }
 
   const previousStatus = payment.refundStatus;
+  const blockPayout = opts.blockPendingPayout !== false;
   const claimed = await prisma.payment.updateMany({
     where: {
       id: payment.id,
       status: "CAPTURED",
       OR: [{ refundStatus: null }, { refundStatus: { in: ["pending", "processed", "failed"] } }],
-      ...(opts.blockPendingPayout ? { AND: [{ OR: [{ payoutId: null }, { payout: { status: { not: "PENDING" as const } } }] }] } : {}),
+      ...(blockPayout ? { AND: [{ OR: [{ payoutId: null }, { payout: { status: { not: "PENDING" as const } } }] }] } : {}),
       ...(opts.expectedRemainingMinor !== undefined ? { refundAmountMinor: payment.refundAmountMinor } : {}),
     },
     data: { refundStatus: "requested" },
   });
   if (claimed.count === 0) {
-    if (opts.blockPendingPayout || opts.expectedRemainingMinor !== undefined) {
+    if (blockPayout || opts.expectedRemainingMinor !== undefined) {
       // Say what actually changed (a payout took the payment, or another refund moved the total) instead of "in progress".
       const now = await prisma.payment.findUnique({ where: { id: payment.id }, select: { refundAmountMinor: true, payout: { select: { status: true } } } });
-      if (opts.blockPendingPayout && now?.payout?.status === "PENDING") {
-        throw new RefundNotAllowedError("This payment is in a pending payout. Cancel that payout first.");
+      if (blockPayout && now?.payout?.status === "PENDING") {
+        throw new RefundNotAllowedError(
+          opts.influencerId
+            ? "This payment is part of a payout being prepared. Try again once that payout is paid or cancelled."
+            : "This payment is in a pending payout. Cancel that payout first.",
+        );
       }
       if (opts.expectedRemainingMinor !== undefined && now && now.refundAmountMinor !== payment.refundAmountMinor) {
         throw new RefundAmountChangedError("The amount left to refund changed. Reload the page and check it again.");
@@ -188,7 +199,10 @@ export async function refundPayment(
 
   await upsertRefundRow(prisma, payment.id, refund);
   await prisma.payment.update({ where: { id: payment.id }, data: { refundedAt: new Date() } });
-  const summary = await recomputeRefundSummary(payment.id, prisma, { needsRefund: false, latestStatus: refund.status });
+  // A booking cancelled by the platform promised the customer a FULL refund (recorded in the payment's failureReason by cancelBooking, which
+  // the cancel route prefixes with PLATFORM_CANCEL_MARK): a partial refund does not clear the flag; it goes when nothing is left to refund.
+  const platformCancelled = (payment.failureReason ?? "").includes(PLATFORM_CANCEL_MARK);
+  const summary = await recomputeRefundSummary(payment.id, prisma, { needsRefund: platformCancelled, latestStatus: refund.status });
   return {
     refundId: refund.id,
     status: refund.status,

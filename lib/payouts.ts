@@ -493,12 +493,33 @@ export async function createPayout(
 }
 
 /**
+ * A payout's figures are a snapshot taken when it was created. Before it is approved or marked paid, its payments must still match that
+ * snapshot: no refund in flight (requested / pending) and the same refund total as `payout.refundsMinor`. Otherwise (a refund made from the
+ * dashboard, in the Razorpay dashboard and applied by webhook, ...) the net would be stale and the influencer overpaid: refused with
+ * 409 `refund-in-flight`; cancel the payout and create it again. The payments are locked (`FOR UPDATE`) for the rest of the transaction,
+ * so a refund update cannot slip in between this check and the status change.
+ */
+async function assertRefundsSettled(tx: Prisma.TransactionClient, payoutId: string, refundsMinor: number): Promise<void> {
+  const rows = await tx.$queryRaw<{ refund_status: string | null; refund_amount_minor: number | null }[]>`
+    SELECT refund_status, refund_amount_minor FROM payments WHERE payout_id = ${payoutId} FOR UPDATE`;
+  const inFlight = rows.some((r) => r.refund_status === "requested" || r.refund_status === "pending");
+  const total = rows.reduce((n, r) => n + (r.refund_amount_minor ?? 0), 0);
+  if (inFlight || total !== refundsMinor) {
+    throw new PayoutError(
+      "A payment in this payout was refunded (or a refund is in progress) after the payout was created, so its amount is out of date. Cancel this payout and create it again.",
+      409,
+      "refund-in-flight",
+    );
+  }
+}
+
+/**
  * Four-eyes approval: a PENDING payout gets `approvedAt` / `approvedByEmail`, and only an administrator OTHER than the
  * one who created it may do this. Enforced here (not just hidden in the UI), and the update is conditional on the
  * payout still being pending and unapproved, so concurrent approvals cannot overwrite each other.
  */
 export async function approvePayout(payoutId: string, adminEmail: string, now = new Date(), override?: SuspendedOverride) {
-  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true, influencerId: true } });
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, createdByEmail: true, approvedAt: true, influencerId: true, refundsMinor: true } });
   if (!payout) throw new PayoutError("Payout not found", 404);
   if (payout.status !== "PENDING") throw new PayoutError("Only a pending payout can be approved.", 409);
   if (sameAdmin(payout.createdByEmail, adminEmail)) {
@@ -506,11 +527,19 @@ export async function approvePayout(payoutId: string, adminEmail: string, now = 
   }
   if (payout.approvedAt) throw new PayoutError("This payout is already approved.", 409);
   const suspendedOverride = await checkSuspended(payout.influencerId, override);
-  const { count } = await prisma.payout.updateMany({
-    where: { id: payoutId, status: "PENDING", approvedAt: null },
-    data: { approvedAt: now, approvedByEmail: adminEmail },
+  const count = await prisma.$transaction(async (tx) => {
+    await assertRefundsSettled(tx, payoutId, payout.refundsMinor);
+    const done = await tx.payout.updateMany({
+      // The suspension is part of the condition too, so a suspension that lands after the read above cannot be raced.
+      where: { id: payoutId, status: "PENDING", approvedAt: null, ...(override ? {} : { influencer: { suspendedAt: null } }) },
+      data: { approvedAt: now, approvedByEmail: adminEmail },
+    });
+    return done.count;
   });
-  if (count === 0) throw new PayoutError("This payout changed while you were approving it. Reload and try again.", 409);
+  if (count === 0) {
+    await checkSuspended(payout.influencerId, override); // suspended in the meantime: say so, not "changed"
+    throw new PayoutError("This payout changed while you were approving it. Reload and try again.", 409);
+  }
   return { ...(await prisma.payout.findUniqueOrThrow({ where: { id: payoutId } })), suspendedOverride };
 }
 
@@ -521,7 +550,7 @@ export async function approvePayout(payoutId: string, adminEmail: string, now = 
 export async function markPayoutPaid(payoutId: string, reference: string, adminEmail: string, env: NodeJS.ProcessEnv = process.env, override?: SuspendedOverride) {
   const ref = reference.trim();
   if (ref.length < 6 || ref.length > 60) throw new PayoutError("Enter the bank reference (UTR) of the transfer.");
-  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true, influencerId: true, currency: true } });
+  const payout = await prisma.payout.findUnique({ where: { id: payoutId }, select: { status: true, netMinor: true, approvedAt: true, influencerId: true, currency: true, refundsMinor: true } });
   if (!payout || payout.status !== "PENDING") throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
   const suspendedOverride = await checkSuspended(payout.influencerId, override);
   // The threshold applies to this payout plus the influencer's other unapproved payouts of the last 24 hours (no splitting).
@@ -529,12 +558,19 @@ export async function markPayoutPaid(payoutId: string, reference: string, adminE
   if (needsApproval && !payout.approvedAt) {
     throw new PayoutError("This payout has to be approved by a second administrator before it can be marked as paid.", 409);
   }
-  const { count } = await prisma.payout.updateMany({
-    // The approval is part of the condition too, so the check cannot be raced.
-    where: { id: payoutId, status: "PENDING", ...(needsApproval ? { approvedAt: { not: null } } : {}) },
-    data: { status: "PAID", reference: ref, paidAt: new Date(), paidByEmail: adminEmail },
+  const count = await prisma.$transaction(async (tx) => {
+    await assertRefundsSettled(tx, payoutId, payout.refundsMinor);
+    const done = await tx.payout.updateMany({
+      // The approval and the suspension are part of the condition too, so the checks cannot be raced.
+      where: { id: payoutId, status: "PENDING", ...(needsApproval ? { approvedAt: { not: null } } : {}), ...(override ? {} : { influencer: { suspendedAt: null } }) },
+      data: { status: "PAID", reference: ref, paidAt: new Date(), paidByEmail: adminEmail },
+    });
+    return done.count;
   });
-  if (count === 0) throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
+  if (count === 0) {
+    await checkSuspended(payout.influencerId, override); // suspended in the meantime: say so, not "not pending"
+    throw new PayoutError("This payout is not pending (it may already be paid or cancelled).", 409);
+  }
   const paid = await prisma.payout.findUniqueOrThrow({ where: { id: payoutId }, include: { influencer: { select: { id: true, name: true, email: true } } } });
   return { ...paid, suspendedOverride };
 }

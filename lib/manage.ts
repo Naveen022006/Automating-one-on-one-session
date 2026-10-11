@@ -351,6 +351,10 @@ export async function rescheduleBooking(
   const { session } = booking;
   const { service } = session;
   if (opts.actor === "customer") {
+    // A suspended host takes no new commitments (the manage page hides the button; this is the rule itself). Cancelling stays allowed.
+    if (service.influencer.suspendedAt) {
+      throw new BookingNotManageableError("This host's account is not taking changes right now, so this session cannot be moved online. You can still cancel it.");
+    }
     if (service.type === "GROUP") {
       throw new BookingNotManageableError("Group sessions can only be moved by the host. Please contact them, or cancel your seat.");
     }
