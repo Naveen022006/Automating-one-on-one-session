@@ -200,6 +200,13 @@ export function BookingFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change of step moves focus
   }, [step]);
 
+  // A failed submit: focus the first field marked invalid. Bumped in the same batch as the errors, so this runs after they are in the DOM.
+  const detailsForm = useRef<HTMLFormElement>(null);
+  const [focusErrors, setFocusErrors] = useState(0);
+  useEffect(() => {
+    if (focusErrors > 0) detailsForm.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [focusErrors]);
+
   // Hold countdown.
   useEffect(() => {
     if (!hold || step !== 3) return;
@@ -267,9 +274,9 @@ export function BookingFlow({
     }
     setErrors(local);
     if (Object.keys(local).length) {
-      // The error texts are rendered by the next paint; put the keyboard (and a screen reader) on the first field that has one, so a
-      // failed submit is never silent when the message is above the fold.
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('form [aria-invalid="true"]')?.focus());
+      // Put the keyboard (and a screen reader) on the first field that has an error once the texts are rendered (the effect below),
+      // so a failed submit is never silent when the message is above the fold.
+      setFocusErrors((n) => n + 1);
       return;
     }
     setBusy(true);
@@ -288,7 +295,10 @@ export function BookingFlow({
           setDate((d) => d);
           setStep(1);
         } else {
-          if (data.answerErrors) setErrors(Object.fromEntries(Object.entries(data.answerErrors as Record<string, string>).map(([k, v]) => [`q:${k}`, v])));
+          if (data.answerErrors) {
+            setErrors(Object.fromEntries(Object.entries(data.answerErrors as Record<string, string>).map(([k, v]) => [`q:${k}`, v])));
+            setFocusErrors((n) => n + 1);
+          }
           setError(data.error ?? "Could not hold that time.");
         }
         return;
@@ -527,7 +537,7 @@ export function BookingFlow({
 
           {step === 2 && service && slot && (
             <section aria-labelledby="your-details">
-              <form className="stack" onSubmit={submitDetails} noValidate>
+              <form ref={detailsForm} className="stack" onSubmit={submitDetails} noValidate>
                 <div className="row row--between">
                   <h2 id="your-details" tabIndex={-1} style={{ outline: "none" }} className="section-title">
                     Your details

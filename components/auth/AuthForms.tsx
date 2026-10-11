@@ -27,10 +27,16 @@ function fieldErrors(data: { error?: string; field?: string; details?: { fieldEr
 /**
  * After a failed submit, once the error texts are rendered, put the keyboard (and a screen reader) on the first field that has one.
  * Without it the focus stays on the submit button while the message sits above the fold, which on a phone looks like "nothing
- * happened".
+ * happened". Bump the returned counter in the same batch as the state that holds the errors: the effect then runs after they have
+ * been committed to the DOM, also when the errors come from a server answer (a timer or an animation frame could run before React).
  */
-function focusFirstInvalid(form: HTMLFormElement | null) {
-  requestAnimationFrame(() => form?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
+function useFocusFirstInvalid() {
+  const formRef = useRef<HTMLFormElement>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (tick > 0) formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [tick]);
+  return { formRef, focusFirstInvalid: () => setTick((n) => n + 1) };
 }
 
 export function LoginForm({ next, notice }: { next?: string; notice?: string }) {
@@ -105,6 +111,7 @@ export function RegisterForm() {
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const origin = typeof window !== "undefined" ? window.location.host : "";
+  const { formRef, focusFirstInvalid } = useFocusFirstInvalid();
 
   useEffect(() => {
     if (!slugTouched) setSlug(suggest(name));
@@ -124,7 +131,6 @@ export function RegisterForm() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
     const local: Errors = {};
     if (!name.trim()) local.name = "Enter your name.";
     if (!/^\S+@\S+\.\S+$/.test(email)) local.email = "Enter a valid email address.";
@@ -132,7 +138,7 @@ export function RegisterForm() {
     if (!terms) local.acceptTerms = "Please accept the Terms and Privacy Policy.";
     if (slugStatus && !slugStatus.available) local.slug = slugStatus.problem ?? "Choose another address.";
     setErrors(local);
-    if (Object.keys(local).length) return focusFirstInvalid(form);
+    if (Object.keys(local).length) return focusFirstInvalid();
     setBusy(true);
     setFormError(null);
     const r = await post("/api/auth/register", { name, email, password, slug, timezone, acceptTerms: terms });
@@ -140,7 +146,7 @@ export function RegisterForm() {
       setBusy(false);
       const fe = fieldErrors(r.data);
       setErrors(fe);
-      if (Object.keys(fe).length) focusFirstInvalid(form);
+      if (Object.keys(fe).length) focusFirstInvalid();
       else setFormError(r.data.error ?? "Could not create your account.");
       return;
     }
@@ -151,7 +157,7 @@ export function RegisterForm() {
   const slugError = errors.slug ?? (slugStatus && !slugStatus.available ? slugStatus.problem : null);
 
   return (
-    <form className="stack" onSubmit={submit} noValidate>
+    <form ref={formRef} className="stack" onSubmit={submit} noValidate>
       {formError && <Alert tone="danger">{formError}</Alert>}
       <Field id="reg-name" label="Your name" error={errors.name}>
         <Input {...describedBy("reg-name", { error: errors.name })} autoComplete="name" required value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />

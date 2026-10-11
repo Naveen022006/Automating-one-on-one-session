@@ -19,14 +19,20 @@ test("booking flow: every step heading that the focus effect can name is a focus
 });
 
 test("booking flow: a failed submit focuses the first invalid field, and the opt-in error is announced and tied to its checkbox", () => {
-  assert.match(flow, /requestAnimationFrame\(\(\) => document\.querySelector<HTMLElement>\('form \[aria-invalid="true"\]'\)\?\.focus\(\)\)/);
+  // The focus happens in an effect that depends on a counter bumped in the same batch as the errors (after a commit, never before).
+  assert.match(flow, /setFocusErrors\(\(n\) => n \+ 1\)/);
+  assert.match(flow, /detailsForm\.current\?\.querySelector<HTMLElement>\('\[aria-invalid="true"\]'\)\?\.focus\(\)/);
+  assert.match(flow, /<form ref=\{detailsForm\}/);
+  assert.equal(flow.split("setFocusErrors((n) => n + 1)").length - 1, 2, "after local validation and after the server's answer errors");
   assert.match(flow, /aria-describedby=\{errors\.optIn \? "optin-error" : undefined\}/);
   assert.match(flow, /id="optin-error" role="alert"/);
 });
 
 test("register form: local and server-side errors both move focus to the first invalid field; the live slug answer marks the input invalid", () => {
-  assert.equal(auth.split("focusFirstInvalid(form)").length - 1, 2, "called after local validation and after a server answer");
-  assert.match(auth, /const form = e\.currentTarget as HTMLFormElement/, "the form is read before the first await (currentTarget is null afterwards)");
+  assert.equal(auth.split("focusFirstInvalid()").length - 1, 2, "called after local validation and after a server answer");
+  assert.match(auth, /const \{ formRef, focusFirstInvalid \} = useFocusFirstInvalid\(\)/);
+  assert.match(auth, /<form ref=\{formRef\} className="stack" onSubmit=\{submit\} noValidate>\s*\{formError/);
+  assert.match(auth, /setTick\(\(n\) => n \+ 1\)/, "an effect on a counter, so the focus follows the commit of the error texts");
   assert.match(auth, /describedBy\("reg-slug", \{ error: slugError, help: true \}\)/);
   assert.match(auth, /id="reg-terms-error" role="alert"/);
 });
