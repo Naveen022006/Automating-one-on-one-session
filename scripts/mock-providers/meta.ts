@@ -645,6 +645,9 @@ export function registerMeta(router: Router): void {
     c.rt.activity(`Meta: ${phone.display}: ${action}${action === "set-pin" ? " (changed behind the app's back)" : ""}`, "/__mock/meta");
     return { ok: true };
   });
+  // For tests: a new, empty account with one fresh number and ids no other run (or database row) shares, what the popup's "create a
+  // new account" makes. The tests that write to a shared database use these instead of the fixed demo ids.
+  addControl(router, "/__mock/meta/waba", (c) => createWaba(c.rt));
   addControl(router, "/__mock/meta/es-code", (c, f) => {
     const wabaId = String(f.wabaId ?? "");
     const phoneId = String(f.phoneId ?? "");

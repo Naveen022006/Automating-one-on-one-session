@@ -1,17 +1,20 @@
 // The Google connection and the create-meeting job against the mock server and a migrated Postgres (skipped without DATABASE_URL /
 // TOKEN_ENCRYPTION_KEY; no Redis needed, every queue is injected). The REAL Google client and the REAL database queries run; only
-// Google is the mock (doc/11-provider-simulator.md, 6.4). Each run makes its own influencer with timestamped names and deletes it.
+// Google is the mock (doc/11-provider-simulator.md, 6.4). Each run makes its own influencer with unique names (a timestamp and random
+// bytes: two runs, or the owner's own data, never share them) and deletes only that influencer, whose services, sessions, bookings and
+// Google token go with it.
 import "dotenv/config";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { prisma } from "../lib/db";
 import { buildAuthUrl, exchangeCode } from "../lib/google";
 import { saveGoogleToken } from "../lib/google-tokens";
 import { MeetingBlockedError, calendarEventId, createMeetingForBooking, sessionEventId } from "../lib/meeting";
-import { control, raw, startMock, useMockEnv, type TestMock } from "./helpers/mock-server";
+import { cleanup, control, raw, startMock, useMockEnv, type TestMock } from "./helpers/mock-server";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY not set";
-const run = Date.now();
+const run = `${Date.now()}-${randomBytes(3).toString("hex")}`;
 const account = `meeting-${run}@mock-google.invalid`;
 let t: TestMock;
 let restoreEnv = () => {};
@@ -32,12 +35,18 @@ before(async () => {
 });
 
 after(async () => {
-  if (!skip) {
-    restoreEnv();
-    await t.stop();
-    await prisma.influencer.delete({ where: { id: influencerId } });
+  if (skip) {
+    await prisma.$disconnect();
+    return;
   }
-  await prisma.$disconnect();
+  await cleanup(
+    [
+      ["restore the environment", () => restoreEnv()],
+      ["stop the mock", () => t.stop()],
+      ["delete this run's influencer", () => influencerId && prisma.influencer.delete({ where: { id: influencerId } })],
+    ],
+    () => prisma.$disconnect(),
+  );
 });
 
 /** The influencer connects Google through the mock's consent screen, exactly as the callback route stores it. */

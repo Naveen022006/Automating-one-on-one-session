@@ -93,6 +93,25 @@ export async function startReceiver(respond: (n: number, req: Received) => { sta
   };
 }
 
+/**
+ * Runs every cleanup step, each in its own try/catch, so one failing step never skips the rest (a half-cleaned shared database is
+ * worse than a noisy one), then `last` (the Prisma `$disconnect`). A failure is reported with the step's name and the error's
+ * message only. Nothing here may delete a row this run did not create.
+ */
+export async function cleanup(steps: [name: string, fn: () => unknown | Promise<unknown>][], last: () => unknown | Promise<unknown>): Promise<void> {
+  try {
+    for (const [name, fn] of steps) {
+      try {
+        await fn();
+      } catch (e) {
+        console.warn(`[test cleanup] ${name} failed: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
+      }
+    }
+  } finally {
+    await last();
+  }
+}
+
 /** Polls until `check` is true (or fails the test after `ms`). */
 export async function waitFor(check: () => boolean, what: string, ms = 5000): Promise<void> {
   const until = Date.now() + ms;

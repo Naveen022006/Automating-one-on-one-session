@@ -271,6 +271,26 @@ test("Embedded Signup code exchange: the code works once and the token is the pl
   assert.ok(!wrongSecret.text.includes(code), "the code is not echoed");
 });
 
+test("the waba control route makes new accounts and numbers whose ids are never the fixed demo ids (database tests use them)", async () => {
+  const fixed = new Set([WABA_NEW, WABA_OLD_TEMPLATE, WABA_BIG, PHONE_FRESH, PHONE_MANUAL, PHONE_UNKNOWN_PIN]);
+  const a = (await control(t.mock, "/__mock/meta/waba")).json() as { wabaId: string; phoneId: string };
+  const b = (await control(t.mock, "/__mock/meta/waba")).json() as { wabaId: string; phoneId: string };
+  for (const id of [a.wabaId, a.phoneId, b.wabaId, b.phoneId]) assert.ok(!fixed.has(id), `${id} is not a fixture id`);
+  assert.notEqual(a.wabaId, b.wabaId);
+  assert.notEqual(a.phoneId, b.phoneId);
+  const state = t.mock.state().meta;
+  assert.deepEqual(state.wabas[a.wabaId].phoneIds, [a.phoneId]);
+  assert.equal(state.phones[a.phoneId].registered, false, "fresh: not registered, no PIN");
+  assert.equal(state.phones[a.phoneId].pin, null);
+  // It works with the rest of the Embedded Signup path like any other account.
+  const code = (await control(t.mock, "/__mock/meta/es-code", { wabaId: a.wabaId, phoneId: a.phoneId })).json().code as string;
+  const token = await exchangeEmbeddedCode(code);
+  assert.equal((await getPhoneNumber(a.phoneId, token)).displayPhone, state.phones[a.phoneId].display);
+  // A control route needs the control token like the others.
+  const noToken = await raw(t.mock, "POST", "/__mock/meta/waba", { "content-type": "application/json" }, "{}");
+  assert.ok(noToken.status === 403 || noToken.status === 400 || noToken.status === 401, `refused without the token (got ${noToken.status})`);
+});
+
 const context = { link: "http://127.0.0.1:4010/meet/mock-abcd-efgh", serviceTitle: "1:1 Career Call", influencerName: "Demo Creator", when: "Mon, 12 Oct 2026, 11:00 am IST" };
 const send = (token: string, phoneNumberId: string, o: { template?: string; components?: ReturnType<typeof whatsappComponents>; to?: string } = {}) =>
   sendWhatsApp({ to: o.to ?? "+919876543210", template: o.template ?? "booking-confirmation", languageCode: "en", components: o.components ?? whatsappComponents(o.template ?? "booking-confirmation", context), credentials: { token, phoneNumberId } });
