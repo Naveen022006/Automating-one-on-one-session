@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  IconAlertCircle,
   IconCalendar,
   IconCheckCircle,
   IconChevronLeft,
@@ -555,7 +556,8 @@ export function BookingFlow({
                         label="Send my meeting link and reminders on WhatsApp (SMS if WhatsApp fails)."
                       />
                       {errors.optIn && (
-                        <p className="field__error" id="optin-error">
+                        <p className="field__error" id="optin-error" role="alert">
+                          <IconAlertCircle size={16} />
                           {errors.optIn}
                         </p>
                       )}
