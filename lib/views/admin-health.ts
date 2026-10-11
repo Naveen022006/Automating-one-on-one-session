@@ -47,13 +47,16 @@ export interface AdminHealthView {
   /** The four limits the page prints under the conditions table. */
   thresholds: { workerStaleSeconds: number; meetingStuckMinutes: number; queueFailedMax: number; queueWaitingMax: number };
   report: {
-    /** All of them, the worker's first. */
+    /** The rows of the "Monitored conditions" table: every condition except the worker's, which has its own card. */
     conditions: AdminHealthCondition[];
-    unhealthy: { id: string; label: string; status: ConditionStatus }[];
+    /** How many of ALL the conditions (the worker's included) could not be measured. */
+    unknownCount: number;
+    unhealthy: { label: string; status: ConditionStatus }[];
   };
   worker: {
     status: ConditionStatus;
-    detail: string;
+    /** Only while the worker is not running (the page shows them in that alert); null otherwise. */
+    detail: string | null;
     hint: string | null;
     /** ms since the epoch; null when no heartbeat could be read. */
     lastBeatAt: number | null;
@@ -64,19 +67,19 @@ export interface AdminHealthView {
     heartbeatReason: string | null;
   };
   /** The last payment-recovery run; null when none was recorded. */
-  recovery: { lastRunAt: number | null; lastCandidates: number; lastRecovered: number } | null;
+  recovery: { lastRunAt: number; lastCandidates: number; lastRecovered: number } | null;
   queueNames: string[];
   queues: Record<string, { waiting: number; active: number; delayed: number; failed: number } | null>;
   recovered: {
     id: string;
     at: Date;
     outcome: "recovered" | "flagged";
-    paymentId: string | null;
-    razorpayPaymentId: string | null;
-    bookingId: string | null;
+    /** The "Razorpay payment" column: the Razorpay payment id, else our payment id; null shows a dash. */
+    reference: string | null;
     amountMinor: number | null;
     currency: string | null;
-    reason: string | null;
+    /** The "Note" column: the reason, else "Booking <id>", else empty. */
+    note: string;
   }[];
   failed: {
     jobs: { queue: string; id: string; name: string; bookingId: string | null; failedReason: string; attemptsMade: number; failedAt: Date | null }[];
@@ -106,27 +109,31 @@ export function buildAdminHealthView(
       queueWaitingMax: thresholds.queueWaitingMax,
     },
     report: {
-      conditions: report.conditions.map((c) => ({
-        id: c.id,
-        label: c.label,
-        status: c.status,
-        value: c.value,
-        detail: scrub(c.detail),
-        hint: c.hint ? scrub(c.hint) : null,
-        href: c.href ?? null,
-      })),
-      unhealthy: report.unhealthy.map((c) => ({ id: c.id, label: c.label, status: c.status })),
+      conditions: report.conditions
+        .filter((c) => c.id !== "worker-heartbeat")
+        .map((c) => ({
+          id: c.id,
+          label: c.label,
+          status: c.status,
+          value: c.value,
+          detail: scrub(c.detail),
+          hint: c.hint ? scrub(c.hint) : null,
+          href: c.href ?? null,
+        })),
+      unknownCount: report.conditions.filter((c) => c.status === "unknown").length,
+      unhealthy: report.unhealthy.map((c) => ({ label: c.label, status: c.status })),
     },
     worker: {
       status: worker.status,
-      detail: scrub(worker.detail),
-      hint: worker.hint ? scrub(worker.hint) : null,
+      detail: worker.status === "critical" ? scrub(worker.detail) : null,
+      hint: worker.status === "critical" && worker.hint ? scrub(worker.hint) : null,
       lastBeatAt: lastBeat,
       lastBeatAgeText: lastBeat === null ? null : formatAge((snapshot.at - lastBeat) / 1000),
       heartbeatState: snapshot.heartbeat.state,
       heartbeatReason: snapshot.heartbeat.state === "unknown" ? scrub(snapshot.heartbeat.reason) : null,
     },
-    recovery: recovery ? { lastRunAt: recovery.lastRunAt, lastCandidates: recovery.lastCandidates, lastRecovered: recovery.lastRecovered } : null,
+    // The card only shows a run that happened; without one it says "No run recorded yet".
+    recovery: recovery?.lastRunAt ? { lastRunAt: recovery.lastRunAt, lastCandidates: recovery.lastCandidates, lastRecovered: recovery.lastRecovered } : null,
     queueNames: [...input.queueNames],
     queues: Object.fromEntries(
       Object.entries(snapshot.queues).map(([name, q]) => [name, q ? { waiting: q.waiting, active: q.active, delayed: q.delayed, failed: q.failed } : null]),
@@ -135,12 +142,10 @@ export function buildAdminHealthView(
       id: r.id,
       at: r.at,
       outcome: r.outcome,
-      paymentId: r.paymentId,
-      razorpayPaymentId: r.razorpayPaymentId,
-      bookingId: r.bookingId,
+      reference: r.razorpayPaymentId ?? r.paymentId,
       amountMinor: r.amountMinor,
       currency: r.currency,
-      reason: r.reason === null ? null : scrub(r.reason),
+      note: r.reason !== null ? scrub(r.reason) : r.bookingId ? `Booking ${r.bookingId}` : "",
     })),
     failed: {
       jobs: failed.jobs.map((j) => ({

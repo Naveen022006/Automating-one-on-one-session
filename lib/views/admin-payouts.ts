@@ -24,10 +24,9 @@ export interface AdminPayoutRow {
   influencer: { id: string; name: string };
   /** Where the money goes, already masked when the payout was created. */
   destination: string;
-  grossMinor: number;
-  refundsMinor: number;
+  /** The "Gross" column: what the customers paid, less the refunds made before the payout was created. */
+  grossAfterRefundsMinor: number;
   feeMinor: number;
-  feeBps: number;
   /** For example "10%"; formatted on the server so the browser needs no payout code. */
   feePercentText: string;
   netMinor: number;
@@ -89,10 +88,8 @@ export async function loadAdminPayoutsView(
         createdAt: p.createdAt,
         influencer: { id: p.influencer.id, name: p.influencer.name },
         destination: p.destination,
-        grossMinor: p.grossMinor,
-        refundsMinor: p.refundsMinor,
+        grossAfterRefundsMinor: p.grossMinor - p.refundsMinor,
         feeMinor: p.feeMinor,
-        feeBps: p.feeBps,
         feePercentText: formatFeePercent(p.feeBps),
         netMinor: p.netMinor,
         currency: p.currency,
@@ -102,7 +99,8 @@ export async function loadAdminPayoutsView(
         approval: {
           required: approval.required,
           approved: approval.approved,
-          approvedByEmail: approval.approvedByEmail,
+          // The page names the approver only on a payout still to send ("Approved by ..."); another administrator's address is not sent otherwise.
+          approvedByEmail: p.status === "PENDING" ? approval.approvedByEmail : null,
           canApprove: approval.canApprove,
           createdByViewer: approval.createdByViewer,
           canMarkPaid: approval.canMarkPaid,

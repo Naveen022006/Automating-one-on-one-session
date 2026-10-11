@@ -31,7 +31,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
     unpaid: counts.unpaid,
   };
   const href = (p: number) => `/admin/payments?view=${view}&page=${p}`;
-  const toReconcile = data.rows.filter((p) => p.status === "CAPTURED" && !p.reconciledAt && !p.payoutId).map((p) => p.id);
+  const toReconcile = data.rows.filter((p) => p.status === "CAPTURED" && !p.reconciled && !p.inPayout).map((p) => p.id);
   const label = VIEWS.find((v) => v.key === view)?.label ?? "All";
   // Tabs and pagination are links that no longer reload the page, so nothing announces the new list: this line does (a live region whose text changes).
   const found = `${label}: ${data.total === 0 ? "no payments" : `${data.total} ${data.total === 1 ? "payment" : "payments"}`}, page ${data.page} of ${data.pageCount}.`;
@@ -99,9 +99,9 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                       <td data-label="Reconciled">
                         {!paid ? (
                           <span className="subtle">—</span>
-                        ) : p.payoutId ? (
+                        ) : p.inPayout ? (
                           <Badge tone="info">In payout</Badge>
-                        ) : p.reconciledAt ? (
+                        ) : p.reconciled ? (
                           <span className="row row--nowrap">
                             <Badge tone="success">Yes</Badge>
                             <UnreconcileButton paymentId={p.id} />
@@ -111,7 +111,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                         )}
                       </td>
                       <td data-label="Razorpay" className="subtle" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
-                        {p.providerPaymentId ?? p.providerOrderId}
+                        {p.razorpayId}
                       </td>
                     </tr>
                   );

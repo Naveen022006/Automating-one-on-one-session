@@ -64,7 +64,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
                     <td data-label="Created">{new Date(p.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
                     <td data-label="Influencer"><Link href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</Link></td>
                     <td data-label="Send to">{p.destination}</td>
-                    <td data-label="Gross" className="num">{formatMoney(p.grossMinor - p.refundsMinor, p.currency)}</td>
+                    <td data-label="Gross" className="num">{formatMoney(p.grossAfterRefundsMinor, p.currency)}</td>
                     <td data-label="Fee" className="num">{formatMoney(p.feeMinor, p.currency)} <span className="subtle">({p.feePercentText})</span></td>
                     <td data-label="To send" className="num"><strong>{formatMoney(p.netMinor, p.currency)}</strong></td>
                     <td data-label="Status">

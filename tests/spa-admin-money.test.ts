@@ -75,30 +75,86 @@ async function ask(handler: Handler, query = "", cookie?: string): Promise<{ sta
 const orderId = (kind: string) => `order_${run}_${kind}`;
 const customer = (kind: string) => `Money ${kind} ${run}`;
 
+/**
+ * Values stored in rows the pages never show them from: encrypted tokens of the influencer's connections, bank details, customer
+ * contact data, internal notes. They sit in the same rows the endpoints read (or hang off the same influencer), so a careless
+ * `...row` or `include` would put them on the wire. No response may contain any of them.
+ */
+const hidden: string[] = [DETAIL_MARKER];
+const secret = (label: string) => {
+  const value = `hidden-${label}-${run}`;
+  hidden.push(value);
+  return value;
+};
+
 /** One payment of every kind the Payments tabs tell apart, a booking of each status the Bookings tabs filter by, and three payouts. */
 async function seed() {
   const service = await prisma.service.create({ data: { influencerId, title: `Money call ${run}`, durationMin: 30, priceMinor: 1000 } });
+  // The influencer's connections hold encrypted tokens and bank details.
+  await prisma.googleToken.create({ data: { influencerId, refreshTokenEnc: secret("google-refresh-enc"), scope: secret("google-scope"), googleEmail: `${secret("google-email")}@example.com` } });
+  await prisma.whatsAppConnection.create({
+    data: { influencerId, wabaId: secret("waba"), phoneNumberId: secret("phone-number-id"), tokenEnc: secret("whatsapp-token-enc"), registrationPinEnc: secret("whatsapp-pin-enc"), lastError: secret("whatsapp-error") },
+  });
+  await prisma.payoutAccount.create({
+    data: {
+      influencerId,
+      method: "BANK",
+      accountHolderName: secret("holder"),
+      bankName: secret("bank"),
+      ifsc: secret("ifsc"),
+      accountNumberEnc: secret("account-number-enc"),
+      accountNumberMasked: secret("account-masked"),
+      upiIdEnc: secret("upi-enc"),
+      status: "VERIFIED",
+      reviewedByEmail: `${secret("reviewer")}@example.com`,
+    },
+  });
   let n = 0;
   const booking = async (kind: string, status: "SCHEDULED" | "EXPIRED" | "CANCELLED" | "PENDING_PAYMENT" | "COMPLETED" | "FAILED" | "REQUESTED", extra: Record<string, unknown> = {}) => {
     const start = new Date(Date.now() + (3 + n++) * DAY);
     const session = await prisma.session.create({ data: { serviceId: service.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
     return prisma.booking.create({
-      data: { sessionId: session.id, status, customerName: customer(kind), customerEmail: `money-${kind}-${run}@example.com`.toLowerCase(), whatsappE164: "+919876543210", whatsappOptIn: true, ...extra },
+      data: {
+        sessionId: session.id,
+        status,
+        customerName: customer(kind),
+        customerEmail: `${secret(`customer-email-${kind}`)}@example.com`.toLowerCase(),
+        whatsappE164: `+91${secret(`phone-${kind}`)}`,
+        whatsappOptIn: true,
+        meetLink: `https://meet.google.com/${secret(`meet-${kind}`)}`,
+        eventId: secret(`event-${kind}`),
+        intakeAnswers: [{ id: "q1", label: "Question", answer: secret(`intake-${kind}`) }],
+        declineReason: secret(`decline-${kind}`),
+        ...extra,
+      },
     });
   };
   const payment = (bookingId: string, kind: string, extra: Record<string, unknown> = {}) =>
-    prisma.payment.create({ data: { bookingId, providerOrderId: orderId(kind), providerPaymentId: `pay_${run}_${kind}`, amountMinor: 1000, currency: "INR", status: "CAPTURED", ...extra } });
+    prisma.payment.create({
+      data: {
+        bookingId,
+        providerOrderId: orderId(kind),
+        providerPaymentId: `pay_${run}_${kind}`,
+        amountMinor: 1000,
+        currency: "INR",
+        status: "CAPTURED",
+        failureReason: secret(`failure-${kind}`),
+        recoveryError: secret(`recovery-${kind}`),
+        reconciledByEmail: `${secret(`reconciler-${kind}`)}@example.com`,
+        ...extra,
+      },
+    });
 
   await payment((await booking("recon", "SCHEDULED")).id, "recon"); // captured, not reconciled: the "To reconcile" tab
   await payment((await booking("mismatch", "EXPIRED")).id, "mismatch"); // captured, but the booking expired: "No paid booking"
-  await payment((await booking("done", "SCHEDULED")).id, "done", { reconciledAt: new Date(), reconciledByEmail: emailY });
+  await payment((await booking("done", "SCHEDULED")).id, "done", { reconciledAt: new Date() });
   await payment((await booking("refunded", "CANCELLED")).id, "refunded", { status: "REFUNDED", refundStatus: "processed", refundAmountMinor: 1000, reconciledAt: new Date() });
   await payment((await booking("unpaid", "PENDING_PAYMENT", { holdExpiresAt: new Date(Date.now() + DAY) })).id, "unpaid", { status: "CREATED", providerPaymentId: null });
   await payment((await booking("needsrefund", "CANCELLED")).id, "needsrefund", { needsRefund: true });
 
-  const payoutBase = { influencerId, currency: "INR", grossMinor: 1000, refundsMinor: 0, feeBps: 1050, feeMinor: 105, netMinor: 895, paymentCount: 1, destination: "UPI ****1234", createdByEmail: emailY };
+  const payoutBase = { influencerId, currency: "INR", grossMinor: 1000, refundsMinor: 0, feeBps: 1050, feeMinor: 105, netMinor: 895, paymentCount: 1, destination: "UPI ****1234", createdByEmail: emailY, note: secret("payout-note") };
   payoutPending = (await prisma.payout.create({ data: { ...payoutBase, status: "PENDING" } })).id;
-  payoutPaid = (await prisma.payout.create({ data: { ...payoutBase, status: "PAID", reference: `UTR${run}`, paidAt: new Date(), paidByEmail: emailY, approvedAt: new Date(), approvedByEmail: emailZ } })).id;
+  payoutPaid = (await prisma.payout.create({ data: { ...payoutBase, status: "PAID", reference: `UTR${run}`, paidAt: new Date(), paidByEmail: `${secret("payer")}@example.com`, approvedAt: new Date(), approvedByEmail: emailZ } })).id;
   payoutCancelled = (await prisma.payout.create({ data: { ...payoutBase, status: "CANCELLED" } })).id;
   // A payment in the paid payout that was partly refunded afterwards: money the influencer received that should come back.
   await payment((await booking("inpayout", "COMPLETED")).id, "inpayout", { reconciledAt: new Date(), payoutId: payoutPaid, refundStatus: "processed", refundAmountMinor: 300 });
@@ -121,7 +177,17 @@ async function seed() {
   });
 }
 
+/** Every environment setting these tests depend on is saved here before they change it, and put back by `after`, so the test passes alone and with any .env. */
+const ENV_NAMES = ["RATE_LIMIT_STORE", "REDIS_URL", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "ADMIN_REQUIRE_2FA"];
+function restoreEnv() {
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
 before(async () => {
+  for (const name of ENV_NAMES) savedEnv[name] = process.env[name];
   if (skip) return;
   process.env.RATE_LIMIT_STORE = "memory";
   // GET /api/admin/health builds the health report, which would open BullMQ/Redis connections that keep the test process alive
@@ -129,11 +195,11 @@ before(async () => {
   secretValues = Object.entries(process.env)
     .filter(([name, value]) => /SECRET|PASSWORD|TOKEN|_KEY|PRIVATE|DATABASE_URL|REDIS_URL/.test(name) && (value ?? "").length >= 8)
     .map(([, value]) => value as string);
-  for (const name of ["REDIS_URL", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "ADMIN_REQUIRE_2FA"]) savedEnv[name] = process.env[name];
   delete process.env.REDIS_URL;
   delete process.env.PAYOUT_FOUR_EYES_MIN_MINOR;
-  delete process.env.ADMIN_REQUIRE_2FA;
-  process.env.PAYOUT_FOUR_EYES = "true"; // a payout needs a second administrator to approve it, whatever NODE_ENV is
+  // Both switches default to ON in production, so they are set explicitly: the result does not depend on NODE_ENV or the .env.
+  process.env.ADMIN_REQUIRE_2FA = "false";
+  process.env.PAYOUT_FOUR_EYES = "true"; // a payout needs a second administrator to approve it
   mock.module("next/headers", {
     namedExports: {
       cookies: async () => ({ get: (name: string) => (jar.has(name) ? { name, value: jar.get(name) } : undefined) }),
@@ -174,20 +240,33 @@ before(async () => {
 });
 
 after(async () => {
-  if (!skip) {
-    if (influencerId) {
-      // Payouts restrict the influencer's deletion (their payments let go of them: SET NULL).
-      await prisma.payout.deleteMany({ where: { influencerId } });
-      await prisma.influencer.deleteMany({ where: { id: influencerId } });
+  try {
+    if (!skip) {
+      // Each step on its own (and tried twice), so a pool timeout on the slow shared database in one of them never leaves the rows of the
+      // others behind. Rows are found by the run's own markers, not by ids a failed `before` may not have stored.
+      const slug = `money-${run}`;
+      const steps: [string, () => Promise<unknown>][] = [
+        // Payouts restrict the influencer's deletion (their payments let go of them: SET NULL).
+        ["payouts", () => prisma.payout.deleteMany({ where: { influencer: { slug } } })],
+        ["influencer", () => prisma.influencer.deleteMany({ where: { slug } })],
+        ["audit", () => prisma.adminAuditLog.deleteMany({ where: { OR: [{ adminEmail: { in: [emailX, emailY, emailZ, auditEmail] } }, { targetId: `pay-row-${run}` }] } })],
+        ["admins", () => prisma.adminUser.deleteMany({ where: { email: { in: [emailX, emailY, emailZ] } } })],
+      ];
+      for (const [name, step] of steps) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            await step();
+            break;
+          } catch (e) {
+            if (attempt === 2) console.error(`[spa-admin-money cleanup] ${name} failed:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
     }
-    await prisma.adminAuditLog.deleteMany({ where: { adminEmail: { in: [emailX, emailY, emailZ, auditEmail] } } });
-    await prisma.adminUser.deleteMany({ where: { id: { in: [X, Y, Z].filter(Boolean) } } });
+  } finally {
+    restoreEnv();
+    await prisma.$disconnect().catch(() => {});
   }
-  for (const [name, value] of Object.entries(savedEnv)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-  await prisma.$disconnect();
 });
 
 /* ---------- the gate: the same one the console pages have ---------- */
@@ -244,7 +323,7 @@ test("every endpoint: 200 for a signed-in admin, 403 enroll when 2FA is required
       assertNoSecretKeys(ok.body);
     }
   } finally {
-    delete process.env.ADMIN_REQUIRE_2FA;
+    process.env.ADMIN_REQUIRE_2FA = "false"; // back to what `before` set
   }
 });
 
@@ -262,10 +341,12 @@ test("a disabled administrator's session stops working at once on every endpoint
 /* ---------- M5 payments ---------- */
 
 const PAYMENT_ROW_KEYS = [
-  "amountMinor", "booking", "createdAt", "currency", "id", "influencer", "mismatch", "needsRefund", "payoutId", "providerOrderId",
-  "providerPaymentId", "reconciledAt", "refundAmountMinor", "refundStatus", "service", "status",
+  "amountMinor", "booking", "createdAt", "currency", "id", "inPayout", "influencer", "mismatch", "needsRefund", "razorpayId",
+  "reconciled", "refundAmountMinor", "refundStatus", "service", "status",
 ];
-type PaymentRow = { providerOrderId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; payoutId: string | null; influencer: { id: string; name: string }; service: { title: string } };
+type PaymentRow = { razorpayId: string; status: string; mismatch: boolean; needsRefund: boolean; booking: { status: string; customerName: string }; inPayout: boolean; reconciled: boolean; influencer: { id: string; name: string }; service: { title: string } };
+/** The kind a seeded payment was created with ("recon", "done"...): the Razorpay id column holds `pay_<run>_<kind>`, or `order_<run>_<kind>` while there is no payment id. */
+const kindOf = (r: { razorpayId: string }) => (r.razorpayId.includes(`_${run}_`) ? r.razorpayId.split(`_${run}_`)[1] : null);
 
 test("M5 GET /api/admin/payments: each tab shows the matching payments, the counts are the tabs', and a row has exactly the hand-picked fields", { skip }, async () => {
   const token = await sessionLib.createAdminSession(Y);
@@ -277,7 +358,7 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
     assert.equal(out.body.view, view);
     assert.ok((out.body.rows as unknown[]).length <= 25, "one page at a time");
     assertNoSecretKeys(out.body);
-    return { out, mine: (out.body.rows as PaymentRow[]).filter((r) => r.providerOrderId.startsWith(`order_${run}_`)).map((r) => r.providerOrderId.slice(`order_${run}_`.length)).sort() };
+    return { out, mine: (out.body.rows as PaymentRow[]).map(kindOf).filter((k): k is string => k !== null).sort() };
   };
 
   assert.deepEqual((await kinds("all")).mine, ["done", "inpayout", "mismatch", "needsrefund", "recon", "refunded", "unpaid"]);
@@ -289,12 +370,19 @@ test("M5 GET /api/admin/payments: each tab shows the matching payments, the coun
 
   // The fields of a row, and the values worked out on the server.
   const all = await kinds("all");
-  const row = (kind: string) => (all.out.body.rows as PaymentRow[]).find((r) => r.providerOrderId === orderId(kind))!;
+  const row = (kind: string) => (all.out.body.rows as PaymentRow[]).find((r) => kindOf(r) === kind)!;
   for (const r of all.out.body.rows as object[]) assert.deepEqual(keys(r), PAYMENT_ROW_KEYS);
   assert.equal(row("mismatch").mismatch, true);
   for (const k of ["recon", "done", "refunded", "unpaid", "needsrefund", "inpayout"]) assert.equal(row(k).mismatch, false, k);
   assert.equal(row("needsrefund").needsRefund, true);
-  assert.equal(row("inpayout").payoutId, payoutPaid);
+  assert.equal(row("inpayout").inPayout, true);
+  for (const k of ["recon", "done", "refunded", "unpaid", "needsrefund", "mismatch"]) assert.equal(row(k).inPayout, false, k);
+  assert.equal(row("done").reconciled, true);
+  assert.equal(row("recon").reconciled, false);
+  assert.equal(row("recon").razorpayId, `pay_${run}_recon`, "the Razorpay payment id");
+  assert.equal(row("unpaid").razorpayId, orderId("unpaid"), "the order id while there is no payment id");
+  const text = JSON.stringify(all.out.body);
+  assert.ok(!text.includes(payoutPaid) && !text.includes(orderId("recon")), "neither the payout id nor an order id that has a payment id is sent");
   assert.deepEqual(row("recon").booking, { status: "SCHEDULED", customerName: customer("recon") });
   assert.equal(row("recon").service.title, `Money call ${run}`);
   assert.equal(row("recon").influencer.name, `Money Owner ${run}`);
@@ -333,7 +421,7 @@ test("payment, payout and booking URL rules: an unknown tab is the default one, 
 
 /* ---------- M6 payouts ---------- */
 
-const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeBps", "feeMinor", "feePercentText", "grossMinor", "id", "influencer", "netMinor", "owedMinor", "reference", "refundsMinor", "status"];
+const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeMinor", "feePercentText", "grossAfterRefundsMinor", "id", "influencer", "netMinor", "owedMinor", "reference", "status"];
 type PayoutRow = Jsonify<AdminPayoutsView>["rows"][number];
 
 test("M6 GET /api/admin/payouts: the tabs and their counts, the destination masked, 'refunded since' on a paid payout, exactly the hand-picked fields", { skip }, async () => {
@@ -369,6 +457,8 @@ test("M6 GET /api/admin/payouts: the tabs and their counts, the destination mask
   assert.equal(paid.destination, "UPI ****1234", "the destination is the masked label stored with the payout");
   assert.equal(paid.reference, `UTR${run}`);
   assert.equal(paid.feePercentText, "10.50%");
+  assert.equal(paid.grossAfterRefundsMinor, 1000);
+  assert.equal(paid.approval.approvedByEmail, null, "the page names an approver only on a payout still to send; the address of another administrator is not sent for a paid one");
   assert.equal(paid.owedMinor, 300, "refunded since it was paid");
   assert.equal(paid.netMinor, 895);
   const text = JSON.stringify(paidTab.body);
@@ -523,19 +613,23 @@ test("M8 GET /api/admin/health: the worker, the conditions, the queues and the l
   assert.deepEqual(keys(out.body), ["at", "failed", "queueNames", "queues", "recovered", "recovery", "report", "thresholds", "worker"]);
   assert.equal(typeof out.body.at, "number");
   assert.deepEqual(keys(out.body.thresholds), ["meetingStuckMinutes", "queueFailedMax", "queueWaitingMax", "workerStaleSeconds"], "only the four limits the page prints");
-  assert.deepEqual(keys(out.body.report), ["conditions", "unhealthy"]);
-  const report = out.body.report as { conditions: { id: string }[]; unhealthy: object[] };
-  assert.equal(report.conditions[0].id, "worker-heartbeat", "the worker is the first condition");
+  assert.deepEqual(keys(out.body.report), ["conditions", "unhealthy", "unknownCount"]);
+  const report = out.body.report as { conditions: { id: string }[]; unhealthy: object[]; unknownCount: number };
+  assert.ok(report.conditions.length >= 8 && report.conditions.every((c) => c.id !== "worker-heartbeat"), "the table rows: every condition but the worker's, which has its own card");
   for (const c of report.conditions) assert.deepEqual(keys(c), ["detail", "hint", "href", "id", "label", "status", "value"]);
-  for (const u of report.unhealthy) assert.deepEqual(keys(u), ["id", "label", "status"]);
+  for (const u of report.unhealthy) assert.deepEqual(keys(u), ["label", "status"]);
+  assert.ok(Number.isInteger(report.unknownCount) && report.unknownCount >= 1, "the worker, Redis and the queues cannot be measured without Redis");
   assert.deepEqual(keys(out.body.worker), ["detail", "heartbeatReason", "heartbeatState", "hint", "lastBeatAgeText", "lastBeatAt", "status"]);
   assert.deepEqual(out.body.queueNames, [...QUEUE_NAMES]);
   assert.deepEqual(keys(out.body.queues), [...QUEUE_NAMES].sort(), "one entry per queue (null when Redis cannot be asked)");
   assert.deepEqual(keys(out.body.failed), ["jobs", "unavailable"]);
 
   // Redis is not configured in this test, so nothing can be said about the worker: Unknown, with the reason, never an error.
-  const worker = out.body.worker as { status: string; heartbeatState: string; heartbeatReason: string; lastBeatAt: number | null; lastBeatAgeText: string | null };
+  const worker = out.body.worker as { status: string; heartbeatState: string; heartbeatReason: string; lastBeatAt: number | null; lastBeatAgeText: string | null; detail: string | null; hint: string | null };
   assert.equal(worker.status, "unknown");
+  assert.equal(worker.detail, null, "the worker's sentence is only sent while it is not running (the alert that shows it)");
+  assert.equal(worker.hint, null);
+  assert.equal(out.body.recovery, null, "no recovery run recorded without Redis: the card says so");
   assert.equal(worker.heartbeatState, "unknown");
   assert.equal(worker.heartbeatReason, "Redis is not configured");
   assert.equal(worker.lastBeatAt, null);
@@ -543,18 +637,56 @@ test("M8 GET /api/admin/health: the worker, the conditions, the queues and the l
   assert.deepEqual(out.body.failed && (out.body.failed as { unavailable: string[] }).unavailable.sort(), [...QUEUE_NAMES].sort(), "the failed-job lists could not be read");
 
   // The recovery row has its fields, and the password and host user part of the connection string in its reason are gone.
-  const rows = out.body.recovered as { paymentId: string | null; razorpayPaymentId: string | null; reason: string | null; outcome: string; amountMinor: number | null }[];
-  const row = rows.find((r) => r.razorpayPaymentId === `pay_${run}_rec`);
+  const rows = out.body.recovered as { reference: string | null; note: string; outcome: string; amountMinor: number | null }[];
+  const row = rows.find((r) => r.reference === `pay_${run}_rec`);
   assert.ok(row, "the recovery entry is listed");
-  assert.deepEqual(keys(row), ["amountMinor", "at", "bookingId", "currency", "id", "outcome", "paymentId", "razorpayPaymentId", "reason"]);
+  assert.deepEqual(keys(row), ["amountMinor", "at", "currency", "id", "note", "outcome", "reference"], "the Razorpay id and the note as the page shows them, not the ids behind them");
   assert.equal(row.outcome, "flagged");
-  assert.equal(row.reason, "Redis said redis://***@redis.example.com:6379 refused");
+  assert.equal(row.note, "Redis said redis://***@redis.example.com:6379 refused");
+  assert.ok(!JSON.stringify(out.body).includes(`pay-row-${run}`) && !JSON.stringify(out.body).includes(`bk-${run}`), "neither our payment id (a Razorpay id exists) nor the booking id (a reason exists) is sent");
 
   // No secret value of this process' environment appears anywhere in the body.
   const textBody = JSON.stringify(out.body);
   assert.ok(!textBody.includes("hunter2-password"));
   for (const value of secretValues) assert.ok(!textBody.includes(value), "no secret environment value in the health body");
   assertNoSecretKeys(out.body);
+});
+
+/* ---------- exposure ---------- */
+
+test("no response carries a value its page does not show: encrypted tokens and bank details of the influencer, customer contact data, notes, internal ids", { skip }, async () => {
+  assert.ok(hidden.length >= 40, "the fixtures hold the connections' encrypted tokens, the bank account, customer contact data and notes");
+  const token = await sessionLib.createAdminSession(Y);
+  const bodies: [string, string][] = [];
+  const grab = async (label: string, handler: Handler, query: string) => {
+    const out = await ask(handler, query, token);
+    assert.equal(out.status, 200, label);
+    bodies.push([label, JSON.stringify(out.body)]);
+  };
+  await grab("payments", routes.payments, "?view=all");
+  await grab("payouts", routes.payouts, "?status=all");
+  await grab("bookings", routes.bookings, "");
+  await grab("audit", routes.audit, "");
+  await grab("health", routes.health, "");
+
+  // The rows really are in the responses (so the check below looks at the data it should).
+  assert.ok(bodies[0][1].includes(`pay_${run}_recon`) && bodies[1][1].includes(`UTR${run}`) && bodies[2][1].includes(customer("recon")) && bodies[3][1].includes("test.money.00"));
+
+  for (const [label, text] of bodies) {
+    for (const value of hidden) assert.ok(!text.includes(value), `${label}: the response contains ${value}`);
+    assert.ok(!text.includes(`money-owner-${run}@example.com`), `${label}: the influencer's email is shown nowhere`);
+    // An administrator's address appears only where a page names an administrator: the audit log's "Admin" column (and "Approved by" on a
+    // payout still to send, none here), never the creator or payer of a payout.
+    if (label !== "audit") for (const value of [emailX, emailY, emailZ]) assert.ok(!text.includes(value), `${label}: the response contains ${value}`);
+    assertNoSecretKeys(JSON.parse(text));
+  }
+  // Ids of rows a page does not name: the payments page never sends booking, session or payout ids; the bookings page no payment id.
+  const payoutIds = await prisma.payout.findMany({ where: { influencer: { slug: `money-${run}` } }, select: { id: true } });
+  for (const { id } of payoutIds) assert.ok(!bodies[0][1].includes(id), "payments: no payout id");
+  const bookingIds = await prisma.booking.findMany({ where: { session: { service: { influencerId } } }, select: { id: true, sessionId: true } });
+  for (const b of bookingIds) assert.ok(!bodies[0][1].includes(b.id) && !bodies[0][1].includes(b.sessionId), "payments: no booking or session id");
+  const paymentIds = await prisma.payment.findMany({ where: { booking: { session: { service: { influencerId } } } }, select: { id: true } });
+  for (const p of paymentIds) assert.ok(!bodies[2][1].includes(p.id), "bookings: no payment id");
 });
 
 /* ---------- no database: scrubbing, fixtures, views, wiring ---------- */
@@ -595,7 +727,9 @@ test("buildAdminHealthView: a stale heartbeat is a critical worker with its age,
   assert.equal(stale.worker.lastBeatAt, NOW - 10 * 60_000);
   assert.equal(stale.worker.lastBeatAgeText, "10 min");
   assert.ok(stale.worker.hint?.includes("npm run worker"));
-  assert.ok(stale.report.unhealthy.some((c) => c.id === "worker-heartbeat" && c.status === "critical"));
+  assert.deepEqual(stale.report.unhealthy, [{ label: "Background worker", status: "critical" }]);
+  assert.ok(stale.report.conditions.every((c) => c.id !== "worker-heartbeat"), "the worker is not a row of the conditions table");
+  assert.equal(stale.report.unknownCount, 1, "the recovery loop is not checked while the worker is down");
   assert.equal(stale.at, NOW);
 
   const missing = health({ heartbeat: { state: "missing" } });
@@ -608,10 +742,18 @@ test("buildAdminHealthView: a stale heartbeat is a critical worker with its age,
   assert.equal(fresh.worker.status, "ok");
   assert.equal(fresh.worker.lastBeatAgeText, "12 s");
   assert.equal(fresh.worker.hint, null);
+  assert.equal(fresh.worker.detail, null, "the worker's sentence is sent only while it is not running");
   assert.deepEqual(fresh.report.unhealthy, []);
+  assert.equal(fresh.report.unknownCount, 0);
+  assert.deepEqual(fresh.recovery, { lastRunAt: NOW - 60_000, lastCandidates: 4, lastRecovered: 1 });
+  assert.equal(health({ recovery: null }).recovery, null);
+  assert.equal(health({ recovery: { consecutiveFailedRuns: 0, lastRunAt: null, lastError: "never sent", lastCandidates: 9, lastRecovered: 9 } }).recovery, null, "without a run the card shows nothing of the counts");
+  assert.ok(!JSON.stringify(health({ recovery: { consecutiveFailedRuns: 5, lastRunAt: NOW - 1000, lastError: "lookup failed hidden-last-error", lastCandidates: 1, lastRecovered: 0 } }).recovery).includes("hidden-last-error"), "the recovery error is only inside the condition's sentence, not a field of its own");
 
   const unknown = health({ heartbeat: { state: "unknown", reason: "Redis did not answer: redis://u:pw@h:6379 timed out", redis: "down" }, redis: "down" }, {}, { REDIS_URL: "redis://u:pw@h:6379" });
   assert.equal(unknown.worker.status, "unknown");
+  assert.equal(unknown.worker.detail, null, "the unknown worker's sentence repeats the reason; the page shows the reason only once");
+  assert.ok(unknown.report.unknownCount >= 1);
   assert.equal(unknown.worker.heartbeatReason, "Redis did not answer: [hidden] timed out", "a secret in the reason is taken out");
   assert.equal(unknown.worker.lastBeatAt, null);
   assert.deepEqual(keys(unknown.queues), [...QUEUE_NAMES].sort());
@@ -682,10 +824,9 @@ const payment = (over: Record<string, unknown> = {}) => ({
   refundAmountMinor: null,
   amountMinor: 250000,
   currency: "INR",
-  reconciledAt: null,
-  payoutId: null,
-  providerPaymentId: "pay_ABC",
-  providerOrderId: "order_ABC",
+  reconciled: false,
+  inPayout: false,
+  razorpayId: "pay_ABC",
   mismatch: false,
   booking: { status: "SCHEDULED", customerName: "Cust One" },
   service: { title: "Strategy call" },
@@ -698,9 +839,9 @@ test("PaymentsView: tabs with counts, a status line, reconcile ids for the unrec
   const { PaymentsView } = await loadViews();
   const rows = [
     payment({ id: "recon" }),
-    payment({ id: "mismatch", mismatch: true, booking: { status: "EXPIRED", customerName: "Cust Two" }, providerOrderId: "order_M", providerPaymentId: null }),
-    payment({ id: "done", reconciledAt: "2026-10-02T08:30:00.000Z" }),
-    payment({ id: "inpayout", reconciledAt: "2026-10-02T08:30:00.000Z", payoutId: "po1" }),
+    payment({ id: "mismatch", mismatch: true, booking: { status: "EXPIRED", customerName: "Cust Two" }, razorpayId: "order_M" }),
+    payment({ id: "done", reconciled: true }),
+    payment({ id: "inpayout", reconciled: true, inPayout: true }),
     payment({ id: "refund", needsRefund: true, refundStatus: "processed", refundAmountMinor: 100000 }),
     payment({ id: "created", status: "CREATED" }),
   ];
@@ -728,8 +869,8 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
   const { PayoutsView } = await loadViews();
   const approval = { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false };
   const row = (over: Record<string, unknown> = {}) => ({
-    id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer" }, destination: "UPI ****1234", grossMinor: 100000, refundsMinor: 10000,
-    feeMinor: 9000, feeBps: 1000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, approval, ...over,
+    id: "po1", createdAt: "2026-10-01T08:30:00.000Z", influencer: { id: "inf1", name: "Ina Fluencer" }, destination: "UPI ****1234", grossAfterRefundsMinor: 90000,
+    feeMinor: 9000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, approval, ...over,
   });
   const data = (over: Record<string, unknown> = {}) =>
     jsonify({ status: "PENDING" as const, page: 1, pageCount: 1, counts: { PENDING: 2, PAID: 1, CANCELLED: 0, all: 3 }, onlyOneAdmin: false, rows: [row(), row({ id: "po2", status: "PAID", reference: "UTR123456", owedMinor: 30000, approval: { ...approval, canApprove: false, required: false, canMarkPaid: false } })], ...over });

@@ -22,11 +22,12 @@ export interface AdminPaymentRow {
   refundAmountMinor: number | null;
   amountMinor: number;
   currency: string;
-  reconciledAt: Date | null;
-  /** Set when the payment went into a payout (the page shows "In payout" and offers no reconcile or undo). */
-  payoutId: string | null;
-  providerPaymentId: string | null;
-  providerOrderId: string;
+  /** Checked against Razorpay by an administrator (the page shows "Yes" and an Undo button; the time and who did it are not shown). */
+  reconciled: boolean;
+  /** The payment went into a payout (the page shows "In payout" and offers no reconcile or undo; the payout is not named). */
+  inPayout: boolean;
+  /** What the "Razorpay" column shows: the Razorpay payment id, or the order id while there is no payment id. Nothing else of the provider ids is sent. */
+  razorpayId: string;
   /** Captured, but the booking is in a state that should not coexist with a captured payment (computed on the server). */
   mismatch: boolean;
   booking: { status: string; customerName: string };
@@ -71,10 +72,9 @@ export async function loadAdminPaymentsView(params: { view?: string | null; page
       refundAmountMinor: p.refundAmountMinor,
       amountMinor: p.amountMinor,
       currency: p.currency,
-      reconciledAt: p.reconciledAt,
-      payoutId: p.payoutId,
-      providerPaymentId: p.providerPaymentId,
-      providerOrderId: p.providerOrderId,
+      reconciled: p.reconciledAt !== null,
+      inPayout: p.payoutId !== null,
+      razorpayId: p.providerPaymentId ?? p.providerOrderId,
       mismatch: p.status === "CAPTURED" && (MISMATCH_BOOKING_STATUSES as readonly string[]).includes(p.booking.status),
       booking: { status: p.booking.status, customerName: p.booking.customerName },
       service: { title: p.booking.session.service.title },

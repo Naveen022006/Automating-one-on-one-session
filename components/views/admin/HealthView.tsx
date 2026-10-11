@@ -23,8 +23,7 @@ const when = (d: string | number) => new Date(d).toLocaleString("en-IN", { dateS
  */
 export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; busy?: boolean }) {
   const { report, thresholds, worker, recovery, queues, recovered, failed } = data;
-  const rest = report.conditions.filter((c) => c.id !== "worker-heartbeat");
-  const unknownCount = report.conditions.filter((c) => c.status === "unknown").length;
+  const { unknownCount } = report;
 
   return (
     <div className="stack stack--lg" aria-busy={busy || undefined}>
@@ -100,7 +99,7 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
               </tr>
             </thead>
             <tbody>
-              {rest.map((c) => (
+              {report.conditions.map((c) => (
                 <tr key={c.id}>
                   <td data-label="Condition">{c.href ? <Link href={c.href}>{c.label}</Link> : c.label}</td>
                   <td data-label="Status">
@@ -186,13 +185,13 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
                       {r.outcome === "recovered" ? <Badge tone="success">Booked</Badge> : <Badge tone="warning">Needs refund</Badge>}
                     </td>
                     <td data-label="Razorpay payment" className="subtle" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
-                      {r.razorpayPaymentId ?? r.paymentId ?? "—"}
+                      {r.reference ?? "—"}
                     </td>
                     <td data-label="Amount" className="num">
                       {r.amountMinor !== null && r.currency ? formatMoney(r.amountMinor, r.currency) : "—"}
                     </td>
                     <td data-label="Note" className="subtle">
-                      {r.reason ?? (r.bookingId ? `Booking ${r.bookingId}` : "")}
+                      {r.note}
                     </td>
                   </tr>
                 ))}
