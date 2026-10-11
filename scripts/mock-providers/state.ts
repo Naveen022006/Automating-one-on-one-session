@@ -1,13 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { GOOGLE_ACCOUNTS, seedMeta } from "./fixtures";
 
 /**
- * The mock's whole world: the fake Google and Meta accounts, tokens, calendar events, mail, WhatsApp messages and the logs the
- * inbox pages show. Everything in it is fake. It is kept in memory and written to one JSON file in the OS temp directory (never
- * inside the repository), so a restart keeps what the app stored a token for; `--reset` deletes it. A token the app stored that
- * is unknown to the mock after a reset is answered like a revoked one, which shows the app's real reconnect states.
+ * The mock's whole world: the fake Google and Meta accounts and tokens, and what the demo made with them: calendar events, mail,
+ * WhatsApp messages, SMS and the logs the inbox pages show. The credentials and accounts are fake, but the booking data is NOT:
+ * customer names, email addresses, phone numbers and message bodies are whatever was typed into the demo's booking form. It is kept
+ * in memory and written to one JSON file in a per-user directory of the OS temp directory (mode 0700, the file 0600; never inside
+ * the repository), so a restart keeps what the app stored a token for; `--reset` deletes it. A token the app stored that is
+ * unknown to the mock after a reset is answered like a revoked one, which shows the app's real reconnect states.
  */
 
 export interface MockAccount {
@@ -245,7 +247,32 @@ export function emptyState(now = Date.now()): MockState {
 
 /** The state file used when none is given. In the OS temp directory, so it can never be committed or shipped in an image. */
 export function defaultStateFile(): string {
-  return path.join(tmpdir(), "session-automation-mock-providers", "state.json");
+  return path.join(tmpdir(), `session-automation-mock-providers-${userTag()}`, "state.json");
+}
+
+/** Who the temp directory belongs to, for its name: the user id where there is one, else the (sanitised) user name. */
+export function userTag(): string {
+  if (typeof process.getuid === "function") return String(process.getuid());
+  try {
+    return userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64) || "user";
+  } catch {
+    return "user";
+  }
+}
+
+/**
+ * Makes sure `dir` exists, is a plain directory (not a symlink planted by someone else) and, where the OS has owners, is OURS and
+ * closed to others (0700). The state file holds the demo's customer names, emails, phone numbers and messages, and /tmp is shared
+ * on Linux and macOS. Throws (refuses) for a directory owned by another user. On Windows the temp directory is already per user.
+ */
+export function ensurePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`Refusing to use ${dir} for the mock's state: it is not a plain directory.`);
+  if (typeof process.getuid === "function") {
+    if (st.uid !== process.getuid()) throw new Error(`Refusing to use ${dir} for the mock's state: it belongs to another user.`);
+    if ((st.mode & 0o077) !== 0) chmodSync(dir, 0o700);
+  }
 }
 
 /** True when `file` is inside the OS temp directory (the only place the mock writes). */
@@ -291,8 +318,8 @@ export class Persister {
   write(): void {
     const tmp = `${this.file}.${process.pid}.tmp`;
     try {
-      mkdirSync(path.dirname(this.file), { recursive: true });
-      writeFileSync(tmp, JSON.stringify(this.state()));
+      ensurePrivateDir(path.dirname(this.file));
+      writeFileSync(tmp, JSON.stringify(this.state()), { mode: 0o600 });
       renameSync(tmp, this.file);
     } catch (e) {
       rmSync(tmp, { force: true });

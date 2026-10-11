@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { META_APP_ID, META_APP_SECRET } from "./fixtures";
 import { registerEmbedded } from "./embedded";
 import { registerGmail } from "./gmail";
@@ -8,7 +9,7 @@ import { dispatch, isLocalUrl, randomHex, Router, type Runtime } from "./http";
 import { registerMeta, resumeReviews } from "./meta";
 import { registerSms } from "./sms";
 import { createWebhooks, registerWebhookControls } from "./webhooks";
-import { ACTIVITY_MAX, Persister, deleteStateFile, isInsideTmpdir, loadState, type MockState } from "./state";
+import { ACTIVITY_MAX, Persister, deleteStateFile, ensurePrivateDir, isInsideTmpdir, loadState, type MockState } from "./state";
 import { registerUi } from "./ui";
 
 /**
@@ -51,6 +52,12 @@ export function startupProblem(opts: { appUrl: string; stateFile: string }, env:
     return "Refusing to start: the app URL must be a local address (localhost, 127.0.0.1, [::1] or *.localhost), because the mock redirects browsers and sends webhooks to it.";
   }
   if (!isInsideTmpdir(opts.stateFile)) return "Refusing to start: the state file must be inside the OS temp directory (the mock never writes inside the repository).";
+  // The state holds the demo's customer names, emails, phones and messages: its directory must be a plain one that is ours and closed to others.
+  try {
+    ensurePrivateDir(path.dirname(opts.stateFile));
+  } catch (e) {
+    return e instanceof Error ? e.message : "Refusing to start: the state directory is not usable.";
+  }
   return null;
 }
 

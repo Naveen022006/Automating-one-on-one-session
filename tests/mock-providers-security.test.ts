@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { GOOGLE_CLIENT_SECRET, META_APP_ID, META_APP_SECRET, META_ES_CONFIG_ID } from "../scripts/mock-providers/fixtures";
-import { createMockServer } from "../scripts/mock-providers/server";
-import { defaultStateFile } from "../scripts/mock-providers/state";
+import { createMockServer, startupProblem } from "../scripts/mock-providers/server";
+import { defaultStateFile, ensurePrivateDir } from "../scripts/mock-providers/state";
 import { control, raw, startMock, type TestMock } from "./helpers/mock-server";
 
 // The mock is a development tool that stands in for Google and Meta: it must never be reachable from the network, never start where
@@ -121,6 +121,61 @@ test("the state file is in the OS temp directory, never in the repository", () =
   assert.ok(path.resolve(defaultStateFile()).startsWith(tmp), defaultStateFile());
   assert.ok(!path.resolve(defaultStateFile()).startsWith(path.resolve(process.cwd())));
   assert.ok(path.resolve(t.dir).startsWith(tmp));
+});
+
+test("the state file holds the demo's customer data, so its directory is per user, private and never someone else's", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mock-providers-perm-"));
+  try {
+    // A per-user name (the default path is shared otherwise: /tmp on Linux and macOS).
+    assert.ok(path.basename(path.dirname(defaultStateFile())).startsWith("session-automation-mock-providers-"));
+    assert.ok(path.basename(path.dirname(defaultStateFile())).length > "session-automation-mock-providers-".length);
+    assert.match(path.basename(path.dirname(defaultStateFile())), /^[A-Za-z0-9_.-]+$/, "nothing from the user name can escape the temp directory");
+
+    const mine = path.join(dir, "state");
+    ensurePrivateDir(mine);
+    if (process.platform !== "win32") assert.equal(statSync(mine).mode & 0o777, 0o700, "created closed to others");
+    if (process.platform !== "win32") {
+      chmodSync(mine, 0o755);
+      ensurePrivateDir(mine);
+      assert.equal(statSync(mine).mode & 0o777, 0o700, "a directory left open is closed again");
+    }
+
+    // Not a plain directory: a file in the way (and, where symlinks can be made, a symlink to someone else's directory).
+    writeFileSync(path.join(dir, "file"), "x");
+    assert.throws(() => ensurePrivateDir(path.join(dir, "file")), "a file is not a directory");
+    try {
+      symlinkSync(dir, path.join(dir, "link"), "dir");
+      assert.throws(() => ensurePrivateDir(path.join(dir, "link")), /not a plain directory/);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EPERM" && (e as NodeJS.ErrnoException).code !== "EACCES") throw e;
+    }
+
+    // A directory that belongs to another user is refused (here by pretending to be someone else, which works on every OS).
+    const real = process.getuid;
+    process.getuid = () => statSync(mine).uid + 1;
+    try {
+      assert.throws(() => ensurePrivateDir(mine), /belongs to another user/);
+      assert.match(startupProblem({ appUrl: "http://localhost:3000", stateFile: path.join(mine, "state.json") }) ?? "", /belongs to another user/, "the server refuses to start on it");
+      await assert.rejects(createMockServer({ port: 0, appUrl: "http://localhost:3000", stateFile: path.join(mine, "state.json") }), /belongs to another user/);
+    } finally {
+      process.getuid = real;
+    }
+
+    // The file is written closed to others, and its content is where the customer data goes (so the directory above matters).
+    const server = await createMockServer({ port: 0, appUrl: "http://localhost:3000", stateFile: path.join(mine, "state.json") });
+    try {
+      await control(server, "/__mock/faults", { key: "latency.sms", value: "300" });
+      server.state().sms.push({ id: "MOCK-SMS-x", at: new Date().toISOString(), to: "+919876543210", body: "Hi Asha" });
+    } finally {
+      await server.close();
+    }
+    const file = path.join(mine, "state.json");
+    assert.ok(existsSync(file));
+    assert.match(readFileSync(file, "utf8"), /Hi Asha/);
+    if (process.platform !== "win32") assert.equal(statSync(file).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("no page or response contains the mock's client or app secrets, and state.json shortens every token", async () => {
