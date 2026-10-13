@@ -239,3 +239,12 @@ The rest in any order. Notes for the deploy: e-mails sent before `fix/booking-li
 (it answers 404; the Meet and manage links in them still work), and a booking tab left open across the `fix/checkout-hardening`
 deploy is asked to reload before paying. Check `SELECT slug FROM influencers WHERE slug IN ('pay', 'opengraph-image');` before
 `fix/reserve-pay-slug` (an existing profile keeps its slug).
+
+## Known gaps found by the fault-handling review (2026-10-13)
+
+Reproducible by reading the code, deliberately not fixed in the review round because each is a feature or a product decision:
+
+1. **No SMS fallback after a late WhatsApp failure.** If Meta accepts a message (recorded SENT) and later reports `failed` (for example 131026, number not on WhatsApp), the row becomes FAILED and no SMS follows; the fallback only runs when the send call itself throws. A fix would enqueue an SMS-only retry from the WhatsApp webhook (`lib/messaging.ts`, `app/api/webhooks/whatsapp/route.ts`).
+2. **A failed calendar update on cancel is never retried.** With Google down or the grant revoked during a cancel, the event stays on the customer's calendar; the booking is already CANCELLED so nothing revisits it (documented as best effort).
+3. **Bookings parked as PAID because the grant was revoked stay PAID** if the host never reconnects, even after the session time passes; nothing flags them for refund.
+4. **A reschedule does not re-check the booking status inside its transaction**, so a cancel landing at the same moment can still send a "rescheduled" e-mail to a cancelled booking (cosmetic).
