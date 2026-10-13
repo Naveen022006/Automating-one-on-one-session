@@ -70,7 +70,13 @@ function tokenState(lookup: unknown = { state: "ok", refreshToken: "refresh", co
 async function load(f: Fixture, tokens: ReturnType<typeof tokenState>) {
   const tx = {
     session: { findFirst: async () => null, update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(f.session, data) },
-    booking: { count: async () => 0 },
+    booking: {
+      count: async () => 0,
+      // cancelBooking's status change: only from the status it checked.
+      updateMany: async ({ where, data }: { where: { status: string }; data: Record<string, unknown> }) =>
+        f.booking.status === where.status ? (Object.assign(f.booking, data), { count: 1 }) : { count: 0 },
+    },
+    payment: { updateMany: async () => ({ count: 1 }) },
     $queryRaw: async () => [],
     $executeRaw: async () => 1, // the influencer's schedule lock (lib/holds.ts lockInfluencerSchedule)
   };
