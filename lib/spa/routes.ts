@@ -232,3 +232,42 @@ export function formatTitle(title: string, template: SpaTitleTemplate, brand: st
  */
 export const DEFAULT_DESCRIPTION =
   "Sell 1:1 and small-group sessions. Customers pick a time and pay; the Google Meet link is created and sent on WhatsApp and email automatically, with reminders.";
+
+/** The head tags the browser keeps in step with the URL after an in-app navigation (the server writes the first page's). */
+export interface ClientHead {
+  description?: string;
+  /** Absolute URL. */
+  canonical?: string;
+  robots: SpaRobots;
+  /** Open Graph / Twitter title, description and url; only indexable pages with a description have one. */
+  share?: { title: string; description: string; url?: string };
+}
+
+/**
+ * What lib/spa/head.ts would write for `pathname`, as far as the table alone can tell (no database). Profile and booking
+ * pages depend on the profile (a bio, a preview that must not be indexed), which only the server knows at first load; after
+ * an in-app navigation they get the conservative head: `noindex`, no canonical, no share card. Crawlers load each URL fresh
+ * and get the server's head, so this is only what a JS-rendered page view carries. `origin` is the page's own origin.
+ */
+export function clientHeadFor(pathname: string, origin: string, brand: string): ClientHead {
+  const match = matchSpaRoute(pathname);
+  if (!match || match.status === 404) return { robots: match?.route.robots ?? "noindex" };
+  const route = match.route;
+  if (route.head === "profile" || route.head === "book" || route.head === "design") return { robots: "noindex" };
+  const canonical = "canonical" in route && route.canonical ? `${origin}${route.path === "/" ? "/" : route.path}` : undefined;
+  const description =
+    route.head === "landing"
+      ? DEFAULT_DESCRIPTION
+      : "description" in route && route.description
+        ? route.description
+        : route.robots === "index"
+          ? DEFAULT_DESCRIPTION
+          : undefined;
+  const title = formatTitle(route.title ?? "", route.template, brand);
+  return {
+    description,
+    canonical,
+    robots: route.robots,
+    share: route.head === "landing" || (route.robots === "index" && description) ? { title, description: description!, url: canonical } : undefined,
+  };
+}
