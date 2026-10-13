@@ -346,6 +346,31 @@ test("repeating a reschedule that fully succeeded does not touch Google again", 
     await mod.rescheduleBooking("b1", newStart, deps);
     await mod.rescheduleBooking("b1", newStart, deps);
     assert.equal(updates, 1);
+
+test("moving a booking back to a time it was moved to before still sends the reschedule notice (no BullMQ id collision)", async () => {
+  const f = fixture();
+  const mod = await load(f, tokenState());
+  try {
+    // Stands in for BullMQ: an add whose job id already exists (completed jobs are kept for 7 days) is silently dropped.
+    const jobs = new Set<string>();
+    let sent = 0;
+    const { deps } = effects(happyGoogle);
+    deps.enqueueSendMessage = async (bookingId: string, template?: string, suffix?: string) => {
+      const id = `send-message-${template}-${bookingId}${suffix ? `-${suffix}` : ""}`;
+      if (jobs.has(id)) return;
+      jobs.add(id);
+      sent++;
+    };
+    const at = (days: number) => {
+      const d = new Date(Date.now() + days * 86_400_000);
+      d.setUTCHours(10, 0, 0, 0);
+      return d;
+    };
+    // The customer moves to A, then to B, then back to A.
+    await mod.rescheduleBooking("b1", at(5), deps);
+    await mod.rescheduleBooking("b1", at(6), deps);
+    await mod.rescheduleBooking("b1", at(5), deps);
+    assert.equal(sent, 3, "each move is announced");
   } finally {
     mock.reset();
   }

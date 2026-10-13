@@ -521,7 +521,9 @@ export async function rescheduleBooking(
 
   // 4) Every live booking in the (possibly shared) session: replace its reminders and tell the customer. Done
   //    before surfacing a calendar error so a Google outage never leaves a moved booking without reminders.
-  const suffix = `at-${newStart.getTime()}`;
+  // Unique per reschedule, not per target time: completed send-message jobs are kept for 7 days and BullMQ silently drops an
+  // add whose id exists, so moving back to a time used before (A -> B -> A) would otherwise send no notice at all.
+  const suffix = `at-${newStart.getTime()}-${Date.now()}`;
   for (const b of session.bookings) {
     if (b.status === "CANCELLED" || b.status === "FAILED" || b.status === "EXPIRED") continue;
     await step("replace reminders", async () => {
