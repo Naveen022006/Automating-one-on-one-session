@@ -81,6 +81,11 @@ const db = {
     },
     update: async ({ where, data }: { where: { providerRefundId: string }; data: Partial<RefundRow> }) =>
       Object.assign(state.refunds.find((r) => r.providerRefundId === where.providerRefundId)!, data),
+    updateMany: async ({ where, data }: { where: { providerRefundId: string; status?: { notIn: string[] } }; data: Partial<RefundRow> }) => {
+      const hit = state.refunds.filter((r) => r.providerRefundId === where.providerRefundId && !(where.status?.notIn ?? []).includes(r.status));
+      hit.forEach((r) => Object.assign(r, data));
+      return { count: hit.length };
+    },
     upsert: async ({ where, create, update }: { where: { providerRefundId: string }; create: Omit<RefundRow, "createdAt">; update: Partial<RefundRow> }) => {
       const found = state.refunds.find((r) => r.providerRefundId === where.providerRefundId);
       if (found) return Object.assign(found, update);
@@ -207,4 +212,32 @@ test("webhooks record refunds issued outside the app and settle an unconfirmed c
   await applyRefundWebhook("refund.processed", { id: "rf_dash", payment_id: "pay_1", amount: 50000 }, async () => {}, db as never);
   assert.equal(p.status, "REFUNDED");
   assert.equal(p.refundStatus, "processed");
+});
+
+test("webhooks: an outcome that arrives before Razorpay's create-refund answer is not overwritten by that answer", async () => {
+  // Razorpay sends refund.failed (or refund.processed) while our create-refund call is still waiting for its HTTP answer,
+  // which then says "pending". The answer is older news than the webhook and must not undo it.
+  const p = reset();
+  await refundPayment("p1", {}, {
+    createRefund: async () => {
+      await applyRefundWebhook("refund.failed", { id: "rf_early", payment_id: "pay_1", amount: 50000 }, async () => {}, db as never);
+      return { id: "rf_early", payment_id: "pay_1", amount: 50000, currency: "INR", status: "pending" };
+    },
+  });
+  assert.equal(state.refunds.find((r) => r.providerRefundId === "rf_early")?.status, "failed");
+  assert.equal(p.status, "CAPTURED", "the refund failed: nothing was refunded");
+  assert.equal(p.refundAmountMinor, null);
+  assert.equal(p.needsRefund, true, "still owed, so it stays flagged for a retry");
+  assert.equal(p.refundStatus, "failed");
+
+  const q = reset();
+  await refundPayment("p1", {}, {
+    createRefund: async () => {
+      await applyRefundWebhook("refund.processed", { id: "rf_fast", payment_id: "pay_1", amount: 50000 }, async () => {}, db as never);
+      return { id: "rf_fast", payment_id: "pay_1", amount: 50000, currency: "INR", status: "pending" };
+    },
+  });
+  assert.equal(state.refunds.find((r) => r.providerRefundId === "rf_fast")?.status, "processed");
+  assert.equal(q.status, "REFUNDED");
+  assert.equal(q.refundStatus, "processed", "not shown as still in flight");
 });
