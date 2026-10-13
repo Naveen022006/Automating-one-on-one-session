@@ -23,6 +23,7 @@ import {
   type SlotOption,
 } from "@web/components/ui/scheduling";
 import { focusFirstInvalid, headingToFocus } from "@web/components/ui/focus";
+import { checkoutRefusalOutcome } from "@web/lib/checkout-refusal";
 import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@web/components/ui/primitives";
 import type { IntakeQuestion } from "@/lib/intake";
 
@@ -326,6 +327,22 @@ export function BookingFlow({
         body: JSON.stringify({ bookingId: hold.bookingId, token: hold.pollToken }),
       });
       const data = await res.json();
+      if (res.status === 409) {
+        // Refused because of the booking's state: find out which state, instead of leaving the countdown and the Pay button up.
+        const outcome = await refusalOutcome(hold);
+        if (outcome === "paid") {
+          setBusy(false);
+          return setPayState("confirming"); // the poll below confirms it and fetches the Meet link
+        }
+        if (outcome === "hold-ended") {
+          setBusy(false);
+          return setHold((h) => (h ? { ...h, holdExpiresAt: new Date(Date.now() - 5000).toISOString() } : h)); // shows "Your hold has ended"
+        }
+        if (outcome === "failed") {
+          setBusy(false);
+          return setPayState("failed");
+        }
+      }
       if (!res.ok) throw new Error(data.error ?? "Could not start payment");
       const c = data as CheckoutResult;
       setHold((h) => (h ? { ...h, holdExpiresAt: c.holdExpiresAt } : h));
@@ -350,6 +367,16 @@ export function BookingFlow({
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
+    }
+  }
+
+  async function refusalOutcome(h: HoldResult) {
+    try {
+      const qs = h.pollToken ? `?t=${encodeURIComponent(h.pollToken)}` : "";
+      const r = await fetch(`/api/bookings/${encodeURIComponent(h.bookingId)}${qs}`);
+      return checkoutRefusalOutcome(r.ok ? await r.json() : null, Date.now());
+    } catch {
+      return "unknown" as const;
     }
   }
 
