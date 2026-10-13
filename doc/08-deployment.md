@@ -568,10 +568,10 @@ failure:
 1. Restart it; check logs for `[env] worker will not start` (configuration), Redis or database connection errors.
 2. On start the worker re-queues every `PAID` booking without a meeting (`requeuePendingMeetings`), expires stale holds and
    resumes the queues, so a short outage self-heals. Jobs that were waiting in Redis are processed in order.
-3. Delayed jobs that came due while the worker was down run as soon as it is back, **however late**: the reminder handler
-   only checks that the booking is still `SCHEDULED` and its time is unchanged, so a "15 minutes before" reminder can
-   arrive after the session has started. Check the dashboard's needs-attention list for failed messages, and contact
-   customers whose session was affected.
+3. Delayed jobs that came due while the worker was down run as soon as it is back. A reminder that is too late is skipped,
+   not sent (`staleReminderReason`: the "15 minutes before" one once the session has started, the 24-hour one with less
+   than 12 hours left; each skip is a log line), so customers whose reminder fell inside the outage got none. Check the
+   dashboard's needs-attention list for failed messages, and contact customers whose session was affected.
 4. Availability and payments are unaffected meanwhile (section 1).
 
 **Redis down (queues unavailable)**
@@ -579,10 +579,11 @@ failure:
    transaction, so the payment webhook returns 500 while Redis is down and Razorpay will retry. Restore Redis and let the
    retries land; nothing is lost or double-processed.
 2. If Redis was **lost or flushed** (not just unreachable), jobs in it are gone. The worker's start-up re-queue recovers
-   paid bookings without a meeting, but **nothing rebuilds scheduled reminders or unsent confirmation messages**
-   (reminders are delayed BullMQ jobs created when the meeting is). After a data loss: restart the worker (recovers meetings),
-   then review upcoming `SCHEDULED` sessions and use the dashboard's resend to re-send confirmations; reminders for those
-   sessions will not fire unless the booking is rescheduled. This is why Redis needs persistence (section 2).
+   paid bookings without a meeting, and the reminder repair (section 12) re-creates the reminders of `SCHEDULED` bookings
+   that start within 25 hours, 60 seconds after the worker starts and then every 10 minutes, so later sessions are covered as
+   they come within that window. **Unsent confirmation messages are not rebuilt**: after a data loss restart the worker,
+   then review upcoming `SCHEDULED` sessions and use the dashboard's resend to re-send confirmations. Reminders whose time
+   passed during the loss are not sent late (step 3 above). Redis still needs persistence (section 2).
 
 **Database pool exhausted (`timeout exceeded when trying to connect`, `/api/ready` 503 with `db: fail`, 500s)**
 1. Check provider connection count against `DATABASE_POOL_MAX x (web instances + worker replicas)`. Over the limit is the
@@ -648,8 +649,8 @@ Razorpay's retry window, and the Google/Meta consent-screen requirements beyond 
 
 **Known gaps**
 
-- Scheduled reminders live only in Redis; nothing reconstructs them from the database after a Redis data loss (section 13).
-  A worker start-up reconciliation of `SCHEDULED` bookings would close this.
+- Scheduled reminders live in Redis; the reminder repair rebuilds them from the database within 25 hours of each session, but
+  unsent confirmation messages are not rebuilt after a Redis data loss (section 13).
 - `scripts/worker-healthcheck.ts` cannot say *which* replica is missing and needs a Redis that allows `CLIENT LIST`
   **(not verified on Upstash)**; use the platform's own restart signal if it does not.
 - Migrations use the single `DATABASE_URL`; a separate `DIRECT_URL` for migrations behind a transaction pooler is not supported yet.

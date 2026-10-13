@@ -194,4 +194,46 @@ money, and the real `refundPayment` / `applyRefundWebhook` (Razorpay injected) f
 
 ## Verification
 
-_Written by the integration owner (WP-Z)._
+_Written by the integration owner (WP-Z), 2026-10-13._
+
+**State found.** CI on `main` had failed on every push since `mk/00-foundation` (runs 34 to 43): four `reminder-reconcile` DB
+tests that collided on `(service_id, start_time)` because their fixtures reused offsets within one second. Two more test bugs
+showed up under other timings (`admin-refund-cancel`'s raced cancel, `readiness-checks` cancelling its own file). All three are
+test-only and fixed on `fix/ci-test-isolation`. Every other branch on the remote is merged into `main`; the `phase-*` branches and
+`docs-phase-7-spec` have unrelated history but are ancestors of `phase-7-product-ui-auth-integrations`, whose tree is `main`'s
+first commit (PR #5, squashed), so nothing on them is missing.
+
+**Branches made in this round**, each from `main` (via `fix/ci-test-isolation`, so its CI is green on its own), with a test
+that fails without the change:
+
+| Branch | What |
+|---|---|
+| `fix/ci-test-isolation` | the three test bugs above; merge first |
+| `fix/late-capture-seat-check` | a payment captured on a lapsed hold the worker had not swept yet booked a taken 1:1 seat twice |
+| `fix/cross-service-overlap` (on the previous) | one influencer, one session at a time, across services: holds, calendar, reschedule, late capture, under a per-influencer advisory lock |
+| `fix/reschedule-onto-abandoned-slot` (on the previous) | a time whose session row only holds expired or cancelled bookings can be rescheduled onto (1:1) |
+| `fix/checkout-hardening` (on `fix/late-capture-seat-check`) | checkout needs the booking's poll token; the hold is extended once, when the order is created |
+| `fix/pay-after-hold-ended` (on the previous) | QA-13: after a 409 the booking page shows the real state |
+| `fix/booking-link-tokens` | the Meet link, the calendar file and resend need a token for the booking, not just its id |
+| `fix/reserve-pay-slug` | `pay` and `opengraph-image` are reserved slugs; the route test covers token prefixes |
+| `fix/reset-token-message` | QA-5: a truncated reset or verification link gets its real message |
+| `feat/checklist-waiting-review` | WP-A polish: "Platform review" shows "Waiting", not a button to the same page |
+| `feat/app-secret-rotation` | `APP_SECRET_PREVIOUS` verifies links signed before a rotation |
+| `chore/node-version` | the tests need Node 22.23+ (`mock.module`); `npm test` says so |
+| `docs/integration-verification` | this section and the section 13 runbook in doc/08 |
+
+**What was run** on `integration/all-fixes` (`main` plus every branch above, merged without conflicts), Linux, Node 22.23.3,
+Postgres 16 and Redis 7 on a fresh database, the CI environment of `.github/workflows/ci.yml`: `prisma migrate deploy`,
+`npm run typecheck` (clean), `npm test` (1197 tests, 1197 pass, 0 fail, 0 cancelled), `npm run build` (Vite with the post-build
+checks, then `next build`), and `node scripts/spa-smoke.mjs` against `next start` of that build with a database (241 passed,
+0 failed). The changed test files were also run one at a time with `DATABASE_POOL_MAX=2`.
+
+**Not checked:** the Docker job of CI (no Docker daemon run here), a real Razorpay, Google or Meta account, a browser pass of the
+changed booking screens (they are covered by render and unit tests), and Node 22.22 for the app at runtime (only the tests need 22.23).
+
+**Merge order.** `fix/ci-test-isolation` first. The stacked ones after their base: `fix/late-capture-seat-check`, then
+`fix/cross-service-overlap`, then `fix/reschedule-onto-abandoned-slot`; `fix/checkout-hardening`, then `fix/pay-after-hold-ended`.
+The rest in any order. Notes for the deploy: e-mails sent before `fix/booking-link-tokens` carry a calendar link without a token
+(it answers 404; the Meet and manage links in them still work), and a booking tab left open across the `fix/checkout-hardening`
+deploy is asked to reload before paying. Check `SELECT slug FROM influencers WHERE slug IN ('pay', 'opengraph-image');` before
+`fix/reserve-pay-slug` (an existing profile keeps its slug).
