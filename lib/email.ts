@@ -3,10 +3,20 @@ import { prisma } from "@/lib/db";
 import { customerZone } from "@/lib/format";
 import { sendCustomerEmail } from "@/lib/customer-email";
 import { createMessage, markMessageFailed } from "@/lib/messages";
-import { buildSelfServiceUrl } from "@/lib/self-service";
+import { buildSelfServiceUrl, signBookingCalendarToken } from "@/lib/self-service";
 import { transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
 import { bookingEmail, type BookingEmailKind } from "@/lib/email/templates";
 import type { RenderedEmail } from "@/lib/email/layout";
+
+/** The e-mailed calendar-file link carries its own token, valid until 30 days after the session ends. Null without APP_SECRET. */
+export function calendarFileUrl(bookingId: string, sessionEnd: Date): string | null {
+  try {
+    const ttlSec = (sessionEnd.getTime() - Date.now()) / 1000 + 30 * 86_400;
+    return `${appUrl()}/api/bookings/${encodeURIComponent(bookingId)}/ics?t=${encodeURIComponent(signBookingCalendarToken(bookingId, ttlSec))}`;
+  } catch {
+    return null;
+  }
+}
 
 /** Which customer email we are sending. */
 export type EmailKind = BookingEmailKind;
@@ -108,7 +118,7 @@ export async function sendBookingEmail(
       tz: customerZone(booking.customerTz, influencer.timezone),
       meetLink: booking.meetLink ?? session.meetLink,
       manageUrl,
-      icsUrl: kind === "booking-cancelled" ? null : `${appUrl()}/api/bookings/${encodeURIComponent(booking.id)}/ics`,
+      icsUrl: kind === "booking-cancelled" ? null : calendarFileUrl(booking.id, session.endTime),
       payment: payment
         ? { amountMinor: payment.amountMinor, currency: payment.currency, reference: payment.providerPaymentId }
         : null,

@@ -138,7 +138,7 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
                 <a className="btn btn--primary" href={data.meetLink} target="_blank" rel="noopener noreferrer">
                   <IconVideo /> Join Google Meet
                 </a>
-                <a className="btn" href={`/api/bookings/${encodeURIComponent(data.bookingId)}/ics`}>
+                <a className="btn" href={`/api/bookings/${encodeURIComponent(data.bookingId)}/ics?t=${encodeURIComponent(data.token)}`}>
                   <IconDownload size={16} /> Add to calendar
                 </a>
               </div>

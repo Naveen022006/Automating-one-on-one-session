@@ -383,7 +383,7 @@ export function BookingFlow({
   async function resendLink() {
     if (!hold) return;
     setResend("busy");
-    const r = await fetch(`/api/bookings/${encodeURIComponent(hold.bookingId)}/resend`, { method: "POST" });
+    const r = await fetch(`/api/bookings/${encodeURIComponent(hold.bookingId)}/resend${hold.pollToken ? `?t=${encodeURIComponent(hold.pollToken)}` : ""}`, { method: "POST" });
     setResend(r.ok ? "sent" : "error");
   }
 
@@ -762,7 +762,7 @@ export function BookingFlow({
                     <li>Need to change it? Use the link below or the one in your email.</li>
                   </ol>
                   <div className="row">
-                    <a className="btn" href={`/api/bookings/${encodeURIComponent(hold.bookingId)}/ics`}>
+                    <a className="btn" href={`/api/bookings/${encodeURIComponent(hold.bookingId)}/ics${hold.pollToken ? `?t=${encodeURIComponent(hold.pollToken)}` : ""}`}>
                       <IconDownload size={16} /> Add to calendar (.ics)
                     </a>
                     {manageUrl && (

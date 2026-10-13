@@ -136,7 +136,7 @@ export function PayNow({
           </p>
         )}
         <div className="row">
-          <a className="btn" href={`/api/bookings/${encodeURIComponent(bookingId)}/ics`}>
+          <a className="btn" href={`/api/bookings/${encodeURIComponent(bookingId)}/ics?t=${encodeURIComponent(pollToken)}`}>
             <IconDownload size={16} /> Add to calendar (.ics)
           </a>
           {manageUrl && (
