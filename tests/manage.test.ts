@@ -109,7 +109,15 @@ function makeDb(sessions: FakeSession[], bookings: FakeBooking[]) {
         bookings
           .filter((b) => b.sessionId === where.sessionId && b.id !== where.id.not && where.status.in.includes(b.status))
           .map((b) => ({ customerEmail: b.customerEmail })),
+      // cancelBooking's status change: only from the status it checked.
+      updateMany: async ({ where, data }: { where: { id: string; status: string }; data: Record<string, unknown> }) => {
+        const b = bookingById.get(where.id);
+        if (!b || b.status !== where.status) return { count: 0 };
+        Object.assign(b, data);
+        return { count: 1 };
+      },
     },
+    payment: { updateMany: async () => ({ count: 0 }) },
     session: {
       // The retire: only if the session still has the event that was read, and the generation moves on atomically.
       updateMany: async ({ where, data }: { where: { id: string; eventId: string }; data: { eventId: null; meetLink: null; eventGeneration: { increment: number } } }) => {

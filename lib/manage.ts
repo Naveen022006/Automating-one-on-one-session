@@ -202,17 +202,23 @@ export async function cancelBooking(
   const hasCapturedPayment = (booking.payments ?? []).length > 0;
 
   // 1) DB: cancel the booking and record the refund decision on any captured payment.
-  await prisma.booking.update({ where: { id: booking.id }, data: { status: "CANCELLED", lastError: null } });
-  if (hasCapturedPayment) {
-    await prisma.payment.updateMany({
-      where: { bookingId: booking.id, status: "CAPTURED" },
-      data: {
-        needsRefund: decision.refund,
-        // The prefix is the system's own record that the PLATFORM cancelled (see PLATFORM_CANCEL_PREFIX); a host's reason never starts a failureReason.
-        failureReason: `${opts.byPlatform ? PLATFORM_CANCEL_PREFIX : ""}booking ${decision.reason}${opts.reason ? `: ${opts.reason}` : ""}`.slice(0, 500),
-      },
-    });
-  }
+  //    Only from the status that was checked above: two cancels at once (host and customer, a double submit) must not both
+  //    go through, or the later one's refund decision overwrites the earlier one's and the customer is told twice. The
+  //    payment flag is written in the same transaction, so a cancelled booking never lacks its refund decision.
+  await prisma.$transaction(async (tx) => {
+    const { count } = await tx.booking.updateMany({ where: { id: booking.id, status: booking.status }, data: { status: "CANCELLED", lastError: null } });
+    if (count === 0) throw new BookingNotManageableError("This booking changed while it was being cancelled. Reload and check it again.");
+    if (hasCapturedPayment) {
+      await tx.payment.updateMany({
+        where: { bookingId: booking.id, status: "CAPTURED" },
+        data: {
+          needsRefund: decision.refund,
+          // The prefix is the system's own record that the PLATFORM cancelled (see PLATFORM_CANCEL_PREFIX); a host's reason never starts a failureReason.
+          failureReason: `${opts.byPlatform ? PLATFORM_CANCEL_PREFIX : ""}booking ${decision.reason}${opts.reason ? `: ${opts.reason}` : ""}`.slice(0, 500),
+        },
+      });
+    }
+  });
 
   // 2) Calendar (best-effort): remove the attendee / delete the event.
   let calendarError: unknown = null;
