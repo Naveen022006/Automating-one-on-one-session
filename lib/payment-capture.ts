@@ -1,5 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
-import { activeSeatWhere } from "@/lib/holds";
+import { activeSeatWhere, hasOverlappingBusySession, lockInfluencerSchedule } from "@/lib/holds";
 import { ENQUEUE_TIMEOUT_MS, within } from "@/lib/timeout";
 
 /** What the business transition needs to know about a captured Razorpay payment. */
@@ -105,7 +105,8 @@ export async function applyCapturedPayment(
   // sweep marks it EXPIRED, which takes up to 30 s and never happens while the worker is down: treat it as expired too.
   const lapsed = booking.holdExpiresAt !== null && booking.holdExpiresAt <= now;
   if (booking.status === "EXPIRED" || lapsed) {
-    // Paid after the hold timed out: honour it only if the seat is still free.
+    // Paid after the hold timed out: honour it only if the seat is still free, and the host is not booked elsewhere then.
+    await lockInfluencerSchedule(tx, booking.session.service.influencerId);
     await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${booking.sessionId} FOR UPDATE`;
     const taken = await tx.booking.count({
       where: { sessionId: booking.sessionId, id: { not: booking.id }, ...activeSeatWhere(now) },
@@ -113,6 +114,14 @@ export async function applyCapturedPayment(
     if (taken >= booking.session.service.capacity) {
       return refuseAndFail("paid after the hold expired and the slot was taken");
     }
+    const elsewhere = await hasOverlappingBusySession(tx, {
+      influencerId: booking.session.service.influencerId,
+      start: booking.session.startTime,
+      end: booking.session.endTime,
+      excludeSessionId: booking.sessionId,
+      now,
+    });
+    if (elsewhere) return refuseAndFail("paid after the hold expired and the host was booked at that time");
   }
 
   await tx.payment.update({ where: { id: payment.id }, data: captured });

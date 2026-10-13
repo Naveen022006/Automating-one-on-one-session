@@ -8,7 +8,7 @@ import {
   type GoogleClient,
 } from "@/lib/google";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
-import { activeSeatWhere } from "@/lib/holds";
+import { activeSeatWhere, hasOverlappingBusySession, lockInfluencerSchedule } from "@/lib/holds";
 import { reportNotice } from "@/lib/observability";
 import { calendarEventId, sessionEventId } from "@/lib/meeting";
 import { CANCELLATION_TEMPLATE, CONFIRMATION_TEMPLATE, RESCHEDULE_TEMPLATE } from "@/lib/message-templates";
@@ -439,11 +439,16 @@ export async function rescheduleBooking(
 
   // 2) DB: move the session to the new time under a FOR UPDATE lock that re-checks capacity (see lib/holds.ts).
   await prisma.$transaction(async (tx) => {
+    await lockInfluencerSchedule(tx, influencerId);
     const clash = await tx.session.findFirst({
       where: { serviceId: service.id, startTime: newStart, id: { not: session.id } },
       select: { id: true },
     });
     if (clash) throw new RescheduleNotAllowedError("Another session already occupies that time");
+    // The influencer is in one session at a time: no other occupied session of theirs (any service) may overlap the new time.
+    if (await hasOverlappingBusySession(tx, { influencerId, start: newStart, end: newEnd, excludeSessionId: session.id, now: new Date() })) {
+      throw new RescheduleNotAllowedError("The host already has another session at that time");
+    }
 
     await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${session.id} FOR UPDATE`;
     const taken = await tx.booking.count({ where: { sessionId: session.id, ...activeSeatWhere(new Date()) } });
