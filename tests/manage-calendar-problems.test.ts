@@ -303,3 +303,50 @@ test("a reschedule while Google is not connected does not flag anything", async 
   assert.deepEqual(log.alerts.map((a) => a.kind), ["meeting-creation-failed"]);
   mock.reset();
 });
+
+test("retrying a reschedule whose calendar update failed moves the Google event (the retry the alert offers is not a no-op)", async () => {
+  const f = fixture();
+  const mod = await load(f, tokenState());
+  try {
+    const newStart = new Date(Date.now() + 5 * 86_400_000);
+    newStart.setUTCHours(10, 0, 0, 0);
+    const first = effects({
+      ...happyGoogle,
+      updateEvent: async () => {
+        throw new Error("Google request failed: fetch failed");
+      },
+    });
+    // Transient: the booking moved, the customer was told, the event still shows the old time.
+    await mod.rescheduleBooking("b1", newStart, first.deps);
+    assert.match(String(f.booking.lastError), /Could not reschedule the calendar event/);
+    assert.ok(first.log.alerts.some((a) => a.kind === "meeting-creation-failed"), "the host is told to retry");
+
+    // The host retries the same move once Google is reachable again.
+    const patched: { eventId: string; start: Date }[] = [];
+    const second = effects({ ...happyGoogle, updateEvent: async (_t: string, eventId: string, t: { start: Date }) => void patched.push({ eventId, start: t.start }) });
+    await mod.rescheduleBooking("b1", newStart, second.deps);
+
+    assert.deepEqual(patched, [{ eventId: "evt-1", start: newStart }], "the Calendar event is moved to the new time");
+    assert.equal(f.booking.lastError, null, "the problem is cleared");
+    assert.deepEqual(second.log.emails, [], "the customer is not told about the same move twice");
+    assert.deepEqual(second.log.messages, []);
+  } finally {
+    mock.reset();
+  }
+});
+
+test("repeating a reschedule that fully succeeded does not touch Google again", async () => {
+  const f = fixture();
+  const mod = await load(f, tokenState());
+  try {
+    const newStart = new Date(Date.now() + 5 * 86_400_000);
+    newStart.setUTCHours(10, 0, 0, 0);
+    let updates = 0;
+    const { deps } = effects({ ...happyGoogle, updateEvent: async () => void updates++ });
+    await mod.rescheduleBooking("b1", newStart, deps);
+    await mod.rescheduleBooking("b1", newStart, deps);
+    assert.equal(updates, 1);
+  } finally {
+    mock.reset();
+  }
+});

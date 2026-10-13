@@ -430,7 +430,37 @@ export async function rescheduleBooking(
   }
   const influencerId = service.influencer.id;
   const newEnd = new Date(newStart.getTime() + service.durationMin * 60_000);
-  if (session.startTime.getTime() === newStart.getTime()) return; // already there (idempotent re-run)
+
+  // Calendar (best-effort): patch the event start/end. Returns what went wrong, if anything.
+  const grant: { connectedAt?: Date } = {};
+  const moveCalendarEvent = async (): Promise<unknown> => {
+    if (!booking.eventId && !session.eventId) return null;
+    const eventId =
+      service.type === "GROUP" ? session.eventId ?? sessionEventId(session.id) : booking.eventId ?? calendarEventId(booking.id);
+    try {
+      const accessToken = await accessTokenFor(deps, booking, grant);
+      await deps.google.updateEvent(accessToken, eventId, { start: newStart, end: newEnd });
+      return null;
+    } catch (e) {
+      return e;
+    }
+  };
+  const surfaceCalendarProblem = async (calendarError: unknown): Promise<void> => {
+    const problem = await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "reschedule", grant.connectedAt);
+    if (problem.kind === "blocked") throw new ManageBlockedError(problem.detail);
+    if (problem.kind === "rejected") throw new ManageRejectedError(problem.detail);
+    // Transient: the DB change already landed; the influencer was alerted and can retry from the dashboard.
+  };
+
+  if (session.startTime.getTime() === newStart.getTime()) {
+    // Already there (idempotent re-run). If the Calendar event could not be moved last time, this re-run is the retry the
+    // influencer was told to make: move the event now (the customers were already told, so nothing else is repeated).
+    if (!(booking.lastError ?? "").startsWith(problemDetailPrefix("reschedule"))) return;
+    const calendarError = await moveCalendarEvent();
+    if (calendarError) return surfaceCalendarProblem(calendarError);
+    await prisma.booking.update({ where: { id: booking.id }, data: { lastError: null } });
+    return;
+  }
 
   // 1) Validate the new time the same way the hold route does: a real slot start, not on a blocked day.
   const blocked = await prisma.blockedDate.findMany({
@@ -487,18 +517,7 @@ export async function rescheduleBooking(
   });
 
   // 3) Calendar (best-effort): patch the event start/end.
-  const eventId =
-    service.type === "GROUP" ? session.eventId ?? sessionEventId(session.id) : booking.eventId ?? calendarEventId(booking.id);
-  let calendarError: unknown = null;
-  const grant: { connectedAt?: Date } = {};
-  if (booking.eventId || session.eventId) {
-    try {
-      const accessToken = await accessTokenFor(deps, booking, grant);
-      await deps.google.updateEvent(accessToken, eventId, { start: newStart, end: newEnd });
-    } catch (e) {
-      calendarError = e;
-    }
-  }
+  const calendarError = await moveCalendarEvent();
 
   // 4) Every live booking in the (possibly shared) session: replace its reminders and tell the customer. Done
   //    before surfacing a calendar error so a Google outage never leaves a moved booking without reminders.
@@ -523,13 +542,11 @@ export async function rescheduleBooking(
     await step("enqueue reschedule notice", () => deps.enqueueSendMessage(b.id, RESCHEDULE_TEMPLATE, suffix));
   }
 
-  if (calendarError) {
-    const problem = await recordCalendarProblem(deps, influencerId, booking.id, calendarError, "reschedule", grant.connectedAt);
-    if (problem.kind === "blocked") throw new ManageBlockedError(problem.detail);
-    if (problem.kind === "rejected") throw new ManageRejectedError(problem.detail);
-    // Transient: the DB change already landed; the influencer was alerted and can retry from the dashboard.
-  }
+  if (calendarError) await surfaceCalendarProblem(calendarError);
 }
+
+/** How a calendar problem recorded on `booking.lastError` starts; a reschedule re-run looks for its own to retry the event. */
+const problemDetailPrefix = (action: "cancel" | "reschedule") => `Could not ${action} the calendar event: `;
 
 interface CalendarProblem {
   /** blocked: Google is not connected or the grant is dead. rejected: Google refused this change. transient: try again. */
@@ -555,7 +572,7 @@ async function recordCalendarProblem(
   connectedAt?: Date,
 ): Promise<CalendarProblem> {
   const message = e instanceof Error ? e.message : String(e);
-  const detail = `Could not ${action} the calendar event: ${message}`;
+  const detail = `${problemDetailPrefix(action)}${message}`;
   await prisma.booking.update({ where: { id: bookingId }, data: { lastError: detail.slice(0, 500) } }).catch(() => {});
   // `connectedAt`: the grant that produced the error; if the influencer reconnected meanwhile nothing is flagged.
   const flagged = e instanceof GoogleReconnectError ? await markReconnectNeeded(influencerId, message, connectedAt).catch(() => false) : false;
