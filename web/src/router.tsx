@@ -88,7 +88,8 @@ const routes: RouteObject[] = [
       leaf("privacy"),
       leaf("refund-policy"),
       leaf("contact"),
-      ...(__DESIGN_PAGE__ ? [leaf("design")] : []),
+      // Without the design page `/design` must not fall through to `/:slug` (a profile lookup that 404s in the console).
+      ...(__DESIGN_PAGE__ ? [leaf("design")] : [{ path: "/design", element: <NotFound /> }]),
 
       // --- auth. A signed-in visitor on login/register goes on to `next` or the dashboard.
       { element: <GuestOnly />, children: [leaf("login"), leaf("register")] },
