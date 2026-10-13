@@ -1,12 +1,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { isEntityId } from "@/lib/http";
 import { buildIcs } from "@/lib/ics";
+import { mayViewMeetingDetails } from "@/lib/self-service";
 
-// Same exposure rule as GET /api/bookings/[id]: only paid/scheduled bookings, and the Meet link only then.
+// Same exposure rule as GET /api/bookings/[id]: only paid/scheduled bookings, and only with a token for the booking
+// (`?t=`: the calendar-link token from an e-mail, the page's poll token or the manage-link token; see
+// mayViewMeetingDetails). The file carries the Meet link, and the booking id alone is a reference that may be shared.
 const VISIBLE = new Set(["PAID", "SCHEDULED", "COMPLETED"]);
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  if (!isEntityId(id) || !mayViewMeetingDetails(id, new URL(req.url).searchParams.get("t"))) {
+    return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  }
   const booking = await prisma.booking.findUnique({
     where: { id },
     include: { session: { include: { service: { include: { influencer: { select: { name: true } } } } } } },

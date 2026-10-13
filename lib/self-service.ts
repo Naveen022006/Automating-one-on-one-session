@@ -53,3 +53,32 @@ export function buildPayUrl(bookingId: string, ttlSec: number): string {
 export function verifyPayToken(token: string | null | undefined): string | null {
   return verifyToken<{ b: string }>(BOOKING_PAY_PURPOSE, token)?.b ?? null;
 }
+
+/**
+ * Long-lived token for the calendar file link in booking e-mails (`/api/bookings/<id>/ics?t=`). Distinct purpose; it only
+ * shows the booking's meeting details (time, title, Meet link), never manages it.
+ */
+export const BOOKING_CALENDAR_PURPOSE = "booking-calendar";
+
+export function signBookingCalendarToken(bookingId: string, ttlSec: number): string {
+  return signToken(BOOKING_CALENDAR_PURPOSE, { b: bookingId }, Math.max(60, Math.floor(ttlSec)));
+}
+
+/**
+ * True when `token` was issued for this booking to someone entitled to its meeting details: the poll token of the browser
+ * that made the hold (or opened the pay link), the calendar-link token from an e-mail, or the customer's manage-link token.
+ * The booking id alone is a reference shown on receipts and quoted to support, so it never is enough. False, not a throw,
+ * when APP_SECRET is unset.
+ */
+export function mayViewMeetingDetails(bookingId: string, token: string | null | undefined): boolean {
+  if (!token) return false;
+  try {
+    return (
+      verifyBookingPollToken(bookingId, token) ||
+      verifyToken<{ b: string }>(BOOKING_CALENDAR_PURPOSE, token)?.b === bookingId ||
+      verifySelfServiceToken(token) === bookingId
+    );
+  } catch {
+    return false;
+  }
+}
