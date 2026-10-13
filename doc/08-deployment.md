@@ -4,8 +4,8 @@
 > written from the code in this repository; items that could not be verified here are marked **(not verified)** so you
 > can check them against your own provider before relying on them.
 >
-> **Upgrading an existing installation? Read section 16 first** (`APP_SECRET` must now be 32+ characters, and changing it
-> invalidates emailed links).
+> **Upgrading an existing installation? Read section 16 first** (`APP_SECRET` must now be 32+ characters; rotate it with
+> `APP_SECRET_PREVIOUS` so emailed links keep working, section 9).
 
 ## 1. Architecture
 
@@ -170,7 +170,8 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | Variable | Req | Default | Notes |
 |---|---|---|---|
 | `APP_URL` | yes | `http://localhost:3000` | Public origin, **https** in production. Builds every emailed link, the OAuth redirect check and the CSRF allow-list |
-| `APP_SECRET` | yes | none | **32+ characters in production** (the absolute minimum anywhere is 16). `openssl rand -base64 32`. Signs manage/pay links and OAuth state. No previous-secret fallback: changing it invalidates links already emailed (section 16) |
+| `APP_SECRET` | yes | none | **32+ characters in production** (the absolute minimum anywhere is 16). `openssl rand -base64 32`. Signs manage/pay links and OAuth state. Rotate it with `APP_SECRET_PREVIOUS` (section 9); changing it without that invalidates links already emailed |
+| `APP_SECRET_PREVIOUS` | no | none | The secret before the last rotation of `APP_SECRET`. Only verifies links signed with it (nothing new is signed with it); ignored when shorter than 16 characters or equal to `APP_SECRET`. Start-up warns while it is set. Remove it 30 days after the rotation |
 | `TOKEN_ENCRYPTION_KEY` | yes | none | 32 bytes, base64. AES-256-GCM key for Google refresh tokens, payout account numbers/UPI ids, WhatsApp tokens. Back it up (section 9) |
 | `TOKEN_ENCRYPTION_KEY_PREVIOUS` | no | none | Rotation only: the old key, tried after the current key when decrypting. `keys:rotate` and `keys:verify` read this and `TOKEN_ENCRYPTION_KEY` (new key), i.e. the services' own variables. Remove it when the rotation is finished (a warning reminds you) |
 | `DATABASE_URL` | yes | none | `postgresql://...`. Used by the app, the worker, migrations and scripts |
@@ -468,9 +469,16 @@ fingerprint, and since you confirm with A's (from the service log) it refuses. T
 (current = old): same refusal. A leftover `TOKEN_ENCRYPTION_KEY_NEW` from an older version of this document is ignored.
 
 Other secrets: `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` rotate in the Razorpay dashboard and the environment at
-the same moment (payments fail between the two changes, so do it in a quiet period); `APP_SECRET` has no overlap window, so
-changing it invalidates every emailed manage/pay link and any in-flight Google connect; OAuth client secrets rotate in
+the same moment (payments fail between the two changes, so do it in a quiet period); OAuth client secrets rotate in
 Google Cloud Console; per-influencer WhatsApp tokens are replaced by the influencer in Settings.
+
+*`APP_SECRET`.* It signs links (manage, pay, booking status and calendar links, the Google connect state), not data at rest,
+so there is nothing to re-encrypt. Generate the new value (`openssl rand -base64 32`), then on web AND worker set
+`APP_SECRET_PREVIOUS=<old value>` and `APP_SECRET=<new value>` in the same deploy. Every new link is signed with the new secret;
+links already sent keep working because a signature by the previous one is still accepted (`lib/signing.ts`). After 30 days
+(the lifetime of a manage link) remove `APP_SECRET_PREVIOUS`. Calendar-file links in e-mails live until 30 days after their
+session, so a link for a session further out than that stops working then; the e-mail's Meet and manage links are unaffected
+once they are re-sent. Changing `APP_SECRET` without `APP_SECRET_PREVIOUS` invalidates every link already sent at once.
 
 ## 10. Razorpay live-mode go-live checklist
 
@@ -653,7 +661,6 @@ Razorpay's retry window, and the Google/Meta consent-screen requirements beyond 
 - `scripts/worker-healthcheck.ts` cannot say *which* replica is missing and needs a Redis that allows `CLIENT LIST`
   **(not verified on Upstash)**; use the platform's own restart signal if it does not.
 - Migrations use the single `DATABASE_URL`; a separate `DIRECT_URL` for migrations behind a transaction pooler is not supported yet.
-- `APP_SECRET` has no previous-key fallback (unlike the encryption key).
 - Hosting-specific manifests (Vercel project settings, Kubernetes, Fly.io, ...) are not included; the Dockerfiles and
   this document are the contract.
 - The Docker build and the compose stack are exercised in CI only as image builds and a smoke test (`.github/workflows/ci.yml`).
@@ -664,8 +671,8 @@ Read this before deploying this version to an installation that is already runni
 
 1. **`APP_SECRET` must be at least 32 characters in production.** The code still works with 16, and development only
    warns, but production start-up now refuses anything shorter, so an installation that was set up with a 16-31 character
-   secret **will not start** until it is replaced. `APP_SECRET` has **no previous-secret fallback** (unlike the encryption
-   key): once you change it, every link signed with the old one stops working. That covers customers' emailed
+   secret **will not start** until it is replaced. Replace it with the rotation in section 9 (`APP_SECRET_PREVIOUS` keeps the
+   links signed with the old one working); without that, once you change it, every link signed with the old one stops working. That covers customers' emailed
    manage/cancel/reschedule and pay links (`lib/self-service.ts`), the status polling of a booking that is being paid right
    now, and any Google connection flow in progress (`app/api/google/connect`). Logins are not affected (sessions are opaque
    database tokens, not signed with it). Plan for it: replace it during a quiet period, set the new value on web and worker

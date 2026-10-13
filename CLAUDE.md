@@ -138,7 +138,8 @@ every host); production refuses to start with it. It proves the app's side only.
 
 **Key rotation.** Secrets at rest (Google refresh tokens, payout account numbers, WhatsApp tokens, TOTP secrets) are encrypted with
 `TOKEN_ENCRYPTION_KEY` (`lib/crypto.ts`). Rotation uses `TOKEN_ENCRYPTION_KEY_PREVIOUS` plus `keys:verify` / `keys:rotate`
-(`lib/key-rotation*.ts`, dry run by default, `--apply` needs the new key's fingerprint). Procedure: `doc/08-deployment.md`.
+(`lib/key-rotation*.ts`, dry run by default, `--apply` needs the new key's fingerprint). `APP_SECRET` (signed links only) rotates with
+`APP_SECRET_PREVIOUS`, which `verifyToken` accepts but never signs with. Procedure: `doc/08-deployment.md`.
 
 **Start-up validation (`lib/env.ts`, `instrumentation.ts`).** `KNOWN_ENV_VARS` is kept in step with `.env.example` by a test. In
 production a bad configuration exits 1 with one secret-free message; the web process also refuses to start without
