@@ -51,6 +51,8 @@ let RazorpayHttpError: typeof import("../lib/payments").RazorpayHttpError;
 let setAlertSender: typeof import("../lib/alerts").setAlertSender;
 let previousSender: ReturnType<typeof import("../lib/alerts").setAlertSender> | undefined;
 let realCancelBooking: typeof import("../lib/manage").cancelBooking;
+// The error class lib/admin/cancel.ts sees: taken from the module before it is mocked (a later import can be another instance).
+let NotManageable: typeof import("../lib/manage").BookingNotManageableError;
 let X = "";
 let Y = "";
 let influencerId = "";
@@ -257,6 +259,7 @@ before(async () => {
   });
   const realManage = await import("../lib/manage");
   realCancelBooking = realManage.cancelBooking;
+  NotManageable = realManage.BookingNotManageableError;
   mock.module("@/lib/manage", {
     namedExports: {
       ...realManage,
@@ -653,10 +656,9 @@ test("cancel: refused for a past session, a cancelled or unpaid booking, or an u
   assert.equal(cancelCalls.length, 1, "cancelBooking was not called");
 
   // The booking changed between the read and the cancel (another administrator, the customer): cancelBooking refuses, we report a 409-kind result.
-  const { BookingNotManageableError } = await import("../lib/manage");
   const raced = await seedPayment("raced", { bookingStatus: "SCHEDULED", startOffsetMs: 3 * DAY });
   cancelStandIn = async () => {
-    throw new BookingNotManageableError("Booking cannot be cancelled while it is CANCELLED");
+    throw new NotManageable("Booking cannot be cancelled while it is CANCELLED");
   };
   assert.deepEqual(await cancelLib.adminCancelBooking(raced.bookingId, actor(), "Reason is long enough", null), { kind: "not-allowed", reason: "Booking cannot be cancelled while it is CANCELLED" });
   assert.deepEqual((await auditOf("booking", raced.bookingId)).map((t) => t.action), ["booking.cancel_requested", "booking.cancel_refused"]);
