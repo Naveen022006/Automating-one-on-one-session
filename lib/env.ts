@@ -121,6 +121,7 @@ const envSchema = z.object({
   APP_URL: z.string().refine(isHttpUrl, "must be a valid http:// or https:// URL").optional(),
   REDIS_URL: z.string().regex(/^rediss?:\/\/.+/, "must be a redis:// or rediss:// URL").optional(),
   APP_SECRET: z.string().optional(),
+  APP_SECRET_PREVIOUS: z.string().optional(),
   TOKEN_ENCRYPTION_KEY: keyString.optional(),
   TOKEN_ENCRYPTION_KEY_PREVIOUS: keyString.optional(),
 
@@ -167,7 +168,7 @@ type ParsedEnv = z.infer<typeof envSchema>;
  */
 export const KNOWN_ENV_VARS = [
   "NODE_ENV", "DATABASE_URL", "DATABASE_POOL_MAX", "DATABASE_STATEMENT_TIMEOUT_MS", "DATABASE_CONNECT_TIMEOUT_MS", "DATABASE_IDLE_TIMEOUT_MS",
-  "APP_URL", "APP_SECRET", "APP_LOCALE", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "REDIS_URL",
+  "APP_URL", "APP_SECRET", "APP_SECRET_PREVIOUS", "APP_LOCALE", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "REDIS_URL",
   "RATE_LIMIT_STORE", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MULTIPLIER", "CLIENT_IP_HEADER",
   "NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL", "SPA_API_TARGET",
   "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "AUTO_REFUND_ON_CANCEL",
@@ -277,6 +278,11 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
   if (!env.APP_SECRET) essential("APP_SECRET", "is not set");
   else if (production && env.APP_SECRET.length < 32) errors.push("APP_SECRET: must be at least 32 characters in production (openssl rand -base64 32)");
   else if (env.APP_SECRET.length < 16) warnings.push("APP_SECRET: must be at least 16 characters or signing fails");
+  if (env.APP_SECRET_PREVIOUS) {
+    if (env.APP_SECRET_PREVIOUS.length < 16) warn("APP_SECRET_PREVIOUS", "is shorter than 16 characters and is ignored");
+    else if (env.APP_SECRET_PREVIOUS === env.APP_SECRET) warn("APP_SECRET_PREVIOUS", "is identical to APP_SECRET; remove it");
+    else warn("APP_SECRET_PREVIOUS", "is set: links signed with the old secret are still accepted. Remove it 30 days after the rotation (doc/08-deployment.md)");
+  }
   if (!env.TOKEN_ENCRYPTION_KEY) essential("TOKEN_ENCRYPTION_KEY", "is not set");
   if (
     parsed.TOKEN_ENCRYPTION_KEY_PREVIOUS &&
