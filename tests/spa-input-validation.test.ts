@@ -66,6 +66,6 @@ test("POST /api/bookings/hold and /api/checkout: a \\u0000 in any field is a 400
   const details = (await nulName.json()) as { details?: { formErrors?: unknown[] } };
   assert.ok((details.details?.formErrors?.length ?? 0) > 0, "the body was discarded, not parsed");
   for (const bookingId of ["a\u0000b", "../x", "x y", ""]) {
-    assert.equal((await checkout(post("http://localhost/api/checkout", { bookingId }))).status, 400, JSON.stringify(bookingId));
+    assert.equal((await checkout(post("http://localhost/api/checkout", { bookingId, token: "t" }))).status, 400, JSON.stringify(bookingId));
   }
 });

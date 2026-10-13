@@ -322,7 +322,8 @@ export function BookingFlow({
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bookingId: hold.bookingId }),
+        // The poll token proves this browser made the hold; the server refuses a checkout without it.
+        body: JSON.stringify({ bookingId: hold.bookingId, token: hold.pollToken }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start payment");
