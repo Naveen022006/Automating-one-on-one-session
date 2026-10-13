@@ -77,6 +77,8 @@ const defaultDeps: ManageDeps = {
 
 /** Statuses whose booking still has a live session the customer/influencer can act on. */
 const MANAGEABLE = ["PAID", "SCHEDULED"] as const;
+/** Bookings that still hold their seat in a session (a reschedule moves them along with it). */
+const LIVE_STATUSES: ReadonlySet<string> = new Set(["PAID", "SCHEDULED", "REQUESTED", "HELD", "PENDING_PAYMENT"]);
 
 type BookingWithContext = NonNullable<Awaited<ReturnType<typeof loadBooking>>>;
 
@@ -440,14 +442,27 @@ export async function rescheduleBooking(
   // 2) DB: move the session to the new time under a FOR UPDATE lock that re-checks capacity (see lib/holds.ts).
   await prisma.$transaction(async (tx) => {
     await lockInfluencerSchedule(tx, influencerId);
+    const now = new Date();
     const clash = await tx.session.findFirst({
       where: { serviceId: service.id, startTime: newStart, id: { not: session.id } },
-      select: { id: true },
+      select: { id: true, _count: { select: { bookings: { where: activeSeatWhere(now) } } } },
     });
-    if (clash) throw new RescheduleNotAllowedError("Another session already occupies that time");
+    // Session rows are never deleted, so a row at the new time whose seats are all free is left over from a hold that ended or a
+    // booking that was cancelled; the calendar offers that time. A 1:1 booking that is alone in its session moves INTO that row
+    // (the (service, start) key forbids a second row). A group session cannot: its Calendar event id is derived from its own row.
+    const othersLive = session.bookings.filter((b) => b.id !== bookingId && LIVE_STATUSES.has(b.status)).length;
+    if (clash && (clash._count.bookings > 0 || service.type === "GROUP" || othersLive > 0)) {
+      throw new RescheduleNotAllowedError("Another session already occupies that time");
+    }
     // The influencer is in one session at a time: no other occupied session of theirs (any service) may overlap the new time.
-    if (await hasOverlappingBusySession(tx, { influencerId, start: newStart, end: newEnd, excludeSessionId: session.id, now: new Date() })) {
+    if (await hasOverlappingBusySession(tx, { influencerId, start: newStart, end: newEnd, excludeSessionId: session.id, now })) {
       throw new RescheduleNotAllowedError("The host already has another session at that time");
+    }
+    if (clash) {
+      await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${clash.id} FOR UPDATE`;
+      await tx.session.update({ where: { id: clash.id }, data: { endTime: newEnd } });
+      await tx.booking.update({ where: { id: bookingId }, data: { sessionId: clash.id } });
+      return;
     }
 
     await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${session.id} FOR UPDATE`;
