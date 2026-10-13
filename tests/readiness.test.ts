@@ -218,12 +218,26 @@ test("the approval gate adds a Platform review blocker only when it is on and th
   const gateOn = evaluateReadiness({ ...none, approved: false }, [], { approvalRequired: true });
   assert.equal(gateOn.ready, false);
   const item = gateOn.items.find((i) => i.key === "account")!;
-  assert.deepEqual({ label: item.label, state: item.state, required: item.required, href: item.href }, { label: "Platform review", state: "todo", required: true, href: "/dashboard" });
+  assert.deepEqual({ label: item.label, state: item.state, required: item.required, href: item.href }, { label: "Platform review", state: "todo", required: true, href: null });
   assert.equal(item.detail, "We review new booking pages before they go live. You will get an e-mail.");
   assert.equal(evaluateReadiness({ ...none, approved: true }, [], { approvalRequired: true }).ready, true, "approved: live");
   const gateOff = evaluateReadiness({ ...none, approved: false }, [], { approvalRequired: false });
   assert.equal(gateOff.ready, true, "gate off: an unapproved page is not blocked");
   assert.equal(gateOff.items.some((i) => i.key === "account"), false);
+});
+
+test("GoLiveChecklist: the Platform review step shows Waiting, not a button back to the dashboard", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { GoLiveChecklist } = await import("../web/src/components/app/GoLiveChecklist");
+  const readiness = evaluateReadiness({ ...none, approved: false }, [], { approvalRequired: true });
+  const html = renderToStaticMarkup(createElement(GoLiveChecklist, { readiness, live: false }));
+  const review = html.slice(html.indexOf("Platform review"));
+  const reviewItem = review.slice(0, review.indexOf("</li>"));
+  assert.match(reviewItem, />Waiting</);
+  assert.doesNotMatch(reviewItem, /<a /, "no link for a step the influencer cannot do");
+  // The other open steps keep their links.
+  assert.match(html, /href="\/dashboard\/payouts"/);
 });
 
 test("isLiveBlocker: the email, the account and every connection keep a page offline; services and hours do not", () => {

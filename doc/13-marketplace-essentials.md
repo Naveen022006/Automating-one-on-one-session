@@ -63,6 +63,8 @@ Branch `mk/a-moderation`, 2026-10-11. Built as in the plan (section 2, WP-A); th
 
 Shared-file requests: none required. Optional polish for the integration owner: `GoLiveChecklist` shows the "Platform review" item with a
 "Set up" button that links to `/dashboard` (the page you are on); a label such as "Waiting" would read better (`web/src/components/app/GoLiveChecklist.tsx`).
+Done on `feat/checklist-waiting-review`: `ReadinessItem.href` is `string | null`, the review item has `href: null`, and the checklist shows a
+"Waiting" badge instead of a button for such an item (render test in `tests/readiness.test.ts`).
 
 ## WP-B Admin money operations
 
