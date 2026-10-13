@@ -77,6 +77,24 @@ async function upsertRefundRow(db: Db, paymentId: string, r: { id: string; amoun
   });
 }
 
+/** A refund's final outcome; nothing moves a refund out of these. */
+const FINAL_REFUND_STATUSES = ["processed", "failed"];
+
+/**
+ * Records the refund Razorpay just created and returns its status as stored. A row a webhook already settled
+ * (processed/failed) keeps its status: the create-refund answer can reach us after that webhook.
+ */
+async function recordCreatedRefund(paymentId: string, r: { id: string; amount: number; status: string }): Promise<string> {
+  await prisma.refund.upsert({
+    where: { providerRefundId: r.id },
+    create: { paymentId, providerRefundId: r.id, amountMinor: r.amount, status: r.status },
+    update: {},
+  });
+  await prisma.refund.updateMany({ where: { providerRefundId: r.id, status: { notIn: FINAL_REFUND_STATUSES } }, data: { status: r.status } });
+  const row = await prisma.refund.findUnique({ where: { providerRefundId: r.id }, select: { status: true } });
+  return row?.status ?? r.status;
+}
+
 /**
  * Settles an unconfirmed claim: asks Razorpay which refunds exist for the payment, records them, and releases the
  * claim. Called when a "requested" claim is older than CLAIM_STALE_MS.
@@ -203,12 +221,14 @@ export async function refundPayment(
     );
   }
 
-  await upsertRefundRow(prisma, payment.id, refund);
+  // Razorpay can deliver refund.processed / refund.failed before its answer to this call reaches us; that webhook already
+  // recorded the final outcome, which this (older) "pending" answer must not overwrite.
+  const status = await recordCreatedRefund(payment.id, refund);
   await prisma.payment.update({ where: { id: payment.id }, data: { refundedAt: new Date() } });
   // A booking cancelled by the platform promised the customer a FULL refund (recorded in the payment's failureReason by cancelBooking, which
   // the prefix PLATFORM_CANCEL_PREFIX): a partial refund does not clear the flag; it goes when nothing is left to refund.
   const platformCancelled = (payment.failureReason ?? "").startsWith(PLATFORM_CANCEL_PREFIX);
-  const summary = await recomputeRefundSummary(payment.id, prisma, { needsRefund: platformCancelled, latestStatus: refund.status });
+  const summary = await recomputeRefundSummary(payment.id, prisma, { needsRefund: status === "failed" || platformCancelled, latestStatus: status });
   return {
     refundId: refund.id,
     status: refund.status,
