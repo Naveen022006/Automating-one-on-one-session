@@ -84,7 +84,8 @@ export interface ReadinessItem {
   state: "done" | "todo" | "attention";
   required: boolean;
   detail: string;
-  href: string;
+  /** Where the influencer fixes it; null when there is nothing for them to do but wait (the platform's review). */
+  href: string | null;
 }
 
 export interface Readiness {
@@ -167,7 +168,7 @@ export function evaluateReadiness(
       state: "todo",
       required: true,
       detail: "We review new booking pages before they go live. You will get an e-mail.",
-      href: "/dashboard",
+      href: null,
     });
   }
   // A connection whose templates are rejected or unsent is flagged but never blocks, exactly like one still in review:

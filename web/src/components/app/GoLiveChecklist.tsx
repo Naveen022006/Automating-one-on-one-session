@@ -43,11 +43,15 @@ export function GoLiveChecklist({ readiness, live }: { readiness: Readiness; liv
                   <p className="muted text-sm">{i.detail}</p>
                 </div>
               </div>
-              {i.state !== "done" && (
-                <ButtonLink href={i.href} size="sm" variant={i.required ? "primary" : "secondary"}>
-                  {i.state === "attention" ? "Fix" : "Set up"} <IconArrowRight size={16} />
-                </ButtonLink>
-              )}
+              {i.state !== "done" &&
+                (i.href ? (
+                  <ButtonLink href={i.href} size="sm" variant={i.required ? "primary" : "secondary"}>
+                    {i.state === "attention" ? "Fix" : "Set up"} <IconArrowRight size={16} />
+                  </ButtonLink>
+                ) : (
+                  // Nothing for the influencer to do (the platform's review): no button that only links back to this page.
+                  <Badge>Waiting</Badge>
+                ))}
             </li>
           ))}
         </ul>
