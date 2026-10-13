@@ -4,7 +4,8 @@ import { recordActivityForUser } from "@/lib/activity";
 import { verifyEmailToken } from "@/lib/auth/accounts";
 import { jsonError, parseJson } from "@/lib/http";
 
-const schema = z.object({ token: z.string().min(10).max(200) });
+// Any non-empty token reaches the lookup, so a truncated link gets the "invalid" answer, not a form error (QA-5).
+const schema = z.object({ token: z.string().min(1).max(200) });
 
 // The verify page POSTs the token (rather than verifying on GET) so mail scanners that prefetch links cannot
 // consume it.
