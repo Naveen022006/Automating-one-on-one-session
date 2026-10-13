@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "tsx scripts/dev.ts",
@@ -24,7 +24,7 @@
     "keys:verify": "tsx scripts/verify-encryption-keys.ts",
     "expire-holds": "tsx worker/index.ts",
     "worker": "tsx worker/index.ts",
-    "test": "tsx --test --experimental-test-module-mocks tests/*.test.ts",
+    "test": "node scripts/check-node.mjs && tsx --test --experimental-test-module-mocks tests/*.test.ts",
     "db:deploy": "prisma migrate deploy",
     "data:cleanup-test": "tsx scripts/cleanup-test-data.ts"
   },

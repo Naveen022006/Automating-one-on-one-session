@@ -8,7 +8,7 @@ messaging, reminders and retries, groups and dashboard, and Phase 7 (accounts, i
 UI, rate limiting). See `doc/07-product-ui-auth-and-integrations.md` section 11 for what Phase 7 contains.
 
 ## Run it locally
-Needs Node 22.12 or newer (Vite 8), a Postgres and a Redis.
+Needs Node 22.12 or newer (Vite 8; 22.23 or newer to run the tests), a Postgres and a Redis.
 1. Copy `.env.example` to `.env` and set at least `DATABASE_URL`, `REDIS_URL`, `APP_URL` (`http://localhost:3000`), `APP_SECRET` and
    `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32` for the last two).
 2. `npm install`, then `npx prisma generate`
