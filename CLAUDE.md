@@ -32,7 +32,7 @@ node scripts/spa-smoke.mjs <url> [--no-db]   # HTTP smoke test of a built server
 ```
 
 Setup: `cp .env.example .env`, `npm install`, `npx prisma generate` (client goes to `generated/`, gitignored), migrate, seed.
-Node 22.12+. There is no lint script. Never print or commit `.env` (it holds real secrets on the owner's machine).
+Node 22.12+ to run, 22.23+ for the tests (`scripts/check-node.mjs` refuses older: `mock.module` changed). There is no lint script. Never print or commit `.env` (it holds real secrets on the owner's machine).
 
 ## Architecture
 
@@ -151,7 +151,7 @@ production build run on `http://localhost` for local checks.
 
 ## Tests
 
-Node's built-in runner through tsx. Files in `tests/*.test.ts`; several need the database, and skip themselves when `DATABASE_URL`
+Node's built-in runner through tsx, on Node 22.23 or newer (older 22.x breaks `mock.module` across tests in one file). Files in `tests/*.test.ts`; several need the database, and skip themselves when `DATABASE_URL`
 is unset (they create timestamped rows and delete them in `after`). The database is a small shared Postgres: run files ONE AT A TIME:
 
 ```
