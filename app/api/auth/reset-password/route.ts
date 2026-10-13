@@ -7,7 +7,8 @@ import { createSession, setSessionCookie } from "@/lib/auth/session";
 import { jsonError, parseJson, requestMeta } from "@/lib/http";
 import { clientIp } from "@/lib/rate-limit";
 
-const schema = z.object({ token: z.string().min(10).max(200), password: z.string().min(1).max(PASSWORD_MAX_LENGTH) });
+// Any non-empty token reaches the lookup, so a truncated link gets "invalid or has expired", not a form error (QA-5).
+const schema = z.object({ token: z.string().min(1).max(200), password: z.string().min(1).max(PASSWORD_MAX_LENGTH) });
 
 // Single-use, 1-hour token from the reset email. Every existing session is revoked and a fresh one is issued.
 export async function POST(req: Request) {
