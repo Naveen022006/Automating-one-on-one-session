@@ -185,6 +185,12 @@ export async function cancelBooking(
   if (!MANAGEABLE.includes(booking.status as (typeof MANAGEABLE)[number]) && booking.status !== "FAILED") {
     throw new BookingNotManageableError(`Booking cannot be cancelled while it is ${booking.status}`);
   }
+  // A FAILED booking is one the platform could not honour (payment too late or wrong, Google refused the event). Its money is
+  // the host's or the platform's to refund; a customer cancel would apply the service's refund policy to it and could clear
+  // the refund flag ("no refund due") for a session that never existed. The manage page offers no cancel for it either.
+  if (actor === "customer" && booking.status === "FAILED") {
+    throw new BookingNotManageableError("This booking could not be confirmed, so it cannot be cancelled online. The host or the platform will sort out your payment.");
+  }
 
   const { session } = booking;
   const { service } = session;
