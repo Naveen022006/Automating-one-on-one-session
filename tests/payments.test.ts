@@ -126,3 +126,38 @@ test("payment after hold expiry is refused when the slot was re-taken", { skip }
   const p = await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } });
   assert.equal(p.needsRefund, true);
 });
+
+test("payment after hold expiry is refused when the slot was re-taken, before the sweep marked the hold EXPIRED", { skip }, async () => {
+  // The hold lapsed but the worker has not run yet (it sweeps every 30 s, never while it is down): the booking is still
+  // PENDING_PAYMENT. Availability already treats the seat as free, so another customer can take it.
+  const start = new Date(slotStart.getTime() + 14_400_000);
+  const { bookingId, orderId } = await pendingBooking("late-unswept@example.com", start);
+  await prisma.booking.update({ where: { id: bookingId }, data: { holdExpiresAt: new Date(Date.now() - 60_000) } });
+  const other = await createHold({
+    serviceId,
+    startTime: start,
+    endTime: new Date(start.getTime() + 30 * 60_000),
+    capacity: 1,
+    customerName: "Someone else",
+    customerEmail: "other-unswept@example.com",
+    whatsappE164: "+919876543210",
+    whatsappOptIn: true,
+  });
+  await prisma.booking.update({ where: { id: other.id }, data: { status: "PAID", holdExpiresAt: null } });
+
+  const queued: string[] = [];
+  await handleRazorpayEvent(`evt_${run}_f`, captured(orderId), async (id) => void queued.push(id));
+  assert.equal(queued.length, 0, "the late payer must not be booked into a seat someone else holds");
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "FAILED");
+  assert.equal((await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } })).needsRefund, true);
+});
+
+test("payment after hold expiry, before the sweep, is honoured when the seat is still free", { skip }, async () => {
+  const start = new Date(slotStart.getTime() + 18_000_000);
+  const { bookingId, orderId } = await pendingBooking("late-free@example.com", start);
+  await prisma.booking.update({ where: { id: bookingId }, data: { holdExpiresAt: new Date(Date.now() - 60_000) } });
+  const queued: string[] = [];
+  await handleRazorpayEvent(`evt_${run}_g`, captured(orderId), async (id) => void queued.push(id));
+  assert.deepEqual(queued, [bookingId]);
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "PAID");
+});
