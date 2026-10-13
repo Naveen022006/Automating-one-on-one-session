@@ -169,3 +169,35 @@ test("a late payment is refused when the host was booked on another service mean
   assert.equal(payment.needsRefund, true);
   assert.match(payment.failureReason ?? "", /host was booked/);
 });
+
+test("a reschedule onto a time whose session row only holds an expired hold or a cancelled booking goes through (1:1)", { skip }, async () => {
+  const manage = await import("../lib/manage");
+  const mine = await hold(halfId, dayAt(15, 9));
+  await prisma.booking.update({ where: { id: mine.id }, data: { status: "SCHEDULED", holdExpiresAt: null } });
+  // Someone held 15:00 and walked away, and someone else's 16:00 booking was cancelled: both leave a session row behind.
+  const abandoned = await hold(halfId, dayAt(15, 15));
+  await prisma.booking.update({ where: { id: abandoned.id }, data: { status: "EXPIRED", holdExpiresAt: new Date(Date.now() - MIN) } });
+  const cancelled = await hold(halfId, dayAt(15, 16));
+  await prisma.booking.update({ where: { id: cancelled.id }, data: { status: "CANCELLED", holdExpiresAt: null } });
+  const offered = (await openSlots(await bookable(halfId), dayAt(15, 15), dayAt(15, 16, 1))).map((s) => s.start);
+  assert.ok(offered.includes(dayAt(15, 15).toISOString()) && offered.includes(dayAt(15, 16).toISOString()), "the calendar offers both times");
+
+  const noop = async () => {};
+  const deps = { google: {} as never, enqueueSendMessage: noop, sendBookingEmail: noop as never, cancelReminders: noop, enqueueReminders: noop, rearmMessage: noop, alert: noop as never };
+  await manage.rescheduleBooking(mine.id, dayAt(15, 15), deps);
+  const moved = await prisma.booking.findUniqueOrThrow({ where: { id: mine.id }, include: { session: true } });
+  assert.equal(moved.session.startTime.getTime(), dayAt(15, 15).getTime());
+  assert.equal(moved.session.endTime.getTime(), dayAt(15, 15, 30).getTime());
+  assert.equal(moved.status, "SCHEDULED");
+  // The expired hold keeps the session it was made for (its history is unchanged).
+  const old = await prisma.booking.findUniqueOrThrow({ where: { id: abandoned.id }, include: { session: true } });
+  assert.equal(old.session.startTime.getTime(), dayAt(15, 15).getTime());
+
+  await manage.rescheduleBooking(mine.id, dayAt(15, 16), deps);
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: mine.id }, include: { session: true } })).session.startTime.getTime(), dayAt(15, 16).getTime());
+
+  // A time somebody actually holds is still refused.
+  const live = await hold(halfId, dayAt(15, 17));
+  assert.ok(live);
+  await assert.rejects(manage.rescheduleBooking(mine.id, dayAt(15, 17), deps), manage.RescheduleNotAllowedError);
+});
