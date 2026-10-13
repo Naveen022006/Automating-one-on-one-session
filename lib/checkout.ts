@@ -18,7 +18,8 @@ export interface CheckoutResult {
 
 /**
  * Starts (or resumes) payment for a held booking. The booking row is locked so a double click cannot
- * create two orders; a second call returns the existing open order.
+ * create two orders; a second call returns the existing open order and leaves the hold where the first call put it.
+ * The caller (app/api/checkout/route.ts) has checked that the request carries the booking's poll token.
  */
 export async function startCheckout(bookingId: string): Promise<CheckoutResult> {
   return prisma.$transaction(
@@ -46,16 +47,16 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
       const service = booking.session.service;
       const customer = { name: booking.customerName, email: booking.customerEmail, contact: booking.whatsappE164 };
 
-      // Extend (never shorten) the hold so the seat stays reserved while the customer pays.
-      const windowEnd = new Date(now.getTime() + PAYMENT_WINDOW_MINUTES * 60_000);
-      const holdExpiresAt = booking.holdExpiresAt! > windowEnd ? booking.holdExpiresAt! : windowEnd;
-      await tx.booking.update({ where: { id: bookingId }, data: { status: "PENDING_PAYMENT", holdExpiresAt } });
-
       const open = await tx.payment.findFirst({
         where: { bookingId, status: "CREATED" },
         orderBy: { createdAt: "desc" },
       });
       if (open) {
+        // Resuming the open order does not move the hold: the payment window started when the order was created. Extending it
+        // on every call let one request every few minutes keep a seat reserved indefinitely without paying. A payment that
+        // completes after the hold ended is still applied if the seat is free (lib/payment-capture.ts), refunded otherwise.
+        const holdExpiresAt = booking.holdExpiresAt!;
+        await tx.booking.update({ where: { id: bookingId }, data: { status: "PENDING_PAYMENT" } });
         return {
           bookingId,
           keyId: razorpayKeyId(),
@@ -66,6 +67,11 @@ export async function startCheckout(bookingId: string): Promise<CheckoutResult> 
           customer,
         };
       }
+
+      // The payment window starts now: extend (never shorten) the hold so the seat stays reserved while the customer pays.
+      const windowEnd = new Date(now.getTime() + PAYMENT_WINDOW_MINUTES * 60_000);
+      const holdExpiresAt = booking.holdExpiresAt! > windowEnd ? booking.holdExpiresAt! : windowEnd;
+      await tx.booking.update({ where: { id: bookingId }, data: { status: "PENDING_PAYMENT", holdExpiresAt } });
 
       // The amount always comes from the service row, never from the client.
       const order = await createOrder({

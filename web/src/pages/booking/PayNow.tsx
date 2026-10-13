@@ -93,7 +93,7 @@ export function PayNow({
     setError(null);
     try {
       if (!(await loadRazorpay()) || !window.Razorpay) throw new Error("The payment window could not load. Check your connection and try again.");
-      const res = await fetch("/api/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookingId }) });
+      const res = await fetch("/api/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookingId, token: pollToken }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start payment");
       const c = data as CheckoutResult;
