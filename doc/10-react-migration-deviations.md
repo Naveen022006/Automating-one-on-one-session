@@ -78,8 +78,10 @@ stops. Group branches: read sections 1 and 3 before relying on the plan's wordin
 **For the owner:**
 
 - Before cut-over confirm no influencer already uses the slug `assets` or `spa-shell` (plan section 5). Both are reserved for new accounts now.
-- Existing gap, not introduced here: `pay` is not in `RESERVED_SLUGS`. A profile with the slug `pay` would be reachable at `/pay`, but its booking page `/pay/book` is taken by the pay-link route
-  (a static first segment wins, in Next and in the SPA alike). Not changed because it is outside the migration; adding `pay` to the reserved list is a one-line follow-up.
+- Existing gap, not introduced here: `pay` was not in `RESERVED_SLUGS`. A profile with the slug `pay` would be reachable at `/pay`, but its booking page `/pay/book` is taken by the pay-link route
+  (a static first segment wins, in Next and in the SPA alike). Fixed on `fix/reserve-pay-slug`: `pay` and `opengraph-image` are reserved, and `tests/spa-routes.test.ts` now requires the
+  literal first segment of every route (the token prefixes included) to be reserved. A profile that already uses one of these slugs keeps it; check with
+  `SELECT slug FROM influencers WHERE slug IN ('pay', 'opengraph-image');` before deploying.
 - The GitHub Actions workflow could not be run from this machine; its Docker steps were exercised locally with the same commands (see the progress log), and the new `check`-job steps
   are the same commands that were run here.
 - `x-pathname` is still set by the proxy (the old admin layout needs it); the SPA never reads it. It goes away in the cleanup branch.

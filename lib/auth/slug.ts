@@ -1,12 +1,13 @@
 /**
  * Public booking-page slugs (`/<slug>` and `/<slug>/book`). They share the URL root with app routes, so app
  * route names and other confusing words are reserved. `assets` (the SPA's hashed build files) and `spa-shell` (the
- * internal route behind the SPA's HTML shell) are reserved because they are URL prefixes the server answers itself.
+ * internal route behind the SPA's HTML shell) are reserved because they are URL prefixes the server answers itself, and so
+ * are `pay` (the pay links `/pay/<token>` would shadow the profile's `/pay/book`) and `opengraph-image` (a metadata route).
  */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "admin", "api", "app", "assets", "auth", "billing", "blog", "book", "booking", "bookings", "contact", "dashboard",
   "design", "docs", "error", "faq", "features", "forgot-password", "help", "home", "how-it-works", "index",
-  "legal", "login", "logout", "manage", "me", "new", "null", "onboarding", "pricing", "privacy", "profile",
+  "legal", "login", "logout", "manage", "me", "new", "null", "onboarding", "opengraph-image", "pay", "pricing", "privacy", "profile",
   "refund-policy", "refunds", "register", "reset-password", "robots", "root", "settings", "signin", "signup",
   "sitemap", "spa-shell", "static", "status", "support", "system", "terms", "undefined", "verify-email", "www", "_next",
 ]);
