@@ -34,6 +34,9 @@ export interface CaptureOptions {
   now?: Date;
 }
 
+/** A payment that a capture already reached: captured, or captured and then refunded in full. */
+const alreadyApplied = (status: string) => status === "CAPTURED" || status === "REFUNDED";
+
 /**
  * The one place a captured payment turns a booking into a paid one. Used by the Razorpay webhook
  * (lib/payment-webhook.ts) and by the missed-webhook recovery job (lib/payment-recovery.ts), so both paths apply
@@ -62,13 +65,15 @@ export async function applyCapturedPayment(
 ): Promise<CaptureResult> {
   const payment = await tx.payment.findUnique({ where: { providerOrderId: entity.order_id! } });
   if (!payment) return { outcome: "ignored" }; // not an order we created
-  if (payment.status === "CAPTURED") return { outcome: "ignored", bookingId: payment.bookingId }; // payment.captured and order.paid both arrive; first one wins
+  // payment.captured and order.paid both arrive (and Razorpay retries either for a day); first one wins. A payment refunded
+  // since then was applied too: a late duplicate must not turn it back into CAPTURED and flag a second refund.
+  if (alreadyApplied(payment.status)) return { outcome: "ignored", bookingId: payment.bookingId };
 
   await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${payment.bookingId} FOR UPDATE`;
   // The webhook and the recovery job can race: the other transaction may have applied this payment while we waited
   // for the booking lock. Without this re-read the loser would see a PAID booking and wrongly flag a refund.
   const current = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, select: { status: true } });
-  if (current.status === "CAPTURED") return { outcome: "ignored", bookingId: payment.bookingId };
+  if (alreadyApplied(current.status)) return { outcome: "ignored", bookingId: payment.bookingId };
 
   const booking = await tx.booking.findUniqueOrThrow({
     where: { id: payment.bookingId },

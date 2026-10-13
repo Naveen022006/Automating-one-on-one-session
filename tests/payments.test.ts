@@ -161,3 +161,29 @@ test("payment after hold expiry, before the sweep, is honoured when the seat is 
   assert.deepEqual(queued, [bookingId]);
   assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "PAID");
 });
+
+test("a late duplicate of the capture webhook does not reopen a payment that was refunded meanwhile", { skip }, async () => {
+  // payment.captured is applied; the order.paid for the same payment failed on our side and Razorpay retries it hours
+  // later. In between, the booking was cancelled and refunded in full.
+  const start = new Date(slotStart.getTime() + 21_600_000);
+  const { bookingId, orderId } = await pendingBooking("late-dup@example.com", start);
+  const queued: string[] = [];
+  await handleRazorpayEvent(`evt_${run}_h`, captured(orderId), async (id) => void queued.push(id));
+  assert.deepEqual(queued, [bookingId]);
+
+  const payment = await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } });
+  await prisma.booking.update({ where: { id: bookingId }, data: { status: "CANCELLED" } });
+  const { refundPayment } = await import("../lib/refunds");
+  const refunded = await refundPayment(payment.id, { reason: "cancelled" }, {
+    createRefund: async () => ({ id: `rfnd_${orderId}`, payment_id: `pay_${orderId}`, amount: 49900, currency: "INR", status: "processed" }),
+  });
+  assert.equal(refunded.fullyRefunded, true);
+
+  const out = await handleRazorpayEvent(`evt_${run}_i`, { ...captured(orderId), event: "order.paid" }, async (id) => void queued.push(id));
+  assert.notEqual(out, "duplicate");
+  assert.deepEqual(queued, [bookingId], "nothing is queued again");
+  const after = await prisma.payment.findUniqueOrThrow({ where: { providerOrderId: orderId } });
+  assert.equal(after.status, "REFUNDED", "the refunded payment stays refunded");
+  assert.equal(after.needsRefund, false, "and is not flagged for a second refund");
+  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "CANCELLED");
+});
