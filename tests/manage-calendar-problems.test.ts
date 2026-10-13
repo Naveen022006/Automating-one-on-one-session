@@ -72,6 +72,7 @@ async function load(f: Fixture, tokens: ReturnType<typeof tokenState>) {
     session: { findFirst: async () => null, update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(f.session, data) },
     booking: { count: async () => 0 },
     $queryRaw: async () => [],
+    $executeRaw: async () => 1, // the influencer's schedule lock (lib/holds.ts lockInfluencerSchedule)
   };
   const db = {
     booking: {

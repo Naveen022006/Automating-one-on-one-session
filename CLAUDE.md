@@ -72,7 +72,10 @@ statement and connect timeouts. Path aliases: `@/` = repo root, `@web/` = `web/s
 `(serviceId, startTime)`), created lazily by `INSERT ... ON CONFLICT DO NOTHING`; many `Booking`s hang off it (a 1:1 is capacity 1).
 `createHold` locks the session row (`SELECT ... FOR UPDATE`) and counts seat-occupying bookings. `activeSeatWhere(now)` is the single
 definition of "occupies a seat" (`PAID/SCHEDULED/COMPLETED` always; `HELD/PENDING_PAYMENT` only while `holdExpiresAt > now`), so
-availability is right even when the worker is down. Status machine: `HELD -> PENDING_PAYMENT -> PAID -> SCHEDULED -> COMPLETED`;
+availability is right even when the worker is down. An influencer is in ONE session at a time across all their services:
+`hasOverlappingBusySession` (same file) refuses a time that overlaps another of their sessions with an occupied seat, in `createHold`,
+`openSlots`, `rescheduleBooking` and a late capture, under `lockInfluencerSchedule` (a transaction advisory lock per influencer, taken
+before any session row lock). Status machine: `HELD -> PENDING_PAYMENT -> PAID -> SCHEDULED -> COMPLETED`;
 exits `EXPIRED / CANCELLED / FAILED`. Slots (`lib/slots.ts`): weekly rules, ISO weekday, wall-clock `HH:mm` in the rule's zone
 (luxon handles DST), all stored times UTC; the hold endpoint re-validates that the requested start is a generated slot.
 

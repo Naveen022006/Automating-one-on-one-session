@@ -25,6 +25,39 @@ export function activeSeatWhere(now: Date): Prisma.BookingWhereInput {
   };
 }
 
+type Db = Prisma.TransactionClient;
+
+/**
+ * Serialises every change to one influencer's calendar (holds, late captures, reschedules) for the rest of the transaction.
+ * The session row lock below only covers ONE session, but an influencer can be booked through several services (and
+ * overlapping rules), so two holds for overlapping times would lock two different rows. Take this before any session lock.
+ */
+export async function lockInfluencerSchedule(tx: Db, influencerId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"schedule:" + influencerId}, 0))`;
+}
+
+/**
+ * The influencer is in only one session at a time: true when another of their sessions (any service, including the same
+ * service at another start) overlaps [start, end) and has a booking that occupies a seat (activeSeatWhere). The session
+ * `excludeSessionId` is the one being booked or moved; its own seats are counted against its capacity instead.
+ */
+export async function hasOverlappingBusySession(
+  db: Db,
+  args: { influencerId: string; start: Date; end: Date; excludeSessionId?: string; now: Date },
+): Promise<boolean> {
+  const clash = await db.session.findFirst({
+    where: {
+      ...(args.excludeSessionId ? { id: { not: args.excludeSessionId } } : {}),
+      service: { influencerId: args.influencerId },
+      startTime: { lt: args.end },
+      endTime: { gt: args.start },
+      bookings: { some: activeSeatWhere(args.now) },
+    },
+    select: { id: true },
+  });
+  return clash !== null;
+}
+
 export class SlotUnavailableError extends Error {}
 export class DuplicateBookingError extends Error {}
 
@@ -47,14 +80,17 @@ export interface HoldInput {
 }
 
 /**
- * Atomically takes a seat. The session row is locked (SELECT ... FOR UPDATE) so concurrent
- * holds for the same slot serialize and the capacity check cannot be raced.
+ * Atomically takes a seat. The influencer's schedule lock and the session row lock (SELECT ... FOR UPDATE) make concurrent
+ * holds serialize, so neither the capacity check nor the overlap check (one session at a time per influencer) can be raced.
  */
 export async function createHold(input: HoldInput) {
   const now = new Date();
   const holdExpiresAt = new Date(now.getTime() + (input.requestApproval ? REQUEST_TTL_HOURS * 3_600_000 : HOLD_MINUTES * 60_000));
 
   return prisma.$transaction(async (tx) => {
+    const owner = await tx.service.findUniqueOrThrow({ where: { id: input.serviceId }, select: { influencerId: true } });
+    await lockInfluencerSchedule(tx, owner.influencerId);
+
     // Idempotent create: the (service_id, start_time) unique constraint makes this race-safe.
     await tx.$executeRaw`
       INSERT INTO sessions (id, service_id, start_time, end_time, created_at)
@@ -69,6 +105,18 @@ export async function createHold(input: HoldInput) {
 
     const taken = await tx.booking.count({ where: { sessionId, ...activeSeatWhere(now) } });
     if (taken >= input.capacity) throw new SlotUnavailableError("Slot is no longer available");
+    // Another of the influencer's sessions at an overlapping time (another service, or the same one at another start).
+    if (
+      await hasOverlappingBusySession(tx, {
+        influencerId: owner.influencerId,
+        start: input.startTime,
+        end: input.endTime,
+        excludeSessionId: sessionId,
+        now,
+      })
+    ) {
+      throw new SlotUnavailableError("Slot is no longer available");
+    }
 
     const duplicate = await tx.booking.count({
       where: { sessionId, customerEmail: input.customerEmail, ...activeSeatWhere(now) },

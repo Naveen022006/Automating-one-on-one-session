@@ -85,10 +85,32 @@ export async function openSlots(
     include: { bookings: { where: activeSeatWhere(now), select: { id: true } } },
   });
   const taken = new Map<number, number>(sessions.map((s) => [s.startTime.getTime(), s.bookings.length]));
+  // The influencer is in one session at a time: their other occupied sessions (any service) block overlapping slots.
+  // The same rule is enforced under a lock by createHold (lib/holds.ts); this only keeps such times off the calendar.
+  const durationMs = service.durationMin * 60_000;
+  const busy = await prisma.session.findMany({
+    where: {
+      service: { influencerId: service.influencerId },
+      startTime: { lt: new Date(candidates[candidates.length - 1].getTime() + durationMs) },
+      endTime: { gt: candidates[0] },
+      bookings: { some: activeSeatWhere(now) },
+    },
+    select: { serviceId: true, startTime: true, endTime: true },
+  });
+  const blockedByOther = (start: Date) => {
+    const end = start.getTime() + durationMs;
+    return busy.some(
+      (b) =>
+        !(b.serviceId === service.id && b.startTime.getTime() === start.getTime()) &&
+        b.startTime.getTime() < end &&
+        b.endTime.getTime() > start.getTime(),
+    );
+  };
   return candidates
+    .filter((start) => !blockedByOther(start))
     .map((start) => ({
       start: start.toISOString(),
-      end: new Date(start.getTime() + service.durationMin * 60_000).toISOString(),
+      end: new Date(start.getTime() + durationMs).toISOString(),
       seatsLeft: service.capacity - (taken.get(start.getTime()) ?? 0),
     }))
     .filter((s) => s.seatsLeft > 0);

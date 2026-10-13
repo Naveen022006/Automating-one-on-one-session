@@ -14,11 +14,12 @@ let influencerId: string;
 let oneToOneId: string;
 let groupId: string;
 
-const holdFor = (serviceId: string, capacity: number, i: number) =>
+// The group test books two hours later: one influencer is in one session at a time, so the 1:1 at slotStart would block it.
+const holdFor = (serviceId: string, capacity: number, i: number, start = slotStart) =>
   createHold({
     serviceId,
-    startTime: slotStart,
-    endTime: slotEnd,
+    startTime: start,
+    endTime: new Date(start.getTime() + (slotEnd.getTime() - slotStart.getTime())),
     capacity,
     customerName: `Customer ${i}`,
     customerEmail: `c${i}@example.com`,
@@ -52,7 +53,7 @@ test("concurrent holds on one 1:1 slot: exactly one wins", { skip }, async () =>
 });
 
 test("group slot never oversells", { skip }, async () => {
-  const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => holdFor(groupId, 3, i)));
+  const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => holdFor(groupId, 3, i, new Date(slotStart.getTime() + 2 * 3_600_000))));
   assert.equal(results.filter((r) => r.status === "fulfilled").length, 3);
 });
 
