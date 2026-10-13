@@ -175,7 +175,8 @@ test("with four-eyes off a payout can be paid without approval (and the default 
   assert.equal(paid.approvedAt, null);
 
   const q = await newPayout();
-  assert.equal(process.env.PAYOUT_FOUR_EYES === undefined || process.env.PAYOUT_FOUR_EYES === "false", true, "the test environment does not enable four-eyes");
+  // Ask the app's own rule, not the raw variable: `cp .env.example .env` leaves PAYOUT_FOUR_EYES empty, which means "default" (off outside production).
+  assert.equal(fourEyesEnabled(), false, "the test environment does not enable four-eyes");
   assert.equal((await markPayoutPaid(q.id, "UTR8888888888", CREATOR)).status, "PAID");
 });
 
