@@ -346,6 +346,10 @@ test("repeating a reschedule that fully succeeded does not touch Google again", 
     await mod.rescheduleBooking("b1", newStart, deps);
     await mod.rescheduleBooking("b1", newStart, deps);
     assert.equal(updates, 1);
+  } finally {
+    mock.reset();
+  }
+});
 
 test("moving a booking back to a time it was moved to before still sends the reschedule notice (no BullMQ id collision)", async () => {
   const f = fixture();
