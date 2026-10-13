@@ -13,7 +13,15 @@ import { proxy } from "../proxy";
 const ok = async () => 1;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-after(() => closeReadinessConnections());
+// The readiness timeout timer is unref'd (it must not keep a server alive). A test whose ping never settles therefore
+// holds nothing open, and without another handle the event loop drains before the timer fires and the runner cancels
+// the rest of the file. Hold the loop open for the file instead.
+const keepAlive = setInterval(() => {}, 60_000);
+
+after(() => {
+  clearInterval(keepAlive);
+  return closeReadinessConnections();
+});
 
 /* ---------- liveness ---------- */
 

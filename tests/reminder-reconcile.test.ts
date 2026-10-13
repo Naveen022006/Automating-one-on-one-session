@@ -510,8 +510,12 @@ interface MakeOptions {
   startAt?: Date;
 }
 
+// Each default start gets its own second: tests reuse offsets (5 h, 14 h, 20 h) on the same service and run within one
+// second of each other, so two of them would otherwise collide on the (service_id, start_time) unique key.
+let startSeq = 0;
+
 async function makeBooking(key: string, startsInMs: number, data: MakeOptions = {}) {
-  const start = data.startAt ?? new Date(Date.now() + startsInMs);
+  const start = data.startAt ?? new Date(Date.now() + startsInMs + startSeq++ * 1_000);
   start.setMilliseconds(0);
   const session = await prisma.session.create({
     data: { serviceId: serviceIds[data.service ?? 0], startTime: start, endTime: new Date(start.getTime() + 30 * MIN) },
