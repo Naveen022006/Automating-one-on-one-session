@@ -42,7 +42,8 @@ export interface CaptureOptions {
  *  - amount or currency differs from the order -> record the capture, flag for refund, booking FAILED
  *  - a booking that is not waiting for payment (already paid, cancelled...) -> a second or late payment: flag for refund
  *  - the session has already started -> too late to honour it: flag for refund, booking FAILED
- *  - booking EXPIRED -> pay it only if the seat is still free, otherwise flag for refund and FAILED
+ *  - booking EXPIRED, or HELD/PENDING_PAYMENT with a lapsed hold -> pay it only if the seat is still free, otherwise flag
+ *    for refund and FAILED
  *  - booking HELD / PENDING_PAYMENT -> PAID, hold cleared, create-meeting enqueued
  *
  * Must run inside the caller's transaction (idempotency record and `enqueue` belong to it too). Idempotent and safe
@@ -94,16 +95,20 @@ export async function applyCapturedPayment(
     return needsRefund(`payment captured while booking was ${booking.status}`);
   }
 
+  const now = opts.now ?? new Date();
   // A capture can surface days late (recovery looks back a week). Never book a session that has already begun.
-  if (booking.session.startTime.getTime() <= (opts.now ?? new Date()).getTime()) {
+  if (booking.session.startTime.getTime() <= now.getTime()) {
     return refuseAndFail("paid after the session had already started");
   }
 
-  if (booking.status === "EXPIRED") {
+  // A HELD/PENDING_PAYMENT booking whose hold has lapsed stopped occupying its seat (activeSeatWhere) before the worker's
+  // sweep marks it EXPIRED, which takes up to 30 s and never happens while the worker is down: treat it as expired too.
+  const lapsed = booking.holdExpiresAt !== null && booking.holdExpiresAt <= now;
+  if (booking.status === "EXPIRED" || lapsed) {
     // Paid after the hold timed out: honour it only if the seat is still free.
     await tx.$queryRaw`SELECT id FROM sessions WHERE id = ${booking.sessionId} FOR UPDATE`;
     const taken = await tx.booking.count({
-      where: { sessionId: booking.sessionId, id: { not: booking.id }, ...activeSeatWhere(opts.now ?? new Date()) },
+      where: { sessionId: booking.sessionId, id: { not: booking.id }, ...activeSeatWhere(now) },
     });
     if (taken >= booking.session.service.capacity) {
       return refuseAndFail("paid after the hold expired and the slot was taken");
