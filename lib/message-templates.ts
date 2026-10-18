@@ -18,6 +18,14 @@
  *   reschedule             sa_reschedule            1 link, 2 service, 3 host, 4 time   "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then."
  *   cancellation           sa_cancellation          1 service, 2 host, 3 time           "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy."
  *
+ * The four booking-request messages (services that need the host's approval, doc/16-request-whatsapp-flow.md):
+ *   request-received       sa_request_received      1 service, 2 host, 3 time, 4 wait, 5 booking link
+ *   request-approved       sa_request_approved      1 service, 2 host, 3 time, 4 amount, 5 pay by, 6 payment link, 7 booking link
+ *   request-declined       sa_request_declined      1 service, 2 host, 3 time, 4 note, 5 booking page
+ *   request-expired        sa_request_expired       1 service, 2 host, 3 time, 4 booking page
+ *   (bodies in BODIES below). Their extra values (payment link, pay-by time, amount, ...) are worked out when the message is SENT
+ *   (lib/request-message-context.ts), never stored in a job.
+ *
  * A template that already has one of these names on the account is used only if it has the same number of variables as
  * ours (templateConflict); otherwise it is reported and not used. Its wording is not compared: see templateConflict.
  *
@@ -34,18 +42,42 @@ export interface MessageContext {
   influencerName: string;
   /** Already formatted in Indian Standard Time, e.g. "Mon, 12 Oct 2026, 11:00 AM IST" (lib/format.ts formatSessionTime). */
   when: string;
+  /** The customer's signed manage/status page, when one could be built (APP_URL / APP_SECRET set). Carried by the request-received message. */
+  manageUrl?: string | null;
+  /** request-approved: the customer's payment link. A BEARER link: never logged, never stored, built when the message is sent. */
+  payUrl?: string | null;
+  /** request-approved: when the time to pay ends, already formatted in IST ("Tue, 13 Oct 2026, 6:00 PM IST"). */
+  payBy?: string;
+  /** request-approved: the price, already formatted in rupees ("₹499.00"). */
+  amount?: string;
+  /** request-declined / request-expired: the influencer's public booking page ("https://.../slug"), to pick another time. */
+  bookingPageUrl?: string | null;
+  /** request-received: how long the host has to answer, in hours (the request's hold). */
+  decideWithinHours?: number;
+  /** request-declined: the note the host left for the customer, plain text; empty or absent when there is none. */
+  reason?: string | null;
 }
 
-type Field = keyof MessageContext;
+/** The values a template can take, in the words the body uses. Each is a plain string by the time it reaches a body (see `values`). */
+type Field = "link" | "serviceTitle" | "influencerName" | "when" | "manageUrl" | "payUrl" | "payBy" | "amount" | "bookingPageUrl" | "decideWithin" | "reason";
 
 interface TemplateDef {
   /** The name submitted to and sent through Meta (see the header: lowercase letters, digits, underscores). */
   meta: string;
   params: Field[];
-  sms: (c: Required<{ [K in Field]: string }>) => string;
+  sms: (c: Record<Field, string>) => string;
 }
 
 const LINK_PENDING = "(link coming soon)";
+const LINK_UNAVAILABLE = "(link unavailable)";
+const NO_NOTE = "(none)";
+
+/** "2 days" / "36 hours": how long a request waits for the host (the e-mail says the same: lib/email/templates.ts). */
+export function describeWait(hours: number): string {
+  const h = Math.max(1, Math.round(hours));
+  const days = Math.round(h / 24);
+  return days >= 2 ? `${days} days` : h === 1 ? "1 hour" : `${h} hours`;
+}
 
 const DEFS: Record<string, TemplateDef> = {
   "booking-confirmation": {
@@ -72,6 +104,30 @@ const DEFS: Record<string, TemplateDef> = {
     meta: "sa_cancellation",
     params: ["serviceTitle", "influencerName", "when"],
     sms: (c) => `Your ${c.serviceTitle} session with ${c.influencerName} on ${c.when} was cancelled. Any refund follows our policy.`,
+  },
+  "request-received": {
+    meta: "sa_request_received",
+    params: ["serviceTitle", "influencerName", "when", "decideWithin", "manageUrl"],
+    sms: (c) =>
+      `Request received: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. ${c.influencerName} has ${c.decideWithin} to answer. Nothing is charged yet. If accepted, the payment link follows. Your booking: ${c.manageUrl}`,
+  },
+  "request-approved": {
+    meta: "sa_request_approved",
+    params: ["serviceTitle", "influencerName", "when", "amount", "payBy", "payUrl", "manageUrl"],
+    sms: (c) =>
+      `Request accepted: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. Pay ${c.amount} by ${c.payBy} to confirm, or the time is released. Pay here: ${c.payUrl}`,
+  },
+  "request-declined": {
+    meta: "sa_request_declined",
+    params: ["serviceTitle", "influencerName", "when", "reason", "bookingPageUrl"],
+    sms: (c) =>
+      `Request not accepted: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. Their note: "${c.reason}". You were not charged. Pick another time: ${c.bookingPageUrl}`,
+  },
+  "request-expired": {
+    meta: "sa_request_expired",
+    params: ["serviceTitle", "influencerName", "when", "bookingPageUrl"],
+    sms: (c) =>
+      `Request not confirmed in time: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. You were not charged. Request a time again: ${c.bookingPageUrl}`,
   },
 };
 
@@ -134,6 +190,10 @@ export const TEMPLATE_LABELS: Record<string, string> = {
   "reminder-15m": "Reminder, 15 minutes before",
   reschedule: "Session rescheduled",
   cancellation: "Session cancelled",
+  "request-received": "Request received",
+  "request-approved": "Request accepted (payment link)",
+  "request-declined": "Request declined",
+  "request-expired": "Request expired",
 };
 export const templateLabel = (key: string): string => TEMPLATE_LABELS[key] ?? key;
 
@@ -220,12 +280,19 @@ export function cleanParam(value: string): string {
   return (v || "-").slice(0, 1000);
 }
 
-function values(c: MessageContext): Required<{ [K in Field]: string }> {
+function values(c: MessageContext): Record<Field, string> {
   return {
     link: c.link || LINK_PENDING,
     serviceTitle: c.serviceTitle,
     influencerName: c.influencerName,
     when: c.when,
+    manageUrl: c.manageUrl || LINK_UNAVAILABLE,
+    payUrl: c.payUrl || LINK_UNAVAILABLE,
+    payBy: c.payBy ?? "",
+    amount: c.amount ?? "",
+    bookingPageUrl: c.bookingPageUrl || LINK_UNAVAILABLE,
+    decideWithin: c.decideWithinHours ? describeWait(c.decideWithinHours) : "a couple of days",
+    reason: c.reason?.trim() || NO_NOTE,
   };
 }
 
@@ -265,6 +332,13 @@ const EXAMPLES = {
   serviceTitle: "Career call",
   influencerName: "Sam Rao",
   when: "Mon, 12 Oct 2026, 11:00 am IST",
+  manageUrl: "https://example.com/manage/abc123",
+  payUrl: "https://example.com/pay/abc123",
+  payBy: "Tue, 13 Oct 2026, 6:00 pm IST",
+  amount: "₹499.00",
+  bookingPageUrl: "https://example.com/sam-rao",
+  decideWithin: "2 days",
+  reason: "I am away that week",
 } satisfies Record<Field, string>;
 
 const BODIES: Record<string, string> = {
@@ -273,6 +347,14 @@ const BODIES: Record<string, string> = {
   "reminder-15m": "Your session starts in 15 minutes. Join link: {{1}} Session: {{2}} with {{3}} on {{4}}. See you there.",
   reschedule: "Your session was rescheduled. Updated link: {{1}} Session: {{2}} with {{3}}, now on {{4}}. See you then.",
   cancellation: "Your session was cancelled. Session: {{1}} with {{2}} on {{3}}. Any refund follows the cancellation policy.",
+  "request-received":
+    "Your booking request was received. Session: {{1}} with {{2}} on {{3}}. The host has {{4}} to answer. Nothing has been charged. If it is accepted, the payment link will be sent here. Your booking: {{5}} Thank you.",
+  "request-approved":
+    "Your booking request was accepted. Session: {{1}} with {{2}} on {{3}}. Amount: {{4}}. Pay by {{5}} or the time is released. Payment link: {{6}} Your booking: {{7}} Thank you.",
+  "request-declined":
+    'Your booking request was not accepted. Session: {{1}} with {{2}} on {{3}}. Their note: "{{4}}". You were not charged. Pick another time: {{5}} Thank you.',
+  "request-expired":
+    "Your booking request was not confirmed in time. Session: {{1}} with {{2}} on {{3}}. You were not charged. Request a time again: {{4}} Thank you.",
 };
 
 /** What gets submitted to each influencer's WhatsApp Business Account for approval, keyed by our template key. */

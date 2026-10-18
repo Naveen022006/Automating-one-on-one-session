@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { decryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/db";
+import { KNOWN_TEMPLATES } from "../lib/message-templates";
 import { WhatsAppConnectError, applyTemplateStatusUpdate, connectEmbedded, disconnect, getConnectionView, getRegistrationPin, whatsappPinAad } from "../lib/whatsapp-connection";
 import { parseTemplateStatusUpdates, verifyMetaSignature } from "../lib/whatsapp-webhook";
 import { META_APP_SECRET } from "../scripts/mock-providers/fixtures";
@@ -66,7 +67,7 @@ after(async () => {
 
 const esCode = async (wabaId: string, phoneId: string) => (await control(t.mock, "/__mock/meta/es-code", { wabaId, phoneId })).json().code as string;
 
-test("Embedded Signup for a fresh number: ACTIVE, subscribed, a PIN saved and registered, five templates in review; approvals arrive by webhook", { skip }, async () => {
+test("Embedded Signup for a fresh number: ACTIVE, subscribed, a PIN saved and registered, every template in review; approvals arrive by webhook", { skip }, async () => {
   const view = await connectEmbedded(influencerId, { code: await esCode(WABA_NEW, PHONE_FRESH), wabaId: WABA_NEW, phoneNumberId: PHONE_FRESH }, undefined, env());
   assert.equal(view.status, "ACTIVE");
   assert.equal(view.source, "embedded");
@@ -74,7 +75,7 @@ test("Embedded Signup for a fresh number: ACTIVE, subscribed, a PIN saved and re
   assert.equal(view.verifiedName, t.mock.state().meta.phones[PHONE_FRESH].verifiedName);
   assert.deepEqual(view.webhook, { subscribed: true, error: null });
   assert.equal(view.ready, false);
-  assert.deepEqual(view.templates.map((x) => x.status), ["PENDING", "PENDING", "PENDING", "PENDING", "PENDING"]);
+  assert.deepEqual(view.templates.map((x) => x.status), Array(KNOWN_TEMPLATES.length).fill("PENDING"));
   assert.deepEqual(view.notes, [], "the token passed Meta's check without remarks");
 
   // The PIN: generated, saved BEFORE the number was registered, and the mock's number holds exactly that.
@@ -86,17 +87,17 @@ test("Embedded Signup for a fresh number: ACTIVE, subscribed, a PIN saved and re
   assert.equal(t.mock.state().meta.phones[PHONE_FRESH].registered, true);
   assert.deepEqual(t.mock.state().meta.wabas[WABA_NEW].subscribedApps, [process.env.META_APP_ID]);
 
-  // Approve all five at the mock; the signed webhooks go to the "app", which parses and applies them.
+  // Approve every template at the mock (nine: the five booking events and the four booking-request messages); the signed webhooks go to the "app", which parses and applies them.
   receiver.received.length = 0;
   for (const tpl of Object.values(t.mock.state().meta.wabas[WABA_NEW].templates)) await control(t.mock, "/__mock/meta/template", { wabaId: WABA_NEW, templateId: tpl.id, action: "approve" });
-  await waitFor(() => receiver.received.length === 5, "five template webhooks");
+  await waitFor(() => receiver.received.length === KNOWN_TEMPLATES.length, "one webhook per template");
   for (const r of receiver.received) {
     assert.equal(verifyMetaSignature(r.raw, String(r.headers["x-hub-signature-256"]), META_APP_SECRET), true);
     for (const update of parseTemplateStatusUpdates(JSON.parse(r.raw))) assert.equal(await applyTemplateStatusUpdate(update), true);
   }
   const after = (await getConnectionView(influencerId))!;
   assert.equal(after.ready, true, "every template approved: WhatsApp messages will go out");
-  assert.deepEqual(after.templates.map((x) => x.status), ["APPROVED", "APPROVED", "APPROVED", "APPROVED", "APPROVED"]);
+  assert.deepEqual(after.templates.map((x) => x.status), Array(KNOWN_TEMPLATES.length).fill("APPROVED"));
   assert.equal(await disconnect(influencerId), true);
 });
 

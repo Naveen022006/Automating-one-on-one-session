@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import vm from "node:vm";
 import { after, afterEach, before, test } from "node:test";
-import { TEMPLATE_SPECS, whatsappComponents } from "../lib/message-templates";
+import { KNOWN_TEMPLATES, TEMPLATE_SPECS, whatsappComponents } from "../lib/message-templates";
 import { sendSMS } from "../lib/sms";
 import { sendWhatsApp } from "../lib/whatsapp";
 import {
@@ -175,13 +175,14 @@ test("PIN and registration: a fresh number takes any PIN, a known PIN is idempot
   await assert.rejects(registerNumber(PHONE_UNKNOWN_PIN, token, "222222"), (e: unknown) => e instanceof WhatsAppGraphError && e.pinLocked, "the lock control");
 });
 
-test("templates: five are submitted once as PENDING, a re-run adds nothing, and the review timer decides", async () => {
+test("templates: every template we send is submitted once as PENDING, a re-run adds nothing, and the review timer decides", async () => {
   const token = await fresh();
   await setFault(t.mock, "meta.review", "manual");
   const first = await ensureTemplates(WABA_NEW, token, "en");
-  assert.equal(first.submitted.length, 5);
+  const N = KNOWN_TEMPLATES.length; // nine: the five booking events and the four booking-request messages (doc/16)
+  assert.equal(first.submitted.length, N);
   assert.deepEqual(first.failed, []);
-  assert.deepEqual(Object.values(first.templates).map((x) => x.status), ["PENDING", "PENDING", "PENDING", "PENDING", "PENDING"]);
+  assert.deepEqual(Object.values(first.templates).map((x) => x.status), Array(N).fill("PENDING"));
   for (const spec of Object.values(TEMPLATE_SPECS)) {
     const stored = Object.values(wabaOf(WABA_NEW).templates).find((x) => x.name === spec.name);
     assert.ok(stored, spec.name);
@@ -190,7 +191,7 @@ test("templates: five are submitted once as PENDING, a re-run adds nothing, and 
   }
   const second = await ensureTemplates(WABA_NEW, token, "en");
   assert.equal(second.submitted.length, 0);
-  assert.equal(Object.values(wabaOf(WABA_NEW).templates).length, 5);
+  assert.equal(Object.values(wabaOf(WABA_NEW).templates).length, N);
 
   // Created a moment ago but not on the list the app read: Meta says "already exists" and the app looks it up by name.
   const hideUnfiltered = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -227,7 +228,7 @@ test("templates: five are submitted once as PENDING, a re-run adds nothing, and 
   await ensureTemplates(WABA_OLD_TEMPLATE, t2, "en");
   await new Promise((r) => setTimeout(r, 150));
   const rejected = (await listTemplates(WABA_OLD_TEMPLATE, t2)).filter((x) => x.name !== "sa_reschedule");
-  assert.ok(rejected.length === 4 && rejected.every((x) => x.status === "REJECTED" && x.rejectedReason === "INVALID_FORMAT"));
+  assert.ok(rejected.length === N - 1 && rejected.every((x) => x.status === "REJECTED" && x.rejectedReason === "INVALID_FORMAT"));
 });
 
 test("templates: a name already used with a different number of variables is a CONFLICT, and a long list needs several pages", async () => {
@@ -236,7 +237,7 @@ test("templates: a name already used with a different number of variables is a C
   const r = await ensureTemplates(WABA_OLD_TEMPLATE, token, "en");
   assert.equal(r.templates.reschedule.status, "CONFLICT");
   assert.match(r.templates.reschedule.reason ?? "", /2 variables and our message needs 4/);
-  assert.equal(r.submitted.length, 4, "the four others are submitted; the clashing name is left alone");
+  assert.equal(r.submitted.length, KNOWN_TEMPLATES.length - 1, "all the others are submitted; the clashing name is left alone");
 
   const log = await logDuring(async () => {
     const all = await listTemplates(WABA_BIG, token);
@@ -246,10 +247,10 @@ test("templates: a name already used with a different number of variables is a C
   assert.equal(pages.length, 2, "100 + 50: the app follows the cursor");
   assert.ok(pages[1].path.includes("after="));
   const big = await ensureTemplates(WABA_BIG, token, "en");
-  assert.equal(big.submitted.length, 5, "the five are submitted although 150 other templates exist");
+  assert.equal(big.submitted.length, KNOWN_TEMPLATES.length, "every template is submitted although 150 other templates exist");
   await setFault(t.mock, "meta.templates", "500");
   const failing = await ensureTemplates(WABA_NEW, token, "en");
-  assert.equal(failing.failed.length, 5, "every submit failed");
+  assert.equal(failing.failed.length, KNOWN_TEMPLATES.length, "every submit failed");
   assert.deepEqual(failing.submitted, []);
 });
 
