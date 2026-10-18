@@ -189,7 +189,7 @@ export function InfluencerWhatsAppWebPanel({ influencerId }: { influencerId: str
         open={open}
         onClose={close}
         title="Force disconnect this number"
-        description="The linked device is logged out and its saved login is deleted. Customer messages go through the official connection, SMS or e-mail. Your reason is kept with the action."
+        description="The linked device is logged out and its saved login is deleted. Customer messages go through the official connection, SMS or e-mail. The influencer is not emailed, but sees an entry in their account activity. Your reason goes in the audit log."
       >
         <ForceDisconnectForm
           reason={reason}

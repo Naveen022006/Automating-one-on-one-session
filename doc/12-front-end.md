@@ -130,6 +130,33 @@ admin sidebar (`components/admin/AdminShell.tsx`).
   with a required reason; the refund sends `expectedRemainingMinor` as a check. `PayoutActions.tsx` gained the "pay anyway" acknowledgement
   for a suspended influencer. `BookingsView` has the search box (`?q=`).
 
+## WhatsApp by QR code screens (optional, unofficial)
+
+The mode is described in `README.md` ("WhatsApp by QR code") and `doc/14-whatsapp-qr-deviations.md`; this is only the front end. The
+browser imports types only (`lib/whatsapp-web/types.ts`, `api-types.ts`); the allowlist did not change and the Vite guard also refuses the
+WhatsApp library, `uqr` and `libsignal`.
+
+- `components/app/WhatsAppModePicker.tsx`, in Settings > WhatsApp (`SettingsView`; the onboarding wizard keeps the bare official form). It reads
+  `GET /api/dashboard/whatsapp-web` once after mount. While that has not answered, when the platform flag is off, or when the read fails, it
+  draws exactly the official form (`WhatsAppConnect`) and nothing else. With the flag on it adds a group of two radios, "Official WhatsApp
+  Business API (Meta)" (the default) and "Link with QR code (unofficial)", and shows the chosen side. `WhatsAppModeLayout` is the pure part.
+- `components/app/WhatsAppQrLink.tsx`: `WhatsAppQrPanel` draws one state from a view (every state is a server render in the tests) and
+  `WhatsAppQrLink` owns the behaviour: commands through `useApi()` (so the password prompt for a stale sign-in works), a status poll
+  every 2 s while a code waits to be scanned or the first code is being made (10 s while reconnecting, never otherwise, never in a hidden
+  tab, backing off to 30 s after failures), a one-second clock for the countdown, and focus moved to the panel heading when the state
+  changes (only if focus was inside the panel or nowhere). One `role="status"` live region carries the sentence for each state; the
+  countdown is not announced. The consent box gates "Show QR code" / "Link again"; the request carries `view.consentVersion`.
+- `components/admin/InfluencerWhatsAppWebPanel.tsx`: the card on the admin Influencer page (`GET /api/admin/whatsapp-web?influencerId=`),
+  drawn only when the platform flag is on; **Force disconnect** opens a dialog that needs a reason of 5 to 300 characters
+  (`POST /api/admin/whatsapp-web/:id`). `ForceDisconnectForm` and `WhatsAppWebPanelBody` are the pure parts.
+- `lib/whatsapp-web-ui.ts`: the rules as pure functions (poll delay, countdown, starting timeout, the consent request, the announcement
+  sentences, the test-message outcome, the reason check) and `safeQrImageSrc`. The server's QR SVG is never put in the page as markup: it
+  is checked against a short allowlist (svg, rect, path, g, title, desc and plain attributes; no script, handler, link, style, entity or
+  comment) and shown as `<img src="data:image/svg+xml...">`, which a browser draws without running anything. A string that fails the
+  check shows "The code could not be shown". Tests: `tests/whatsapp-web-ui.test.ts`.
+- Styles: `.qr-frame` (always dark on white, the QR scales to the width up to 320 px), `.qr-layout`, `.qr-steps`, `.qr-modes` at the end
+  of `styles/components.css`.
+
 ## Working on it
 
 ```

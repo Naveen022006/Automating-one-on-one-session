@@ -248,6 +248,16 @@ login of each linked device (credentials and Signal keys) is one AES-256-GCM blo
 it is covered by `keys:rotate` / `keys:verify`. The worker image needs no extra package (the library's optional `sharp`
 dependency is only used for media, which this mode never sends). Rollout order is the usual one (migrate `20261109000000`, web, worker).
 
+Operating notes. (1) Set `WHATSAPP_QR_ENABLED=true` on **both** the web app and the worker: the web app decides whether the option is
+shown and the endpoints answer, the worker decides whether any connection is opened; with only one side set, the screen either hides
+the option or shows "the background worker is not running". (2) **Memory:** every linked number is a live connection plus an in-memory
+copy of its login, held for as long as the worker runs. Not measured on a real host; budget a few tens of megabytes per number and watch
+the worker's memory before raising `WHATSAPP_QR_MAX_SESSIONS`. (3) **Rollouts:** restarting or redeploying the worker drops the
+connections and reconnects every linked number from its stored login shortly after the worker starts, with no new scan; messages that fall in
+that gap go by the official connection, SMS or e-mail. Never run two workers during a rollout of this mode (two connections on one
+login log each other out); stop the old worker first. (4) The influencer-facing and administrator screens are described in `README.md`
+("WhatsApp by QR code") and `doc/12-front-end.md`; the one-time check with a spare phone number is the list in the README.
+
 ### Email
 | Variable | Req | Default | Notes |
 |---|---|---|---|
