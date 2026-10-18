@@ -2,7 +2,7 @@ import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { sendCustomerEmail } from "@/lib/customer-email";
 import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
-import { createMessage, markMessageFailed } from "@/lib/messages";
+import { createMessage, markMessageFailed, NO_EMAIL_ROUTE_REASON } from "@/lib/messages";
 import { buildSelfServiceUrl, signBookingCalendarToken } from "@/lib/self-service";
 import { EmailDisabledError, transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
 import { bookingEmail, type BookingEmailKind } from "@/lib/email/templates";
@@ -73,7 +73,7 @@ interface PriorSent {
 }
 
 /** The reason on the row of an e-mail that had no way to go out at all (no Gmail, and EMAIL_PROVIDER=none). */
-export const NO_EMAIL_ROUTE_REASON = "Not sent: no Gmail connection and this site sends no e-mail. The customer is reached by WhatsApp or SMS where they allowed it.";
+export { NO_EMAIL_ROUTE_REASON };
 
 /** Puts a row that recorded a sent e-mail back as it was after an attempt that did not send (best effort, never throws). */
 async function restoreSentRow(messageId: string | null, prior: PriorSent): Promise<void> {

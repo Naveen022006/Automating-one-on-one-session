@@ -14,6 +14,13 @@ import { prisma } from "@/lib/db";
  * booking/meeting job that produced the message. On error we log and return null (createMessage) or do nothing.
  */
 
+/**
+ * The reason on the FAILED e-mail row of a message that had no way to go out at all: no Gmail connection and a platform without e-mail
+ * (EMAIL_PROVIDER=none, doc/15). Nothing failed, so lib/failed-messages.ts leaves such rows out of the "not delivered" counts and the Failed
+ * filter. Browser copy: web/src/lib/email-route-ui.ts (kept equal by tests/email-none.test.ts).
+ */
+export const NO_EMAIL_ROUTE_REASON = "Not sent: no Gmail connection and this site sends no e-mail. The customer is reached by WhatsApp or SMS where they allowed it.";
+
 export type MessageChannel = "email" | "whatsapp" | "sms" | "log";
 export type MessageStatus = "queued" | "sent" | "failed";
 

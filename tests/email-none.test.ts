@@ -278,6 +278,18 @@ test("customer e-mail with no Gmail: nothing is sent, the row says why (never pe
   assert.ok(!rows[0].error?.startsWith(gmailLib.GMAIL_FAILED_PREFIX));
   assert.ok(logged.some((l) => l.includes("[email:customer] booking-confirmation not sent") && l.includes("no Gmail connection")));
   assert.ok(!logged.join("\n").includes(customerEmail), "the customer's address is not logged");
+  // Nothing failed, so it is not a "message not delivered": not in the overview count, not in the Failed filter (and resending cannot clear it).
+  const { countFailedMessages } = await import("../lib/failed-messages");
+  const { listMessages } = await import("../lib/dashboard-data");
+  const since = new Date(Date.now() - 86_400_000);
+  assert.equal(await countFailedMessages(since, influencerId), 0, "the dashboard overview does not count it");
+  assert.equal((await listMessages(influencerId, { status: "FAILED" })).total, 0, "the Failed filter does not list it");
+  const all = await listMessages(influencerId, {});
+  assert.ok(all.messages.some((m) => m.error === emailLib.NO_EMAIL_ROUTE_REASON), "it is still in the full list, shown as No e-mail route");
+  const ui = await import("../web/src/lib/email-route-ui");
+  assert.equal(ui.NO_EMAIL_ROUTE_TEXT, emailLib.NO_EMAIL_ROUTE_REASON, "the browser copy of the text is the server one");
+  assert.ok(ui.isNoEmailRouteMessage({ channel: "EMAIL", error: emailLib.NO_EMAIL_ROUTE_REASON }));
+  assert.ok(!ui.isNoEmailRouteMessage({ channel: "SMS", error: emailLib.NO_EMAIL_ROUTE_REASON }) && !ui.isNoEmailRouteMessage({ channel: "EMAIL", error: "Gmail could not send: x" }));
 });
 
 test("customer e-mail through the influencer's Gmail: a failing Gmail leaves a FAILED row and the panel says so; a working one sends and clears it", { skip }, async () => {
@@ -292,6 +304,9 @@ test("customer e-mail through the influencer's Gmail: a failing Gmail leaves a F
   assert.ok(failed[0].error?.startsWith(gmailLib.GMAIL_FAILED_PREFIX), String(failed[0].error));
   const status = await tokensLib.getGoogleStatus(influencerId, { details: true });
   assert.ok(status.state === "connected" && status.gmailSend && status.gmailFailing, "the Google panel says Gmail is not working");
+  // A real Gmail failure IS a message not delivered: it counts.
+  const { countFailedMessages } = await import("../lib/failed-messages");
+  assert.equal(await countFailedMessages(new Date(Date.now() - 86_400_000), influencerId), 1);
 
   tokenMode = "ok";
   await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });

@@ -1,7 +1,7 @@
 import { parseAnswers } from "@/lib/intake";
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
-import { countFailedMessages, supersededWebFailureIds } from "@/lib/failed-messages";
+import { countFailedMessages, EXCLUDE_NO_EMAIL_ROUTE, supersededWebFailureIds } from "@/lib/failed-messages";
 import { istDayStart, istMonthStart } from "@/lib/india";
 import { PLATFORM_CANCEL_PREFIX } from "@/lib/refunds";
 import { aggregateEarnings, type EarningsPaymentInput, type EarningsSummary } from "@/lib/dashboard";
@@ -308,6 +308,8 @@ export async function listMessages(influencerId: string, opts: { status?: string
     channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS", "EMAIL"] as ("WHATSAPP" | "WHATSAPP_WEB" | "SMS" | "EMAIL")[] },
     ...(opts.status && statuses.includes(opts.status) ? { status: opts.status as "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED" } : {}),
     ...(superseded.length > 0 ? { id: { notIn: superseded } } : {}),
+    // The Failed filter lists what the overview counts: an e-mail that had no way to go out is not a failure (doc/15).
+    ...(opts.status === "FAILED" ? EXCLUDE_NO_EMAIL_ROUTE : {}),
   };
   const [total, rows] = await Promise.all([
     prisma.message.count({ where }),

@@ -2,6 +2,7 @@ import { AppLink } from "@web/lib/link";
 import { IconMessage } from "@web/components/icons";
 import { PageHead } from "@web/components/app/AppShell";
 import { Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
+import { isNoEmailRouteMessage } from "@web/lib/email-route-ui";
 import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from "@web/lib/whatsapp-web-ui";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardMessagesView, MessageStatusFilter } from "@/lib/views/dashboard-messages";
@@ -68,7 +69,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
                   <tr key={`${m.bookingId}:${m.channel}:${m.template}`}>
                     <td data-label="Message">
                       {TEMPLATE[m.template] ?? m.template}
-                      {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : m.error && <div className="error-text break">{m.error}</div>}
+                      {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : isNoEmailRouteMessage(m) ? <div className="subtle break">{m.error}</div> : m.error && <div className="error-text break">{m.error}</div>}
                     </td>
                     <td data-label="Customer">
                       <AppLink href={`/dashboard/sessions?view=${new Date(m.sessionStart) > new Date() ? "upcoming" : "past"}&booking=${m.bookingId}`}>{m.customerName}</AppLink>
@@ -76,7 +77,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
                     </td>
                     <td data-label="Channel">{CHANNEL[m.channel] ?? m.channel}</td>
                     <td data-label="Status">
-                      {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
+                      {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : isNoEmailRouteMessage(m) ? <Badge>No e-mail route</Badge> : <StatusPill kind="message" status={m.status} />}
                     </td>
                     <td data-label="Updated" className="tabular">{at(m.at)}</td>
                   </tr>
