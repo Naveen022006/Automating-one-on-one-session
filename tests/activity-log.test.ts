@@ -53,6 +53,7 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "auth.logout_all": { sessions: 3 },
   "auth.session_revoked": {},
   "auth.reauthenticated": {},
+  "auth.admin_reset_link": {},
   "profile.updated": { fields: "name,slug", slugFrom: "old-page", slugTo: "new-page" },
   "service.created": { serviceId: "svc1", title: "Career call", priceTo: 150000, currency: "INR", activeTo: true },
   "service.updated": { serviceId: "svc1", title: "Career call", priceFrom: 100000, priceTo: 120000, currency: "INR", activeFrom: true, activeTo: false },

@@ -210,7 +210,7 @@ test("reset-link: the full link comes back once; it is stored only as a hash and
   assert.equal(out.headers.get("cache-control"), "private, no-store");
   assert.deepEqual(Object.keys(out.body).sort(), ["expiresAt", "ok", "url"]);
   const url = String(out.body.url);
-  assert.match(url, /^http:\/\/localhost:3000\/reset-password\?token=[A-Za-z0-9_-]{20,}$/);
+  assert.match(url, /^http:\/\/localhost:3000\/reset-password\?token=adm\.[A-Za-z0-9_-]{20,}$/);
   const raw = tokenOf(url);
 
   const row = await prisma.passwordResetToken.findUnique({ where: { tokenHash: hashToken(raw) } });
@@ -249,14 +249,62 @@ test("the link works once, a newer link replaces the older one, and an expired l
   await prisma.passwordResetToken.update({ where: { tokenHash: hashToken(two) }, data: { expiresAt: new Date(Date.now() - 1000) } });
   await assert.rejects(accountsLib.resetPassword(two, "another-long-password-1"), /invalid or has expired/);
 
+  // The verify-email test above verified the address; this one needs it unverified to see what a reset does to it.
+  await prisma.user.update({ where: { id: userId }, data: { emailVerifiedAt: null } });
   const three = tokenOf(String((await asAdmin(admin, () => link())).body.url));
+  assert.ok(three.startsWith(accountsLib.ADMIN_RESET_PREFIX), "an administrator's link is marked");
   const done = await accountsLib.resetPassword(three, "another-long-password-1");
   assert.equal(done.userId, userId);
   assert.notEqual((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).passwordChangedAt, null);
   await assert.rejects(accountsLib.resetPassword(three, "yet-another-long-password-2"), /invalid or has expired|already used/, "one time only");
-  // Setting the new password proved control of the account, so it also verifies the address (the existing reset flow).
-  assert.notEqual((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).emailVerifiedAt, null);
+  // A link an administrator handed over proves nothing about the mailbox: using it does NOT verify the address.
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).emailVerifiedAt, null);
   assert.equal((await audit("influencer.reset_link_created")).length, 5, "every link handed over (two in the tests above, three here) is in the audit trail");
+});
+
+test("a self-requested reset link (the one e-mailed to the address) still verifies the address, and its token is not marked", { skip }, async () => {
+  await prisma.user.update({ where: { id: userId }, data: { emailVerifiedAt: null } });
+  const { url } = await accountsLib.createPasswordResetLink(userId);
+  const token = tokenOf(url);
+  assert.ok(!token.startsWith(accountsLib.ADMIN_RESET_PREFIX) && !token.includes("."));
+  await accountsLib.resetPassword(token, "self-requested-password-1");
+  assert.notEqual((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).emailVerifiedAt, null);
+  // The prefix cannot be added to somebody's token to change what it does: the marker is part of what was hashed and stored.
+  const { url: another } = await accountsLib.createPasswordResetLink(userId);
+  await assert.rejects(accountsLib.resetPassword(`${accountsLib.ADMIN_RESET_PREFIX}${tokenOf(another)}`, "self-requested-password-2"), /invalid or has expired/);
+});
+
+test("the influencer sees that an administrator created a link (activity entry, no link in it), and is e-mailed a notice only when the platform sends e-mail", { skip }, async () => {
+  const admin = await sessionLib.createAdminSession(Y);
+  const emailLib = await import("../lib/email");
+  const sent: { to: { email: string }; subject: string; text: string; html: string; tag?: string }[] = [];
+  const before = await prisma.influencerActivity.count({ where: { influencerId, action: "auth.admin_reset_link" } });
+
+  // EMAIL_PROVIDER=none (this file's setting): the entry, but nothing to send.
+  emailLib.setEmailSender(async (m) => (sent.push(m), { providerMessageId: null }));
+  const none = await asAdmin(admin, () => link());
+  assert.equal(none.status, 200);
+  assert.equal(sent.length, 0, "no platform e-mail, no notice");
+
+  process.env.EMAIL_PROVIDER = "resend";
+  try {
+    const withMail = await asAdmin(admin, () => link());
+    const raw = tokenOf(String(withMail.body.url));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].tag, "admin-reset-link");
+    assert.ok(!sent[0].text.includes(raw) && !sent[0].html.includes(raw) && !/reset-password\?token/.test(sent[0].text + sent[0].html), "the notice never carries the link");
+  } finally {
+    process.env.EMAIL_PROVIDER = "none";
+    emailLib.setEmailSender(null);
+  }
+
+  const rows = await prisma.influencerActivity.findMany({ where: { influencerId, action: "auth.admin_reset_link" }, orderBy: { createdAt: "asc" } });
+  assert.equal(rows.length - before, 2);
+  for (const r of rows) {
+    assert.equal(r.actor, "system");
+    assert.equal(r.detail, null);
+    assert.ok(!/token|reset-password/.test(JSON.stringify(r)));
+  }
 });
 
 test("no token reached the logs at any point", { skip }, async () => {

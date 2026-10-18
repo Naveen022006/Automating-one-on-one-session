@@ -18,6 +18,8 @@ export class AccountError extends Error {
   }
 }
 
+/** Start of a password-reset token created by an administrator (see createPasswordResetLink). */
+export const ADMIN_RESET_PREFIX = "adm.";
 export const VERIFY_TTL_MS = 24 * 3_600_000;
 export const RESET_TTL_MS = 3_600_000;
 
@@ -194,10 +196,15 @@ export async function requestPasswordReset(emailInput: string): Promise<void> {
 export async function createPasswordResetLink(
   userId: string,
   db: Pick<typeof prisma, "passwordResetToken"> = prisma,
+  opts: { createdByAdmin?: boolean } = {},
 ): Promise<{ url: string; expiresAt: Date }> {
   // Only the newest link is valid.
   await db.passwordResetToken.updateMany({ where: { userId, usedAt: null }, data: { usedAt: new Date() } });
-  const token = randomToken();
+  // A link an administrator hands over proves nothing about the mailbox, so using it must not verify the e-mail address (resetPassword does
+  // that only for a link e-mailed to the address). The table has no column for the difference and a migration is not worth it: the
+  // marker is a prefix of the token itself. Self-requested tokens are base64url and never contain a ".", and the marker is only read
+  // from a token whose hash is stored, so nobody can add or remove it from a token they were given.
+  const token = opts.createdByAdmin ? `${ADMIN_RESET_PREFIX}${randomToken()}` : randomToken();
   const expiresAt = new Date(Date.now() + RESET_TTL_MS);
   await db.passwordResetToken.create({ data: { userId, tokenHash: hashToken(token), expiresAt } });
   return { url: `${appUrl()}/reset-password?token=${encodeURIComponent(token)}`, expiresAt };
@@ -226,7 +233,9 @@ export async function resetPassword(token: string, newPassword: string): Promise
     data: {
       passwordHash: await hashPassword(newPassword),
       passwordChangedAt: new Date(),
-      emailVerifiedAt: row.user.emailVerifiedAt ?? new Date(),
+      // Setting a password through a link e-mailed to the address proves control of the mailbox. A link an administrator handed over
+      // proves nothing about it, so it leaves the verification state exactly as it was.
+      ...(token.startsWith(ADMIN_RESET_PREFIX) ? {} : { emailVerifiedAt: row.user.emailVerifiedAt ?? new Date() }),
     },
   });
   await revokeAllSessions(row.userId);

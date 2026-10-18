@@ -1,6 +1,10 @@
 import { recordAudit, type AuditActor } from "@/lib/admin/audit";
+import { recordActivity } from "@/lib/activity";
 import { createPasswordResetLink } from "@/lib/auth/accounts";
 import { prisma } from "@/lib/db";
+import { sendAccountEmail } from "@/lib/email";
+import { platformEmailEnabled } from "@/lib/email/providers";
+import { adminResetLinkNoticeMessage } from "@/lib/email/templates";
 
 /**
  * Account help an administrator gives by hand when the platform sends no e-mail (EMAIL_PROVIDER=none, doc/15): without these two actions
@@ -42,16 +46,23 @@ export async function adminVerifyEmail(actor: AuditActor, influencerId: string, 
  * Creates a one-time password-reset link for the influencer, to be handed over by the administrator. The FULL link is returned once,
  * to the caller; it is stored only as a hash and is in neither the audit row nor any log. It expires like an e-mailed reset link, and a
  * newer link (or this one being used) cancels the older ones. 404 unknown influencer, 409 no sign-in account.
+ *
+ * The influencer is told: an entry in their own account activity (never the link), and an e-mail notice when the platform sends e-mail.
+ * Using this kind of link does NOT verify the e-mail address (see createPasswordResetLink).
  */
 export async function adminCreateResetLink(actor: AuditActor, influencerId: string, ip: string | null): Promise<{ url: string; expiresAt: Date }> {
-  const user = await prisma.user.findUnique({ where: { influencerId }, select: { id: true } });
+  const user = await prisma.user.findUnique({ where: { influencerId }, select: { id: true, email: true, influencer: { select: { name: true } } } });
   if (!user) {
     const exists = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { id: true } });
     throw exists ? new AccountHelpError(NO_SIGN_IN, 409) : new AccountHelpError("Influencer not found", 404);
   }
-  return prisma.$transaction(async (tx) => {
-    const link = await createPasswordResetLink(user.id, tx);
-    await recordAudit(actor, { action: "influencer.reset_link_created", targetType: "influencer", targetId: influencerId, detail: { expiresAt: link.expiresAt.toISOString() }, ip }, tx);
-    return link;
+  const link = await prisma.$transaction(async (tx) => {
+    const created = await createPasswordResetLink(user.id, tx, { createdByAdmin: true });
+    await recordAudit(actor, { action: "influencer.reset_link_created", targetType: "influencer", targetId: influencerId, detail: { expiresAt: created.expiresAt.toISOString() }, ip }, tx);
+    return created;
   });
+  // After the commit, best effort (neither call throws): what the influencer sees, without the link.
+  await recordActivity({ influencerId, actor: "system", action: "auth.admin_reset_link" });
+  if (platformEmailEnabled()) await sendAccountEmail({ email: user.email, name: user.influencer.name }, adminResetLinkNoticeMessage(user.influencer.name), "admin-reset-link");
+  return link;
 }
