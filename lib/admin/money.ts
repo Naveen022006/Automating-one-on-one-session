@@ -5,8 +5,8 @@ import { balanceFigures, istStart, nextDay, rangeFigures, type Day } from "@/lib
 /**
  * The queries behind the admin Money page (GET /api/admin/money) and its CSV export: ONE chronological ledger of every money movement
  * of the platform. Nothing is loaded without a bound: the rows come from a single SQL statement (a UNION ALL of three explicit selects,
- * ordered, LIMIT / OFFSET), the counts and the totals are aggregates, and every query runs after the other (the database has a small
- * connection cap).
+ * ordered, LIMIT / OFFSET) and the counts and the totals are aggregates. The queries are few and small; the view function runs them in
+ * short stages, never more than four connections at a time (the database has a small connection cap).
  *
  * THREE KINDS OF MOVEMENT, each dated by the one timestamp that is the most exact the schema has, and the same one the Reports page
  * (lib/admin/reports.ts) uses, so the rows of a range add up to the Reports figures of that range:
@@ -262,12 +262,12 @@ export interface MoneyTotals {
 
 /**
  * The cards: the range figures and the held balance of lib/admin/reports.ts, computed by those very functions (narrowed to one influencer
- * when asked), one entry per currency with anything in it. Six queries. The `type` of the filter does not narrow them.
+ * when asked), one entry per currency with anything in it. Six queries, two at a time (each function runs its three one after the other).
+ * The `type` of the filter does not narrow them.
  */
 export async function moneyTotals(f: Pick<MoneyFilter, "from" | "to" | "influencerId">): Promise<MoneyTotals[]> {
   const scope = { influencerId: f.influencerId };
-  const range = await rangeFigures(f.from, f.to, scope);
-  const balances = await balanceFigures(scope);
+  const [range, balances] = await Promise.all([rangeFigures(f.from, f.to, scope), balanceFigures(scope)]);
   const by = new Map<string, MoneyTotals>();
   const get = (currency: string) => {
     let t = by.get(currency);

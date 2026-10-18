@@ -162,13 +162,17 @@ export function toMoneyRow(r: MovementRecord): AdminMoneyRow {
 }
 
 export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: number, now = new Date()): Promise<AdminMoneyView> {
-  // Sequential on purpose: one connection at a time (the database has a small connection cap).
-  const selected = filter.influencerId ? await prisma.influencer.findUnique({ where: { id: filter.influencerId }, select: { id: true, name: true } }) : null;
+  // The queries run in three short stages, at most four connections at a time (the database has a small connection cap), so the page is
+  // about eight round trips deep instead of seventeen.
+  const showScheduled = KINDS_OF_TYPE[filter.type].includes("payout");
+  const [selected, choices, scheduled] = await Promise.all([
+    filter.influencerId ? prisma.influencer.findUnique({ where: { id: filter.influencerId }, select: { id: true, name: true } }) : Promise.resolve(null),
+    influencerChoices(),
+    showScheduled ? scheduledPayouts(filter.influencerId) : Promise.resolve({ total: 0, sums: [], rows: [] }),
+  ]);
   const influencerUnknown = filter.influencerId !== null && selected === null;
-  const choices = await influencerChoices();
   const options = selected && !choices.options.some((o) => o.id === selected.id) ? [...choices.options, selected].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) : choices.options;
   const influencers = { options, truncated: choices.truncated };
-  const showScheduled = KINDS_OF_TYPE[filter.type].includes("payout");
 
   if (influencerUnknown) {
     // Nothing can match, and the summary of an influencer that does not exist would throw: answer an empty page.
@@ -192,20 +196,20 @@ export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: num
     };
   }
 
-  const counts = await countMovements(filter);
+  const readPage = (p: number) => readMovements(filter, { limit: MONEY_PAGE_SIZE, offset: (p - 1) * MONEY_PAGE_SIZE, order: "desc" });
+  const [counts, firstRead, totals] = await Promise.all([countMovements(filter), readPage(requestedPage), moneyTotals(filter)]);
   const pageCount = Math.max(1, Math.ceil(counts.total / MONEY_PAGE_SIZE));
   const page = Math.min(requestedPage, pageCount);
-  const records = counts.total === 0 ? [] : await readMovements(filter, { limit: MONEY_PAGE_SIZE, offset: (page - 1) * MONEY_PAGE_SIZE, order: "desc" });
-  const totals = await moneyTotals(filter);
-  const scheduled = showScheduled ? await scheduledPayouts(filter.influencerId) : { total: 0, sums: [], rows: [] };
+  // A page beyond the last is the last one (a second read, only for a URL that names a page that is not there).
+  const records = page === requestedPage ? firstRead : await readPage(page);
 
   let summary: AdminMoneyView["summary"] = null;
   if (selected) {
-    const s = await influencerPayoutSummary(selected.id);
+    const [s, lastPayout] = await Promise.all([influencerPayoutSummary(selected.id), lastPaidPayout(selected.id)]);
     summary = {
       feePercentText: formatFeePercent(s.feeBps),
       currencies: s.currencies.map((c) => ({ currency: c.currency, paidOutMinor: c.paidOutMinor, payableMinor: c.readyMinor, heldMinor: c.waitingMinor, pendingMinor: c.pendingMinor })),
-      lastPayout: await lastPaidPayout(selected.id),
+      lastPayout,
     };
   }
 
