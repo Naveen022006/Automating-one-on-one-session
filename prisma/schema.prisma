@@ -395,6 +395,8 @@ model Payment {
   @@index([payoutId])
   @@index([status, reconciledAt])
   @@index([status, recoveryCheckedAt])
+  // The Reports page and the admin Money ledger read payments by the day they began (checkout start).
+  @@index([createdAt])
   @@map("payments")
 }
 
@@ -413,6 +415,8 @@ model Refund {
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
   @@index([paymentId])
+  // Reports and the Money ledger read refunds by the day they were recorded.
+  @@index([createdAt])
   @@map("refunds")
 }
 
@@ -648,6 +652,8 @@ model Payout {
 
   @@index([influencerId, createdAt])
   @@index([status])
+  // Reports and the Money ledger read PAID payouts by the day they were marked as sent.
+  @@index([status, paidAt])
   @@map("payouts")
 }
 
