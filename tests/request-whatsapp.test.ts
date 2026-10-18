@@ -12,8 +12,8 @@ import { prisma } from "../lib/db";
 import { createHold } from "../lib/holds";
 import { addDays, formatDateTime, istDayStart, istToday } from "../lib/india";
 import { customerMessageRoute as customerRoute } from "../lib/message-route";
-import { sendMessageForBooking, type MessagingDeps } from "../lib/messaging";
-import type { SendResult } from "../lib/sms";
+import { NO_MESSAGE_ROUTE_REASON, reportMessageFailure, sendMessageForBooking, type MessagingDeps } from "../lib/messaging";
+import { NoMessageRouteError, type SendResult } from "../lib/sms";
 import { setActiveSender, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "../lib/whatsapp-web/send";
 import { FakeTransport } from "../lib/whatsapp-web/fake-transport";
 import { harness, ManualClock, settle, want } from "./helpers/whatsapp-web";
@@ -783,6 +783,100 @@ test("SMS is a route only when the provider is set up for that message", { skip 
   }
 });
 
+// ---- 5a. no route at all: no retries, no alerts for the request messages ------------------------------------------------------------
+
+/** The world with no way to reach the customer: the number is not linked, no official connection, and SMS says it is not set up. */
+async function withNoRoute(): Promise<{ deps: Partial<MessagingDeps>; calls: string[]; alerts: string[] }> {
+  await prisma.whatsAppWebSession.update({ where: { influencerId }, data: { status: "NOT_LINKED", wantLinked: false } });
+  const f = fakes();
+  f.ctl.ready = false;
+  const alerts: string[] = [];
+  const calls: string[] = [];
+  const { sendWhatsApp: _official, ...rest } = f.deps; // the DEFAULT official sender: this influencer has no connection, so it refuses before any network call
+  void _official;
+  return {
+    deps: {
+      ...rest,
+      sendSMS: async () => {
+        calls.push("sms");
+        throw new NoMessageRouteError("SMS is not set up (SMS_API_KEY is missing)");
+      },
+      alert: async (_id, a) => void alerts.push(a.kind),
+    },
+    calls,
+    alerts,
+  };
+}
+
+test("no route at all: a request message records ONE plain FAILED row and is done (no retry, no alert, no booking error); the five booking events keep today's retries and alerts", { skip }, async () => {
+  for (const kind of ["request-received", "request-approved", "request-declined", "request-expired"]) {
+    const id = await inStateFor(kind);
+    const w = await withNoRoute();
+    assert.equal(await sendMessageForBooking(id, kind, w.deps), "skipped", `${kind}: finished, not failed (a thrown error would be retried five times)`);
+    assert.deepEqual(w.calls, ["sms"], "SMS was asked once");
+    const rows = await prisma.message.findMany({ where: { bookingId: id, template: kind } });
+    assert.deepEqual(rows.map((r) => [r.channel, r.status, r.error]), [["SMS", "FAILED", "No WhatsApp or SMS route for this message"]], `${kind}: one row, one plain reason`);
+    assert.equal(NO_MESSAGE_ROUTE_REASON, "No WhatsApp or SMS route for this message");
+    assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id } })).lastError, null, `${kind}: no booking error`);
+    assert.deepEqual(w.alerts, [], `${kind}: the host is not alerted`);
+    // Run again (a duplicate job): still one row, still done.
+    assert.equal(await sendMessageForBooking(id, kind, w.deps), "skipped");
+    assert.equal(await prisma.message.count({ where: { bookingId: id, template: kind } }), 1);
+    await prisma.whatsAppWebSession.update({ where: { influencerId }, data: { status: "LINKED", wantLinked: true } });
+  }
+
+  // A paid customer who is missing the Meet link must still alert the host: same situation, the existing message.
+  const paid = await requestBooking();
+  await prisma.booking.update({ where: { id: paid }, data: { status: "SCHEDULED", meetLink: MEET, holdExpiresAt: null } });
+  const w = await withNoRoute();
+  await assert.rejects(sendMessageForBooking(paid, "booking-confirmation", w.deps), NoMessageRouteError, "today's behaviour: the job fails and is retried");
+  const row0 = await row(paid, "SMS", "booking-confirmation");
+  assert.match(row0?.error ?? "", /SMS is not set up/);
+  assert.notEqual(row0?.status, "SENT");
+  await reportMessageFailure(paid, "booking-confirmation", "SMS is not set up (SMS_API_KEY is missing)", async (_id, a) => void w.alerts.push(a.kind));
+  assert.deepEqual(w.alerts, ["message-delivery-failed"], "the host is alerted, as before");
+  assert.match((await prisma.booking.findUniqueOrThrow({ where: { id: paid } })).lastError ?? "", /Could not deliver "booking-confirmation"/);
+});
+
+test("a send that really failed, or a linked number that is expected back, is still retried (only 'nothing could even be tried' is final)", { skip }, async () => {
+  // The official connection was tried and failed, and SMS is not set up: a real failure, retried as before.
+  const a = await inStateFor("request-approved");
+  await prisma.whatsAppWebSession.update({ where: { influencerId }, data: { status: "NOT_LINKED", wantLinked: false } });
+  const f = fakes();
+  f.ctl.ready = false;
+  f.deps.sendWhatsApp = async () => {
+    throw new Error("Meta said no");
+  };
+  f.deps.sendSMS = async () => {
+    throw new NoMessageRouteError("SMS is not set up");
+  };
+  await assert.rejects(sendMessageForBooking(a, "request-approved", f.deps), NoMessageRouteError);
+  assert.equal((await row(a, "WHATSAPP", "request-approved"))?.error, "Meta said no", "the real attempt is recorded");
+
+  // The linked number is linked and wanted but busy right now (retryable), and nothing else routes: try again later.
+  await prisma.whatsAppWebSession.update({ where: { influencerId }, data: { status: "LINKED", wantLinked: true } });
+  const b = await inStateFor("request-declined");
+  const busy = await withNoRoute();
+  await prisma.whatsAppWebSession.update({ where: { influencerId }, data: { status: "LINKED", wantLinked: true } });
+  const g = fakes();
+  g.ctl.qr = () => ({ ok: false, reason: "busy", retryable: true });
+  await assert.rejects(sendMessageForBooking(b, "request-declined", { ...busy.deps, qr: g.deps.qr }), NoMessageRouteError, "busy now, expected back: the job is retried");
+  assert.equal(await row(b, "SMS", "request-declined").then((r) => r?.error === NO_MESSAGE_ROUTE_REASON), false, "not recorded as 'no route'");
+
+  // The same linked number reconnecting (the worker's socket is not open, the stored status says linked): also later.
+  const c = await inStateFor("request-declined");
+  const h = fakes();
+  h.ctl.ready = false;
+  await assert.rejects(sendMessageForBooking(c, "request-declined", { ...busy.deps, qr: h.deps.qr }), NoMessageRouteError);
+
+  // A refusal that is final for this message (the daily limit) is not a reason to wait: no route, done.
+  const d = await inStateFor("request-declined");
+  const cap = fakes();
+  cap.ctl.qr = () => ({ ok: false, reason: "daily-cap", retryable: false });
+  assert.equal(await sendMessageForBooking(d, "request-declined", { ...busy.deps, qr: cap.deps.qr }), "skipped");
+  assert.equal((await row(d, "SMS", "request-declined"))?.error, NO_MESSAGE_ROUTE_REASON);
+});
+
 // ---- 5. the request expires ---------------------------------------------------------------------------------------------------
 
 test("expiry: each unanswered request is expired and queued once for request-expired; an approved hold that lapsed unpaid, a plain hold, and a customer who did not opt in are not messaged", { skip }, async () => {
@@ -1049,7 +1143,6 @@ test("the payment link never reaches a log line, a stored error or an alert, eve
   for (const r of rows) assert.ok(!(r.error ?? "").includes("/pay/") && !(r.error ?? "").includes(link), `a stored error carries no link: ${r.error}`);
 
   // The final failure of the job: the row, the booking and the alert.
-  const { reportMessageFailure } = await import("../lib/messaging");
   await reportMessageFailure(bookingId, "request-approved", `SMS refused: ${link}`, async (_id, a) => void alerts.push(a.detail ?? ""));
   const after = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
   assert.ok(after.lastError && !after.lastError.includes("/pay/"), `booking.lastError: ${after.lastError}`);

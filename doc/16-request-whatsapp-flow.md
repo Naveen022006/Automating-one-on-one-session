@@ -121,7 +121,16 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   through to SMS for that message, as for the other templates. The settings card shows nine templates now; template trouble never blocks
   going live.
 - **SMS**: bodies in `lib/message-templates.ts`; MSG91 flow ids `MSG91_TEMPLATE_REQUEST_RECEIVED`, `_APPROVED`, `_DECLINED`, `_EXPIRED`
-  (`.env.example`, `KNOWN_ENV_VARS`, doc/08). The variables are sent in the order of the Meta parameters.
+  (`.env.example`, `KNOWN_ENV_VARS`, doc/08). The variables are sent in the order of the Meta parameters. `smsConfigProblem` (lib/sms.ts) is
+  the one check of "can this message go by SMS" (provider credentials, and for MSG91 a flow id of its own or `MSG91_TEMPLATE_DEFAULT`);
+  `sendSMS` refuses with the typed, non-retryable `NoMessageRouteError` when it says no, before any network call.
+- **No route at all is final, and quiet, for the four request messages.** When the linked number is not a route, the official WhatsApp could
+  not even be tried (no connection, or the template not approved) and SMS throws `NoMessageRouteError`, `sendMessageForBooking` writes ONE
+  FAILED row ("No WhatsApp or SMS route for this message", on the SMS channel) and finishes: no five retries, no "could not deliver" alert,
+  no `booking.lastError`. Anything that could still work stays a retried failure: an official send that really failed, or a linked
+  number that is linked and wanted but busy or reconnecting right now. The five booking events keep today's behaviour exactly: a paid
+  customer who is missing the Meet link still alerts the host. Because nothing is queued without a route (above), this path is rare: it
+  covers a route that vanished between queueing and sending.
 - **Labels**: "Request received", "Request accepted (payment link)", "Request declined", "Request expired" in the Messages page, the booking
   drawer and the template list. The e-mail row and the WhatsApp row of a step share the key; the channel column tells them apart.
 - **The customer's status link**: the existing manage link. Its page used to say "This booking can no longer be changed online" for every
@@ -161,9 +170,8 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
    would be wrong.
 5. **The expiry notification is a separate function** (`expireStaleHoldsAndNotify`), not a change to `expireStaleHolds`: the plain
    function stays Redis-free for the tests that call it, and the worker calls the new one.
-6. **MSG91 with no flow id is not "skipped"**: `sendViaMsg91` falls back to `MSG91_TEMPLATE_DEFAULT` and throws when that is unset, exactly as for
-   the five existing messages. If nothing else delivered the message, the job retries and the influencer gets the usual "could not deliver" alert.
-   I did not change that.
+6. **MSG91 with no flow id is a missing route, not a failure**, for the four request messages (see "No route at all"). For the five booking
+   events a missing SMS route still ends as a thrown error with retries and the usual alert, as before.
 7. **The linked-number texts are nine now**: `WHATSAPP_WEB_TEMPLATES` and its pinned tests were updated on purpose. The tests that counted five
    Meta templates (`mock-providers-meta`, `mock-providers-whatsapp-db`, `spa-dashboard-setup`, `whatsapp-connect`) count `KNOWN_TEMPLATES` now.
 

@@ -60,7 +60,7 @@ function templateEnvName(template: string): string {
  * always possible. The one answer is read by `sendSMS` (which refuses to send) and by lib/message-route.ts (which decides whether to
  * queue a message at all), so the two can never disagree.
  */
-export function smsConfigProblem(template: string | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
+export function smsConfigProblem(template: string | undefined, env: Record<string, string | undefined> = process.env): string | null {
   if (env.MESSAGING_DRY_RUN === "true") return null;
   const missing = (...names: string[]) => names.filter((n) => !env[n]);
   const provider = (env.SMS_PROVIDER || "generic").toLowerCase();

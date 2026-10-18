@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { mock, test } from "node:test";
+import { NoMessageRouteError, sendSMS, smsConfigProblem } from "../lib/sms";
 import { canMessageOnWhatsApp, queueRequestMessage } from "../lib/request-messages";
 
 // Pure tests (no database, no Redis): the best-effort queueing helper, the worker's job wrapper that keeps a payment link out of a
@@ -124,4 +125,45 @@ test("production code logs ids, statuses and redacted errors for these messages,
   }
   // Every place that logs an error from a send goes through errText (which redacts), not the raw error.
   assert.ok(!/console\.\w+\([^)]*\$\{(whatsappError|smsError)\}/.test(src("lib/messaging.ts")));
+});
+
+test("SMS configuration: one check tells whether a message can go by SMS, and sendSMS refuses with a typed, non-retryable error before any network call", async () => {
+  const none: Record<string, string | undefined> = {};
+  assert.match(smsConfigProblem("request-approved", none) ?? "", /SMS_API_URL \/ SMS_API_KEY are missing/, "the default provider needs a URL and a key");
+  assert.equal(smsConfigProblem("request-approved", { SMS_API_URL: "https://x.test", SMS_API_KEY: "k" }), null);
+  assert.match(smsConfigProblem("request-approved", { SMS_API_URL: "https://x.test" }) ?? "", /missing/);
+
+  const msg91 = { SMS_PROVIDER: "msg91", SMS_API_KEY: "k" };
+  assert.match(smsConfigProblem("request-approved", msg91) ?? "", /no flow for this message/);
+  assert.equal(smsConfigProblem("request-approved", { ...msg91, MSG91_TEMPLATE_REQUEST_APPROVED: "f1" }), null);
+  assert.match(smsConfigProblem("request-declined", { ...msg91, MSG91_TEMPLATE_REQUEST_APPROVED: "f1" }) ?? "", /no flow/, "a flow id belongs to its own message");
+  assert.equal(smsConfigProblem("request-declined", { ...msg91, MSG91_TEMPLATE_DEFAULT: "d" }), null, "the default flow carries any message");
+  assert.equal(smsConfigProblem(undefined, { ...msg91, MSG91_TEMPLATE_DEFAULT: "d" }), null);
+  assert.match(smsConfigProblem("request-approved", { SMS_PROVIDER: "msg91", MSG91_TEMPLATE_DEFAULT: "d" }) ?? "", /SMS_API_KEY/);
+
+  const twilio = { SMS_PROVIDER: "Twilio", TWILIO_ACCOUNT_SID: "AC", TWILIO_AUTH_TOKEN: "t" };
+  assert.match(smsConfigProblem("x", twilio) ?? "", /no sender/);
+  assert.equal(smsConfigProblem("x", { ...twilio, TWILIO_FROM: "+1555" }), null);
+  assert.equal(smsConfigProblem("x", { ...twilio, TWILIO_MESSAGING_SERVICE_SID: "MG" }), null);
+  assert.match(smsConfigProblem("x", { SMS_PROVIDER: "twilio" }) ?? "", /credentials are missing/);
+  assert.equal(smsConfigProblem("x", { MESSAGING_DRY_RUN: "true" }), null, "a dry run only logs");
+
+  const saved = { ...process.env };
+  for (const k of ["SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL", "MSG91_TEMPLATE_DEFAULT", "MESSAGING_DRY_RUN"]) delete process.env[k];
+  try {
+    await assert.rejects(sendSMS({ to: "+919876543210", body: "hello", template: "request-approved" }), (e: unknown) => e instanceof NoMessageRouteError && e.retryable === false && /SMS is not set up/.test(e.message));
+    process.env.MESSAGING_DRY_RUN = "true";
+    const realLog = console.log;
+    console.log = () => {};
+    try {
+      assert.match((await sendSMS({ to: "+919876543210", body: "hello", template: "request-approved" })).providerMessageId, /^dry-run-sms-/);
+    } finally {
+      console.log = realLog;
+    }
+  } finally {
+    for (const k of ["SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL", "MSG91_TEMPLATE_DEFAULT", "MESSAGING_DRY_RUN"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
 });

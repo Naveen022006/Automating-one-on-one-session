@@ -11,7 +11,7 @@ import {
 } from "@/lib/message-templates";
 import { requestMessageContext } from "@/lib/request-message-context";
 import { buildSelfServiceUrl } from "@/lib/self-service";
-import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
+import { NoMessageRouteError, sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 import { WhatsAppNotConnectedError, markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
@@ -39,6 +39,12 @@ export class RetryableMessageError extends Error {
 }
 
 export type MessageOutcome = "sent" | "already-sent" | "skipped";
+
+/**
+ * The plain reason on the one FAILED row of a booking-request message that had no way to reach the customer at all (no linked number, no
+ * official template Meta has approved, SMS not set up). Shown in the host's Messages view; nothing else is recorded or alerted for it.
+ */
+export const NO_MESSAGE_ROUTE_REASON = "No WhatsApp or SMS route for this message";
 
 /*
  * Which booking states each message may be sent in lives in lib/message-kinds.ts (messageMayBeSent), shared with the linked-number
@@ -161,7 +167,12 @@ type WebOutcome =
   /** Handed over, but no answer in time: it may still arrive. Nothing else may send it. */
   | { kind: "unknown" }
   /** Not wanted any more (a reminder past its time, a booking cancelled while waiting): send nothing, anywhere. */
-  | { kind: "skip" };
+  | { kind: "skip" }
+  /**
+   * The linked number is the influencer's route and is expected back (it was busy, reconnecting or refused for now): carry on with the
+   * next channels as always, but if none of them takes the message it is worth trying again later instead of giving up for good.
+   */
+  | { kind: "later" };
 
 /** E.164 as WhatsApp numbers are written: a plus sign, a country code that does not start with 0, up to 15 digits in all. */
 const E164 = /^\+[1-9]\d{7,14}$/;
@@ -184,10 +195,13 @@ async function tryWhatsAppWeb(
   b: { bookingId: string; influencerId: string; to: string; template: string; context: MessageContext; sessionStart: Date; holdExpiresAt: Date | null },
 ): Promise<WebOutcome | null> {
   const { bookingId, influencerId, to, template } = b;
-  if (!readQrConfig().enabled || !deps.qr.isReady(influencerId)) return null;
-  if (!E164.test(to)) return null;
+  if (!readQrConfig().enabled) return null;
   const linked = await prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: { status: true, wantLinked: true } });
-  if (!linked || linked.status !== "LINKED" || !linked.wantLinked) return null;
+  const expected = !!linked && linked.status === "LINKED" && linked.wantLinked;
+  // Linked and wanted but the worker's socket is not open right now (reconnecting): not this time, but it is expected back.
+  if (!deps.qr.isReady(influencerId)) return expected ? { kind: "later" } : null;
+  if (!E164.test(to)) return null;
+  if (!expected) return null;
 
   const text = whatsAppWebText(template, b.context);
   if (text === null) return null;
@@ -230,11 +244,11 @@ async function tryWhatsAppWeb(
   if (NOT_ATTEMPTED.has(result.reason)) {
     await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template, status: "PENDING", error: QR_IN_FLIGHT } });
     console.info(`[send-message] booking ${bookingId}: the linked WhatsApp did not try (${result.reason}); trying the next channel`);
-    return null;
+    return result.retryable ? { kind: "later" } : null;
   }
   await prisma.message.update({ where, data: { status: "FAILED", error: `${describeWebRefusal(result.reason)}; sent another way.`.slice(0, 500) } });
   console.info(`[send-message] booking ${bookingId}: not sent from the linked WhatsApp (${result.reason}); trying the next channel`);
-  return null;
+  return result.retryable ? { kind: "later" } : null;
 }
 
 /** An error as text for a log line or a stored row. Never carries a payment link, even if a provider echoed the message back. */
@@ -358,10 +372,12 @@ export async function sendMessageForBooking(
   }
   if (viaLinkedNumber?.kind === "unknown") return "sent";
   if (viaLinkedNumber?.kind === "skip") return "skipped";
+  const linkedMayRecover = viaLinkedNumber?.kind === "later";
 
   // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
   let channel: "WHATSAPP" | "SMS" = "WHATSAPP";
   let result: SendResult;
+  let officialTried = true;
   try {
     result = await deps.sendWhatsApp({
       influencerId: influencer.id,
@@ -375,6 +391,7 @@ export async function sendMessageForBooking(
       // WhatsApp was not even tried (no healthy connection, or this template is not approved yet), so there is no
       // failed attempt to record: go straight to SMS and say why in the log.
       console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError)}); sending by SMS`);
+      officialTried = false;
     } else {
       console.warn(
         `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
@@ -386,6 +403,15 @@ export async function sendMessageForBooking(
     try {
       result = await deps.sendSMS({ to, body, template, variables: templateParams(template, context) });
     } catch (smsError) {
+      // Nothing could even be tried: no linked number to wait for, no approved official template, and SMS is not set up for this message.
+      // For the booking-request messages that is not a delivery failure worth five retries, a booking error and an alert on every request:
+      // one plain FAILED row says why, and the job is done. (The five booking events keep today's behaviour: a paid customer who is missing
+      // the Meet link must still alert the host. An official send that really failed, or a linked number that is expected back, is retried.)
+      if (smsError instanceof NoMessageRouteError && isRequestMessageKind(template) && !officialTried && !linkedMayRecover) {
+        await recordNoRoute(bookingId, template);
+        console.info(`[send-message] booking ${bookingId}: no route for "${template}" (${errText(smsError)}); recorded, not retried`);
+        return "skipped";
+      }
       await recordFailure(bookingId, "SMS", template, errText(smsError)); // transient: worker alerts after final attempt
       throw smsError;
     }
@@ -411,6 +437,15 @@ async function recordSent(bookingId: string, channel: "WHATSAPP" | "WHATSAPP_WEB
     if (channel !== "WHATSAPP_WEB") throw e;
     await write();
   }
+}
+
+/** The one FAILED row of a request message that had no route at all. No retry, no alert and no booking error follow from it. */
+async function recordNoRoute(bookingId: string, template: string): Promise<void> {
+  await prisma.message.upsert({
+    where: { bookingId_channel_template: { bookingId, channel: "SMS", template } },
+    create: { bookingId, template, channel: "SMS", status: "FAILED", error: NO_MESSAGE_ROUTE_REASON },
+    update: { status: "FAILED", error: NO_MESSAGE_ROUTE_REASON },
+  });
 }
 
 /** Records (or creates) the Message row for a channel with the latest failure, without flipping it to FAILED. */
