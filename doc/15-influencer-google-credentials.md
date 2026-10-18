@@ -141,9 +141,11 @@ timeout (10 s), a 5xx or a 429 is "could not check, nothing was saved". Only an 
 - `POST /api/dashboard/google-client` `{ action: "save-client", clientId, clientSecret }` and `{ action: "remove-client", confirm? }`. Both need a
   recent password entry (`requireRecentAuth`, like Disconnect). Rate limits: route rule `dashboard-google-client` (10 per hour per session) and the
   identity rule `google-client-check` (12 per hour per influencer, across devices).
-  - save: refused in mode `platform` (409). Saving NEVER writes to a connection (4.9): the callback replaces it after Google accepted the consent.
-    Only changing the Client ID of an influencer's OWN client breaks the connection made with the old one (its next refresh is refused), so that
-    needs `confirm: true` (409 `needsConfirmation` while upcoming bookings have calendar events); the same ID with a new secret keeps it.
+  - save: refused in mode `platform` (409). Saving never touches a connection made with the SHARED client (4.9): the callback replaces it after Google accepted the consent.
+    Only changing the Client ID of an influencer's OWN client breaks the connection made with the old one, so that needs `confirm: true` (409
+    `needsConfirmation` while upcoming bookings have calendar events); the same ID with a new secret keeps it. After the new client row is saved, the
+    grant made with the old client is removed and its token revoked unless another profile is connected with the same Google account (best effort: a
+    failed revoke never fails the save); the Google panel then shows "connect".
     Activity entry `google.client_saved` (masked tail of the ID, `replaced`).
   - remove: 404 when there is none. A connection made with this client is removed with it, with the same rule as Disconnect (409 `needsConfirmation`
     while upcoming bookings have calendar events, then `confirm: true`); a connection made with the shared pair is left alone. Activity entries
@@ -214,9 +216,10 @@ to. `npm run dev:mock` sets `GOOGLE_CLIENT_MODE=own`.
    the moment the first own client was saved, before the new client had been tried at Google's consent screen. Now the callback does the replacing, after a
    successful code exchange: it saves the new grant and revokes the previous token whenever the kind of client changed (and, as before, when the Google account
    changed for certain). A failed callback leaves the old connection as it was. The one save that does affect a connection is a different Client ID for an own
-   client that has a connection: Google ties the refresh token to the old client, so the next refresh fails and is flagged by the existing path (an OWN
-   client's ID is not stored per grant, so an old own client's authorization is simply left for the influencer to delete in Google Cloud). That save needs the
-   dialog and, server side, `confirm: true` when upcoming bookings have calendar events.
+   client that has a connection: Google ties the refresh token to the old client, so it could never be refreshed again. That save needs the dialog and,
+   server side, `confirm: true` when upcoming bookings have calendar events, and (delta review C5) once the NEW client is saved it deletes the old grant and
+   revokes its token with `revokeGrantUnlessShared` (skipped while another profile uses that Google account; failures are logged, never returned). The
+   callback uses the same helper for every replaced token, also on an own to shared switch (delta review C6).
 10. **Legacy shared-client grants no longer die silently (review G2).** When the mode is not `platform` and the shared pair is missing, a refresh for a
     `client_kind = platform` grant is "reconnect needed" with "The shared Google connection is no longer available. Save your own Google client in Settings
     and connect again." (it was "transient": ACTIVE, live, taking payments, no alert). The admin Health page shows how many ACTIVE shared-client connections
@@ -238,7 +241,9 @@ to. `npm run dev:mock` sets `GOOGLE_CLIENT_MODE=own`.
     cannot be added or removed). `resetPassword` sets `emailVerifiedAt` only for the other kind. The influencer gets an account-activity entry
     (`auth.admin_reset_link`, actor `system`, no link) and, when the platform sends e-mail, a notice without the link.
 14. **A missing e-mail route marks the row, it does not delete it (review G6).** FAILED with the reason; a row that already recorded a sent e-mail is put back
-    as it was after any later attempt that did not send. The Gmail item of the go-live checklist (G8) now says "no e-mail at all" only when the site really
+    exactly as it was only when NO route was tried; after a real failed attempt (Gmail or Resend) it stays SENT and carries the failure note, which the
+    Google panel's "Gmail is not working" check also reads (delta review C3). A "no e-mail route" row is shown as a neutral "No e-mail route" and is left
+    out of the failed-message count and the Failed filter (C2). The Gmail item of the go-live checklist (G8) now says "no e-mail at all" only when the site really
     sends none, and "connect again, the permission was not allowed" when Google is connected without it.
 15. **Autofill (review G4).** The secret input is `autocomplete="new-password"` with the password managers' opt-outs, and the fields are named
     `google-client-id` / `google-client-secret`, so the site login password is not offered or overwritten.
