@@ -1,6 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { SUPPORT_EMAIL } from "@/lib/brand";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { GMAIL_SEND_SCOPE } from "@/lib/google";
 import { TEMPLATE_STATE_NOTICE } from "@/lib/message-templates";
 import { whatsappTemplateState } from "@/lib/whatsapp-connection";
@@ -95,10 +96,28 @@ export interface Readiness {
   ready: boolean;
 }
 
+/**
+ * What the Gmail item says while it is not done. It depends on two facts: whether the platform sends e-mail itself (with
+ * EMAIL_PROVIDER=none there is no "our address": without Gmail the customer gets no e-mail at all) and whether the influencer has
+ * connected Google but left the Gmail permission unticked (then "allow it when you connect" would be the wrong advice).
+ */
+export function gmailAdvice(input: Pick<ReadinessInput, "google" | "gmailSend">, emailEnabled: boolean): string {
+  const without = emailEnabled
+    ? "Without it customer e-mails come from our address with your e-mail as Reply-To."
+    : "Without it customers are messaged by WhatsApp or SMS only and get no e-mail.";
+  const how =
+    input.google === "none"
+      ? "Allow it when you connect Google."
+      : input.google === "reconnect"
+        ? "Reconnect Google first and leave the Gmail permission ticked."
+        : "The Gmail permission was not allowed: connect Google again and leave it ticked.";
+  return `${how} ${without}`;
+}
+
 export function evaluateReadiness(
   input: ReadinessInput,
   required: ConnectionKey[] = requiredConnections(),
-  opts: { approvalRequired: boolean } = { approvalRequired: approvalRequired() },
+  opts: { approvalRequired: boolean; emailEnabled?: boolean } = { approvalRequired: approvalRequired() },
 ): Readiness {
   const req = new Set<ReadinessKey>([...BASICS, ...required]);
   const item = (key: ReadinessKey, label: string, state: ReadinessItem["state"], detail: string, href: string): ReadinessItem => ({
@@ -125,7 +144,7 @@ export function evaluateReadiness(
       "gmail",
       "Send customer emails from your Gmail",
       input.gmailSend && input.google === "active" ? "done" : "todo",
-      input.gmailSend && input.google === "active" ? "Confirmations come from your own address." : "Allow it when you connect Google. Without it customers are messaged by WhatsApp or SMS and may get no e-mail at all.",
+      input.gmailSend && input.google === "active" ? "Confirmations come from your own address." : gmailAdvice(input, opts.emailEnabled ?? platformEmailEnabled()),
       "/dashboard/settings#google",
     ),
     item(
