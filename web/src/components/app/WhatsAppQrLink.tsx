@@ -354,6 +354,9 @@ export function WhatsAppQrLink({ initial }: { initial: WhatsAppWebView }) {
   useEffect(() => {
     if (previous.current === shown) return;
     previous.current = shown;
+    // A result or a refusal belongs to the state it was shown in.
+    setNotice(null);
+    setError(null);
     const active = document.activeElement;
     if (shouldMoveFocus(!!active && !!box.current?.contains(active), !active || active === document.body)) {
       document.getElementById("wa-qr-heading")?.focus();

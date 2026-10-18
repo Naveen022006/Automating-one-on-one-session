@@ -154,7 +154,11 @@ export function InfluencerWhatsAppWebPanel({ influencerId }: { influencerId: str
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setAttempted(true);
-    if (disconnectReasonError(reason)) return;
+    if (disconnectReasonError(reason)) {
+      // The refusal is shown under the field; put the keyboard there once it is rendered.
+      setTimeout(() => document.getElementById("wa-web-reason")?.focus(), 0);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
