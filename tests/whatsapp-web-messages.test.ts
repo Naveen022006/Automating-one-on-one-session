@@ -13,7 +13,7 @@ import { newRow, settle } from "./helpers/whatsapp-web";
 // Pure tests (no database, no network): the five texts, the delivery-state mapping and the activity observer of the worker.
 
 const START = new Date(Date.UTC(2026, 10, 12, 5, 30, 0));
-const when = formatSessionTime(START, "Asia/Kolkata");
+const when = formatSessionTime(START);
 const ctx = { link: "https://meet.google.com/abc-defg-hij", serviceTitle: "Career call", influencerName: "Asha Rao", when };
 const MANAGE = "https://example.test/manage/abc123";
 
