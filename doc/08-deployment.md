@@ -222,6 +222,32 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM` | for twilio | none | |
 | `SMS_API_URL` | for generic | none | |
 
+### WhatsApp by QR code (optional, UNOFFICIAL, off by default)
+
+> **Risk.** This mode lets an influencer link their *own* WhatsApp as a linked device (Settings > Linked devices) by scanning a QR
+> code, and the platform then sends their booking messages from it. It uses an unofficial client library
+> (`@whiskeysockets/baileys`). WhatsApp's terms do not allow third-party clients, a linked number **can be restricted or banned
+> without notice**, and the protocol can change and break sending on any day. The official Cloud API connection (section 4,
+> "WhatsApp and SMS") stays the default and the safer choice, and the SMS and e-mail fallbacks are never reduced by this mode.
+> Switch it on only knowingly. Design and deviations: `doc/14-whatsapp-qr-deviations.md`. Empty values mean the default shown.
+
+| Variable | Req | Default | Notes |
+|---|---|---|---|
+| `WHATSAPP_QR_ENABLED` | no | `false` | The platform switch. Off: no socket is ever opened, no influencer sees the option, messaging ignores it. Turning it **off** is also the kill switch: at the next worker start every linked number is disconnected and every stored login is deleted (unless `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED=true`). Needs `REDIS_URL` (the web app and the worker share the QR code and the daily counters through it) and exactly **one** worker |
+| `WHATSAPP_QR_MAX_SESSIONS` | no | `10` | Most numbers the worker keeps connected (each is a live socket and some memory). Extra influencers stay "not linked" with an explanation until room appears; numbers that were linked before get the places first |
+| `WHATSAPP_QR_DAILY_CAP` | no | `150` | Messages one linked number may send per Indian calendar day (counted in Redis). Over the cap a message goes by the official connection, SMS or e-mail |
+| `WHATSAPP_QR_MIN_GAP_MS` | no | `4000` | Fixed minimum time between two messages from one number (at least `1000`). A plain throttle to protect the influencer's number; there is no randomness in it |
+| `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED` | no | `false` | `true`: keep the encrypted logins when `WHATSAPP_QR_ENABLED` is switched off, so switching it on again needs no new scan |
+| `WHATSAPP_QR_FAKE` | no | `false` | **Dev only.** A local simulator instead of WhatsApp: a QR string, "connected" 12 s later as a made-up number, messages are logged. Accepted only when `NODE_ENV` is not production **and** `APP_URL` is a local address; **refused in production** (start-up error) |
+
+What runs where: the web app only records what the influencer asked for and reads the status and QR code; the **worker**
+(`worker/whatsapp-web-manager.ts`) is the only process that opens sockets. Never run two workers against one database
+(WhatsApp ends a login that is used twice). The QR payload lives in Redis for 60 s and is never stored in Postgres or logged. The
+login of each linked device (credentials and Signal keys) is one AES-256-GCM blob in `whatsapp_web_sessions.auth_state_enc`
+(AAD `wa-web:<influencerId>`), deleted on disconnect, on logout from the phone, by the kill switch, and with the influencer;
+it is covered by `keys:rotate` / `keys:verify`. The worker image needs no extra package (the library's optional `sharp`
+dependency is only used for media, which this mode never sends). Rollout order is the usual one (migrate `20261109000000`, web, worker).
+
 ### Email
 | Variable | Req | Default | Notes |
 |---|---|---|---|
@@ -280,8 +306,9 @@ from the top of `worker/index.ts`. The pure function `validateEnv(env)` is unit-
 * **Anything else** (development, test): the same kind of problem is printed as a warning and the process carries on.
   Production-only strictness is not applied.
 * **Warnings in production** (the process still starts): `CLIENT_IP_HEADER` or `ERROR_WEBHOOK_URL` unset, Razorpay test key,
-  `RATE_LIMIT_STORE=memory`, incomplete Google/SMS/WhatsApp-webhook configuration, `ENABLE_DESIGN_PAGE=true`, and
-  `TOKEN_ENCRYPTION_KEY_PREVIOUS` still set (a rotation is unfinished).
+  `RATE_LIMIT_STORE=memory`, incomplete Google/SMS/WhatsApp-webhook configuration, `ENABLE_DESIGN_PAGE=true`, `WHATSAPP_QR_ENABLED=true`
+  (the unofficial QR-code mode, said out loud on every start), and `TOKEN_ENCRYPTION_KEY_PREVIOUS` still set (a rotation is unfinished).
+  `WHATSAPP_QR_FAKE=true` is an **error** in production (not even `ALLOW_INSECURE_LOCAL_RUN` tolerates it).
 * **Key fingerprint in the log.** Every web and worker process logs `[env] web: encryption key fingerprint 77710ab8` (plus
   `(previous key fingerprint ...)` during a rotation): the first 8 hex characters of a SHA-256 over the key, never the key.
   Compare it across instances (they must all match) and with the output of `keys:rotate` / `keys:verify` (section 9).
@@ -402,6 +429,7 @@ table, column, the column its AAD is derived from (`ownerColumn`) and the AAD fu
 | `whatsapp_connections.token_enc` | `whatsapp:<influencerId>` |
 | `whatsapp_registration_pins.pin_enc` | `whatsapp-pin-number:<phoneNumberId>` (the two-step PIN belongs to the number, so this row outlives a disconnect) |
 | `whatsapp_connections.registration_pin_enc` | `whatsapp-pin:<influencerId>` (superseded; still rotated, and read once if it holds a PIN) |
+| `whatsapp_web_sessions.auth_state_enc` | `wa-web:<influencerId>` (the login of a QR-linked WhatsApp device, one JSON blob; optional mode) |
 
 **How the keys behave**: new values are always encrypted with `TOKEN_ENCRYPTION_KEY`. Decryption tries that key, then
 `TOKEN_ENCRYPTION_KEY_PREVIOUS` if set. A wrong key or wrong AAD fails GCM authentication and throws.
@@ -702,3 +730,8 @@ Read this before deploying this version to an installation that is already runni
    deploying, open Admin > Payouts: a PENDING payout that shows "Contains a flagged payment" has to be cancelled (the cancel message lists how
    many flagged payments it released), the flagged payment refunded from Payments > Needs refund, and the payout created again. PAID payouts
    are not touched. No migration.
+8. **Optional QR-code WhatsApp mode (migration `20261109000000`).** Additive: the enum `WhatsAppWebStatus` and the table
+   `whatsapp_web_sessions` (empty). Two new dependencies (`@whiskeysockets/baileys` 7.0.0-rc14, `uqr` 0.1.3, both pinned exactly; the
+   library pulls in `libsignal`, GPL-3.0, see the licence note in `README.md`). **Nothing changes unless `WHATSAPP_QR_ENABLED=true`**; with it unset,
+   the worker only runs a one-time pass at start-up that deletes any stored login (there are none yet). Read the risk note under
+   "WhatsApp by QR code" in section 4 before switching it on. Roll back by setting `WHATSAPP_QR_ENABLED=false` and restarting the worker.

@@ -119,6 +119,12 @@ export class FakeTransport implements WhatsAppWebTransport {
     this.timers.push(this.setTimer(() => !this.ended && fn(), ms));
   }
 
+  /** The auth store this transport was connected with (tests read and change it as the library would). */
+  get authStore(): WhatsAppAuthStore {
+    if (!this.auth) throw new Error("connect has not been called");
+    return this.auth;
+  }
+
   // ---- scripting (tests) -------------------------------------------------------------------------------------------
   emitQr(qr: string): void {
     this.events?.onQr(qr);

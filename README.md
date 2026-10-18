@@ -326,6 +326,29 @@ Embedded Signup could not be exercised without an approved Meta app. The newer G
 check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
 against a real Meta account. The local mock (next section) exercises the app's side only.
 
+## WhatsApp by QR code (optional, unofficial, off by default)
+An influencer can instead link their **own** WhatsApp as a linked device (WhatsApp > Settings > Linked devices) by scanning a QR code
+in the dashboard, and the platform then sends their booking messages (confirmation, the two reminders, reschedule, cancellation) to
+their customers from that device. It is **unofficial**: WhatsApp's terms do not allow third-party clients, a linked number can be
+restricted or banned without notice, and the protocol can change and break it. The official connection above stays the default and
+the safer option; this mode never lowers the SMS and e-mail fallbacks (any refusal or failure falls back to the official
+connection, SMS or e-mail on its own). Settings, risks and operation: `doc/08-deployment.md` section 4 ("WhatsApp by QR code");
+design and deviations: `doc/14-whatsapp-qr-deviations.md`.
+
+- **Switch**: `WHATSAPP_QR_ENABLED=true` (default off), and the influencer must also opt in with a written risk statement. Turning it
+  off disconnects every number and deletes the stored logins at the next worker start.
+- **Where it runs**: only the **worker** opens connections (it needs `REDIS_URL`; run exactly one worker). The web app records the
+  request and shows the status and the QR image (rendered on the server as an SVG; the browser loads no QR or WhatsApp library).
+- **Conservative sending**: one message at a time per number, a fixed gap between messages (`WHATSAPP_QR_MIN_GAP_MS`), a daily cap
+  (`WHATSAPP_QR_DAILY_CAP`), a check that the number is on WhatsApp, only to a customer with a real booking with that influencer.
+  Three failed sends in a row pause the number and e-mail the influencer. Replies and chats are never read or stored.
+- **Try it locally without a phone**: `WHATSAPP_QR_ENABLED=true`, `WHATSAPP_QR_FAKE=true` (refused in production, local `APP_URL`
+  only), a local Redis and `npm run worker`: a QR string appears, the number "connects" 12 s later and messages are logged.
+- **Licence note**: the mode uses `@whiskeysockets/baileys` (MIT), which depends on `libsignal` (**GPL-3.0**) and
+  `whatsapp-rust-bridge` (MIT), plus `uqr` (MIT) for the QR image. A GPL dependency is acceptable here because the platform is a
+  hosted service that is **not distributed** to users; if you ever distribute the server code or an image containing it (for
+  example to a customer to self-host), the GPL-3.0 terms of that dependency apply and you must review them first.
+
 ## Try the integrations without Google or Meta accounts
 `npm run dev:mock` runs a **local mock of Google (OAuth consent, Calendar with Meet links, Gmail) and Meta (the Graph API the
 app calls, the Embedded Signup window, signed webhooks)** next to the app, so you can connect an influencer and follow a booking

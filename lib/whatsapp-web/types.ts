@@ -21,7 +21,7 @@ export interface WhatsAppWebView {
   /** True when the local simulator is in use (WHATSAPP_QR_FAKE, development only): nothing reaches WhatsApp. */
   fake: boolean;
   status: WhatsAppWebStatus;
-  /** The linked number with the middle hidden, for example "+91 ••••• ••210". Null until linked. */
+  /** The linked number with the middle hidden, for example "+91 ••••••• 210". Null until linked. */
   phoneMasked: string | null;
   /** How the linked device appears on the phone, when known. */
   deviceLabel: string | null;

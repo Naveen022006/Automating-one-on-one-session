@@ -175,6 +175,7 @@ export class WhatsAppWebManager {
     const byId = new Map(rows.map((r) => [r.influencerId, r]));
     // The heartbeat tells the web app that a manager is looking after the sessions (otherwise it says the worker is not running).
     if (cfg.enabled) await this.d.kv.set("wa-web:manager:alive", String(this.clock.now()), HEARTBEAT_TTL_MS).catch(ok);
+    else await this.d.kv.del("wa-web:manager:alive").catch(ok);
 
     // Sockets whose row is gone (the influencer was deleted): close them, there is nothing left to update.
     for (const live of [...this.lives.values()]) {

@@ -19,7 +19,7 @@ import { WhatsAppWebManager, type ManagerDeps } from "./whatsapp-web-manager";
  *  - otherwise the real library must load. If it cannot, the manager does NOT start: the sessions stay as they are, the dashboard
  *    shows that the worker is not running, and messages keep going through the official connection, SMS and e-mail.
  */
-export async function startWhatsAppWeb(): Promise<WhatsAppWebManager | null> {
+export async function startWhatsAppWeb(overrides: Partial<ManagerDeps> = {}): Promise<WhatsAppWebManager | null> {
   const log = (line: string) => console.log(`[whatsapp-web] ${line}`);
   const cfg = readQrConfig();
 
@@ -50,6 +50,7 @@ export async function startWhatsAppWeb(): Promise<WhatsAppWebManager | null> {
       await alertInfluencer(influencerId, { kind: kind === "logged-out" ? "whatsapp-qr-logged-out" : "whatsapp-qr-suspended", detail });
     },
     log,
+    ...overrides,
   };
   const manager = new WhatsAppWebManager(deps);
 

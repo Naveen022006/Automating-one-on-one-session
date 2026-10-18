@@ -24,7 +24,7 @@ const STATUS: Record<string, WhatsAppWebStatus> = {
   LOGGED_OUT: "logged-out",
 };
 
-/** "+919876543210" -> "+91 ••••• ••210": enough to recognise the number, not enough to copy it. */
+/** "+919876543210" -> "+91 ••••••• 210": enough to recognise the number, not enough to copy it. */
 export function maskPhone(e164: string | null | undefined): string | null {
   const digits = e164?.replace(/\D/g, "");
   if (!digits || digits.length < 6) return null;
