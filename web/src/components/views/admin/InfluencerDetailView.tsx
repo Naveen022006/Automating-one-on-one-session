@@ -1,5 +1,5 @@
 import { PageHead } from "@web/components/app/AppShell";
-import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@web/components/ui/primitives";
+import { Alert, Badge, Breadcrumb, ButtonLink, Card, StatusPill } from "@web/components/ui/primitives";
 import { AccountHelpActions } from "@web/components/admin/AccountHelpActions";
 import { InfluencerActivityPanel } from "@web/components/admin/InfluencerActivityPanel";
 import { InfluencerStatusPanel } from "@web/components/admin/InfluencerStatusPanel";
@@ -76,7 +76,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
         <PayoutPanel influencerId={i.id} account={payout} />
       </Card>
 
-      <Card title="Earnings and payouts">
+      <Card title="Earnings and payouts" actions={<ButtonLink href={`/admin/money?influencerId=${encodeURIComponent(i.id)}`} size="sm">All money movements</ButtonLink>}>
         <div className="stack">
           <FeeForm influencerId={i.id} feeBps={fee.overrideBps} defaultBps={fee.defaultBps} />
           <p className="subtle">Current fee: {fee.feePercentText}. Changing it affects payouts created from now on, not ones already created.</p>

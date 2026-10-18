@@ -130,6 +130,33 @@ admin sidebar (`components/admin/AdminShell.tsx`).
   with a required reason; the refund sends `expectedRemainingMinor` as a check. `PayoutActions.tsx` gained the "pay anyway" acknowledgement
   for a suspended influencer. `BookingsView` has the search box (`?q=`).
 
+## Money ledger screen (`/admin/money`)
+
+One admin page for the owner's question "what money moved, in and out, and what are the influencer payouts?". The data, the dates and the
+totals are described in `README.md` ("Admin money ledger") and `CLAUDE.md`; this is only the front end. The browser import allowlist did not change.
+
+| Path | Route id | Page module | View | Data |
+|---|---|---|---|---|
+| `/admin/money` | `admin-money` | `pages/admin/Money.tsx` | `components/views/admin/MoneyView.tsx` | `GET /api/admin/money?from=&to=&type=&influencerId=&page=` |
+
+The row sits after `admin-payments` in `lib/spa/routes.ts` (admin title template, `noindex,nofollow`); the nav item "Money" sits right after Payments in
+`components/admin/AdminShell.tsx` and is not in the phone bar, so it lands in "More" (`IconArrowsLeftRight` is new in `components/icons.tsx`).
+
+- `pages/admin/Money.tsx` copies the URL's `from`, `to`, `type`, `influencerId` and `page` to the endpoint, keeps the previous data on screen while the next filter loads
+  (`keepPreviousData`, so `busy` is true) and, when the server refuses (a 400 with its own sentence), is rate limited or fails with no data, draws `MoneyProblem`: the
+  filter form stays, with the reason and, for a failure that may pass, "Try again".
+- `MoneyView` is the page body (a pure function of its JSON): `PageHead` with the **Export CSV** button; a GET filter form (`GetForm`: From, To included, an Influencer
+  `<select>` of up to 200 names, and the `type` as a hidden field so the tabs and the form agree); a hidden `<p role="status">` that announces every soft navigation
+  ("All, 2026-10-01 to 2026-10-31: 3 movements, page 1 of 2. INR in ..."); one card per currency with five `Stat`s; for a chosen influencer a summary card with a button to
+  their page ("Open influencer to create a payout"); the **Movements** section (type tabs as `LinkTabs`, then the table, then `Pagination`); the table of payouts created and
+  not sent yet; and the definitions card. The table is `table table--stack` inside `.table-wrap` (stacked cells with `data-label` on a phone, so the page never scrolls
+  sideways; the wrapper scrolls on its own if it must), has a screen-reader caption, `scope="col"` headers, and the amount cell reads "In"/"Out" for screen readers before its sign.
+- The content container is `aria-busy` while loading; the empty state is "No money moved"; an unknown influencer id shows a warning and an empty page.
+- `components/admin/ExportControls.tsx` now exports `ExportLink` (the download button with the fetch-and-save click handler and the message on a refusal) beside
+  `ExportControls`, and `exportUrl()` takes optional extra query values (`type`, `influencerId`). `InfluencerDetailView` has an "All money movements" button in its
+  "Earnings and payouts" card; `PayoutsView` rows carry `id="payout-<id>"` so the ledger's "Open in Payouts" lands on the payout when it is on the first page.
+- Tests: `tests/admin-money-ledger-view.test.ts` (rendering, wiring), `tests/admin-money-ledger.test.ts` (endpoint, totals, CSV).
+
 ## WhatsApp by QR code screens (optional, unofficial)
 
 The mode is described in `README.md` ("WhatsApp by QR code") and `doc/14-whatsapp-qr-deviations.md`; this is only the front end. The
