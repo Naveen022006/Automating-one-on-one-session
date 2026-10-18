@@ -128,7 +128,7 @@ async function main() {
   }
 
   // --- the guards that stay on the server
-  for (const [path, login] of [["/dashboard", "/login?next=%2Fdashboard"], ["/admin", "/admin/login?next=%2Fadmin"], ["/admin/reports", "/admin/login?next=%2Fadmin%2Freports"]]) {
+  for (const [path, login] of [["/dashboard", "/login?next=%2Fdashboard"], ["/admin", "/admin/login?next=%2Fadmin"], ["/admin/reports", "/admin/login?next=%2Fadmin%2Freports"], ["/admin/money", "/admin/login?next=%2Fadmin%2Fmoney"]]) {
     const r = await get(path);
     check(`${path} without cookies redirects to the login page`, r.status === 307 && header(r, "location").endsWith(login), `${r.status} ${header(r, "location")}`);
   }

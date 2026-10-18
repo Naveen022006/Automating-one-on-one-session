@@ -80,8 +80,9 @@ test("C11: a section and its sub-pages are active, a look-alike prefix is not, a
 test("C11: both shells hand every section that is not in the bar to More (nothing is dropped)", () => {
   for (const [file, primaryPaths, total] of [
     ["web/src/components/app/AppShell.tsx", ["/dashboard", "/dashboard/sessions", "/dashboard/services", "/dashboard/availability"], 9],
-    // 10: the finance report (/admin/reports, doc/13) joined the console; it is not in the bar, so it lands in More.
-    ["web/src/components/admin/AdminShell.tsx", ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"], 10],
+    // 11: the finance report (/admin/reports, doc/13) and the Money ledger (/admin/money, doc/12) joined the console; neither is in the bar,
+    // so both land in More.
+    ["web/src/components/admin/AdminShell.tsx", ["/admin", "/admin/influencers", "/admin/payments", "/admin/payouts"], 11],
   ] as const) {
     const src = read(file);
     assert.match(src, /more=\{NAV\.filter\(\(n\) => !MOBILE_PRIMARY\.includes\(n\.href\)\)\}/, `${file}: More is the complement of the bar`);

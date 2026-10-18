@@ -109,6 +109,8 @@ test("per-currency summary separates ready money from waiting money", () => {
   assert.equal(inr.readyMinor, 54_000);
   assert.equal(inr.waitingCount, 1);
   assert.equal(inr.waitingByReason["not-reconciled"], 1);
+  assert.equal(inr.waitingMinorByReason["not-reconciled"], 50_000, "the value of the waiting payment, by reason (the admin Money page lists it)");
+  assert.equal(Object.values(inr.waitingMinorByReason).reduce((n, v) => n + (v ?? 0), 0), inr.waitingMinor, "the reasons add up to the waiting figure");
 });
 
 // ---- Integration: the ledger against a real database (skipped without DATABASE_URL) ----

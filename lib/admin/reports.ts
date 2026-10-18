@@ -42,8 +42,26 @@ export type Day = string;
 
 const num = (v: bigint | number | null | undefined): number => (v == null ? 0 : Number(v));
 
-/** The UTC wall-clock instant at which the IST calendar day `day` begins, as a SQL value comparable with a `timestamp(3)` column. */
-const istStart = (day: Day) => Prisma.sql`(${day}::date::timestamp AT TIME ZONE 'Asia/Kolkata' AT TIME ZONE 'UTC')`;
+/** The UTC wall-clock instant at which the IST calendar day `day` begins, as a SQL value comparable with a `timestamp(3)` column. Shared with the Money page (lib/admin/money.ts) so the two never cut a day differently. */
+export const istStart = (day: Day) => Prisma.sql`(${day}::date::timestamp AT TIME ZONE 'Asia/Kolkata' AT TIME ZONE 'UTC')`;
+
+/**
+ * Narrows the money-in-a-range and balance figures to ONE influencer (the influencer filter of the Money page, lib/admin/money.ts). Without a
+ * scope every query below is exactly the SQL it always was, so the Reports page is unchanged. An influencer's payments are the ones on bookings of
+ * their services; their refunds are the refunds of those payments; their payouts carry their id.
+ */
+export interface ReportScope {
+  influencerId?: string | null;
+}
+
+/** `AND <bookingColumn> IN (the bookings of this influencer's services)`, or nothing without a scope. */
+const bookingsOfScope = (bookingColumn: Prisma.Sql, scope?: ReportScope) =>
+  scope?.influencerId
+    ? Prisma.sql`AND ${bookingColumn} IN (SELECT sb.id FROM bookings sb JOIN sessions ss ON ss.id = sb.session_id JOIN services sv ON sv.id = ss.service_id WHERE sv.influencer_id = ${scope.influencerId})`
+    : Prisma.empty;
+/** `AND <influencerColumn> = this influencer`, or nothing without a scope. */
+const payoutsOfScope = (influencerColumn: Prisma.Sql, scope?: ReportScope) =>
+  scope?.influencerId ? Prisma.sql`AND ${influencerColumn} = ${scope.influencerId}` : Prisma.empty;
 /** The IST month (`YYYY-MM`) of a `timestamp(3)` column that holds UTC wall-clock time. */
 const istMonthOf = (column: Prisma.Sql) => Prisma.sql`to_char(${column} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM')`;
 
@@ -109,31 +127,31 @@ type Bucket = { bucket: string | null; currency: string };
  * checkout began (the Razorpay order was created). The schema has no capture time, and a capture the recovery job applies later does not
  * move the date.
  */
-async function paymentRows(start: Day, endExclusive: Day, byMonth: boolean) {
+async function paymentRows(start: Day, endExclusive: Day, byMonth: boolean, scope?: ReportScope) {
   const bucket = byMonth ? istMonthOf(Prisma.sql`created_at`) : Prisma.sql`NULL::text`;
   return prisma.$queryRaw<(Bucket & { gross: bigint; payments: bigint })[]>`
     SELECT ${bucket} AS bucket, currency, COALESCE(SUM(amount_minor), 0) AS gross, COUNT(*) AS payments
     FROM payments
-    WHERE status IN ('CAPTURED', 'REFUNDED') AND created_at >= ${istStart(start)} AND created_at < ${istStart(endExclusive)}
+    WHERE status IN ('CAPTURED', 'REFUNDED') AND created_at >= ${istStart(start)} AND created_at < ${istStart(endExclusive)} ${bookingsOfScope(Prisma.sql`booking_id`, scope)}
     GROUP BY 1, currency`;
 }
 
 /** Refunds recorded in the window (by `refunds.created_at`) that are pending or processed, in the currency of their payment. */
-async function refundRows(start: Day, endExclusive: Day, byMonth: boolean) {
+async function refundRows(start: Day, endExclusive: Day, byMonth: boolean, scope?: ReportScope) {
   const bucket = byMonth ? istMonthOf(Prisma.sql`r.created_at`) : Prisma.sql`NULL::text`;
   return prisma.$queryRaw<(Bucket & { refunds: bigint; refund_count: bigint })[]>`
     SELECT ${bucket} AS bucket, p.currency, COALESCE(SUM(r.amount_minor), 0) AS refunds, COUNT(*) AS refund_count
     FROM refunds r JOIN payments p ON p.id = r.payment_id
-    WHERE r.status IN ('pending', 'processed') AND r.created_at >= ${istStart(start)} AND r.created_at < ${istStart(endExclusive)}
+    WHERE r.status IN ('pending', 'processed') AND r.created_at >= ${istStart(start)} AND r.created_at < ${istStart(endExclusive)} ${bookingsOfScope(Prisma.sql`p.booking_id`, scope)}
     GROUP BY 1, p.currency`;
 }
 
 /** Payouts marked as paid in the range (by `payouts.paid_at`): the number, the amount sent and the fee kept, as stored when they were created. */
-async function payoutRows(start: Day, endExclusive: Day) {
+async function payoutRows(start: Day, endExclusive: Day, scope?: ReportScope) {
   return prisma.$queryRaw<{ currency: string; payouts: bigint; net: bigint; fees: bigint }[]>`
     SELECT currency, COUNT(*) AS payouts, COALESCE(SUM(net_minor), 0) AS net, COALESCE(SUM(fee_minor), 0) AS fees
     FROM payouts
-    WHERE status = 'PAID' AND paid_at >= ${istStart(start)} AND paid_at < ${istStart(endExclusive)}
+    WHERE status = 'PAID' AND paid_at >= ${istStart(start)} AND paid_at < ${istStart(endExclusive)} ${payoutsOfScope(Prisma.sql`influencer_id`, scope)}
     GROUP BY currency`;
 }
 
@@ -146,13 +164,13 @@ async function payoutFeeRows(start: Day, endExclusive: Day) {
     GROUP BY 1, currency`;
 }
 
-/** The figures of the chosen range, one entry per currency that had any activity in it, sorted by currency. Three queries. */
-export async function rangeFigures(from: Day, to: Day): Promise<RangeFigures[]> {
+/** The figures of the chosen range, one entry per currency that had any activity in it, sorted by currency. Three queries. `scope` narrows them to one influencer (the Money page). */
+export async function rangeFigures(from: Day, to: Day, scope?: ReportScope): Promise<RangeFigures[]> {
   const endExclusive = nextDay(to);
   // Sequential on purpose: one connection at a time.
-  const payments = await paymentRows(from, endExclusive, false);
-  const refunds = await refundRows(from, endExclusive, false);
-  const payouts = await payoutRows(from, endExclusive);
+  const payments = await paymentRows(from, endExclusive, false, scope);
+  const refunds = await refundRows(from, endExclusive, false, scope);
+  const payouts = await payoutRows(from, endExclusive, scope);
   const by = new Map<string, RangeFigures>();
   const get = (currency: string) => {
     let f = by.get(currency);
@@ -188,9 +206,9 @@ export async function monthlyFigures(endMonth: string): Promise<MonthFigures[]> 
 
 /**
  * The balances: one scan of the paid payments (every payment is in exactly one place, see the top of this file), the pending payouts,
- * and the refunds-since of the paid payouts. Three queries.
+ * and the refunds-since of the paid payouts. Three queries. `scope` narrows them to one influencer (the Money page).
  */
-export async function balanceFigures(): Promise<BalanceFigures[]> {
+export async function balanceFigures(scope?: ReportScope): Promise<BalanceFigures[]> {
   // `free` = in no payout that matters (a cancelled payout lets its payments go, so none should be left pointing at one).
   const places = await prisma.$queryRaw<
     { currency: string; held: bigint; owed: bigint; unallocated: bigint; flagged_paid: bigint }[]
@@ -201,15 +219,15 @@ export async function balanceFigures(): Promise<BalanceFigures[]> {
       COALESCE(SUM(left_minor) FILTER (WHERE NOT p.needs_refund AND free AND b.status NOT IN ('PAID', 'SCHEDULED', 'COMPLETED')), 0) AS unallocated,
       COALESCE(SUM(left_minor) FILTER (WHERE p.needs_refund AND po.status = 'PAID'), 0) AS flagged_paid
     FROM (
-      SELECT p.*, (p.amount_minor - COALESCE(p.refund_amount_minor, 0)) AS left_minor FROM payments p WHERE p.status IN ('CAPTURED', 'REFUNDED')
+      SELECT p.*, (p.amount_minor - COALESCE(p.refund_amount_minor, 0)) AS left_minor FROM payments p WHERE p.status IN ('CAPTURED', 'REFUNDED') ${bookingsOfScope(Prisma.sql`p.booking_id`, scope)}
     ) p
     JOIN bookings b ON b.id = p.booking_id
     LEFT JOIN payouts po ON po.id = p.payout_id
     CROSS JOIN LATERAL (SELECT (po.id IS NULL OR po.status NOT IN ('PENDING', 'PAID')) AS free) f
     GROUP BY p.currency`;
   const pending = await prisma.$queryRaw<{ currency: string; amount: bigint }[]>`
-    SELECT currency, COALESCE(SUM(net_minor), 0) AS amount FROM payouts WHERE status = 'PENDING' GROUP BY currency`;
-  const recover = await refundsSinceByCurrency();
+    SELECT currency, COALESCE(SUM(net_minor), 0) AS amount FROM payouts WHERE status = 'PENDING' ${payoutsOfScope(Prisma.sql`influencer_id`, scope)} GROUP BY currency`;
+  const recover = await refundsSinceByCurrency(scope);
 
   const by = new Map<string, BalanceFigures>();
   const get = (currency: string) => {
@@ -245,7 +263,7 @@ export async function balanceFigures(): Promise<BalanceFigures[]> {
  * positive part (`recover`); the negative part, which it clips away, is a refund that was counted at creation and failed since
  * (`not_completed`), and is kept apart so the identity still adds up.
  */
-export async function refundsSinceByCurrency(): Promise<{ currency: string; recover: bigint; not_completed: bigint }[]> {
+export async function refundsSinceByCurrency(scope?: ReportScope): Promise<{ currency: string; recover: bigint; not_completed: bigint }[]> {
   return prisma.$queryRaw<{ currency: string; recover: bigint; not_completed: bigint }[]>`
     SELECT d.currency, COALESCE(SUM(GREATEST(d.diff, 0)), 0) AS recover, COALESCE(SUM(GREATEST(-d.diff, 0)), 0) AS not_completed
     FROM (
@@ -254,7 +272,7 @@ export async function refundsSinceByCurrency(): Promise<{ currency: string; reco
       LEFT JOIN (
         SELECT payout_id, SUM(refund_amount_minor) AS refunded FROM payments WHERE payout_id IS NOT NULL GROUP BY payout_id
       ) s ON s.payout_id = po.id
-      WHERE po.status = 'PAID'
+      WHERE po.status = 'PAID' ${payoutsOfScope(Prisma.sql`po.influencer_id`, scope)}
     ) d
     GROUP BY d.currency`;
 }

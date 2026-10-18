@@ -19,6 +19,7 @@ test("the three new routes have a lazy page module in the router, in the right g
     ["customer-bookings", "./pages/booking/FindBookings"],
     ["customer-portal", "./pages/booking/CustomerPortal"],
     ["admin-reports", "./pages/admin/Reports"],
+    ["admin-money", "./pages/admin/Money"],
   ]) {
     assert.ok(router.includes(`"${id}": () => import("${module}")`), `${id} has a lazy page`);
     assert.ok(router.includes(`leaf("${id}")`), `${id} is a leaf`);
@@ -29,6 +30,8 @@ test("the three new routes have a lazy page module in the router, in the right g
   assert.ok(at('leaf("customer-portal")') < at("<RequireSession />"), "no session guard on the customer pages");
   // The report is inside RequireAdmin.
   assert.ok(at("<RequireAdmin />") < at('leaf("admin-reports")') && at('leaf("admin-reports")') < at('path: "/admin/*"'));
+  // The Money ledger is inside RequireAdmin too, after Payments.
+  assert.ok(at("<RequireAdmin />") < at('leaf("admin-money")') && at('leaf("admin-payments")') < at('leaf("admin-money")') && at('leaf("admin-money")') < at('path: "/admin/*"'));
 });
 
 test("no placeholder page remains; the token page keeps the no-referrer policy", () => {
@@ -49,14 +52,21 @@ test("no placeholder page remains; the token page keeps the no-referrer policy",
   assert.ok(!reports.includes("Coming soon"), "web/src/pages/admin/Reports.tsx");
   assert.equal(reports.match(/<PageTitle /g)?.length, 1, "Reports: exactly one PageTitle");
   assert.ok(reports.includes(`<PageTitle title="${route("admin-reports").title}" template="admin" />`), "Reports: title equals the route table");
+  const moneyPage = read("web/src/pages/admin/Money.tsx");
+  assert.equal(moneyPage.match(/<PageTitle /g)?.length, 1, "Money: exactly one PageTitle");
+  assert.ok(moneyPage.includes(`<PageTitle title="${route("admin-money").title}" template="admin" />`), "Money: title equals the route table");
 });
 
 test("navigation: the admin sidebar has Reports after Payouts, the site footers link to /bookings", () => {
   const shell = read("web/src/components/admin/AdminShell.tsx");
   assert.ok(shell.includes('{ href: "/admin/reports", label: "Reports", icon: IconBarChart }'));
   assert.ok(shell.indexOf('href: "/admin/payouts"') < shell.indexOf('href: "/admin/reports"'));
+  // The Money ledger (doc/12) sits right after Payments, before Payouts.
+  assert.ok(shell.includes('{ href: "/admin/money", label: "Money", icon: IconArrowsLeftRight }'));
+  assert.ok(shell.indexOf('href: "/admin/payments"') < shell.indexOf('href: "/admin/money"') && shell.indexOf('href: "/admin/money"') < shell.indexOf('href: "/admin/payouts"'));
   const mobilePrimary = /const MOBILE_PRIMARY = \[([^\]]*)\]/.exec(shell)?.[1] ?? "";
   assert.ok(!mobilePrimary.includes("/admin/reports"), "Reports lands in More");
+  assert.ok(!mobilePrimary.includes("/admin/money"), "Money lands in More");
   const chrome = read("web/src/components/site/SiteChrome.tsx");
   assert.ok(chrome.includes('<AppLink href="/bookings">Find your booking</AppLink>'));
   assert.ok(chrome.includes('<AppLink href="/bookings">Your bookings</AppLink>'));

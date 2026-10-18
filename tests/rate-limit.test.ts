@@ -194,7 +194,9 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
     ["GET", "/api/admin/exports/bookings", "admin-export"],
     ["GET", "/api/admin/exports/payouts", "admin-export"],
     ["GET", "/api/admin/exports/audit", "admin-export"],
+    ["GET", "/api/admin/exports/money", "admin-export"],
     ["GET", "/api/admin/reports", "admin-reports"],
+    ["GET", "/api/admin/money", "admin-money-ledger"],
     ["POST", "/api/admin/influencers/abc/status", "admin-moderation"],
     ["POST", "/api/admin/payments/abc/refund", "admin-money"],
     ["PATCH", "/api/admin/payments/abc/refund", "admin-money"],
@@ -208,6 +210,8 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
     ["HEAD", "/api/customer/portal/sometoken/export", "customer-export"],
     ["HEAD", "/api/admin/exports/payments", "admin-export"],
     ["HEAD", "/api/admin/reports", "admin-reports"],
+    ["HEAD", "/api/admin/money", "admin-money-ledger"],
+    ["HEAD", "/api/admin/exports/money", "admin-export"],
   ];
   for (const [method, path, name] of cases) assert.equal(matchRouteRule(method, path)?.name, name, `${method} ${path}`);
 
@@ -218,6 +222,8 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
   };
   assert.deepEqual(limits("GET", "/api/admin/exports/payments"), [30, 60 * 60_000, "ip"]);
   assert.deepEqual(limits("GET", "/api/admin/reports"), [30, 10 * 60_000, "ip"]);
+  assert.deepEqual(limits("GET", "/api/admin/money"), [60, 10 * 60_000, "ip"], "the Money ledger (doc/12): twice the reports' rate, it is paged by hand");
+  assert.deepEqual(limits("GET", "/api/admin/exports/money"), [30, 60 * 60_000, "ip"], "the money CSV shares the export limit");
   assert.deepEqual(limits("POST", "/api/admin/influencers/abc/status"), [60, 60 * 60_000, "ip"]);
   assert.deepEqual(limits("POST", "/api/admin/payments/abc/refund"), [60, 60 * 60_000, "ip"], "admin-money keeps its limit");
   assert.deepEqual(limits("POST", "/api/customer/access"), [5, 60 * 60_000, "ip"]);
@@ -228,9 +234,13 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
 
   // Nothing else changes meaning: the other methods and neighbouring paths keep their old rules.
   assert.equal(matchRouteRule("GET", "/api/admin/influencers/abc/status")?.name, "admin", "reading the status is an ordinary admin read");
-  assert.equal(matchRouteRule("GET", "/api/admin/exports/other")?.name, "admin", "only the four export kinds are the export rule");
+  assert.equal(matchRouteRule("GET", "/api/admin/exports/other")?.name, "admin", "only the five export kinds are the export rule");
+  assert.equal(matchRouteRule("GET", "/api/admin/exports/moneyx")?.name, "admin", "the export rule is anchored");
   assert.equal(matchRouteRule("POST", "/api/admin/exports/payments")?.name, "admin");
   assert.equal(matchRouteRule("POST", "/api/admin/reports")?.name, "admin");
+  assert.equal(matchRouteRule("POST", "/api/admin/money")?.name, "admin", "the ledger rule is for reads; /api/admin/money takes no writes");
+  assert.equal(matchRouteRule("GET", "/api/admin/money/x")?.name, "admin", "the ledger rule is anchored");
+  assert.equal(matchRouteRule("GET", "/api/admin/moneyx")?.name, "admin");
   assert.equal(matchRouteRule("GET", "/api/admin/payments/abc/refund")?.name, "admin", "money rules are writes only");
   assert.equal(matchRouteRule("GET", "/api/admin/bookings/abc/cancel")?.name, "admin");
   assert.equal(matchRouteRule("POST", "/api/admin/bookings/abc/cancel/x")?.name, "admin", "the money rule is anchored");
@@ -253,7 +263,7 @@ test("marketplace foundation (doc/13): each new rule matches its path and method
 
   // First match wins: every new rule is listed before `admin`, and the narrow customer rules before the portal view.
   const names = ROUTE_RULES.map((r) => r.name);
-  for (const n of ["admin-moderation", "admin-export", "admin-reports", "admin-money"]) assert.ok(names.indexOf(n) < names.indexOf("admin"), n);
+  for (const n of ["admin-moderation", "admin-export", "admin-reports", "admin-money-ledger", "admin-money"]) assert.ok(names.indexOf(n) < names.indexOf("admin"), n);
   assert.ok(names.indexOf("customer-erase") < names.indexOf("customer-portal"));
   assert.ok(names.indexOf("customer-export") < names.indexOf("customer-portal"));
   assert.equal(new Set(names).size, names.length, "rule names are unique (they are the counter keys)");

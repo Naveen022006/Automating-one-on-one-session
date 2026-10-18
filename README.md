@@ -151,7 +151,7 @@ npm run admin:create -- --email you@company.com --name "Your Name"
 It prints a generated password once (or set `ADMIN_PASSWORD`); add `--reset` to change an existing admin's password.
 The console shows platform totals, every influencer with their connection status, every payment (with filters for
 "needs refund" and "captured but booking not paid"), bookings, and an append-only audit log of admin activity. Further sections below cover
-moderation, CSV exports, admin refunds and cancellations, booking search, each influencer's account activity and the finance Reports page.
+moderation, CSV exports, admin refunds and cancellations, booking search, each influencer's account activity, the finance Reports page and the Money ledger.
 
 ### Test logins for a development machine
 After `npm run db:seed`, `npm run dev:logins` creates a login for the demo influencer and two administrators with random
@@ -598,9 +598,10 @@ best effort.
   `doc/13-marketplace-essentials.md` (WP-A, item 3) once. There is no bulk-approve endpoint on purpose.
 
 ## Admin exports, refunds, cancellations and booking search
-- **CSV exports** (`lib/admin/exports.ts`, `GET /api/admin/exports/payments|bookings|payouts|audit?from=YYYY-MM-DD&to=YYYY-MM-DD`). The
-  Payments, Bookings, Payouts and Audit pages each have a download control. A file holds the rows **created** in the range (both days
-  included, UTC; default the 1st of the month to today; at most 366 days). The columns are chosen one by one (no phone numbers, intake
+- **CSV exports** (`lib/admin/exports.ts`, `GET /api/admin/exports/payments|bookings|payouts|audit|money?from=YYYY-MM-DD&to=YYYY-MM-DD`). The
+  Payments, Bookings, Payouts and Audit pages each have a download control; the Money page has its own "Export CSV" button (the `money`
+  kind, see "Admin money ledger"). A file holds the rows **created** in the range (both days
+  included, IST days (00:00 to 24:00 Indian Standard Time); default the 1st of the month to today; at most 366 days). The columns are chosen one by one (no phone numbers, intake
   answers, Meet links, tokens or full bank numbers; an erased customer reads "(erased)"). **Formula protection:** a cell that starts with
   `=`, `+`, `-`, `@`, a tab, a line break or a full-width form of those gets a leading apostrophe (`csvCell` in `lib/dashboard.ts`), and the
   file starts with a UTF-8 byte-order mark so Excel reads non-Latin names. **Row cap:** more than 20,000 rows is refused with a 400
@@ -681,9 +682,9 @@ footer) fixes that:
 
 ## Admin finance reports
 **Admin > Reports** (`/admin/reports`, `GET /api/admin/reports?from=&to=`, MFA-gated, `lib/admin/reports.ts`): read-only, nine aggregate
-SQL queries, each currency on its own (never added together). The range defaults to the 1st of this month up to today (UTC) and may be up
+SQL queries, each currency on its own (never added together). The range defaults to the 1st of this month up to today (IST) and may be up
 to 366 days; an invalid range is a 400. Figures for the period:
-- **Gross**: payments captured (including those since refunded), **dated by the day checkout began** (the order was created), UTC. The
+- **Gross**: payments captured (including those since refunded), **dated by the day checkout began** (the order was created), as an IST day (00:00 to 24:00 IST). The
   schema stores no capture time, so a payment captured later by the recovery job stays on the day it began.
 - **Refunds**: refunds recorded in the period that are pending or processed. **Net of refunds** = Gross - Refunds.
 - **Platform fees** and **Paid out**: the stored fee and net amount of payouts marked paid in the period (as computed when the payout was
@@ -697,6 +698,46 @@ Balances "right now" (all-time, whatever the range):
 - **To recover**: refunds made after an influencer's payout was marked paid (the same as "Refunded since" on Payouts, summed).
 - Shown only when not zero: **Not payable** (captured money on a booking that can never be paid out), **Flagged, already paid out**, and
   **Refunds that did not complete**.
+
+## Admin money ledger
+**Admin > Money** (`/admin/money`, `GET /api/admin/money?from=&to=&type=&influencerId=&page=`, MFA-gated, `lib/admin/money.ts` and
+`lib/views/admin-money.ts`): one list of **every money movement of the platform, newest first**, so the owner can watch payments in and out
+and the influencer payouts in one place. It is read-only; creating, approving and sending a payout stay on the influencer and Payouts pages.
+- **Rows** (50 to a page; one SQL statement, never an unbounded read): **In - Customer payment** (a payment that is captured, including one
+  since refunded; its status is Paid, Refunded or *Flagged for refund*), **Out - Refund to customer** (pending, processed or *failed*), and
+  **Out - Payout to influencer** (a payout marked as sent: the amount sent after the fee, the fee kept, who approved it and who marked it
+  sent). A Razorpay payment id and a bank reference (UTR) are shown by their last four characters only (`****1234`); a customer reads
+  "(erased)" when their data was erased. Each row links to the influencer, the booking (Bookings search by its id) or the payout itself
+  (`/admin/payouts?id=...` shows that one payout, in any status, with its usual buttons). A paid payout there names who approved it and who
+  marked it sent; the Payouts list itself keeps withholding the approver's address on a paid payout, and the audit log already shows both to every administrator.
+- **Dates** (the most exact timestamp the schema has, and the one the Reports page uses, so the rows of a range add up to the Reports
+  figures): a payment by `payments.created_at`, the moment checkout began (there is no capture time: `updated_at` moves on every reconcile or
+  refund and `webhook_events` does not name the payment); a refund by `refunds.created_at`, when it was recorded; a payout by `paid_at`, when
+  it was marked as sent. Days are IST days (00:00 to 24:00 IST, the end date included).
+- **Payouts created, not sent yet** (pending, with or without an approval) are listed in their own table below the ledger, whatever the dates:
+  they are not money out until they are marked as sent, so they are in no total.
+- **Totals** at the top, per currency, for the range (and the influencer): money in, refunds out, payouts out, platform fees kept, and
+  still held. They are computed by `rangeFigures` and `balanceFigures` of `lib/admin/reports.ts` (which take an optional influencer scope; with
+  none their SQL is unchanged), so they equal the Reports page for the same range; a test compares them. A *failed* refund is listed and is in
+  no total. The tabs (All, Money in, Money out, Refunds, Payouts) narrow the list, not the totals. "Still held" is right now and does not
+  depend on the dates.
+- **Filters**: `from`/`to` are parsed exactly like Reports (an odd date is ignored, a start after the end or more than 366 days is a 400);
+  `type` is `all|in|out|refunds|payouts` (anything else is `all`); `influencerId` must be shaped like an id (else a 400), an id nobody has
+  gives an empty page (the id is echoed, so the tabs keep it, and the page draws no Export button: it would export everybody's money);
+  `page` is a whole number from 1 to 9999 (past the last page is the last).
+- **One influencer**: a summary card from `influencerPayoutSummary` (paid out to date, payable now after the fee, **not payable yet** with
+  the reasons, in pending payouts, the last payout) and a button to their page, where the next payout is created. The Influencer page links
+  back here ("All money movements"). "Not payable yet" is every payment still waiting for something (reconciliation, the hold period, a refund
+  flagged or in progress, a booking that did not take place), so it is wider than the **Still held** card, which is the Reports definition
+  (not flagged for a refund, not in a sent payout, on a paid, scheduled or completed booking); the page says so, and a test pins where the two
+  agree. The summary now adds up paid and pending payouts in SQL; it used to stop at the influencer's 50 newest.
+- **CSV**: `GET /api/admin/exports/money?from=&to=&type=&influencerId=` (the Export CSV button sends the page's filters). Oldest first,
+  one row per movement, amounts as decimals, ISO times with +05:30, formula-neutralised cells, the byte-order mark, the 20,000-row cap
+  (a 400), and the `admin.export` audit row (kind, range, row count, type, influencer) written BEFORE the file is returned. Unlike the page, the
+  file carries the full Razorpay ids and the UTR (like the payments and payouts exports); it is not given to anyone but an MFA-passed admin.
+- Rate limit `admin-money-ledger` (GET and HEAD, 60 per 10 minutes per IP); the CSV shares `admin-export`. A page runs its queries at most two
+  at a time. The date columns it reads are indexed (migration `20261113000000_money_ledger_indexes`: `payments(created_at)`,
+  `refunds(created_at)`, `payouts(status, paid_at)`); run `npx prisma migrate deploy` after pulling.
 
 ## Reminder repair
 Delayed reminder jobs live only in Redis, so a Redis that lost its data (or an enqueue that failed during an outage) leaves a paid,

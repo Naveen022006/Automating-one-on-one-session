@@ -23,10 +23,13 @@ const FILTERS: { key: PayoutFilter; label: string }[] = [
  */
 export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; busy?: boolean }) {
   const { status, rows, counts } = data;
+  const single = data.single === true;
   const label = FILTERS.find((f) => f.key === status)?.label ?? "To send";
   const total = counts[status];
   // Tabs and pagination are links that no longer reload the page, so nothing announces the new list: this line does (a live region whose text changes).
-  const found = `${label}: ${total === 0 ? "no payouts" : `${total} ${total === 1 ? "payout" : "payouts"}`}, page ${data.page} of ${data.pageCount}.`;
+  const found = single
+    ? rows.length === 0 ? "No payout has that id." : "One payout."
+    : `${label}: ${total === 0 ? "no payouts" : `${total} ${total === 1 ? "payout" : "payouts"}`}, page ${data.page} of ${data.pageCount}.`;
 
   return (
     <div className="stack stack--lg">
@@ -38,12 +41,17 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
         </Alert>
       )}
       <ExportControls kind="payouts" />
-      <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/admin/payouts?status=${f.key}`, current: status === f.key, count: counts[f.key] }))} />
+      <LinkTabs items={FILTERS.map((f) => ({ label: f.label, href: `/admin/payouts?status=${f.key}`, current: !single && status === f.key, count: counts[f.key] }))} />
       <p role="status" className="sr-only">{busy ? "Loading…" : found}</p>
       <div className="stack stack--lg" aria-busy={busy || undefined}>
+        {single && (
+          <Alert tone="info">
+            Showing one payout. <AppLink href="/admin/payouts">Show all payouts</AppLink>
+          </Alert>
+        )}
         {rows.length === 0 ? (
-          <EmptyState icon={<IconWallet />} title="No payouts here">
-            Payouts appear when you create one from an influencer&apos;s page.
+          <EmptyState icon={<IconWallet />} title={single ? "No such payout" : "No payouts here"}>
+            {single ? "No payout has that id." : "Payouts appear when you create one from an influencer's page."}
           </EmptyState>
         ) : (
           <div className="table-wrap">

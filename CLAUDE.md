@@ -133,6 +133,20 @@ the file. `adminRefundPayment` never takes an amount from the client: it refunds
 `adminCancelBooking` reuses `cancelBooking` with `byPlatform: true`. Reports are read-only aggregate SQL (nine queries, one at a time) that
 must agree with `lib/payouts.ts`; Gross is dated by `payments.created_at` (the schema has no capture time).
 
+**Admin money ledger (`lib/admin/money.ts`, `lib/views/admin-money.ts`, `/admin/money`, `GET /api/admin/money`).** One newest-first list of every money
+movement, read by ONE `UNION ALL` of three explicit selects (`branch`) with `LIMIT/OFFSET` (50 a page) and a count query; nothing is loaded unbounded.
+Movements and their dates are the Reports dates, on purpose, so the rows of a range add up to the Reports figures: a payment IN (CAPTURED or REFUNDED)
+by `payments.created_at` (checkout start; there is no capture time), a refund OUT by `refunds.created_at` (a FAILED one is listed and is in no total),
+a payout OUT (PAID) by `paid_at`. PENDING payouts are not movements: `scheduledPayouts` lists them apart, whatever the dates. Day bounds come from
+`istStart` of `lib/admin/reports.ts`, never a second copy. The cards are `moneyTotals` = `rangeFigures` + `balanceFigures` (do not re-implement the maths;
+both take an optional `ReportScope { influencerId }` that adds `AND ... IN (the influencer's bookings)` or `AND influencer_id = ...` and changes nothing
+without it); the `type` tab narrows the rows, never the cards. The DTO masks the Razorpay payment id and the UTR to `****1234` (`maskTail`); the CSV kind `money`
+(`exportMoney`, oldest first, audit detail also carries `type` and `influencerId`) writes them in full like the payments and payouts exports. An influencer id that
+is not shaped like an id is a 400 (never silently ignored); a well-formed unknown one is an empty page. `influencerPayoutSummary` sums paid and pending payouts in SQL
+(it used to read only the 50 newest) and returns the reasons money is not payable (`waiting`, from `waitingMinorByReason`): the page's "Not payable yet" is wider than the
+"Still held" card on purpose, and says so. An unknown influencer echoes `influencerId` and draws no export (never everybody's money). The ledger links to a payout as
+`/admin/payouts?id=...` (`single: true`, any status, same DTO). The view function runs its queries at most two at a time. Indexes: migration `20261113000000_money_ledger_indexes`. Rate rule `admin-money-ledger`.
+
 **Customer portal (`lib/customer-portal.ts`, `lib/receipts.ts`, `/bookings`).** Customers have no accounts: a random token e-mailed to
 the booking address, valid one hour, stored as SHA-256 in `customer_access_tokens`, opens that address's bookings, a JSON export and
 erasure (`eraseCustomerData`, with `isKeptBooking` as the one "kept" rule). It is NOT the signed manage/pay token of `lib/signing.ts`.
