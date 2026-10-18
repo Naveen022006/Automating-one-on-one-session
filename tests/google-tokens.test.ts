@@ -151,12 +151,13 @@ test("S3: getRefreshToken returns the connectedAt it read, and a renewed grant h
 });
 
 test("N1: the account's stable id is stored with the grant, read with its token in one go, and the next connect replaces it", { skip }, async () => {
+  // doc/15: the record also says which kind of OAuth client issued the grant (clientKind), which the callback needs to replace it.
   const { getGoogleAccountRecord } = await import("../lib/google-tokens");
   await saveGoogleToken(a, "rt-n1", SCOPE, "n1@gmail.com"); // a row from before the id was recorded
-  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "n1@gmail.com", sub: null, refreshToken: "rt-n1" });
+  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "n1@gmail.com", sub: null, refreshToken: "rt-n1", clientKind: "platform" });
 
   await saveGoogleToken(a, "rt-n2", SCOPE, "renamed@gmail.com", "sub-n1"); // reconnected: the id is filled in, the address follows the rename
-  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "renamed@gmail.com", sub: "sub-n1", refreshToken: "rt-n2" });
+  assert.deepEqual(await getGoogleAccountRecord(a), { connected: true, email: "renamed@gmail.com", sub: "sub-n1", refreshToken: "rt-n2", clientKind: "platform" });
 
   await saveGoogleToken(a, "rt-n3", SCOPE, "renamed@gmail.com", null); // an ID token without one clears it: address-only comparison, never a revoke
   assert.equal((await getGoogleAccountRecord(a)).sub, null);
@@ -172,7 +173,7 @@ test("N2: the record returns the token of a grant flagged 'reconnect needed' too
   await saveGoogleToken(c, "rt-flag", SCOPE, "flag@gmail.com", "sub-flag");
   assert.equal(await markReconnectNeeded(c, "401 from Google"), true);
   assert.equal(await getActiveGrant(c), null, "the active-grant read still skips it");
-  assert.deepEqual(await getGoogleAccountRecord(c), { connected: true, email: "flag@gmail.com", sub: "sub-flag", refreshToken: "rt-flag" });
+  assert.deepEqual(await getGoogleAccountRecord(c), { connected: true, email: "flag@gmail.com", sub: "sub-flag", refreshToken: "rt-flag", clientKind: "platform" });
 });
 
 test("N1: another profile on the same Google account is also found by the stable id when the address differs", { skip }, async () => {
