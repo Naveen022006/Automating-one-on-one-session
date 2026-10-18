@@ -267,9 +267,15 @@ test("moderation reports 'not emailed', and the other account senders (admin 2FA
   assert.ok(logged.some((l) => l.includes("[email:admin-security] not sent")));
 });
 
-test("customer e-mail with no Gmail: nothing is sent, nothing is left looking like a delivery, and nothing throws", { skip }, async () => {
+test("customer e-mail with no Gmail: nothing is sent, the row says why (never pending, never sent), and nothing throws", { skip }, async () => {
   await emailLib.sendBookingEmail(bookingId, "booking-confirmation");
-  assert.deepEqual(await messages(), [], "no pending, failed or sent row for an e-mail that had no way to go out");
+  const rows = await messages();
+  assert.equal(rows.length, 1, "a record that it was not sent, not a vanished one");
+  assert.equal(rows[0].status, "FAILED");
+  assert.equal(rows[0].error, emailLib.NO_EMAIL_ROUTE_REASON);
+  assert.equal(rows[0].sentAt, null);
+  // That reason is not "Gmail is not working": the Google panel only reads rows Gmail itself failed to send.
+  assert.ok(!rows[0].error?.startsWith(gmailLib.GMAIL_FAILED_PREFIX));
   assert.ok(logged.some((l) => l.includes("[email:customer] booking-confirmation not sent") && l.includes("no Gmail connection")));
   assert.ok(!logged.join("\n").includes(customerEmail), "the customer's address is not logged");
 });
@@ -296,7 +302,22 @@ test("customer e-mail through the influencer's Gmail: a failing Gmail leaves a F
   const after = await tokensLib.getGoogleStatus(influencerId, { details: true });
   assert.ok(after.state === "connected" && after.gmailFailing === false);
   assert.ok(googleCalls.some((u) => u.startsWith("https://gmail.googleapis.com/")));
+
+  // A forced resend (or a second reschedule) that finds no route must not wipe or downgrade the record of the e-mail that WAS sent.
+  tokenMode = "down";
+  await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
+  const afterFailedResend = await messages();
+  assert.equal(afterFailedResend.length, 1);
+  assert.equal(afterFailedResend[0].status, "SENT", "never downgraded");
+  assert.equal(afterFailedResend[0].providerMessageId, "gmail:gm-1");
+  assert.equal(afterFailedResend[0].error, null);
+  assert.ok(afterFailedResend[0].sentAt);
   await prisma.googleToken.deleteMany({ where: { influencerId } });
+  await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
+  const afterNoRoute = await messages();
+  assert.equal(afterNoRoute.length, 1, "not deleted either");
+  assert.equal(afterNoRoute[0].status, "SENT");
+  assert.equal(afterNoRoute[0].providerMessageId, "gmail:gm-1");
 });
 
 test("an approved request: the host is handed the pay link when the customer could not be e-mailed, and decline does not throw", { skip }, async () => {
