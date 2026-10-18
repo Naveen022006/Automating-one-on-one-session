@@ -2,7 +2,8 @@
 // (skipped without DATABASE_URL, TOKEN_ENCRYPTION_KEY and APP_SECRET):
 //   - a client-supplied time zone is accepted for old clients but never stored as another zone (register, profile, availability, hold);
 //     a string that is not a time zone is a 400 with a clear message;
-//   - availability rules are written in Asia/Kolkata; a rule saved earlier in another zone can be re-saved only with both times;
+//   - availability rules are written in Asia/Kolkata and a request naming any other zone is a 400 (its hours would silently move); a rule
+//     saved earlier in another zone can be re-saved only with both times;
 //   - services are in INR only (400 otherwise);
 //   - slots and slot days are IST days, whatever `tz` an old client sends;
 //   - the booking hold takes Indian mobile numbers only and stores +91XXXXXXXXXX.
@@ -11,7 +12,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, mock, test } from "node:test";
 import { prisma } from "../lib/db";
-import { CURRENCY_ERROR, INDIAN_MOBILE_ERROR, istDayStart, addDays, istToday } from "../lib/india";
+import { AVAILABILITY_ZONE_ERROR, CURRENCY_ERROR, INDIAN_MOBILE_ERROR, istDayStart, addDays, istToday } from "../lib/india";
 
 const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && process.env.APP_SECRET ? false : "DATABASE_URL / TOKEN_ENCRYPTION_KEY / APP_SECRET not set";
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -123,17 +124,22 @@ test("profile: a zone sent by an old client is saved as IST; a non-zone is a 400
   assert.equal((await prisma.influencer.findUniqueOrThrow({ where: { id: influencerId } })).timezone, "Asia/Kolkata");
 });
 
-test("availability: new hours are saved in IST whatever zone the client names; a non-zone is a 400", { skip }, async () => {
+test("availability: new hours are IST; a request that names another zone is a 400 and stores nothing (its hours would move)", { skip }, async () => {
   const body = (extra: object) => ({ weekday: 1, startTime: "09:00", endTime: "10:00", ...extra });
-  const withZone = await call(routes.availability, { cookie, method: "POST", body: body({ timezone: "Europe/London" }) });
-  assert.equal(withZone.status, 201);
+  for (const timezone of ["Europe/London", "America/New_York", "UTC", "Asia/Dubai", "Not/AZone"]) {
+    const r = await call(routes.availability, { cookie, method: "POST", body: body({ timezone }) });
+    assert.equal(r.status, 400, timezone);
+    assert.equal(r.body.error, AVAILABILITY_ZONE_ERROR, timezone);
+  }
+  assert.equal(await prisma.availabilityRule.count({ where: { influencerId } }), 0, "nothing was stored");
+  const kolkata = await call(routes.availability, { cookie, method: "POST", body: body({ timezone: "Asia/Kolkata" }) });
+  assert.equal(kolkata.status, 201);
+  const calcutta = await call(routes.availability, { cookie, method: "POST", body: body({ weekday: 3, timezone: "Asia/Calcutta" }) });
+  assert.equal(calcutta.status, 201, "an alias of IST");
   const noZone = await call(routes.availability, { cookie, method: "POST", body: body({ weekday: 2 }) });
   assert.equal(noZone.status, 201, "the new editor sends no zone");
-  const bad = await call(routes.availability, { cookie, method: "POST", body: body({ weekday: 3, timezone: "Not/AZone" }) });
-  assert.equal(bad.status, 400);
-  assert.match(String(bad.body.error), /Invalid time zone/);
   const rules = await prisma.availabilityRule.findMany({ where: { influencerId }, orderBy: { weekday: "asc" } });
-  assert.deepEqual(rules.map((r) => [r.weekday, r.startTime, r.endTime, r.timezone]), [[1, "09:00", "10:00", "Asia/Kolkata"], [2, "09:00", "10:00", "Asia/Kolkata"]]);
+  assert.deepEqual(rules.map((r) => [r.weekday, r.startTime, r.endTime, r.timezone]), [[1, "09:00", "10:00", "Asia/Kolkata"], [2, "09:00", "10:00", "Asia/Kolkata"], [3, "09:00", "10:00", "Asia/Kolkata"]]);
   await prisma.availabilityRule.deleteMany({ where: { influencerId } });
 });
 
@@ -143,7 +149,14 @@ test("availability: a rule saved earlier in another zone is re-saved only with b
   assert.equal(partial.status, 400);
   assert.match(String(partial.body.error), /another time zone/);
   assert.equal((await prisma.availabilityRule.findUniqueOrThrow({ where: { id: legacy.id } })).timezone, "America/New_York", "refused: unchanged");
-  const full = await call(routes.availabilityPatch, { cookie, method: "PATCH", body: { ruleId: legacy.id, startTime: "11:00", endTime: "13:00", timezone: "America/New_York" } });
+  // Naming a zone other than IST is refused outright, with both times or not (the hours would move).
+  for (const timezone of ["America/New_York", "Europe/London"]) {
+    const refused = await call(routes.availabilityPatch, { cookie, method: "PATCH", body: { ruleId: legacy.id, startTime: "11:00", endTime: "13:00", timezone } });
+    assert.equal(refused.status, 400, timezone);
+    assert.equal(refused.body.error, AVAILABILITY_ZONE_ERROR, timezone);
+  }
+  assert.equal((await prisma.availabilityRule.findUniqueOrThrow({ where: { id: legacy.id } })).startTime, "10:00", "unchanged");
+  const full = await call(routes.availabilityPatch, { cookie, method: "PATCH", body: { ruleId: legacy.id, startTime: "11:00", endTime: "13:00", timezone: "Asia/Calcutta" } });
   assert.equal(full.status, 200);
   const row = await prisma.availabilityRule.findUniqueOrThrow({ where: { id: legacy.id } });
   assert.deepEqual([row.startTime, row.endTime, row.timezone], ["11:00", "13:00", "Asia/Kolkata"]);

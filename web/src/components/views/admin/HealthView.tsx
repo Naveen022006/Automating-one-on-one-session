@@ -16,7 +16,7 @@ const STATUS: Record<ConditionStatus, { label: string; tone: Tone }> = {
   unknown: { label: "Unknown", tone: "neutral" },
 };
 
-const when = (d: string | number) => formatDateTime(new Date(d), { weekday: false });
+const when = (d: string | number) => formatDateTime(new Date(d), { weekday: false, seconds: true });
 
 /**
  * The admin System health page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the

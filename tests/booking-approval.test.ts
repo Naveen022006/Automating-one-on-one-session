@@ -34,7 +34,7 @@ test("payment links are signed, tied to one booking, and not interchangeable wit
 });
 
 test("request emails say what happens next without promising a charge", () => {
-  const base = { customerName: "Asha Rao", serviceTitle: "Portfolio review", influencerName: "Sam", startTime: new Date("2026-11-02T10:00:00Z"), tz: "Asia/Kolkata" };
+  const base = { customerName: "Asha Rao", serviceTitle: "Portfolio review", influencerName: "Sam", startTime: new Date("2026-11-02T10:00:00Z") };
   const received = requestEmail("request-received", { ...base, decideWithinHours: 48 });
   assert.match(received.text, /Nothing has been charged/);
   const approved = requestEmail("request-approved", { ...base, payUrl: "https://app.example/pay/abc", payBy: new Date("2026-11-01T10:00:00Z"), amount: { amountMinor: 49900, currency: "INR" } });

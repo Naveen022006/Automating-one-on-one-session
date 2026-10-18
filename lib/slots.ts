@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { APP_TIME_ZONE } from "@/lib/india";
+import { APP_TIME_ZONE, isIstEquivalentZone, istDate } from "@/lib/india";
 
 export interface Rule {
   weekday: number; // ISO: 1 = Monday ... 7 = Sunday
@@ -38,8 +38,11 @@ export function generateSlots(
     for (; day <= last; day = day.plus({ days: 1 })) {
       if (day.weekday !== rule.weekday) continue;
       const date = day.toISODate();
-      // A blocked day yields no slots, so customers cannot book it.
-      if (date && blockedDates.has(date)) continue;
+      // A blocked day yields no slots, so customers cannot book it. Blocked days are Indian days (that is what the dashboard shows), so for
+      // a rule in IST this is a whole-day test; a rule saved earlier in another zone is tested slot by slot on the slot's IST date (below),
+      // because its own calendar day is not the day the influencer blocked (New York Monday 20:00 is Tuesday 06:30 IST).
+      const legacyZone = !isIstEquivalentZone(zone);
+      if (!legacyZone && date && blockedDates.has(date)) continue;
       const windowStart = DateTime.fromISO(`${date}T${rule.startTime}`, { zone });
       const windowEnd = DateTime.fromISO(`${date}T${rule.endTime}`, { zone });
       if (!windowStart.isValid || !windowEnd.isValid) continue;
@@ -49,7 +52,7 @@ export function generateSlots(
         s = s.plus({ minutes: durationMin })
       ) {
         const ms = s.toMillis();
-        if (ms >= from.getTime() && ms < to.getTime()) out.set(ms, new Date(ms));
+        if (ms >= from.getTime() && ms < to.getTime() && !(legacyZone && blockedDates.has(istDate(new Date(ms))))) out.set(ms, new Date(ms));
       }
     }
   }

@@ -69,7 +69,7 @@ export function WeeklyHours({ rules }: { rules: RuleRow[] }) {
       <div className="stack">
         {legacy.length > 0 && (
           <Alert tone="warning" title="Some hours were saved in another time zone">
-            {legacy.length === 1 ? "One range below keeps" : `${legacy.length} ranges below keep`} the zone shown next to it, so customers still see the same moments as before. This service now works in Indian Standard Time only: remove the range and add it again to set it in IST.
+            {legacy.length === 1 ? "One range below keeps" : `${legacy.length} ranges below keep`} the zone shown next to it, so customers still see the same moments as before. This service now works in Indian Standard Time only: remove the range and add it again to set it in IST. Days off are always Indian days, so a day you block also removes an older range whose time falls on that day in India.
           </Alert>
         )}
         {rules.length === 0 && <Alert tone="info" title="No hours yet">Add the times you are available each week. Customers can only book inside them.</Alert>}

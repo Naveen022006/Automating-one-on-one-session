@@ -6,6 +6,7 @@ import { daysWithSlots } from "../lib/availability";
 import { formatDuration, formatMoney, formatSessionTime, formatTime } from "../lib/format";
 import {
   APP_COUNTRY,
+  AVAILABILITY_ZONE_ERROR,
   APP_CURRENCY,
   APP_LOCALE_DEFAULT,
   APP_TIME_ZONE,
@@ -20,6 +21,7 @@ import {
   formatMonth,
   indianMobileDigits,
   isAppCurrency,
+  isIstEquivalentZone,
   isKnownTimeZone,
   istDate,
   istDayBounds,
@@ -35,6 +37,13 @@ import {
 import { toE164 } from "../lib/phone";
 
 /* ---------- constants ---------- */
+
+test("only zones whose offset is always +05:30 count as IST for availability", () => {
+  assert.equal(isIstEquivalentZone("Asia/Kolkata"), true);
+  assert.equal(isIstEquivalentZone("Asia/Calcutta"), true);
+  for (const z of ["Europe/London", "America/New_York", "UTC", "Asia/Kathmandu", "Asia/Dubai", "", null, undefined, 5]) assert.equal(isIstEquivalentZone(z), false, String(z));
+  assert.equal(AVAILABILITY_ZONE_ERROR, "Availability is in Indian Standard Time (IST). Reload the page.");
+});
 
 test("the constants say India", () => {
   assert.equal(APP_TIME_ZONE, "Asia/Kolkata");
@@ -53,6 +62,10 @@ test("date and time carry the IST label and are read in IST whatever the machine
   assert.equal(formatDate(d), "Sat, 25 Oct 2025");
   assert.equal(formatDate(d, { weekday: false }), "25 Oct 2025");
   assert.equal(formatTime(d), "6:30 PM");
+  const s = new Date("2025-10-25T13:00:07Z");
+  assert.equal(formatTime(s, { seconds: true }), "6:30:07 PM");
+  assert.equal(formatDateTime(s, { weekday: false, seconds: true }), "25 Oct 2025, 6:30:07 PM IST", "the admin audit and health tables keep their seconds");
+  assert.equal(formatDateTime(s), "Sat, 25 Oct 2025, 6:30 PM IST", "no seconds by default");
   assert.equal(formatSessionTime(d), "Sat, 25 Oct 2025, 6:30 PM IST");
   assert.equal(formatSessionTime(new Date("2026-10-12T05:30:00Z")), "Mon, 12 Oct 2026, 11:00 AM IST");
 });
@@ -187,6 +200,11 @@ const VALID = [
   "0091 98765 43210",
   "  +91 9876543210  ",
   "6000000001",
+  "+91 (0) 98765 43210",
+  "+91 0 98765 43210",
+  "091 98765 43210",
+  "0919876543210",
+  "+91 (0)9876543210",
   "7012345678",
   "8123456789",
 ];
@@ -224,6 +242,14 @@ const INVALID = [
   "98765 43210 ext 5",
   "+91",
   "0091",
+  "+91 (0) 5876543210", // trunk 0 and a landline-style number
+  "091 5876543210",
+  "0 0 98765 43210", // two zeros
+  "+91 00 98765 43210",
+  "0919876543", // 10 digits after 091
+  "09198765432100", // 11 digits after 091
+  "98765432100", // 11 digits not starting 0
+  "0098765 43210",
   "9".repeat(40),
 ];
 

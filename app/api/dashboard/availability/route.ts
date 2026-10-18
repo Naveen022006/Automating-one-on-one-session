@@ -4,7 +4,7 @@ import { z } from "zod";
 import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import { APP_TIME_ZONE, normaliseTimeZoneInput } from "@/lib/india";
+import { APP_TIME_ZONE, AVAILABILITY_ZONE_ERROR, isIstEquivalentZone } from "@/lib/india";
 import { loadAvailabilityView } from "@/lib/views/dashboard-availability";
 import { jsonView } from "@/lib/views/http";
 
@@ -19,7 +19,7 @@ const createSchema = z.object({
   weekday: z.number().int().min(1).max(7), // ISO: 1=Mon ... 7=Sun
   startTime: z.string().regex(TIME),
   endTime: z.string().regex(TIME),
-  // Old clients still send one: accepted, saved as Asia/Kolkata (IST); a string that is not a time zone is a 400.
+  // Old clients may still send one: only Asia/Kolkata (or its alias Asia/Calcutta) is accepted, anything else is a 400 (see POST).
   timezone: z.string().min(1).optional(),
 });
 
@@ -51,9 +51,10 @@ export async function POST(req: Request) {
   }
 
   const body = parsed.data;
-  if (body.timezone !== undefined) {
-    const zone = normaliseTimeZoneInput(body.timezone);
-    if (!zone.ok) return NextResponse.json({ error: zone.error }, { status: 400 });
+  // Unlike the other routes, hours are NOT leniently normalised: HH:mm only means the same in IST as in a zone whose offset is always +05:30. A tab
+  // left open across the deploy (or a script) that names another zone would otherwise move bookable hours by hours.
+  if (body.timezone !== undefined && !isIstEquivalentZone(body.timezone)) {
+    return NextResponse.json({ error: AVAILABILITY_ZONE_ERROR }, { status: 400 });
   }
   if (body.endTime <= body.startTime) {
     return NextResponse.json({ error: "endTime must be after startTime" }, { status: 400 });
@@ -88,9 +89,8 @@ export async function PATCH(req: Request) {
   });
   if (!existing) return NextResponse.json({ error: "Availability rule not found" }, { status: 404 });
 
-  if (body.timezone !== undefined) {
-    const zone = normaliseTimeZoneInput(body.timezone);
-    if (!zone.ok) return NextResponse.json({ error: zone.error }, { status: 400 });
+  if (body.timezone !== undefined && !isIstEquivalentZone(body.timezone)) {
+    return NextResponse.json({ error: AVAILABILITY_ZONE_ERROR }, { status: 400 });
   }
   // A rule saved before the product went India-only may still carry another zone. Its times mean something else in IST, so a change
   // must restate BOTH of them (they are then read, and saved, as IST); changing only the weekday or one end would silently shift it.

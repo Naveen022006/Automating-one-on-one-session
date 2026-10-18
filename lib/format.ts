@@ -24,8 +24,8 @@ export function formatSessionTime(date: Date): string {
 }
 
 /** "11:00 AM" (IST). */
-export function formatTime(date: Date): string {
-  return formatIstTime(date);
+export function formatTime(date: Date, opts: { seconds?: boolean } = {}): string {
+  return formatIstTime(date, opts);
 }
 
 export { formatDuration };

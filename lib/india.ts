@@ -52,6 +52,16 @@ export function normaliseTimeZoneInput(value: unknown): { ok: true; timeZone: ty
   return { ok: true, timeZone: APP_TIME_ZONE };
 }
 
+/** The zone names whose UTC offset is +05:30 all year: the only ones whose wall-clock hours mean the same thing as IST hours. */
+const IST_EQUIVALENT_ZONES = new Set(["Asia/Kolkata", "Asia/Calcutta"]);
+
+export function isIstEquivalentZone(value: unknown): boolean {
+  return typeof value === "string" && IST_EQUIVALENT_ZONES.has(value);
+}
+
+/** The 400 message for hours posted with another zone: their times would silently move if they were stored as IST. */
+export const AVAILABILITY_ZONE_ERROR = "Availability is in Indian Standard Time (IST). Reload the page.";
+
 /* ---------- IST calendar arithmetic ---------- */
 
 export interface IstParts {
@@ -144,16 +154,16 @@ export function formatDate(d: Date, opts: { weekday?: boolean; year?: boolean } 
   return weekday ? `${WEEKDAYS[p.weekday]}, ${core}` : core;
 }
 
-/** "6:30 PM" in IST. */
-export function formatTime(d: Date): string {
-  const { hour, minute } = istParts(d);
-  return `${hour % 12 === 0 ? 12 : hour % 12}:${p2(minute)} ${hour < 12 ? "AM" : "PM"}`;
+/** "6:30 PM" in IST ("6:30:15 PM" with `seconds`). */
+export function formatTime(d: Date, opts: { seconds?: boolean } = {}): string {
+  const { hour, minute, second } = istParts(d);
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${p2(minute)}${opts.seconds ? `:${p2(second)}` : ""} ${hour < 12 ? "AM" : "PM"}`;
 }
 
 /** "Sat, 25 Oct 2026, 6:30 PM IST". `label: false` drops the "IST" (a page that already says all times are IST). */
-export function formatDateTime(d: Date, opts: { weekday?: boolean; year?: boolean; label?: boolean } = {}): string {
-  const { label = true, ...date } = opts;
-  return `${formatDate(d, date)}, ${formatTime(d)}${label ? ` ${APP_TIME_ZONE_LABEL}` : ""}`;
+export function formatDateTime(d: Date, opts: { weekday?: boolean; year?: boolean; label?: boolean; seconds?: boolean } = {}): string {
+  const { label = true, seconds = false, ...date } = opts;
+  return `${formatDate(d, date)}, ${formatTime(d, { seconds })}${label ? ` ${APP_TIME_ZONE_LABEL}` : ""}`;
 }
 
 /** A wall-clock "HH:mm" (an availability rule's start or end, already IST) as "6:30 PM". Anything else comes back unchanged. */
@@ -243,13 +253,15 @@ export function indianMobileDigits(input: string): string | null {
     national = digits.slice(2);
   } else if (digits.startsWith("0091")) {
     national = digits.slice(4);
+  } else if (digits.length === 13 && digits.startsWith("091")) {
+    national = digits.slice(3);
   } else if (digits.length === 12 && digits.startsWith("91")) {
     national = digits.slice(2);
-  } else if (digits.length === 11 && digits.startsWith("0")) {
-    national = digits.slice(1);
   } else {
     national = digits;
   }
+  // The trunk prefix 0, with or without a country code in front of it ("098765 43210", "+91 (0) 98765 43210"): one leading 0 when 11 digits remain.
+  if (national.length === 11 && national.startsWith("0")) national = national.slice(1);
   return INDIAN_MOBILE.test(national) ? national : null;
 }
 

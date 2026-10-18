@@ -179,8 +179,10 @@ function ServiceForm({
   const [description, setDescription] = useState(initial.description ?? "");
   const [duration, setDuration] = useState(String(initial.durationMin));
   const [price, setPrice] = useState((initial.priceMinor / 100).toFixed(2));
-  // INR for every new service; an older service keeps the currency it was created in (the form never changes it).
-  const currency = initial.currency;
+  // INR for every new service; an older service keeps the currency it was created in until the owner chooses "Switch to INR", which converts
+  // nothing: it changes the currency and clears the price so it has to be typed again in rupees.
+  const [switchedToInr, setSwitchedToInr] = useState(false);
+  const currency = switchedToInr ? APP_CURRENCY : initial.currency;
   const [type, setType] = useState(initial.type);
   const [capacity, setCapacity] = useState(String(initial.type === "GROUP" ? initial.capacity : 5));
   const [policy, setPolicy] = useState(initial.refundPolicy);
@@ -202,7 +204,7 @@ function ServiceForm({
     const local: Record<string, string> = {};
     if (!title.trim()) local.title = "Give the service a name.";
     if (!Number.isInteger(durationMin) || durationMin < 5 || durationMin > 480) local.duration = "Between 5 and 480 minutes.";
-    if (!Number.isFinite(priceMinor) || priceMinor < 0) local.price = "Enter a price, for example 499.";
+    if (!Number.isFinite(priceMinor) || priceMinor < 0 || (switchedToInr && price.trim() === "")) local.price = "Enter a price, for example 499.";
     if (type === "GROUP" && (!Number.isInteger(seats) || seats < 2 || seats > 1000)) local.capacity = "Between 2 and 1000 seats.";
     questions.forEach((q, i) => {
       if (q.label.trim().length < 3) local[`q${i}`] = "Write the question (at least 3 characters).";
@@ -217,7 +219,7 @@ function ServiceForm({
       description: description.trim() || (initial.id ? null : undefined),
       durationMin,
       priceMinor,
-      ...(initial.id ? {} : { currency: APP_CURRENCY }),
+      ...(initial.id && !switchedToInr ? {} : { currency: APP_CURRENCY }),
       type,
       capacity: type === "GROUP" ? seats : 1,
       refundPolicy: policy,
@@ -274,13 +276,29 @@ function ServiceForm({
             <Field id="svc-duration" label="Length (minutes)" error={errors.duration}>
               <Input {...describedBy("svc-duration", { error: errors.duration })} inputMode="numeric" value={duration} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDuration(e.target.value.replace(/\D/g, ""))} />
             </Field>
-            <Field id="svc-price" label="Price (₹)" error={errors.price} help={currency === APP_CURRENCY ? undefined : `This service was created in ${currency}. New services are priced in rupees.`}>
+            <Field id="svc-price" label={`Price (${currency})`} error={errors.price} help={currency === APP_CURRENCY ? undefined : `This service was created in ${currency}. New services are priced in rupees.`}>
               <div className="input-group">
                 <span className="input-group__addon" aria-hidden="true">
                   {currency === APP_CURRENCY ? "₹" : currency}
                 </span>
                 <Input {...describedBy("svc-price", { error: errors.price })} inputMode="decimal" value={price} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPrice(e.target.value)} />
               </div>
+              {initial.id && initial.currency !== APP_CURRENCY && !switchedToInr && (
+                <div className="stack stack--sm" style={{ marginTop: 8 }}>
+                  <Alert tone="warning">This price is in {initial.currency}, not rupees. Switching does not convert it: you type the price again in rupees.</Alert>
+                  <div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSwitchedToInr(true);
+                        setPrice("");
+                      }}
+                    >
+                      Switch to INR
+                    </Button>
+                  </div>
+                </div>
+              )}
             </Field>
           </div>
           <fieldset className="stack stack--sm" style={{ border: 0, padding: 0, margin: 0 }}>

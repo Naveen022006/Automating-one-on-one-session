@@ -58,6 +58,19 @@ test("phone numbers are validated and normalised to E.164 (Indian mobiles only; 
   assert.equal(toE164("not a number"), null);
 });
 
+test("blocked days are Indian days, also for a legacy rule in another zone: New York Monday 20:00 is Tuesday 06:30 IST", () => {
+  const legacy: Rule = { weekday: 1, startTime: "20:00", endTime: "22:00", timezone: "America/New_York" };
+  const from = new Date("2030-01-06T00:00:00Z");
+  const to = new Date("2030-01-10T00:00:00Z");
+  const open = generateSlots([legacy], 60, from, to).map((d) => d.toISOString());
+  assert.deepEqual(open, ["2030-01-08T01:00:00.000Z", "2030-01-08T02:00:00.000Z"], "06:30 and 07:30 IST on Tuesday 8 January");
+  // The influencer sees IST days: blocking Tuesday removes them; blocking the New York Monday (an IST Monday, which they are not on) does not.
+  assert.deepEqual(generateSlots([legacy], 60, from, to, new Set(["2030-01-08"])), []);
+  assert.equal(generateSlots([legacy], 60, from, to, new Set(["2030-01-07"])).length, 2);
+  // An IST rule is unchanged: whole-day test on its own day.
+  assert.deepEqual(generateSlots([monday], 30, new Date("2030-01-07T00:00:00Z"), new Date("2030-01-08T00:00:00Z"), new Set(["2030-01-07"])), []);
+});
+
 test("an IST day has no daylight saving: the same wall-clock time is the same UTC time all year", () => {
   const evening: Rule = { weekday: 7, startTime: "18:00", endTime: "19:00", timezone: IST };
   // Sundays around the dates on which Europe and the US change their clocks.

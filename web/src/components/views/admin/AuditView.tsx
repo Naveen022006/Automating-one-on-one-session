@@ -38,7 +38,7 @@ export function AuditView({ data, busy }: { data: Jsonify<AdminAuditView>; busy?
               <tbody>
                 {data.rows.map((a) => (
                   <tr key={a.id}>
-                    <td data-label="When">{formatDateTime(new Date(a.createdAt), { weekday: false })}</td>
+                    <td data-label="When">{formatDateTime(new Date(a.createdAt), { weekday: false, seconds: true })}</td>
                     <td data-label="Admin">{a.adminEmail}</td>
                     <td data-label="Action">{a.action}</td>
                     <td data-label="Target" className="subtle">{a.targetType ? `${a.targetType} ${a.targetId ?? ""}` : "—"}</td>
