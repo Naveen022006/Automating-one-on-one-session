@@ -114,3 +114,49 @@ distributed (for example to a customer who self-hosts), the GPL terms of that de
 - Messaging (worker process): `isWhatsAppWebReady(influencerId)` then `sendWhatsAppWebText({ influencerId, toE164, text, bookingId, key })`,
   from `lib/whatsapp-web/send.ts`. `{ ok: false }` means fall back to the official connection, SMS or e-mail; `retryable` says whether "later" is reasonable.
 - Rate-limit rules already exist for `GET/POST /api/dashboard/whatsapp-web` and `/api/admin/whatsapp-web*`.
+
+## 5. Messaging path, endpoints, admin (`wa/02-messaging-api`)
+
+**Message path (`lib/messaging.ts`).** For each customer message the order is: the influencer's linked number (when `WHATSAPP_QR_ENABLED`, the
+manager reports the socket open, the stored status is LINKED with `wantLinked`, the destination is E.164 and the template is one of the five
+booking events), then the official connection, then SMS. Any `{ ok: false }` (retryable or not) falls through to the next channel in the same
+run; there is no second QR attempt in the same run. Texts are in `lib/whatsapp-web/messages.ts` (pure; the time string is the SMS context's own,
+so the IST change in `feat/india-only` flows in; no STOP promise, ends with the host's name; the manage link on confirmation, 24 h reminder and
+reschedule, like the e-mails). `MESSAGING_DRY_RUN=true` disables the default QR sender.
+
+- **Channel column.** `MessageChannel` got `WHATSAPP_WEB` (migration `20261110000000_message_channel_whatsapp_web`, one `ALTER TYPE ... ADD VALUE`, checked
+  with `prisma migrate diff`, applied with `migrate deploy`). The `["WHATSAPP", "SMS"]` lists in `lib/messaging.ts` (dedupe, `sendBookingMessage`,
+  `rearmMessage`), `lib/health.ts` (failed confirmations) and `lib/dashboard-data.ts` (message list) include it. The browser label maps in
+  `web/src/components/app/SessionsBoard.tsx` and `MessagesView.tsx` fall back to the raw value `WHATSAPP_WEB` until a label is added there.
+- **No double send.** The row for (booking, `WHATSAPP_WEB`, template) is written `PENDING` with `error = "in-flight"` BEFORE the send and holds the
+  outcome after. A retry that finds the in-flight mark (the process died between handing over and recording) does NOT use the linked number
+  again; it goes to the next channel (a duplicate on another channel in that rare window is accepted over losing the message). The queue key is
+  `bookingId:template:<row.updatedAt ms or 0>`: stable across retries, different after a deliberate `rearmMessage` (so the queue's own
+  "already sent" memory cannot swallow a resend).
+- **Delivery receipts** (`lib/whatsapp-web/delivery.ts`, wired by `worker/whatsapp-web-messaging.ts` through `ManagerDeps.onDelivery`): matched by provider
+  id AND the influencer who owns the booking, forward-only (same rule as the official callbacks), looked for again 3 times (2, 10, 30 s) when the row
+  is not written yet. A `failed` receipt sets `FAILED` with a plain text; it does not trigger a second send.
+- **Activity entries** (new actions `whatsapp_web.consent|linked|disconnected|suspended`, detail keys `version` | `phone` (masked tail) |
+  `phone`,`reason` | `code`): consent and the influencer's disconnect from the endpoint; linked, suspended and logged-out from the worker, by wrapping the
+  session repository (`observeSessionRepo`: first link only, not reconnects); admin removal from the admin action. The e-mail to the influencer
+  is the foundation's `notify` (one per suspension or logout, a no-op without an e-mail provider).
+- `tests/activity-log.test.ts` had its sample table extended with the four new actions (it pins the set).
+
+**Influencer endpoint `/api/dashboard/whatsapp-web`.** `GET` answers the `WhatsAppWebView` itself (flat, not wrapped). `POST` answers the fresh view; the
+`test` action answers the view plus `test: { state: "sent" | "pending" | "failed", message }` (`WhatsAppWebTestAnswer`, `lib/whatsapp-web/api-types.ts`).
+Refusals are `{ error, code }`: 400 `consent-required`, 409 `consent-outdated | disabled | not-pending | not-linked`, 429 `cooldown`
+(`Retry-After: 60`), 503 `unavailable`; a signed-out caller always gets 401 first. **Deviation: `start` uses `requireRecentAuth()`** (401 with
+`reauth: true` after 8 h, like connecting the official number), because a stolen session could otherwise attach its own phone to somebody
+else's customers; the SPA must prompt for the password on that 401. Everything else uses `requireApiAuth()`.
+
+**Test message.** The web app has no socket, so the endpoint queues one job on a new BullMQ queue `whatsapp-web-test` (`lib/whatsapp-web/test-queue.ts`);
+the worker (`worker/whatsapp-web-messaging.ts`) sends to the number read from the influencer's own session row (never from the request) with
+`SELF_TEST_BOOKING_ID`, stores the answer in the shared store, and the request waits up to 12 s for it (else `pending`: the message may still
+arrive). One a minute per influencer (the cooldown is taken only for a request that is really queued, and released if the queue is unreachable).
+
+**Admin.** `GET /api/admin/whatsapp-web?influencerId=` and `GET /api/admin/whatsapp-web/:influencerId` answer `AdminWhatsAppWebView`; `GET
+/api/admin/whatsapp-web` (no id) answers `AdminWhatsAppWebSummary` (counts by state). `POST /api/admin/whatsapp-web/:influencerId`
+`{ action: "disconnect", reason }` (5 to 300 characters) force-disconnects: `wantLinked = false` and the stored login deleted in the same
+transaction as the `whatsapp_web.force_disconnect` audit row; 404 unknown or malformed id, 409 when nothing is linked (a repeat writes no second row). The
+existing influencer detail view and the admin health view are NOT changed (their key sets are pinned): the admin card reads the new endpoint.
+Types: `lib/whatsapp-web/api-types.ts`.
