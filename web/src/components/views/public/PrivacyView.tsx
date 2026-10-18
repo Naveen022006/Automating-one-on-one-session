@@ -21,6 +21,15 @@ export function PrivacyView() {
         <li>An encrypted Google refresh token and the Google account email, to create calendar events with Meet links.</li>
         <li>Sign-in records (time, browser, IP address) to secure your account.</li>
       </ul>
+      <h2>WhatsApp linked by QR code (optional)</h2>
+      <p>
+        A host can choose to link their own WhatsApp number to the service as a linked device, by scanning a QR code, instead of using the
+        official WhatsApp Business connection. This is an unofficial method and WhatsApp may restrict or ban the number. For it we store an
+        encrypted login for the linked device (so it stays connected), the linked phone number, the device name, when and in which version the
+        host accepted the risks, and counts of messages sent. Messages are sent only about a booking that a customer made with that host,
+        from the host&rsquo;s number through WhatsApp. We do not read or store customers&rsquo; replies or the host&rsquo;s chats. When the
+        host disconnects, we delete the stored login; the device should also be removed in WhatsApp under Linked devices.
+      </p>
       <h2>Who we share it with</h2>
       <p>
         Only the providers needed to deliver the service: Razorpay (payments), Google (calendar and Meet), Meta (WhatsApp),
