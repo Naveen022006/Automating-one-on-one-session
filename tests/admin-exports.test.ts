@@ -13,6 +13,7 @@ import { hashPassword } from "../lib/auth/password";
 import { hashToken, randomToken } from "../lib/auth/tokens";
 import { toCsv } from "../lib/dashboard";
 import { prisma } from "../lib/db";
+import { istDate, istIso } from "../lib/india";
 import { matchRouteRule } from "../lib/rate-limit/policies";
 import {
   ADMIN_EXPORT_MAX_DAYS,
@@ -34,10 +35,12 @@ const auditEmail = `exp-audit-${run}@example.com`;
 const slug = `exp-${run}`;
 const DAY = 86_400_000;
 
-// A day in 2060 or later that nobody else writes rows on (the range limit is 2100-12-31).
+// A day in 2060 or later that nobody else writes rows on (the range limit is 2100-12-31). Days are Indian Standard Time days
+// (doc/14-india-localisation.md): `quiet` is the instant at which that IST day BEGINS (18:30 UTC the evening before), so at(0) is 00:00 IST
+// and at(-1) is the last millisecond of the day before.
 const n = Number(run.slice(-6));
-const quiet = new Date(Date.UTC(2060 + (n % 35), n % 12, 1 + (n % 27)));
-const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+const quiet = new Date(Date.UTC(2060 + (n % 35), n % 12, 1 + (n % 27)) - 330 * 60_000);
+const dayOf = (d: Date) => istDate(d);
 const FROM = dayOf(quiet);
 const at = (offsetMs: number) => new Date(quiet.getTime() + offsetMs);
 
@@ -133,11 +136,11 @@ test("parseExportRange: defaults to the 1st of the month up to today, `to` is in
   };
   const dflt = ok("");
   assert.deepEqual([dflt.from, dflt.to], ["2026-10-01", "2026-10-11"]);
-  assert.equal(dflt.start.toISOString(), "2026-10-01T00:00:00.000Z");
-  assert.equal(dflt.end.toISOString(), "2026-10-12T00:00:00.000Z", "to is inclusive: the bound is the start of the next day");
+  assert.equal(dflt.start.toISOString(), "2026-09-30T18:30:00.000Z", "00:00 IST on 1 October");
+  assert.equal(dflt.end.toISOString(), "2026-10-11T18:30:00.000Z", "to is inclusive: the bound is 00:00 IST on the next day");
   assert.deepEqual([ok("from=2026-09-15").from, ok("from=2026-09-15").to], ["2026-09-15", "2026-10-11"]);
   assert.equal(ok("to=2026-08-20").from, "2026-08-01", "only `to`: the 1st of its month");
-  assert.equal(ok("from=2026-10-05&to=2026-10-05").end.toISOString(), "2026-10-06T00:00:00.000Z", "one day");
+  assert.equal(ok("from=2026-10-05&to=2026-10-05").end.toISOString(), "2026-10-05T18:30:00.000Z", "one day");
   assert.ok(ok("from=2025-10-11&to=2026-10-11"), "366 days is allowed");
   assert.match(bad("from=2025-10-10&to=2026-10-11"), /at most 366 days/);
   assert.match(bad("from=2026-10-12&to=2026-10-11"), /after the end/);
@@ -444,7 +447,7 @@ test("payments: money as decimals, refunded amounts, flags, the erased customer,
   assert.equal(normal[col("needs_refund")], "no");
   assert.equal(normal[col("booking_status")], "SCHEDULED");
   assert.equal(normal[col("influencer_slug")], slug);
-  assert.equal(normal[col("created_at")], at(12 * 3_600_000 + 5).toISOString());
+  assert.equal(normal[col("created_at")], istIso(at(12 * 3_600_000 + 5)), "ISO with the +05:30 offset");
   assert.equal(normal[col("reconciled_by")], emailY);
   assert.equal(normal[col("customer_name")], `Export normal ${run}`);
   assert.equal(normal[col("influencer_name")], `'+Export Owner ${run}`, "a name that starts with + is prefixed with a quote");
@@ -496,14 +499,14 @@ test("payouts: money as decimals, the masked destination, who created / approved
   assert.equal(row[col("created_by")], emailY);
   assert.equal(row[col("approved_by")], emailX);
   assert.equal(row[col("paid_by")], emailX);
-  assert.equal(row[col("paid_at")], at(16 * 3_600_000).toISOString());
+  assert.equal(row[col("paid_at")], istIso(at(16 * 3_600_000)));
   assert.ok(!text.includes(hidden.find((h) => h.includes("payout-note"))!));
 });
 
 test("audit: the log without its free-form detail, oldest first", { skip }, async () => {
   const { rows, text } = await csvOf("audit");
   assert.deepEqual(rows.slice(1).map((r) => r[2]), ["test.export.0", "test.export.1", "test.export.2"]);
-  assert.deepEqual(rows[1], [at(0).toISOString(), auditEmail, "test.export.0", "payout", `target-${run}-0`, "203.0.113.7"]);
+  assert.deepEqual(rows[1], [istIso(at(0)), auditEmail, "test.export.0", "payout", `target-${run}-0`, "203.0.113.7"]);
   assert.ok(!text.includes("hidden-audit-detail") && !text.includes("marker"));
 });
 

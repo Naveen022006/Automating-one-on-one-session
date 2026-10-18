@@ -2,7 +2,7 @@
  * Customer message templates (WhatsApp + SMS fallback). The WhatsApp template NAMES are fixed here and must be
  * approved in Meta's WhatsApp Manager with exactly these names and the same number of body variables, in this
  * order. The SMS fallback text is rendered from the same values so both channels say the same thing, with the
- * session time in the customer's timezone (never a raw ISO timestamp).
+ * session time in Indian Standard Time, "Mon, 12 Oct 2026, 11:00 AM IST" (never a raw ISO timestamp).
  *
  * Two names per template. The KEY (booking-confirmation, ...) is what the rest of the app stores and passes around:
  * message rows, job data, the stored template status. The META NAME is what is sent to Meta, which only allows
@@ -32,7 +32,7 @@ export interface MessageContext {
   link: string | null;
   serviceTitle: string;
   influencerName: string;
-  /** Already formatted in the customer's timezone, e.g. "Mon, 12 Oct 2026, 11:00 am IST". */
+  /** Already formatted in Indian Standard Time, e.g. "Mon, 12 Oct 2026, 11:00 AM IST" (lib/format.ts formatSessionTime). */
   when: string;
 }
 

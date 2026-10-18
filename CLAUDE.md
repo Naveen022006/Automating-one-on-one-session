@@ -27,6 +27,7 @@ npm run db:seed:features # demo rows for moderation, portal, reports (after db:s
 npm run admin:create -- --email you@x.com --name "You" [--reset | --reset-2fa]   # administrators (no public registration)
 npm run dev:logins       # random test logins for demo + two admins -> dev-logins.local.md (gitignored; refuses non-local APP_URL)
 npm run data:cleanup-test [-- --apply --confirm=DELETE-TEST-DATA]   # dry run by default: removes test admins/influencers (and their rows) left by tests and QA; see README
+npm run data:normalise-timezones [-- --apply --confirm=NORMALISE-TIMEZONES]   # dry run by default: moves availability rules saved in another time zone to IST where that is exact; doc/14
 npm run keys:verify | keys:rotate     # TOKEN_ENCRYPTION_KEY rotation, see doc/08 section 9
 node scripts/spa-smoke.mjs <url> [--no-db]   # HTTP smoke test of a built server (CI runs it against the Docker image)
 ```
@@ -168,7 +169,8 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
 
 ## Conventions and pitfalls
 
-- Money is integer minor units. All stored times are UTC; display uses the viewer's time zone, `APP_LOCALE` for formats.
+- INDIA ONLY (doc/14-india-localisation.md). `lib/india.ts` is the one pure, browser-safe source: `APP_TIME_ZONE` (Asia/Kolkata), `APP_CURRENCY` (INR), the IST formatters (`formatDateTime` -> "Sat, 25 Oct 2026, 6:30 PM IST"), IST day/month arithmetic and the Indian mobile parser. Never format a date with `Intl`/`toLocale*`/`getUTC*` for a user: use it. The UI has no time zone or currency picker; the server accepts a client `timezone`/`tz` only to replace it with Asia/Kolkata (a non-zone is a 400); services are INR only; phones are Indian mobiles (`toE164` -> `+91XXXXXXXXXX`). Reports, earnings and exports bucket by IST days and months (`AT TIME ZONE 'Asia/Kolkata'`; midnight IST is 18:30 UTC). `lib/slots.ts` still honours the zone stored on an OLD availability rule; `scripts/normalise-timezones.ts` converts the exact ones.
+- Money is integer minor units (paise). All stored times are UTC; display is IST; `APP_LOCALE` (default en-IN) only governs number and money formats.
 - Never trust a client time, amount or id: slots are re-validated, prices come from the `Service` row, ids are checked for shape
   (`isEntityId`), bodies go through `readJson` (rejects NUL bytes; the proxy returns 400 for broken percent escapes and `%00`).
 - Jobs are idempotent with deterministic ids and read current state when they run (`doc/05`).

@@ -12,16 +12,16 @@ import { deleteStateFile, emptyState } from "./state";
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" };
 export const esc = (v: unknown): string => String(v ?? "").replace(/[&<>"'`]/g, (ch) => ESC[ch]);
 
-/** HH:MM:SS in the viewer's local time (this server runs on the viewer's machine). */
+/** HH:MM:SS in Indian Standard Time (the product is India-only; this simulator shares no code with the app, so the zone is spelled out). */
 export function clock(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? esc(iso) : d.toLocaleTimeString("en-GB");
+  return Number.isNaN(d.getTime()) ? esc(iso) : d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
 }
 
-/** A date and time in local time, for event times. */
+/** A date and time in Indian Standard Time, for event times. */
 export function when(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? esc(iso) : d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+  return Number.isNaN(d.getTime()) ? esc(iso) : `${d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })} IST`;
 }
 
 export const TABS: [string, string][] = [

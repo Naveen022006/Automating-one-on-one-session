@@ -155,6 +155,19 @@ passwords, and writes them to `dev-logins.local.md` (gitignored; the passwords a
 passwords, or with `-- --remove` to delete the logins. It refuses to run unless `APP_URL` is a local address, so it cannot
 create known logins on a deployed copy.
 
+### India only: IST, INR, +91
+The product is for India only (details and every decision in `doc/14-india-localisation.md`). All times are shown in Indian Standard Time
+(UTC+05:30, no daylight saving) with `IST` visible; nothing asks for a time zone. Prices are INR and shown with Indian grouping
+(`₹1,25,000.00`). Customers give a 10-digit Indian mobile number (`98765 43210`, `+91 98765 43210` or `09876543210`), stored as
+`+91XXXXXXXXXX`. Stored instants stay UTC. Reports, earnings and exports split days and months at midnight IST.
+
+Hours that an influencer saved in another time zone before this change keep working unchanged. The Availability page lists them; the
+influencer can re-enter them in IST, or the operator can run (dry run by default; it converts only what is exact: zones without daylight
+saving whose shifted hours stay on the same weekday, and refuses the rest with the reason):
+
+    npm run data:normalise-timezones                                           # dry run, changes nothing
+    npm run data:normalise-timezones -- --apply --confirm=NORMALISE-TIMEZONES # convert the exact ones
+
 ### Cleaning dummy data from a development database
 Tests and QA runs against a shared development database leave rows behind (test administrators such as
 `routes-x-<timestamp>@example.com`, throwaway influencers such as `ap-<timestamp>` with their services, bookings, payments,

@@ -5,7 +5,7 @@ import { ConfirmDialog, Dialog, Drawer, useToast } from "@web/components/ui/over
 import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@web/components/ui/primitives";
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIst, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import { formatMoney } from "@/lib/format";
-import { APP_TIME_ZONE_NOTE, formatDateTime } from "@/lib/india";
+import { APP_TIME_ZONE_NOTE, formatDateTime, formatIndianMobile } from "@/lib/india";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
 import { useApi } from "./ApiProvider";
 
@@ -279,7 +279,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                 </dd>
                 <dt>WhatsApp</dt>
                 <dd className="tabular">
-                  {detail.whatsapp} {detail.whatsappOptIn ? "" : "(not opted in)"}
+                  {formatIndianMobile(detail.whatsapp)} {detail.whatsappOptIn ? "" : "(not opted in)"}
                 </dd>
                 <dt>Booked</dt>
                 <dd>{dateTime(detail.createdAt)}</dd>

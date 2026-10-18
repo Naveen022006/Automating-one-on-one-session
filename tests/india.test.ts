@@ -103,6 +103,7 @@ test("calendar days and months format without a zone", () => {
   assert.equal(formatDay("2026-10-25"), "Sun, 25 Oct 2026");
   assert.equal(formatDay("2026-10-25", { weekday: false }), "25 Oct 2026");
   assert.equal(formatDay("nonsense"), "nonsense");
+  assert.equal(formatDay("2026-02-31"), "2026-02-31", "not a real day: left as written, never rolled into March");
   assert.equal(formatMonth("2026-03"), "Mar 2026");
   assert.equal(formatMonth("2026-13"), "2026-13");
   assert.equal(formatClock("18:30"), "6:30 PM");

@@ -237,7 +237,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `READINESS_BYPASS` | no | `false` | **Dev**: skips the go-live checks. Refused in production |
 | `ERROR_WEBHOOK_URL` | recommended | none | Every reported error is POSTed here (Slack/Discord compatible). Unset = a start-up warning |
 | `NEXT_PUBLIC_BRAND_NAME`, `NEXT_PUBLIC_SUPPORT_EMAIL` | no | `Session Automation`, `support@example.com` | **Build** time (also compiled into the SPA bundle) |
-| `APP_LOCALE` | no | `en-IN` | Formatting of money and times. Also a **build** input of the SPA bundle |
+| `APP_LOCALE` | no | `en-IN` | Locale of numbers and money (en-IN: `₹1,25,000.00`). Dates and times are always Indian Standard Time (IST), whatever this says (doc/14-india-localisation.md). Also a **build** input of the SPA bundle |
 | `ENABLE_DESIGN_PAGE` | no | `false` | Publishes the `/design` catalogue; warned about in production. Also a **build** input: the SPA only includes the page when built with `true`. **Use the same value at build and at run time**: the SPA decides at build time, the server (the shell's status code) at run time. Built `false` and run `true` serves the shell with status 200 but the SPA shows its 404 screen; built `true` and run `false` answers 404 while the SPA still draws the catalogue |
 | `SPA_API_TARGET` | no | `http://localhost:3000` | **Dev only**: where Vite's dev server (`npm run dev:hmr`, `npm run dev:web`) proxies `/api` and the metadata routes |
 | `MOCK_PROVIDERS_URL` | no | none | **Dev only**: points Google and Meta at the local mock (`npm run dev:mock`). Refused in production; ignored unless `APP_URL` is local |

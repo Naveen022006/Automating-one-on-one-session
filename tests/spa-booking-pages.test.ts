@@ -169,7 +169,7 @@ test("book page: `?service=` reaches the booking flow, the host and the services
   assert.ok(flow);
   assert.equal(flow.initialServiceId, "svc_2");
   assert.equal(flow.preview, false);
-  assert.deepEqual(flow.host, { name: "Demo Creator", photoUrl: null, slug: "demo", timezone: "Asia/Kolkata" });
+  assert.deepEqual(flow.host, { name: "Demo Creator", photoUrl: null, slug: "demo" });
   assert.deepEqual((flow.services as Array<{ id: string }>).map((s) => s.id), ["svc_1", "svc_2"]);
   assert.ok(!html.includes("Holding a slot is disabled"));
 

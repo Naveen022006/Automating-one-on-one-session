@@ -228,11 +228,11 @@ test("P1 GET /api/public/profiles/:slug: a live page is public, with exactly the
   assert.equal(out.status, 200);
   assert.equal(out.headers.get("cache-control"), "private, no-store");
   assert.equal(out.headers.get("access-control-allow-origin"), null);
-  assert.deepEqual(keys(out.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug", "timezone"]);
+  assert.deepEqual(keys(out.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug"]);
   assert.equal(out.body.slug, liveSlug);
   assert.equal(out.body.name, `Spa Live ${run}`);
   assert.equal(out.body.bio, "Line one\nLine two");
-  assert.equal(out.body.timezone, "Asia/Kolkata");
+  assert.ok(!("timezone" in out.body), "there is no time zone to show: everything is IST");
   assert.equal(out.body.preview, false);
   assert.deepEqual(out.body.blockers, [], "what is still missing is only for the owner's preview");
 
@@ -275,7 +275,7 @@ test("P1: a page that is not live is a 404 for strangers and other hosts, and a 
   assert.equal(owner.body.slug, ownerSlug);
   assert.ok(Array.isArray(owner.body.blockers) && (owner.body.blockers as string[]).length > 0, "the preview lists what is still to do");
   assert.ok((owner.body.blockers as unknown[]).every((b) => typeof b === "string"));
-  assert.deepEqual(keys(owner.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug", "timezone"]);
+  assert.deepEqual(keys(owner.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug"]);
   assert.equal((owner.body.services as unknown[]).length, 1);
   assertNoSecretKeys(owner.body);
   const text = JSON.stringify(owner.body);

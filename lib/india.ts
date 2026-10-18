@@ -169,7 +169,7 @@ export function formatDay(day: string, opts: { weekday?: boolean; year?: boolean
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
   if (!m) return day;
   const noon = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12));
-  if (Number.isNaN(noon.getTime())) return day;
+  if (Number.isNaN(noon.getTime()) || noon.getUTCDate() !== Number(m[3])) return day; // 2026-02-31 is not a day: leave it as written
   const { weekday = true, year = true } = opts;
   const core = `${noon.getUTCDate()} ${MONTHS[noon.getUTCMonth()]}${year ? ` ${noon.getUTCFullYear()}` : ""}`;
   return weekday ? `${WEEKDAYS[noon.getUTCDay()]}, ${core}` : core;

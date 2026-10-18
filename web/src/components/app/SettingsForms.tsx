@@ -2,7 +2,7 @@ import { useRouter } from "@web/lib/navigate";
 import { useEffect, useState } from "react";
 import { IconLogOut } from "@web/components/icons";
 import { ConfirmDialog, Switch, useToast } from "@web/components/ui/overlays";
-import { Alert, Avatar, Button, Field, Input, Select, Textarea, describedBy } from "@web/components/ui/primitives";
+import { Alert, Avatar, Button, Field, Input, Textarea, describedBy } from "@web/components/ui/primitives";
 import type { ProfileData } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
 import { formatDateTime } from "@/lib/india";

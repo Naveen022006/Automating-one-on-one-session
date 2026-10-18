@@ -2,7 +2,8 @@
 
 Branch `feat/india-only`, started from `origin/main` on 2026-10-18. The owner decided the product is for India only. This file is the
 inventory of every place that handles a time zone, a date or time format, a locale, a currency or a phone number or country, what it does
-today, and the decision. It is written BEFORE the code changes (first commit) and the last section is filled in as the work lands.
+today, and the decision. Sections 1 to 5 were written BEFORE the code changes (first commit); where the code ended up differently, section 6
+("Deviations") says so, and that section wins.
 
 ## 1. Policy (decided)
 
@@ -26,29 +27,29 @@ today, and the decision. It is written BEFORE the code changes (first commit) an
 
 | Where | Today | Decision |
 | --- | --- | --- |
-| `lib/format.ts` | `DEFAULT_LOCALE = APP_LOCALE or en-IN`. `formatSessionTime(date, tz, locale)` and `formatTime(date, tz)` take any zone (`safeZone` falls back to UTC); `customerZone(customerTz, influencerTz)` picks the customer's zone; `formatMoney(minor, currency)`; `formatDuration`. | Keep the file (on the allowlist) as the thin layer the app already imports. `formatSessionTime(date)` / `formatTime(date)` become IST-only (no zone argument), `customerZone` and `safeZone` are removed, `formatMoney` keeps the currency argument (stored legacy rows) and defaults the locale to en-IN, `formatDuration` is re-exported from `lib/india.ts`. |
-| `lib/slots.ts` | `Rule.timezone` honoured per rule (luxon). `isValidTimezone`, `blockedDaySet`, `dayBoundsUtc(date, tz)`. | Still honours a rule's STORED zone (so rows in another zone keep producing exactly the same instants). New: `dayBoundsUtc(date)` defaults to IST; callers stop passing a customer zone. `isValidTimezone` stays (used by the normaliser and the script). |
+| `lib/format.ts` | `DEFAULT_LOCALE = APP_LOCALE or en-IN`. `formatSessionTime(date, tz, locale)` and `formatTime(date, tz)` take any zone (`safeZone` falls back to UTC); `customerZone(customerTz, influencerTz)` picks the customer's zone; `formatMoney(minor, currency)`; `formatDuration`. | Keep the file (on the allowlist) as the thin layer the app already imports. `formatSessionTime(date)` / `formatTime(date)` are IST-only (no zone argument), `customerZone` and `safeZone` are removed, `formatMoney` keeps the currency argument (stored legacy rows) and defaults to INR / en-IN, `formatDuration` is re-exported from `lib/india.ts`. |
+| `lib/slots.ts` | `Rule.timezone` honoured per rule (luxon). `isValidTimezone`, `blockedDaySet`, `dayBoundsUtc(date, tz)`. | Still honours a rule's STORED zone (so rows in another zone keep producing exactly the same instants). `dayBoundsUtc(date)` is IST only (the zone argument is gone, so no caller can pass a customer zone). `isValidTimezone` stays (used by the planner and the script). |
 | `lib/availability.ts` | `BookableService.timezone` = the influencer's zone; `daysWithSlots(slots, tz)`. | `daysWithSlots` always buckets by IST day. `timezone` field removed from the service shape; slot generation uses the rules. |
 | `lib/holds.ts` | `customerTz` stored on the booking; slot start re-validated through `generateSlots`. | `customerTz` is written as `Asia/Kolkata` for new bookings. Slot validation unchanged. |
 | `lib/booking-window.ts`, `lib/reminders.ts` | Pure instants and millisecond offsets (24 h, 15 min). | No zone logic; nothing to change. Reminder TEXT comes from `lib/message-templates.ts` (below). |
 | `lib/message-templates.ts` | SMS bodies and WhatsApp variables take a pre-formatted `when` ("in the customer's timezone"). It is on the browser allowlist. | Comments say IST. Text unchanged. |
 | `lib/messaging.ts` | `when = formatSessionTime(start, customerZone(customerTz, influencer.timezone))`. | `when = formatSessionTime(start)` (IST, label `IST`). Also used by reminders and reschedule/cancel notices. |
 | `lib/email.ts`, `lib/email/templates.ts` | `tz` in every template's data; `formatSessionTime(d.startTime, d.tz)`; `d.at.toUTCString()` in two admin security mails. | `tz` removed from the data; times are IST; the two `toUTCString()` mails use `formatDateTime` (IST). |
-| `lib/email/customer-portal.ts`, `lib/privacy.ts`, `lib/customer-portal.ts` | Erasure wording lists "time zone"; the portal DTO exposes `timeZone: b.customerTz`. | `timeZone` stays in the DTO (a pinned key) but is always `Asia/Kolkata`; erasure still blanks `customerTz` on old rows. Wording drops "time zone" from the user-facing lists. |
+| `lib/email/customer-portal.ts`, `lib/privacy.ts`, `lib/customer-portal.ts` | Erasure wording lists "time zone"; the portal DTO exposes `timeZone: b.customerTz`. | Unchanged on purpose: the JSON data export shows what is stored (new bookings store `Asia/Kolkata`, older ones whatever they stored) and erasure still blanks `customerTz`, so the wording stays true. The Privacy page no longer lists "your time zone" among the data collected. |
 | `lib/receipts.ts` | `sessionStart` / `paidAt` ISO strings; the SPA formats them with `Intl` in the viewer's zone. | Strings unchanged; the SPA formats them in IST (`ReceiptCard`). |
 | `lib/ics.ts`, `app/api/bookings/[id]/ics` | `DTSTART:...Z` (UTC). | Keep UTC (correct for every calendar); add the IST time to the description and `X-WR-TIMEZONE:Asia/Kolkata`. |
-| `lib/google.ts`, `lib/meeting.ts` | `start/end { dateTime: ISO, timeZone: "UTC" }`; event description has no time. | `timeZone: "Asia/Kolkata"` (same instants); the description gains the IST time. |
+| `lib/google.ts`, `lib/meeting.ts` | `start/end { dateTime: ISO, timeZone: "UTC" }`; event description has no time. | `timeZone: "Asia/Kolkata"` (same instants, so the event shows in IST by default). The Calendar description does NOT gain the time: it is written once, and a reschedule only patches start/end, so a time in the text would go stale. |
 | `lib/phone.ts` | `toE164(input, defaultCountry IN/US/GB)`: any valid number of any country. | IN only; see section 3. |
 | `lib/sms.ts`, `lib/whatsapp.ts` | `toE164(input.to) ?? input.to` before sending. | Keep the `?? input.to` fall-through so an already-paid booking with a legacy foreign number is still messaged; new numbers are always +91. |
-| `lib/dashboard-data.ts` | Overview: `monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)`; `earningsPayments(from, to)`. | `monthStart` = start of the IST month. |
+| `lib/dashboard-data.ts` | Overview: `monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)`; `earningsPayments(from, to)`. | `monthStart` = 00:00 IST on the 1st (`istDayStart(istMonthStart(now))`). The session drawer's "Time zone" row (`customerTz`) is gone; the field stays in `BookingDetail`. |
 | `lib/views/dashboard-earnings.ts`, `app/api/dashboard/earnings/export` | `from` / `to` are UTC days; `new Date(`${from}T00:00:00.000Z`)`; CSV `paid_at` and `session_start_utc` are UTC ISO. | Days are IST days (`istDayStart`); CSV columns `paid_at_ist` / `session_start_ist` as ISO with `+05:30`. |
 | `lib/views/dashboard-params.ts` | `parseReportDay` validates `YYYY-MM-DD` via UTC. | Unchanged (a calendar-day check). Comment says IST. |
 | `lib/admin/reports.ts`, `lib/views/admin-reports.ts`, `app/api/admin/reports` | `monthWindow` UTC; `created_at >= ${start}::date` (naive UTC); `to_char(created_at, 'YYYY-MM')`; `nextDay` UTC; default range from `toISOString()`. | All buckets and bounds are IST: `(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`. Same nine queries, same identity. |
-| `lib/admin/exports.ts` | UTC range (`T00:00:00.000Z`), UTC "today", ISO UTC cells, `toLocaleString("en-US")`. | IST range and today, IST ISO cells (`+05:30`) with `_ist` header names, `en-IN` count. |
+| `lib/admin/exports.ts` | UTC range (`T00:00:00.000Z`), UTC "today", ISO UTC cells, `toLocaleString("en-US")`. | IST range and today, timestamps as ISO with `+05:30` (header names unchanged: the offset is in every cell), count formatted with `en-IN`. The influencer earnings CSV renames its two time columns `paid_at_ist` / `session_start_ist`. |
 | `lib/admin/cancel.ts`, `lib/booking-approval.ts` | Notice text uses `formatSessionTime(start, influencer.timezone)`. | IST. |
 | `lib/activity-actions.ts` | `Intl.NumberFormat("en-IN")` for money; a `timezone` profile field label. | Money already en-IN; the `timezone` label stays so old log rows still read (new rows never record it). |
 | `lib/views/booking-pay.ts` | `whenText` / `payByText` in the customer's zone; `amountText` via `formatMoney`. | IST; INR. |
-| `lib/views/dashboard-availability.ts`, `dashboard-settings.ts`, `dashboard-types.ts`, `admin-influencer.ts`, `lib/public-profile.ts` | Expose the influencer `timezone` (editor default, settings, admin header, public profile). | The field stays in the DTOs (pinned key sets) but is always sent as `Asia/Kolkata`; the SPA stops showing a picker. |
+| `lib/views/dashboard-availability.ts`, `dashboard-settings.ts`, `dashboard-types.ts`, `admin-influencer.ts`, `lib/public-profile.ts` | Expose the influencer `timezone` (editor default, settings, admin header, public profile). | The `timezone` field is REMOVED from all five DTOs (nothing in the SPA reads it any more; the tests that listed it were updated). `RuleRow.timezone` stays: it is how the Availability page finds hours still saved in another zone. |
 | `lib/auth/accounts.ts`, `app/api/auth/register` | `timezone` from the browser when valid, else `Asia/Kolkata`. | Always `Asia/Kolkata`. |
 | `lib/spa/head.ts`, `web/index.html` | `<html lang="en">`; Organization JSON-LD without area; no `og:locale`. | `<html lang="en-IN">`, `og:locale = en_IN`, `areaServed: IN`, `inLanguage: en-IN`. There is no `Offer` markup anywhere, so `priceCurrency: INR` has nothing to attach to (not invented). |
 | `lib/env.ts`, `.env.example`, `Dockerfile`, `docker-compose.yml`, vite config | `APP_LOCALE` default `en-IN` already. | Comments updated; default kept. |
@@ -70,7 +71,7 @@ today, and the decision. It is written BEFORE the code changes (first commit) an
 
 | File | Today | Decision |
 | --- | --- | --- |
-| `components/ui/scheduling.tsx` | `todayIn(tz)`, `TimeSlotPicker tz`, `partOfDay(en-GB)`, `timezoneOptions()` (browser list or Dubai/Singapore/London/Berlin/New York/Los Angeles/Sydney/UTC). | Zone argument dropped; IST everywhere; `timezoneOptions` deleted. |
+| `components/ui/scheduling.tsx` | `todayIn(tz)`, `TimeSlotPicker tz`, `partOfDay(en-GB)`, `timezoneOptions()` (browser list or Dubai/Singapore/London/Berlin/New York/Los Angeles/Sydney/UTC). | `todayIst()`; no zone argument anywhere; `timezoneOptions` deleted. |
 | `pages/booking/BookingFlow.tsx` | Browser zone detected, time-zone `<select>`, `tz` sent, `Intl` money and dates in `undefined` locale, WhatsApp help "Include the country code", validation `>= 8` digits. | No zone UI; IST note; INR via shared helper; +91 prefix and 10-digit mobile input (`inputMode="tel"`, `autocomplete="tel-national"`, `pattern`). |
 | `pages/booking/ManageBooking.tsx`, `components/app/SessionsBoard.tsx` (reschedule picker) | Browser zone; `Intl` with `undefined` locale. | IST. |
 | `components/app/AvailabilityEditor.tsx`, `SettingsForms.tsx`, `OnboardingWizard.tsx`, `views/dashboard/AvailabilityView.tsx` | Time-zone `<select>`, "mixed zones" alert, `todayIn(timezone)`. | Select removed; IST note; an alert lists hours still saved in another zone. |
@@ -118,3 +119,27 @@ Decision: no SQL migration. `lib/slots.ts` keeps honouring the stored zone, so n
 ## 5. Out of scope / deferred
 
 GST, state, PIN code, TDS, Hindi or regional-language UI, UPI-specific flows, Razorpay settings (the order currency already comes from the service row), a data migration of old payment currencies.
+`lib/whatsapp-connect.ts` (the "token expires on <UTC date>" note) was left alone on purpose: another branch is changing the WhatsApp connection code.
+
+## 6. Deviations from the plan above, and tests that changed
+
+1. **Dates and times are not formatted with `Intl`.** The product copy is English, and `Intl` in `en-IN` writes "Sept" and a lower-case "pm", differently across ICU versions, so the server's text and the browser's would not always match. `lib/india.ts` builds "Sat, 25 Oct 2026, 6:30 PM IST" from IST integer arithmetic (the offset is fixed). `APP_LOCALE` therefore governs numbers and money only (`formatMoney`, `formatCount`).
+2. **`timezone` was removed from five DTOs** (public profile, profile settings, availability, admin influencer, onboarding's profile) instead of being kept and always sent as `Asia/Kolkata`: nothing reads it. `RuleRow.timezone` stays for the legacy-hours notice.
+3. **`dayBoundsUtc(date)` lost its zone argument** so no caller can pass a customer zone; the legacy-rule path goes through `generateSlots`, which still reads `rule.timezone`.
+4. **No `Offer` markup, so no `priceCurrency`.** JSON-LD is an `Organization` with `areaServed: IN` and `knowsLanguage: en-IN`, plus `og:locale = en_IN` and `<html lang="en-IN">`. Inventing product markup was out of scope.
+5. **Google Calendar events** get `timeZone: Asia/Kolkata` (same instants); their description is not given a time, because a reschedule only patches start and end.
+6. **CSV**: the influencer earnings export renames its two time columns (`paid_at_ist`, `session_start_ist`); the admin exports keep their column names and write ISO with `+05:30` (a script that parsed the old `Z` suffix must be told).
+7. **Senders keep their fall-through** (`toE164(to) ?? to`): a paid booking whose stored number is a legacy foreign E.164 is still messaged. New numbers cannot be foreign.
+8. **Services**: a `PATCH` naming no currency is untouched (an older non-INR service keeps working and is shown in its own currency); the form never sends a currency for an existing service.
+9. **Existing non-IST rules**: no migration (section 4). `PATCH` of such a rule must carry both times and re-saves it in IST.
+10. **Activity log wording** ("price 1,000 → 1,200 INR") was already en-IN grouped and was left alone.
+
+Tests changed because their expectation was the old behaviour (rewritten to the IST expectation, none weakened):
+
+* `tests/messages-format.test.ts`: the "customer's timezone" test (and `customerZone`) is now the exact IST string; the e-mail fixtures lose `tz`; the e-mail text is checked for IST and rupees; the calendar file for `X-WR-TIMEZONE`.
+* `tests/slots.test.ts`: the New York day-bounds test is now the IST day (18:30 UTC to 18:30 UTC) with the same slot, plus tests for no daylight saving, a midnight-IST window and a stored legacy zone still producing its own instants; the phone test now refuses a US number.
+* `tests/spa-booking.test.ts`: the two "customer's own time zone" expectations (`America/New_York`, `Europe/London`) are now IST, with the stored zone still on the row to prove it is ignored.
+* `tests/admin-reports.test.ts`: the edge fixtures sat on UTC midnights (23:59:59.999Z, 00:00:00.000Z); they now sit on IST midnights (18:29:59.999Z, 18:30:00.000Z), with every expected number unchanged; the view-import rule also allows `@/lib/india`.
+* `tests/spa-shell.test.ts` (JSON-LD, `og:locale`), `tests/spa-guard.test.ts` (allowlist pin), `tests/schedule-overlap.test.ts`, `tests/spa-admin-core-pages.test.ts`, `tests/spa-booking-pages.test.ts`, `tests/spa-dashboard-setup.test.ts` (removed `timezone` fields).
+
+New: `tests/india.test.ts` (formatters, IST label, lakh grouping, midnight IST vs UTC, zone normaliser, phone matrix, currency, `lang`), `tests/india-api.test.ts` (routes), `tests/ist-reporting.test.ts` (18:30 UTC cases for the report, the earnings page, "this month" and the export range), `tests/normalise-timezones.test.ts` (planner and database), and an IST text test in `tests/messaging.test.ts`.
