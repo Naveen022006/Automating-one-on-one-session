@@ -1,7 +1,7 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import { formatSessionTime } from "@/lib/format";
-import { bearerLinkSecrets, isRequestMessageKind, messageMayBeSent, redactBearerLinks } from "@/lib/message-kinds";
+import { REQUEST_APPROVED_TEMPLATE, bearerLinkSecrets, isRequestMessageKind, messageMayBeSent, redactBearerLinks } from "@/lib/message-kinds";
 import {
   CONFIRMATION_TEMPLATE,
   smsBody,
@@ -235,8 +235,11 @@ async function tryWhatsAppWeb(
     console.warn(`[send-message] booking ${bookingId}: the linked WhatsApp gave no answer in time for "${template}"; it may still arrive, so it is not sent another way`);
     return { kind: "unknown" };
   }
-  const lateReminder = result.reason === "expired" && isReminderTemplate(template);
-  if (lateReminder || result.reason === "not-sendable") {
+  // "Too late" means nothing for a confirmation (it still goes out another way), but a reminder that waited past its time and the payment
+  // link whose time to pay ran out while it waited are worthless on every channel: the text built at the start of this run (its pay-by
+  // time, its link) would only mislead the customer on the official route or by SMS.
+  const tooLate = result.reason === "expired" && (isReminderTemplate(template) || template === REQUEST_APPROVED_TEMPLATE);
+  if (tooLate || result.reason === "not-sendable") {
     await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template } }); // nothing was sent: leave no row, like any skipped message
     console.info(`[send-message] booking ${bookingId}: "${template}" dropped (${result.reason}); not sent anywhere`);
     return { kind: "skip" };
@@ -400,6 +403,13 @@ async function deliverMessage(bookingId: string, template: string, overrides: Pa
   if (viaLinkedNumber?.kind === "unknown") return "sent";
   if (viaLinkedNumber?.kind === "skip") return "skipped";
   const linkedMayRecover = viaLinkedNumber?.kind === "later";
+
+  // The linked number's queue may have held the message for a while. The text for the other channels was built when this run started,
+  // so ask the rule again with the clock as it is now (a payment link whose pay-by time has gone by must not go out another way).
+  if (isRequestMessageKind(template) && !messageMayBeSent(template, facts, new Date(), "sender")) {
+    console.info(`[send-message] booking ${bookingId}: "${template}" is no longer sendable (its time has passed while it waited); not sent anywhere`);
+    return "skipped";
+  }
 
   // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
   let channel: "WHATSAPP" | "SMS" = "WHATSAPP";

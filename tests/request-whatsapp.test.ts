@@ -802,6 +802,46 @@ test("a host suspended between the approval and the send: the payment link is no
   assert.equal(await sendMessageForBooking(approved, "request-approved", g.deps), "sent", "reinstated: the same message goes out");
 });
 
+test("a payment link that is too late is dropped on EVERY channel: the linked number's 'expired' is final for request-approved, and the clock is checked again before the official route", { skip }, async () => {
+  // The linked number's queue says the message waited past its deadline (the pay-by time): not sent anywhere.
+  const a = await requestBooking();
+  await approvalLib.approveRequest(influencerId, a, new Date(), queuedOk);
+  const f = fakes();
+  f.ctl.qr = () => ({ ok: false, reason: "expired", retryable: false });
+  assert.equal(await sendMessageForBooking(a, "request-approved", f.deps), "skipped");
+  assert.deepEqual(f.calls, ["qr"], "no official WhatsApp, no SMS, with a link and a pay-by time that are now in the past");
+  assert.equal(await row(a, "WHATSAPP_WEB", "request-approved"), null, "no row left behind");
+  assert.equal(await row(a, "WHATSAPP", "request-approved"), null);
+  assert.equal(await row(a, "SMS", "request-approved"), null);
+
+  // Other messages are as before: a decline that waited too long still goes out by the next channel.
+  const d = await requestBooking();
+  await approvalLib.declineRequest(influencerId, d, null, new Date(), queuedOk);
+  const g = fakes();
+  g.ctl.qr = () => ({ ok: false, reason: "expired", retryable: false });
+  assert.equal(await sendMessageForBooking(d, "request-declined", g.deps), "sent");
+  assert.deepEqual(g.calls, ["qr", "whatsapp"]);
+
+  // The pay-by time passes while the linked number holds the message, and the linked number then refuses for another reason (busy):
+  // the official route and SMS must not send the link built at the start of the run.
+  const b = await requestBooking();
+  await approvalLib.approveRequest(influencerId, b, new Date(), queuedOk);
+  await prisma.booking.update({ where: { id: b }, data: { holdExpiresAt: new Date(Date.now() + 6_000) } });
+  const h = fakes();
+  const realQr = h.deps.qr!;
+  h.deps.qr = {
+    isReady: realQr.isReady,
+    send: async (req) => {
+      await new Promise((r) => setTimeout(r, 7_000)); // the message waits in the linked number's queue until the time to pay is over
+      return realQr.send(req);
+    },
+  };
+  h.ctl.qr = () => ({ ok: false, reason: "busy", retryable: true });
+  assert.equal(await sendMessageForBooking(b, "request-approved", h.deps), "skipped");
+  assert.deepEqual(h.calls, ["qr"], "not by the official route, not by SMS");
+  assert.equal(await row(b, "SMS", "request-approved"), null);
+});
+
 // ---- 5a. no route at all: no retries, no alerts for the request messages ------------------------------------------------------------
 
 /** The world with no way to reach the customer: the number is not linked, no official connection, and SMS says it is not set up. */

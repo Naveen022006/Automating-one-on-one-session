@@ -114,7 +114,11 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   lapsed) is expired by the unchanged `expireStaleHolds`, which the old tests keep calling. A request declined or approved while the sweep
   ran is never contradicted (the update is conditional and the notified set is read back).
 - **Linked-number deadlines** (`webSendDeadline`): `request-received` 30 minutes after it was queued; `request-approved` until the pay-by
-  time; `request-declined` and `request-expired` 6 hours. A late message is dropped, not sent.
+  time; `request-declined` and `request-expired` 6 hours. A late message is dropped, not sent: for `request-approved` the linked number's
+  "expired" is final on EVERY channel (like a late reminder), because the text and the link built at the start of the run would mislead on
+  the official route or by SMS; and before falling through to the official route the rule is asked again with the clock as it is then (a
+  pay-by time that passed while the linked number held the message ends the run). Another message's "expired" still falls through, as
+  it always did.
 - **Meta templates** (`sa_request_received` 5 variables, `sa_request_approved` 7, `sa_request_declined` 5, `sa_request_expired` 4, all
   UTILITY, bodies in `lib/message-templates.ts`). The existing template sync submits them for approval for every connected influencer (the
   worker's periodic check does it for accounts that were connected before this change); until Meta approves one, the official route falls
