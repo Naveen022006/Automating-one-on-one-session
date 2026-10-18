@@ -138,8 +138,10 @@ WhatsApp library, `uqr` and `libsignal`.
 
 - `components/app/WhatsAppModePicker.tsx`, in Settings > WhatsApp (`SettingsView`; the onboarding wizard keeps the bare official form). It reads
   `GET /api/dashboard/whatsapp-web` once after mount. While that has not answered, when the platform flag is off, or when the read fails, it
-  draws exactly the official form (`WhatsAppConnect`) and nothing else. With the flag on it adds a group of two radios, "Official WhatsApp
-  Business API (Meta)" (the default) and "Link with QR code (unofficial)", and shows the chosen side. `WhatsAppModeLayout` is the pure part.
+  draws exactly the official form (`WhatsAppConnect`) and nothing else. With the flag on it draws two independent sections, both always
+  visible: "Official WhatsApp Business API (Meta)" and "Link with QR code (unofficial)", with the note that an active QR link is used
+  first, then the official connection, then SMS and e-mail, and that disconnecting is how to stop using it. There is no choice to make and
+  no server-side preference: a hidden QR panel would hide its status and its Disconnect button. `WhatsAppModeLayout` is the pure part.
 - `components/app/WhatsAppQrLink.tsx`: `WhatsAppQrPanel` draws one state from a view (every state is a server render in the tests) and
   `WhatsAppQrLink` owns the behaviour: commands through `useApi()` (so the password prompt for a stale sign-in works), a status poll
   every 2 s while a code waits to be scanned or the first code is being made (10 s while reconnecting, never otherwise, never in a hidden

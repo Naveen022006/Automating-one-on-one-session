@@ -5,9 +5,10 @@ import { ConfirmDialog, Dialog, Drawer, useToast } from "@web/components/ui/over
 import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@web/components/ui/primitives";
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
+import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from "@web/lib/whatsapp-web-ui";
 import { useApi } from "./ApiProvider";
 
-const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", SMS: "SMS", EMAIL: "Email", LOG: "Log" };
+const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", WHATSAPP_WEB: QR_CHANNEL_LABEL, SMS: "SMS", EMAIL: "Email", LOG: "Log" };
 const TEMPLATE: Record<string, string> = {
   "booking-confirmation": "Confirmation",
   "reminder-24h": "24 h reminder",
@@ -34,8 +35,8 @@ function MessageSummary({ booking }: { booking: BookingRow }) {
       {booking.latestByChannel
         .filter((m) => m.channel !== "LOG")
         .map((m) => (
-          <span key={m.channel} title={`${TEMPLATE[m.template] ?? m.template}${m.error ? `: ${m.error}` : ""}`}>
-            <span className="subtle">{CHANNEL[m.channel] ?? m.channel}</span> <StatusPill kind="message" status={m.status} />
+          <span key={m.channel} title={`${TEMPLATE[m.template] ?? m.template}${isUnconfirmedMessage(m) ? `: ${UNCONFIRMED_MESSAGE_TEXT}` : m.error ? `: ${m.error}` : ""}`}>
+            <span className="subtle">{CHANNEL[m.channel] ?? m.channel}</span> {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
           </span>
         ))}
     </span>
@@ -361,11 +362,11 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                           <td>
                             {TEMPLATE[m.template] ?? m.template}
                             <div className="subtle">{dateTime(m.at)}</div>
-                            {m.error && <div className="error-text break">{m.error}</div>}
+                            {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : m.error && <div className="error-text break">{m.error}</div>}
                           </td>
                           <td>{CHANNEL[m.channel] ?? m.channel}</td>
                           <td>
-                            <StatusPill kind="message" status={m.status} />
+                            {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
                           </td>
                         </tr>
                       ))}

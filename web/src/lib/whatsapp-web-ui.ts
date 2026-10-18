@@ -7,6 +7,19 @@ import type { WhatsAppWebRequest, WhatsAppWebStatus, WhatsAppWebView } from "@/l
  * Types only come from lib/whatsapp-web/types.ts (`import type`); nothing else under lib/whatsapp-web/ may reach the browser.
  */
 
+/** How the Messages screens name the message channel of a QR-linked number (the `channel` column's value is WHATSAPP_WEB). */
+export const QR_CHANNEL_LABEL = "WhatsApp (QR link)";
+
+/**
+ * A message row of the linked number whose send got no answer in time (the same text as QR_UNKNOWN_DELIVERY in lib/messaging.ts).
+ * It may still have arrived, so it is shown as "Not confirmed" instead of "Sent", and it was not sent another way.
+ */
+export function isUnconfirmedMessage(m: { channel: string; error: string | null }): boolean {
+  return m.channel === "WHATSAPP_WEB" && m.error === "unknown-delivery";
+}
+
+export const UNCONFIRMED_MESSAGE_TEXT = "WhatsApp did not answer in time. The message may still have arrived. It was not sent another way, so the customer does not get it twice.";
+
 /** How often the page asks for a fresh status while a code is on screen (the server may have replaced it). */
 export const QR_POLL_MS = 2000;
 /** While the link is reconnecting nothing needs to be fast; it only keeps the screen from showing an old state for ever. */

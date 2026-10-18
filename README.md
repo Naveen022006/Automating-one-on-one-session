@@ -340,8 +340,10 @@ consent) and is told to use a number they can afford to lose. This mode never lo
 through the linked number goes through the official connection (when active), then SMS or e-mail. Design and deviations:
 `doc/14-whatsapp-qr-deviations.md`; settings and operation: `doc/08-deployment.md` section 4.
 
-**What the influencer sees** (only when the mode is on): a choice between "Official WhatsApp Business API (Meta)" and "Link with QR
-code (unofficial)". The QR screen shows the risk text in an alert, a required consent checkbox, then **Show QR code**: the code
+**What the influencer sees** (only when the mode is on): two independent sections, both always visible, "Official WhatsApp Business API
+(Meta)" and "Link with QR code (unofficial)", with the note "When a QR link is active, booking messages are sent from it first;
+otherwise the official connection, then SMS and e-mail. To stop using the QR link, disconnect it." (There is no stored preference: an
+active QR link is used first, and disconnecting it is how to stop.) The QR screen shows the risk text in an alert, a required consent checkbox, then **Show QR code**: the code
 (the page asks for the status every 2 seconds, and a new code replaces the old one when it runs out), the steps to scan it, and a Cancel. Once linked it shows the masked
 number, the device, messages sent today against the cap, **Send a test message to my own number** and **Disconnect**. Separate
 screens for reconnecting, paused (with the reason) and "the phone removed the device". Administrators see a card on the Influencer
@@ -350,8 +352,10 @@ off, none of this exists on any screen.
 
 **Turn it on**
 1. `WHATSAPP_QR_ENABLED=true` on **both** the web app and the worker (the web app hides the option and the worker opens no
-   connection unless both see it). Needs `REDIS_URL` and **exactly one worker** (`npm run worker`): only the worker opens connections,
-   and two workers on one database would log each other out.
+   connection unless both see it). Needs `REDIS_URL` and **one worker** (`npm run worker`): only the worker opens connections. A second worker
+   (a rolling deploy that starts the new one first) takes no sockets: the worker that holds the lease in Redis (`wa-web:manager:lease`,
+   renewed every 2 s, 20 s long) is the only one that connects, the other stays idle and says so once, and takes over once the lease is
+   released (clean shutdown) or has run out (crash). Without Redis (development) an in-process lease does the same job for one process.
 2. Optional limits, same environment: `WHATSAPP_QR_DAILY_CAP` (messages per number per Indian calendar day, default 150),
    `WHATSAPP_QR_MIN_GAP_MS` (fixed gap between two messages from a number, default 4000), `WHATSAPP_QR_MAX_SESSIONS` (numbers the
    worker keeps connected, default 10), `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED` (keep the stored logins when the switch is turned off).

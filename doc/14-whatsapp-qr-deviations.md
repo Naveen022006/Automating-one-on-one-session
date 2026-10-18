@@ -160,3 +160,51 @@ arrive). One a minute per influencer (the cooldown is taken only for a request t
 transaction as the `whatsapp_web.force_disconnect` audit row; 404 unknown or malformed id, 409 when nothing is linked (a repeat writes no second row). The
 existing influencer detail view and the admin health view are NOT changed (their key sets are pinned): the admin card reads the new endpoint.
 Types: `lib/whatsapp-web/api-types.ts`.
+
+## 6. Review fixes (`wa/04-review-fixes`)
+
+Findings of the review of the whole feature and what was done (items W2 to W13; W1 was the merge of the `wa/02` tip into `wa/03`).
+
+- **W2, messages that wait.** Every send now carries its kind (the template) and a deadline (`lib/whatsapp-web/deadline.ts`): a 15-minute
+  reminder until the session starts, a 24-hour reminder until 12 h are left (the same rule as `staleReminderReason`), the rest 30 minutes after
+  they were queued. The queue checks the deadline again immediately before the send and asks the booking guard again after any wait; a
+  message past its time is dropped as `expired` and a booking that was cancelled, failed, expired or erased while it waited as
+  `not-sendable` (the guard knows the kind: a cancellation notice is for a cancelled booking, nothing else is). `lib/messaging.ts` skips a late reminder and a
+  `not-sendable` message on EVERY channel (no row is left), and sends a late confirmation, reschedule or cancellation notice the next way. A request whose
+  expected wait (queue ahead x the fixed gap) is over 20 s (`MAX_EXPECTED_WAIT_MS`) is refused at once as `busy` (retryable), so a group
+  session's 100 reminders cannot hold the worker's job slots for minutes; the same for a request that cannot be sent before its deadline
+  (`expired`). One linked number can hold at most `MAX_JOBS_PER_SESSION` (2) worker jobs at a time; the rest are `busy` before they wait. The effect on a
+  100-seat reminder: about 6 go from the linked number, the others by the official connection or SMS at once.
+- **W7, a timeout is UNKNOWN.** A send with no answer in 30 s is `unknown-delivery`: not a failure, not counted towards the breaker, its
+  place in the day's count stays taken, and it is NOT sent another way (it could arrive twice). The row is `SENT` with `error = "unknown-delivery"`
+  and no provider id (so every dedupe stops it, including the reminder repair job); the Messages views show it as "Not confirmed".
+- **W4, one worker.** A lease in the shared store (`wa-web:manager:lease`, `SET NX PX`, value = the worker's id, 20 s, renewed every pass,
+  released on shutdown). A worker without it opens no socket and logs once. A holder that cannot renew it because another worker has it closes every socket WITHOUT
+  writing the login (`EncryptedAuthState.abandon()`); one that merely stalled past the lease and finds nobody took it takes it back. A store that
+  does not answer keeps what is open until the lease would have run out and starts nothing new. The kill-switch pass needs no lease. Without
+  `REDIS_URL` the in-memory store makes it an in-process guard. Consequence: during a rolling deploy the messages sent by the idle worker's jobs
+  find no sockets and go the official way.
+- **W5.** `worker/process-guards.ts`: `unhandledRejection` is one log line (the error's name) and the worker keeps running;
+  `uncaughtExceptionMonitor` logs while Node's default (exit) stays. `lib/whatsapp-web/safe.ts` wraps every event callback of the library and the key
+  store in the Baileys adapter, so a throw or rejection becomes a log line (`describeError`: the name and a numeric status, never a message).
+- **W6, customers' numbers in the stored login.** The per-contact keys are named after the contact's address (phone number). The text of
+  `RISK_TEXT` and the Privacy page say so, and `CONSENT_VERSION` is now `wa-web-2026-11-2` (a consent given before must be given again). `lib/privacy.ts`
+  (`eraseCustomerData`, used by the dashboard and the portal) publishes the erased numbers (those without another live booking) into a Redis list
+  (`wa-web:prune:<influencerId>`, 7 days); the manager takes them every 10 s per connected number and removes the keys inside the same coalesced
+  write (`EncryptedAuthState.mutateKeys`; the web process never writes the login). At session start and every 6 h it also forgets each contact
+  with no non-erased booking (`keepContacts`), keeping the account's own addresses. The ONE function that knows the library's key naming is
+  `keyOwner` in `lib/whatsapp-web/prune.ts`; it was read from baileys 7.0.0-rc14 and a test reads the library's source to pin it: recheck it on every upgrade.
+  A session that is not connected (suspended) keeps its login until it is connected again or disconnected.
+- **W8.** A login that could not be deleted is not reported as gone: `teardown` writes the new status only after the delete worked (a logout by the
+  phone is still recorded), `wipeIdle` really clears, and `listManageable` also lists rows that still hold a login (`SessionRow.hasLogin`).
+- **W9.** `requestLink` writes only `wantLinked` and the consent. The one status change left is conditional (`SUSPENDED`/`LOGGED_OUT` to
+  `NOT_LINKED`), so a start after a pause or logout still begins afresh while a live socket is never touched.
+- **W10.** The daily counter's refund uses the key it was counted on (a wait across midnight, India time, no longer refunds the wrong day).
+- **W11.** A linked-number row that was not used (the message went the next way) is `FAILED` with a sentence ("... ; sent another way."), not `PENDING`;
+  `WHATSAPP_WEB` is labelled "WhatsApp (QR link)" in the sessions drawer and the Messages page.
+- **W12.** `qrExpiresAt` is the time the current code was received plus 20 s (`QR_ROTATE_MS`), not the store's 60 s; a code past that is shown faded
+  with "Getting a new code...".
+- **W13.** An influencer who is deleted while linked (the row is gone) is logged out on the phone where the socket was open, and the login wiped;
+  a force-disconnect already did that through `wantLinked = false`.
+- **W3.** The mode picker is gone: the official connection and the QR link are two independent sections, both always visible, with a note on the order.
+  The server has no preference.

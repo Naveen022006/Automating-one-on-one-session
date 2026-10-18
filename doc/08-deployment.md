@@ -241,8 +241,9 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `WHATSAPP_QR_FAKE` | no | `false` | **Dev only.** A local simulator instead of WhatsApp: a QR string, "connected" 12 s later as a made-up number, messages are logged. Accepted only when `NODE_ENV` is not production **and** `APP_URL` is a local address; **refused in production** (start-up error) |
 
 What runs where: the web app only records what the influencer asked for and reads the status and QR code; the **worker**
-(`worker/whatsapp-web-manager.ts`) is the only process that opens sockets. Never run two workers against one database
-(WhatsApp ends a login that is used twice). The QR payload lives in Redis for 60 s and is never stored in Postgres or logged. The
+(`worker/whatsapp-web-manager.ts`) is the only process that opens sockets. A second worker is harmless: a lease in the shared store (`wa-web:manager:lease`, `SET NX PX`, 20 s, renewed
+every pass, released on shutdown) lets only one worker hold the sockets; the other stays idle and logs it once (WhatsApp ends a login that
+is used from two places, and two writers would overwrite each other's saved login). The QR payload lives in Redis for 60 s and is never stored in Postgres or logged. The
 login of each linked device (credentials and Signal keys) is one AES-256-GCM blob in `whatsapp_web_sessions.auth_state_enc`
 (AAD `wa-web:<influencerId>`), deleted on disconnect, on logout from the phone, by the kill switch, and with the influencer;
 it is covered by `keys:rotate` / `keys:verify`. The worker image needs no extra package (the library's optional `sharp`
@@ -254,8 +255,8 @@ the option or shows "the background worker is not running". (2) **Memory:** ever
 copy of its login, held for as long as the worker runs. Not measured on a real host; budget a few tens of megabytes per number and watch
 the worker's memory before raising `WHATSAPP_QR_MAX_SESSIONS`. (3) **Rollouts:** restarting or redeploying the worker drops the
 connections and reconnects every linked number from its stored login shortly after the worker starts, with no new scan; messages that fall in
-that gap go by the official connection, SMS or e-mail. Never run two workers during a rollout of this mode (two connections on one
-login log each other out); stop the old worker first. (4) The influencer-facing and administrator screens are described in `README.md`
+that gap go by the official connection, SMS or e-mail. If the new worker starts before the old one has stopped it stays idle until the old one releases
+the lease (at its shutdown) or the lease runs out (20 s after a crash); linked numbers are then restored from the stored login. (4) The influencer-facing and administrator screens are described in `README.md`
 ("WhatsApp by QR code") and `doc/12-front-end.md`; the one-time check with a spare phone number is the list in the README.
 
 ### Email

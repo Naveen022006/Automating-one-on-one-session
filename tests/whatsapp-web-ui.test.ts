@@ -403,27 +403,36 @@ const qrNode = createElement("p", { id: "qr" }, "QR PANEL");
 
 test("flag off or status unknown: only the official form, nothing new on the page", () => {
   for (const v of [null, view({ enabled: false })]) {
-    const html = render(createElement(picker.WhatsAppModeLayout, { view: v, mode: "official", onMode: () => {}, qr: qrNode, official }));
+    const html = render(createElement(picker.WhatsAppModeLayout, { view: v, qr: qrNode, official }));
     assert.equal(html, '<p id="official">OFFICIAL FORM</p>');
   }
-  // Even if a QR mode were selected by mistake, with the flag off the official form is what shows.
-  assert.equal(render(createElement(picker.WhatsAppModeLayout, { view: view({ enabled: false }), mode: "qr", onMode: () => {}, qr: qrNode, official })), '<p id="official">OFFICIAL FORM</p>');
 });
 
-test("flag on: a clear choice, official first and selected by default; picking QR swaps the form for the QR screen", () => {
-  const html = render(createElement(picker.WhatsAppModeLayout, { view: view(), mode: "official", onMode: () => {}, qr: qrNode, official }));
+test("flag on: two independent sections, both always visible (official first), with the note on which one is used", () => {
+  const html = render(createElement(picker.WhatsAppModeLayout, { view: view(), qr: qrNode, official }));
   const t = text(html);
-  assert.match(t, /How should WhatsApp messages be sent\?/);
   assert.match(t, /Official WhatsApp Business API \(Meta\)/);
   assert.match(t, /Link with QR code \(unofficial\)/);
   assert.match(t, /the safer option/);
   assert.match(t, /terms do not allow this and the number can be restricted or banned without notice/);
-  assert.match(html, /<input[^>]*type="radio"[^>]*checked=""[^>]*value="official"/);
-  assert.ok(html.includes("OFFICIAL FORM") && !html.includes("QR PANEL"));
-  const qrMode = render(createElement(picker.WhatsAppModeLayout, { view: view(), mode: "qr", onMode: () => {}, qr: qrNode, official }));
-  assert.ok(qrMode.includes("QR PANEL") && !qrMode.includes("OFFICIAL FORM"));
-  assert.match(qrMode, /<input[^>]*type="radio"[^>]*checked=""[^>]*value="qr"/);
-  assert.match(html, /<fieldset class="qr-modes"><legend>/, "a labelled group of radios");
+  assert.ok(html.includes("OFFICIAL FORM") && html.includes("QR PANEL"), "neither hides the other");
+  assert.ok(html.indexOf("OFFICIAL FORM") < html.indexOf("QR PANEL"));
+  assert.ok(!/type="radio"|<fieldset/.test(html), "it is not a choice: there is nothing to pick");
+  assert.match(
+    t,
+    /When a QR link is active, booking messages are sent from it first; otherwise the official connection, then SMS and e-mail\. To stop using the QR link, disconnect it\./,
+  );
+  assert.match(html, /<section[^>]*aria-labelledby="wa-official-heading"/);
+  assert.match(html, /<section[^>]*aria-labelledby="wa-qr-heading"/);
+});
+
+test("a linked QR number keeps its status and its Disconnect button on screen next to the official form, whatever else is connected", () => {
+  const linkedView = view({ status: "linked", phoneMasked: "+91 ••••••• 210", officialConnected: true });
+  const html = render(createElement(picker.WhatsAppModeLayout, { view: linkedView, qr: createElement(qr.WhatsAppQrPanel, { ...panelProps(linkedView) }), official }));
+  assert.match(text(html), /Official WhatsApp Business API \(Meta\)/);
+  assert.ok(html.includes("OFFICIAL FORM"));
+  assert.ok(button(html, "Disconnect"), "the Disconnect button is there");
+  assert.match(text(html), /\+91 ••••••• 210/);
 });
 
 test("the real picker renders only the official form before the endpoint has answered (and on the server)", () => {
@@ -547,4 +556,23 @@ test("the Privacy page says what QR linking stores and what it does not read", a
   assert.match(t, /do not read or store customers.{1,3}replies/);
   assert.match(t, /host disconnects, we delete the stored login/);
   assert.match(t, /unofficial method and WhatsApp may restrict or ban the number/);
+});
+
+/* ---------- the Messages views: the linked number as a channel ---------- */
+
+test("Messages: the QR link has its own channel label; a send with no answer shows as Not confirmed with the reason, and a failed fall-back shows its text", async () => {
+  const { MessagesView } = await import("../web/src/components/views/dashboard/MessagesView");
+  assert.equal(ui.QR_CHANNEL_LABEL, "WhatsApp (QR link)");
+  assert.equal(ui.isUnconfirmedMessage({ channel: "WHATSAPP_WEB", error: "unknown-delivery" }), true);
+  assert.equal(ui.isUnconfirmedMessage({ channel: "WHATSAPP", error: "unknown-delivery" }), false);
+  assert.equal(ui.isUnconfirmedMessage({ channel: "WHATSAPP_WEB", error: null }), false);
+  const row = (over: object) => ({ bookingId: "b1", customerName: "Pat", serviceTitle: "Call", sessionStart: "2031-01-01T10:00:00.000Z", channel: "WHATSAPP_WEB", template: "booking-confirmation", status: "SENT", error: null, at: "2031-01-01T09:00:00.000Z", ...over });
+  const html = render(createElement(MessagesView, { data: { status: "", page: 1, pageCount: 1, messages: [row({ error: "unknown-delivery" }), row({ bookingId: "b2", status: "FAILED", error: "The linked number had too many messages waiting; sent another way." }), row({ bookingId: "b3", status: "DELIVERED" })] } }));
+  const t = text(html);
+  assert.ok((t.match(/WhatsApp \(QR link\)/g) ?? []).length === 3);
+  assert.match(t, /Not confirmed/);
+  assert.match(t, /WhatsApp did not answer in time\. The message may still have arrived/);
+  assert.ok(!t.includes("unknown-delivery"), "the machine code is not shown");
+  assert.match(t, /too many messages waiting; sent another way/);
+  assert.match(t, /Delivered/);
 });
