@@ -14,6 +14,8 @@ import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
 import { startReminderReconcile } from "./reminder-reconcile";
 import { startWhatsAppSync } from "./whatsapp-sync";
+import { startWhatsAppWeb } from "./whatsapp-web";
+import type { WhatsAppWebManager } from "./whatsapp-web-manager";
 
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
 import { initEnvOrExit } from "../lib/env";
@@ -124,11 +126,18 @@ startMonitoring();
 // --- end payment recovery + health monitoring ---
 startWhatsAppSync(); // template status backup for Meta's webhook (worker/whatsapp-sync.ts)
 startReminderReconcile(); // re-creates missing reminder jobs after a Redis/worker outage (worker/reminder-reconcile.ts)
+// Optional QR-code WhatsApp mode (worker/whatsapp-web.ts): holds the linked devices' sockets. Off unless WHATSAPP_QR_ENABLED=true; when off
+// it only applies the kill switch (deletes stored logins). A failure here must never stop the rest of the worker.
+let whatsappWeb: WhatsAppWebManager | null = null;
+startWhatsAppWeb()
+  .then((m) => (whatsappWeb = m))
+  .catch((e) => reportError(e, { where: "worker:whatsapp-web-start" }));
 
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
   clearInterval(timer);
-  await Promise.all([meetings?.close(), messages?.close(), reminders?.close()]);
+  // Flush the linked devices' stored logins and close their sockets (a few seconds at most), alongside the queue workers.
+  await Promise.all([meetings?.close(), messages?.close(), reminders?.close(), whatsappWeb?.shutdown().catch(() => {})]);
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));

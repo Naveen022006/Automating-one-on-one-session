@@ -2,11 +2,16 @@ import { readQrConfig } from "./config";
 
 /**
  * The one function the messaging layer (lib/messaging.ts) calls to send a booking message from an influencer's QR-linked WhatsApp.
- * It runs in the worker process (the one that holds the sockets). FOUNDATION STUB: the contract is fixed here, the wiring into
- * lib/messaging.ts is implementer 2's.
  *
- * Never throws for an expected refusal: it answers `{ ok: false, reason, retryable }` and the caller falls back to the official
- * WhatsApp connection, SMS or e-mail. `retryable: true` means "not now" (the number is reconnecting), false means "not this way".
+ * It must run in the WORKER process, the only one that holds sockets (worker/whatsapp-web-manager.ts registers itself here at
+ * start-up). In any other process (the web app) there is no sender, and the call answers "manager-not-running".
+ *
+ * It never throws for an expected refusal. It answers `{ ok: false, reason, retryable }` and the caller falls back to the official
+ * WhatsApp connection, SMS or e-mail. `retryable: true` means "not right now" (the number is reconnecting, the queue is full);
+ * `false` means "not this way" (QR mode off, number not linked, daily limit reached, not on WhatsApp, circuit breaker open,
+ * no real booking for this number). Reason codes: qr-disabled, manager-not-running, not-linked, not-connected, circuit-open,
+ * daily-cap, not-on-whatsapp, no-booking, invalid-number, empty-text, missing-booking, queue-full, limits-unavailable,
+ * guard-unavailable, plus the transport's own codes for a failed send.
  */
 export interface WhatsAppWebSendRequest {
   influencerId: string;
@@ -20,10 +25,45 @@ export interface WhatsAppWebSendRequest {
   key: string;
 }
 
+/**
+ * The one exception to "only about a real booking": a test message to the influencer's OWN linked number (to prove the link works).
+ * Send it with `bookingId: SELF_TEST_BOOKING_ID`; the manager accepts it only when `toE164` is exactly the number linked on this
+ * influencer's device, and refuses it for any other number.
+ */
+export const SELF_TEST_BOOKING_ID = "self-test";
+
 export type WhatsAppWebSendResult = { ok: true; providerMessageId: string } | { ok: false; reason: string; retryable: boolean };
+
+/** What the worker's manager offers. */
+export interface WhatsAppWebSender {
+  send(req: WhatsAppWebSendRequest): Promise<WhatsAppWebSendResult>;
+  /** True when a message could go out through this influencer's linked number right now. */
+  isReady(influencerId: string): boolean;
+}
+
+let active: WhatsAppWebSender | null = null;
+
+/** Called by the worker when the manager starts (and with null when it stops). Tests use it to plug in a fake. */
+export function setActiveSender(next: WhatsAppWebSender | null): void {
+  active = next;
+}
+
+/** Cheap check before building a message: is the QR route usable for this influencer right now? */
+export function isWhatsAppWebReady(influencerId: string): boolean {
+  if (!readQrConfig().enabled || !active) return false;
+  try {
+    return active.isReady(influencerId);
+  } catch {
+    return false;
+  }
+}
 
 export async function sendWhatsAppWebText(req: WhatsAppWebSendRequest): Promise<WhatsAppWebSendResult> {
   if (!readQrConfig().enabled) return { ok: false, reason: "qr-disabled", retryable: false };
-  void req;
-  throw new Error("sendWhatsAppWebText is not implemented yet");
+  if (!active) return { ok: false, reason: "manager-not-running", retryable: false };
+  try {
+    return await active.send(req);
+  } catch {
+    return { ok: false, reason: "send-error", retryable: true };
+  }
 }

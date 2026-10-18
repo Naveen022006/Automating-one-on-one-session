@@ -10,6 +10,8 @@ export type InfluencerAlertKind =
   | "refund-failed"
   | "booking-request"
   | "whatsapp-reconnect-needed"
+  | "whatsapp-qr-logged-out"
+  | "whatsapp-qr-suspended"
   | "platform-cancelled";
 
 export interface InfluencerAlert {
@@ -40,12 +42,14 @@ const TITLES: Record<InfluencerAlertKind, { title: string; action: string }> = {
   "refund-failed": { title: "A refund failed", action: "Review the refund" },
   "booking-request": { title: "New booking request", action: "Review the request" },
   "whatsapp-reconnect-needed": { title: "Reconnect WhatsApp", action: "Reconnect WhatsApp" },
+  "whatsapp-qr-logged-out": { title: "Your linked WhatsApp was logged out", action: "Link WhatsApp again" },
+  "whatsapp-qr-suspended": { title: "Sending from your linked WhatsApp was paused", action: "Review WhatsApp settings" },
   "platform-cancelled": { title: "A booking was cancelled by the platform", action: "Open the session" },
 };
 
 export function defaultActionUrl(alert: InfluencerAlert): string {
   if (alert.kind === "google-reconnect-needed") return `${appUrl()}/dashboard/settings#google`;
-  if (alert.kind === "whatsapp-reconnect-needed") return `${appUrl()}/dashboard/settings#whatsapp`;
+  if (alert.kind === "whatsapp-reconnect-needed" || alert.kind === "whatsapp-qr-logged-out" || alert.kind === "whatsapp-qr-suspended") return `${appUrl()}/dashboard/settings#whatsapp`;
   if (alert.bookingId) return `${appUrl()}/dashboard/sessions?booking=${encodeURIComponent(alert.bookingId)}`;
   return `${appUrl()}/dashboard`;
 }
