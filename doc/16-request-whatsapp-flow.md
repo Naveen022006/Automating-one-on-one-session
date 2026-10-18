@@ -72,6 +72,9 @@ To request a time again: https://example.com/asha
 - Asha Rao
 ```
 
+"has 2 days to answer" is the time the host really has: until the request's hold ends (48 hours), but not past the last moment an approval
+still leaves the customer time to pay (20 minutes before the session: `lib/approval-window.ts`, the same function `approveRequest` uses). For a
+session tomorrow it says "29 hours", under an hour "a short time"; whole hours, rounded down with a quarter of an hour of slack.
 The note line is left out when the host left none. The amount and the pay-by time come from the service row and the booking's hold
 (`lib/india.ts`: rupees, IST); the texts never promise a reply or a stop word (a test reads them for that) and say nothing the system
 cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does).

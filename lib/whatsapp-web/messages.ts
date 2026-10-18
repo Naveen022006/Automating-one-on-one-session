@@ -51,7 +51,7 @@ export function whatsAppWebText(template: string, input: WhatsAppWebTextInput): 
   const amount = input.amount ? line(input.amount) : "";
   const bookingPage = input.bookingPageUrl ? line(input.bookingPageUrl) : "";
   const note = input.reason ? line(input.reason).slice(0, 300) : "";
-  const wait = input.decideWithinHours ? describeWait(input.decideWithinHours) : "a couple of days";
+  const wait = input.decideWithinHours !== undefined ? describeWait(input.decideWithinHours) : "a couple of days";
   const signature = `- ${host}`;
 
   const parts: string[] = [];

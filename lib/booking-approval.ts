@@ -3,7 +3,8 @@ import { alertInfluencer } from "@/lib/alerts";
 import { sendCustomerRendered } from "@/lib/customer-email";
 import { requestEmail, type RequestEmailData } from "@/lib/email/templates";
 import { formatSessionTime } from "@/lib/format";
-import { APPROVED_PAY_HOURS, REQUEST_TTL_HOURS } from "@/lib/holds";
+import { MIN_LEAD_BEFORE_START_MS, paymentDeadline } from "@/lib/approval-window";
+import { REQUEST_TTL_HOURS } from "@/lib/holds";
 import { REQUEST_APPROVED_TEMPLATE, REQUEST_DECLINED_TEMPLATE, type RequestMessageKind } from "@/lib/message-kinds";
 import { queueRequestMessage, type QueueOutcome, type WhatsAppContact } from "@/lib/request-messages";
 import { buildPayUrl } from "@/lib/self-service";
@@ -34,15 +35,9 @@ export class ApprovalError extends Error {
   }
 }
 
-/** Never pay later than this long before the session starts, so there is time to create the Meet link. */
-export const MIN_LEAD_BEFORE_START_MS = 15 * 60_000;
-
-/** The payment deadline after an approval: 24 hours, but never later than 15 minutes before the session. */
-export function paymentDeadline(now: Date, sessionStart: Date): Date | null {
-  const deadline = new Date(Math.min(now.getTime() + APPROVED_PAY_HOURS * 3_600_000, sessionStart.getTime() - MIN_LEAD_BEFORE_START_MS));
-  // Less than five minutes to pay is not a real chance to pay.
-  return deadline.getTime() - now.getTime() >= 5 * 60_000 ? deadline : null;
-}
+// The payment deadline after an approval (24 hours, never later than 15 minutes before the session) lives in lib/approval-window.ts, shared
+// with the "request received" message; re-exported here because this is where callers have always found it.
+export { MIN_LEAD_BEFORE_START_MS, paymentDeadline };
 
 interface Loaded {
   id: string;

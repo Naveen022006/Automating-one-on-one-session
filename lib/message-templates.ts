@@ -72,11 +72,16 @@ const LINK_PENDING = "(link coming soon)";
 const LINK_UNAVAILABLE = "(link unavailable)";
 const NO_NOTE = "(none)";
 
-/** "2 days" / "36 hours": how long a request waits for the host (the e-mail says the same: lib/email/templates.ts). */
+/**
+ * How long the host has to answer a request, in words: "2 days" from 48 hours, "36 hours", "1 hour", and "a short time" under an hour.
+ * Whole hours, rounded down with a quarter of an hour of slack (a request made a few seconds ago still has "2 days", not "47 hours"),
+ * so the customer is never promised more time than there is.
+ */
 export function describeWait(hours: number): string {
-  const h = Math.max(1, Math.round(hours));
-  const days = Math.round(h / 24);
-  return days >= 2 ? `${days} days` : h === 1 ? "1 hour" : `${h} hours`;
+  if (!(hours >= 1)) return "a short time";
+  const h = Math.floor(hours + 0.25);
+  if (h >= 48) return `${Math.floor(h / 24)} days`;
+  return h <= 1 ? "1 hour" : `${h} hours`;
 }
 
 const DEFS: Record<string, TemplateDef> = {
@@ -291,7 +296,7 @@ function values(c: MessageContext): Record<Field, string> {
     payBy: c.payBy ?? "",
     amount: c.amount ?? "",
     bookingPageUrl: c.bookingPageUrl || LINK_UNAVAILABLE,
-    decideWithin: c.decideWithinHours ? describeWait(c.decideWithinHours) : "a couple of days",
+    decideWithin: c.decideWithinHours !== undefined ? describeWait(c.decideWithinHours) : "a couple of days",
     reason: c.reason?.trim() || NO_NOTE,
   };
 }

@@ -381,7 +381,7 @@ async function deliverMessage(bookingId: string, template: string, overrides: Pa
   if (isRequestMessageKind(template)) {
     const extra = requestMessageContext(
       template,
-      { bookingId, holdExpiresAt: booking.holdExpiresAt, declineReason: booking.declineReason, priceMinor: service.priceMinor, currency: service.currency, slug: influencer.slug },
+      { bookingId, holdExpiresAt: booking.holdExpiresAt, sessionStart: session.startTime, declineReason: booking.declineReason, priceMinor: service.priceMinor, currency: service.currency, slug: influencer.slug },
       now,
     );
     if (extra === null) {

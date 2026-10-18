@@ -285,10 +285,18 @@ test("SMS bodies for the request kinds say the same thing as the other channels,
 
 test("how long a request waits, in words", () => {
   assert.equal(describeWait(48), "2 days");
+  assert.equal(describeWait(47.9), "2 days", "a request made a few seconds ago still has its two days");
   assert.equal(describeWait(72), "3 days");
-  assert.equal(describeWait(36), "2 days", "the same rounding as the e-mail");
+  assert.equal(describeWait(71), "2 days", "never more than there is");
+  assert.equal(describeWait(36), "36 hours", "no rounding up to two days");
   assert.equal(describeWait(24), "24 hours");
+  assert.equal(describeWait(29.67), "29 hours", "rounded down, with a quarter of an hour of slack");
   assert.equal(describeWait(12), "12 hours");
   assert.equal(describeWait(1), "1 hour");
-  assert.equal(describeWait(0), "1 hour");
+  assert.equal(describeWait(1.7), "1 hour");
+  assert.equal(describeWait(1.8), "2 hours", "within the quarter hour of slack");
+  assert.equal(describeWait(0.99), "a short time", "under an hour");
+  assert.equal(describeWait(0), "a short time");
+  assert.equal(describeWait(Number.NaN), "a short time");
+  assert.equal(describeWait(-3), "a short time");
 });

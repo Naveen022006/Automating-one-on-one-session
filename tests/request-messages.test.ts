@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { mock, test } from "node:test";
+import { hoursToAnswer, lastApprovalAt, paymentDeadline } from "../lib/approval-window";
+import { requestMessageContext } from "../lib/request-message-context";
+import { whatsAppWebText } from "../lib/whatsapp-web/messages";
 import { NoMessageRouteError, sendSMS, smsConfigProblem } from "../lib/sms";
 import { canMessageOnWhatsApp, queueRequestMessage } from "../lib/request-messages";
 
@@ -167,5 +170,44 @@ test("SMS configuration: one check tells whether a message can go by SMS, and se
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
+  }
+});
+
+test("how long the host has to answer: until the hold ends, but not past the last moment an approval still leaves time to pay", () => {
+  process.env.APP_URL ||= "http://localhost:3000";
+  const HOUR = 3_600_000;
+  const now = new Date("2026-11-10T10:00:00Z");
+  const at = (hours: number) => new Date(now.getTime() + hours * HOUR);
+  const hold = at(48);
+  const book = (start: Date, holdExpiresAt: Date | null = hold) => ({ bookingId: "bk_1", holdExpiresAt, sessionStart: start, declineReason: null, priceMinor: 49900, currency: "INR", slug: "asha" });
+  const wait = (start: Date, holdExpiresAt: Date | null = hold) => requestMessageContext("request-received", book(start, holdExpiresAt), now)!.decideWithinHours;
+
+  // A session far away: the whole hold.
+  assert.equal(wait(at(24 * 10)), 48);
+  // Tomorrow: the hold is 48 h but the session starts in 30 h, and nobody can approve in the last 20 minutes.
+  assert.ok(Math.abs(wait(at(30))! - (30 - 20 / 60)) < 1e-9, String(wait(at(30))));
+  assert.ok(Math.abs(wait(at(3))! - (3 - 20 / 60)) < 1e-9);
+  // A hold that ends before the session matters: the earlier of the two.
+  assert.equal(wait(at(24 * 10), at(5)), 5);
+  // Too late to approve at all: zero, never negative.
+  assert.equal(wait(at(0.2)), 0);
+  assert.equal(wait(new Date(now.getTime() - HOUR)), 0);
+  // No hold, no number: nothing is made up.
+  assert.deepEqual(requestMessageContext("request-received", book(at(100), null), now), {});
+
+  // What the customer reads.
+  const text = (start: Date) => whatsAppWebText("request-received", { link: null, serviceTitle: "Review", influencerName: "Asha", when: "Fri", ...requestMessageContext("request-received", book(start), now)! })!;
+  assert.match(text(at(24 * 10)), /Asha has 2 days to answer\./);
+  assert.match(text(at(30)), /Asha has 29 hours to answer\./);
+  assert.match(text(at(3)), /Asha has 2 hours to answer\./);
+  assert.match(text(at(1)), /Asha has a short time to answer\./);
+  assert.match(text(at(0.2)), /Asha has a short time to answer\./);
+  assert.doesNotMatch(text(at(30)), /2 days/);
+
+  // The window agrees with the approval itself, for every start: approvable exactly while now is not past lastApprovalAt.
+  for (const startHours of [0.1, 0.3, 0.33, 0.34, 0.5, 1, 5, 30, 100]) {
+    const start = at(startHours);
+    assert.equal(paymentDeadline(now, start) !== null, now.getTime() <= lastApprovalAt(start).getTime(), `start in ${startHours} h`);
+    assert.equal(hoursToAnswer(at(48), start, now) > 0, paymentDeadline(now, start) !== null && startHours * 60 > 20, `answer window for ${startHours} h`);
   }
 });

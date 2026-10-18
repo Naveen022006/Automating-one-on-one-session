@@ -1,5 +1,5 @@
+import { hoursToAnswer } from "@/lib/approval-window";
 import { appUrl } from "@/lib/brand";
-import { REQUEST_TTL_HOURS } from "@/lib/holds";
 import { formatDateTime, formatMoney } from "@/lib/india";
 import type { MessageContext } from "@/lib/message-templates";
 import { REQUEST_APPROVED_TEMPLATE, REQUEST_DECLINED_TEMPLATE, REQUEST_EXPIRED_TEMPLATE, REQUEST_RECEIVED_TEMPLATE } from "@/lib/message-kinds";
@@ -15,8 +15,10 @@ import { buildPayUrl } from "@/lib/self-service";
 
 export interface RequestMessageBooking {
   bookingId: string;
-  /** The end of the hold: the pay-by time once a request is approved. */
+  /** The end of the hold: the end of the time to answer while the request waits, the pay-by time once it is approved. */
   holdExpiresAt: Date | null;
+  /** When the session starts: a request cannot be approved in the last minutes before it. */
+  sessionStart: Date;
   declineReason: string | null;
   priceMinor: number;
   currency: string;
@@ -36,7 +38,9 @@ export function requestMessageContext(template: string, b: RequestMessageBooking
   const bookingPageUrl = `${appUrl()}/${encodeURIComponent(b.slug)}`;
   switch (template) {
     case REQUEST_RECEIVED_TEMPLATE:
-      return { decideWithinHours: REQUEST_TTL_HOURS };
+      // The host has until the request's hold ends, but not past the last moment an approval still leaves time to pay: for a session that
+      // starts tomorrow that is far less than the 48 hours of the hold, and the customer is told the truth.
+      return b.holdExpiresAt ? { decideWithinHours: hoursToAnswer(b.holdExpiresAt, b.sessionStart, now) } : {};
     case REQUEST_APPROVED_TEMPLATE: {
       if (!b.holdExpiresAt || b.holdExpiresAt.getTime() <= now.getTime()) return null;
       let payUrl: string;
