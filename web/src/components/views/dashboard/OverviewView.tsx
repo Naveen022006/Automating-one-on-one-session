@@ -8,11 +8,12 @@ import { ButtonLink, Card, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardOverviewView } from "@/lib/views/dashboard-overview";
+import { APP_TIME_ZONE } from "@/lib/india";
 
 /** The dashboard Overview body. Rendered by the SPA page from the endpoint's JSON. */
 export function OverviewView({ data }: { data: Jsonify<DashboardOverviewView> }) {
   const { overview, readiness, live, publicUrl } = data;
-  const monthName = new Intl.DateTimeFormat(undefined, { month: "long" }).format(new Date());
+  const monthName = new Intl.DateTimeFormat("en-IN", { month: "long", timeZone: APP_TIME_ZONE }).format(new Date());
   const totals = overview.monthEarnings.totalsByCurrency;
 
   return (

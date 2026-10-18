@@ -9,7 +9,7 @@ import { clientIp } from "@/lib/rate-limit";
 export const dynamic = "force-dynamic";
 
 // GET /api/admin/exports/payments|bookings|payouts|audit?from=YYYY-MM-DD&to=YYYY-MM-DD -> a CSV file of the rows CREATED in that range
-// (both days included; default: the 1st of this month to today, UTC; at most 366 days). The files hold personal data, so this takes the
+// (both days included; default: the 1st of this month to today, IST; at most 366 days). The files hold personal data, so this takes the
 // same gate as the console (403 `mfaRequired` for a password-only session of an admin who has 2FA, and for one who still has to enrol),
 // is rate limited (`admin-export`) and is audited (`admin.export` with the kind, the range and the row count) BEFORE the file is returned:
 // if the audit entry cannot be written, no data leaves. More than 20,000 rows is refused with a 400, never cut short.

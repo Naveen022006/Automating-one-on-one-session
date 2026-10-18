@@ -27,7 +27,6 @@ export interface PublicProfile {
   name: string;
   bio: string | null;
   photoUrl: string | null;
-  timezone: string;
   services: PublicService[];
   /** True when the page is not live yet and only the logged-in owner is previewing it. */
   preview: boolean;
@@ -69,7 +68,6 @@ export async function loadPublicProfile(slug: string): Promise<PublicProfile | n
     name: influencer.name,
     bio: influencer.bio,
     photoUrl: influencer.photoUrl,
-    timezone: influencer.timezone,
     preview,
     blockers: preview ? readiness.blockers.map((b) => b.label) : [],
     services: influencer.services.map((s) => ({

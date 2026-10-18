@@ -40,7 +40,7 @@ export function BookingFragment() {
           ))}
         </div>
         <span className="btn btn--primary btn--block">Hold 11:00 and pay ₹499</span>
-        <p className="subtle">Times shown in Asia/Kolkata</p>
+        <p className="subtle">All times are in Indian Standard Time (IST)</p>
       </div>
     </Frame>
   );
@@ -50,12 +50,12 @@ export function WhatsAppFragment() {
   return (
     <div className="phone" aria-hidden="true">
       <div className="bubble">
-        Your 1:1 Career Call session with Demo Creator on Tue, 13 Oct 2026, 11:00 am IST is confirmed. Join here:
+        Your 1:1 Career Call session with Demo Creator on Tue, 13 Oct 2026, 11:00 AM IST is confirmed. Join here:
         meet.google.com/abc-defg-hij
         <div className="bubble__meta">11:02</div>
       </div>
       <div className="bubble">
-        Reminder: 1:1 Career Call with Demo Creator is tomorrow, Tue, 13 Oct 2026, 11:00 am IST.
+        Reminder: 1:1 Career Call with Demo Creator is tomorrow, Tue, 13 Oct 2026, 11:00 AM IST.
         <div className="bubble__meta">Mon 11:00</div>
       </div>
       <div className="bubble">

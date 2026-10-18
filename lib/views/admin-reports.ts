@@ -1,9 +1,10 @@
 import { loadReportData, type Day } from "@/lib/admin/reports";
+import { istToday } from "@/lib/india";
 import { parseReportDay } from "./dashboard-params";
 
 /**
  * The admin Reports page's data, for GET /api/admin/reports. The caller has already passed the admin gate (`requireAdminMfa()`).
- * Aggregates only: no personal data and no ids leave the server. Days are UTC calendar days and `to` is inclusive.
+ * Aggregates only: no personal data and no ids leave the server. Days are Indian Standard Time calendar days and `to` is inclusive.
  */
 
 /** The longest range one request may read, in days (both ends included). */
@@ -12,7 +13,7 @@ export const MAX_REPORT_DAYS = 366;
 const DAY_MS = 86_400_000;
 
 export interface AdminReportsView {
-  /** The range actually used, YYYY-MM-DD (UTC). */
+  /** The range actually used, YYYY-MM-DD (IST). */
   from: string;
   to: string;
   generatedAt: Date;
@@ -52,7 +53,7 @@ export interface AdminReportsView {
 
 export type ReportsRange = { ok: true; from: Day; to: Day } | { ok: false; error: string };
 
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+const isoDay = (d: Date) => istToday(d);
 const daysBetween = (from: Day, to: Day) => Math.round((new Date(`${to}T00:00:00.000Z`).getTime() - new Date(`${from}T00:00:00.000Z`).getTime()) / DAY_MS) + 1;
 
 /**

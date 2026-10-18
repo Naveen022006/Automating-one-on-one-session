@@ -5,6 +5,7 @@ import { Alert, Badge, ButtonLink, Card, EmptyState, type Tone } from "@web/comp
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminHealthView } from "@/lib/views/admin-health";
+import { formatDateTime } from "@/lib/india";
 
 type ConditionStatus = AdminHealthView["report"]["conditions"][number]["status"];
 
@@ -15,7 +16,7 @@ const STATUS: Record<ConditionStatus, { label: string; tone: Tone }> = {
   unknown: { label: "Unknown", tone: "neutral" },
 };
 
-const when = (d: string | number) => new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" });
+const when = (d: string | number) => formatDateTime(new Date(d), { weekday: false, seconds: true });
 
 /**
  * The admin System health page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the

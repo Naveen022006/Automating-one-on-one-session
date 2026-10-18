@@ -7,6 +7,7 @@ import { useApiQuery } from "@web/lib/api";
 import { queryKeys } from "@web/lib/query";
 import type { ActivityAction } from "@/lib/activity-actions";
 import type { ActivityPageView } from "@/lib/views/dashboard-activity";
+import { formatDateTime } from "@/lib/india";
 
 /**
  * The account activity table (doc/13-product-build-plan.md, WP-C): When / What / Device / IP, 25 rows a page, newest first. Used by
@@ -35,7 +36,7 @@ const FILTERS = [
 ] satisfies { value: "" | ActivityAction; label: string }[];
 
 function when(iso: string): string {
-  return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  return formatDateTime(new Date(iso), { weekday: false });
 }
 
 const loadingLines = (

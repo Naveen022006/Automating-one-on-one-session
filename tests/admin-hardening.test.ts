@@ -93,10 +93,10 @@ test("security emails escape everything they interpolate and describe each event
     assert.ok(!m.html.includes("<script>alert(1)"), `${event}: name is escaped in the HTML`);
     assert.ok(!m.html.includes("<img src=x>"), `${event}: IP is escaped in the HTML`);
     assert.ok(m.html.includes("&lt;img src=x&gt;") || m.html.includes("&lt;img"), `${event}: escaped IP is shown`);
-    assert.match(m.text, /Tue, 20 Oct 2026 10:00:00 GMT/);
+    assert.match(m.text, /Tue, 20 Oct 2026, 3:30 PM IST/, "the security e-mail says the time in IST");
   }
   const locked = adminSecurityMessage("Ana Admin", "mfa-locked", { at, lockedUntil: new Date("2026-10-20T10:15:00Z") });
-  assert.match(locked.text, /until Tue, 20 Oct 2026 10:15:00 GMT/);
+  assert.match(locked.text, /until Tue, 20 Oct 2026, 3:45 PM IST/);
   assert.match(locked.text, /recovery code/i);
   assert.match(adminSecurityMessage("Ana", "2fa-disabled", { at }).text, /other sessions were signed out/i);
 });

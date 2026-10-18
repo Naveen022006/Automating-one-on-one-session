@@ -163,12 +163,12 @@ test("export controls: the same range rules as the server", () => {
   for (const [a, b] of [["", "2026-10-11"], ["2026-10-01", ""], ["abc", "2026-10-11"], ["2026-13-01", "2026-10-11"]]) assert.match(m.exportRangeProblem(a, b)!, /Choose a start and an end date/);
 });
 
-test("the action components import nothing server-side (the Vite guard allowlist is not extended) and only POST/GET same-origin API paths", () => {
+test("the action components import nothing server-side (only the pure lib/format and lib/india; the Vite guard allowlist is otherwise not extended) and only POST/GET same-origin API paths", () => {
   const root = path.resolve(__dirname, "..");
   for (const file of ["ExportControls", "RefundAction", "CancelBookingAction"]) {
     const src = readFileSync(path.join(root, `web/src/components/admin/${file}.tsx`), "utf8");
     for (const spec of [...src.matchAll(/^import (?!type )[^"']*from\s+["']([^"']+)["']/gm)].map((x) => x[1])) {
-      assert.ok(/^(react|@web\/|@\/lib\/format$)/.test(spec), `${file}: ${spec}`);
+      assert.ok(/^(react|@web\/|@\/lib\/(format|india)$)/.test(spec), `${file}: ${spec}`);
     }
     assert.ok(!/@\/lib\/(admin|views|db|payouts|queue|manage|refunds)/.test(src.replace(/import type[^\n]*\n/g, "")), file);
     for (const url of [...src.matchAll(/fetch\(\s*[`"']([^`"']+)/g)].map((x) => x[1])) assert.ok(url.startsWith("/api/admin/"), `${file}: ${url}`);

@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { IconCalendarClock, IconCalendarX, IconCopy, IconSend, IconUndo, IconUsers, IconVideo } from "@web/components/icons";
 import { ConfirmDialog, Dialog, Drawer, useToast } from "@web/components/ui/overlays";
 import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@web/components/ui/primitives";
-import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
+import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIst, ymd, type SlotOption } from "@web/components/ui/scheduling";
+import { formatMoney } from "@/lib/format";
+import { APP_TIME_ZONE_NOTE, formatDateTime, formatIndianMobile } from "@/lib/india";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
 import { useApi } from "./ApiProvider";
 
@@ -20,11 +22,10 @@ const TEMPLATE: Record<string, string> = {
 };
 const POLICY: Record<string, string> = { FULL: "Full refund", NOTICE_24H: "Refund with 24 h notice", NONE: "No refund" };
 
-export function money(minor: number, currency: string) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / 100);
-}
+export const money = formatMoney;
+/** "Sat, 25 Oct, 6:30 PM IST": every time on the dashboard is Indian Standard Time. */
 export function dateTime(iso: string) {
-  return new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+  return formatDateTime(new Date(iso), { year: false });
 }
 
 function MessageSummary({ booking }: { booking: BookingRow }) {
@@ -278,10 +279,8 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                 </dd>
                 <dt>WhatsApp</dt>
                 <dd className="tabular">
-                  {detail.whatsapp} {detail.whatsappOptIn ? "" : "(not opted in)"}
+                  {formatIndianMobile(detail.whatsapp)} {detail.whatsappOptIn ? "" : "(not opted in)"}
                 </dd>
-                <dt>Time zone</dt>
-                <dd>{detail.customerTz ?? "Not given"}</dd>
                 <dt>Booked</dt>
                 <dd>{dateTime(detail.createdAt)}</dd>
               </dl>
@@ -468,8 +467,7 @@ function RescheduleDialog({
   busy: boolean;
   onConfirm: (startIso: string) => void;
 }) {
-  const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
-  const today = useMemo(() => todayIn(tz), [tz]);
+  const today = useMemo(() => todayIst(), []);
   const [month, setMonth] = useState(() => monthOf(today));
   const [days, setDays] = useState<Set<string> | null>(null);
   const [date, setDate] = useState<string | null>(null);
@@ -481,21 +479,21 @@ function RescheduleDialog({
     const first = ymd(month.y, month.m, 1);
     const from = first < today ? today : first;
     const to = ymd(month.y, month.m, daysInMonth(month.y, month.m));
-    fetch(`/api/slots/days?${new URLSearchParams({ serviceId, from, to, tz })}`)
+    fetch(`/api/slots/days?${new URLSearchParams({ serviceId, from, to })}`)
       .then((r) => r.json())
       .then((b) => setDays(new Set<string>(b.days ?? [])))
       .catch(() => setDays(null));
-  }, [open, serviceId, month, today, tz]);
+  }, [open, serviceId, month, today]);
 
   useEffect(() => {
     if (!date) return;
     setSlots(null);
     setSlot(null);
-    fetch(`/api/slots?${new URLSearchParams({ serviceId, date, tz })}`)
+    fetch(`/api/slots?${new URLSearchParams({ serviceId, date })}`)
       .then((r) => r.json())
       .then((b) => setSlots(b.slots ?? []))
       .catch(() => setSlots([]));
-  }, [serviceId, date, tz]);
+  }, [serviceId, date]);
 
   return (
     <Dialog
@@ -527,8 +525,8 @@ function RescheduleDialog({
           minDay={today}
           maxMonth={addMonths(monthOf(today).y, monthOf(today).m, 6)}
         />
-        {date && <TimeSlotPicker slots={slots} value={slot?.start ?? null} onChange={setSlot} tz={tz} />}
-        <p className="subtle">Only open times from your availability are shown.</p>
+        {date && <TimeSlotPicker slots={slots} value={slot?.start ?? null} onChange={setSlot} />}
+        <p className="subtle">Only open times from your availability are shown. {APP_TIME_ZONE_NOTE}</p>
       </div>
     </Dialog>
   );

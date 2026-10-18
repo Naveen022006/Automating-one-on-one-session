@@ -145,7 +145,7 @@ const row: Jsonify<AdminInfluencersView>["rows"][number] = {
 
 const approval = { required: true, approved: false, approvedByEmail: null, canApprove: true, createdByViewer: false, canMarkPaid: false };
 const detail = (over: Partial<Jsonify<AdminInfluencerView>> = {}): Jsonify<AdminInfluencerView> => ({
-  influencer: { id: "inf_1", name: "Asha Rao", email: "asha@example.com", slug: "asha", timezone: "Asia/Kolkata", onboardedAt: "2026-09-01T00:00:00.000Z", createdAt: "2026-08-01T00:00:00.000Z", emailVerified: true },
+  influencer: { id: "inf_1", name: "Asha Rao", email: "asha@example.com", slug: "asha", onboardedAt: "2026-09-01T00:00:00.000Z", createdAt: "2026-08-01T00:00:00.000Z", emailVerified: true },
   readinessItems: [
     { key: "email", label: "Confirm your email", state: "done", required: true },
     { key: "google", label: "Connect Google Calendar", state: "attention", required: true },

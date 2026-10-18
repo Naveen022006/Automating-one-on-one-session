@@ -8,8 +8,8 @@ export function AvailabilityView({ data }: { data: Jsonify<DashboardAvailability
   return (
     <div className="stack stack--lg">
       <PageHead title="Availability" description="Your weekly hours and days off. Customers can only book open times inside these hours." />
-      <WeeklyHours timezone={data.timezone} rules={data.rules} />
-      <BlockedDays timezone={data.timezone} blocked={data.blocked} />
+      <WeeklyHours rules={data.rules} />
+      <BlockedDays blocked={data.blocked} />
     </div>
   );
 }

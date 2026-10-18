@@ -1,6 +1,6 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
-import { customerZone, formatSessionTime } from "@/lib/format";
+import { formatSessionTime } from "@/lib/format";
 import {
   CANCELLATION_TEMPLATE,
   CONFIRMATION_TEMPLATE,
@@ -143,13 +143,13 @@ export async function sendMessageForBooking(
   const { service } = session;
   const { influencer } = service;
   const to = booking.whatsappE164;
-  // Every template gets the same readable values: link, service, host and the time in the CUSTOMER's timezone
-  // (falling back to the influencer's), never a raw ISO timestamp. See lib/message-templates.ts.
+  // Every template gets the same readable values: link, service, host and the time in Indian Standard Time
+  // ("Mon, 12 Oct 2026, 11:00 AM IST"), never a raw ISO timestamp. See lib/message-templates.ts.
   const context: MessageContext = {
     link: booking.meetLink ?? session.meetLink ?? null,
     serviceTitle: service.title,
     influencerName: influencer.name,
-    when: formatSessionTime(session.startTime, customerZone(booking.customerTz, influencer.timezone)),
+    when: formatSessionTime(session.startTime),
   };
   const body = smsBody(template, context);
 

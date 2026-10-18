@@ -340,7 +340,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   assert.equal((res.body.payoutAccount as { accountNumber: string }).accountNumber, "XXXXXXXX9012");
   assert.equal(res.body.verified, true);
 
-  assert.deepEqual(keys(res.body.influencer), ["createdAt", "email", "emailVerified", "id", "name", "onboardedAt", "slug", "timezone"]);
+  assert.deepEqual(keys(res.body.influencer), ["createdAt", "email", "emailVerified", "id", "name", "onboardedAt", "slug"]);
   assert.equal((res.body.influencer as { id: string }).id, influencerId);
   assert.equal((res.body.influencer as { slug: string }).slug, `core-${run}`);
   assert.equal((res.body.influencer as { emailVerified: boolean }).emailVerified, false);

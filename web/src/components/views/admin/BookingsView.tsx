@@ -8,6 +8,7 @@ import { Button, Card, EmptyState, Input, LinkTabs, Pagination, StatusPill } fro
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminBookingsView, BookingStatusFilter } from "@/lib/views/admin-bookings";
+import { formatDateTime } from "@/lib/india";
 
 const STATUSES: BookingStatusFilter[] = ["all", "REQUESTED", "PENDING_PAYMENT", "PAID", "SCHEDULED", "COMPLETED", "CANCELLED", "FAILED", "EXPIRED"];
 const LABEL: Record<BookingStatusFilter, string> = {
@@ -71,7 +72,7 @@ export function BookingsView({ data, busy }: { data: Jsonify<AdminBookingsView>;
                   <tr key={b.id}>
                     <td data-label="Session">
                       {b.serviceTitle}
-                      <div className="subtle">{new Date(b.startTime).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
+                      <div className="subtle">{formatDateTime(new Date(b.startTime), { weekday: false })}</div>
                     </td>
                     <td data-label="Influencer"><AppLink href={`/admin/influencers/${b.influencer.id}`}>{b.influencer.name}</AppLink></td>
                     <td data-label="Customer">{b.customerName}</td>

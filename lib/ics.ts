@@ -1,3 +1,5 @@
+import { APP_TIME_ZONE } from "@/lib/india";
+
 /**
  * Minimal RFC 5545 calendar file for "Add to calendar" (Apple Calendar, Outlook, Google via import). Pure.
  */
@@ -40,6 +42,7 @@ export function buildIcs(e: {
     "VERSION:2.0",
     "PRODID:-//Session Automation//Bookings//EN",
     "CALSCALE:GREGORIAN",
+    `X-WR-TIMEZONE:${APP_TIME_ZONE}`,
     "METHOD:PUBLISH",
     "BEGIN:VEVENT",
     `UID:${icsText(e.uid)}`,

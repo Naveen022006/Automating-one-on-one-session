@@ -7,6 +7,7 @@ import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { MAX_ADVANCE_DAYS, MAX_NOTICE_HOURS } from "@/lib/booking-window";
 import { activeSeatWhere } from "@/lib/holds";
+import { APP_CURRENCY, CURRENCY_ERROR, isAppCurrency } from "@/lib/india";
 import { intakeQuestionsInput } from "@/lib/intake";
 import { loadServicesView } from "@/lib/views/dashboard-services";
 import { jsonView } from "@/lib/views/http";
@@ -23,7 +24,8 @@ const createSchema = z.object({
   description: z.string().trim().max(2000).optional(),
   durationMin: z.number().int().positive().max(24 * 60),
   priceMinor: z.number().int().nonnegative(),
-  currency: z.string().trim().length(3).optional(),
+  // Optional and checked by isAppCurrency() in the handler: INR is the only currency (doc/14-india-localisation.md).
+  currency: z.string().trim().max(8).optional(),
   type: z.enum(["ONE_TO_ONE", "GROUP"]).optional(),
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
@@ -41,7 +43,7 @@ const updateSchema = z.object({
   description: z.string().trim().max(2000).nullable().optional(),
   durationMin: z.number().int().positive().max(24 * 60).optional(),
   priceMinor: z.number().int().nonnegative().optional(),
-  currency: z.string().trim().length(3).optional(),
+  currency: z.string().trim().max(8).optional(),
   type: z.enum(["ONE_TO_ONE", "GROUP"]).optional(),
   capacity: z.number().int().positive().max(1000).optional(),
   active: z.boolean().optional(),
@@ -81,6 +83,7 @@ export async function POST(req: Request) {
   }
 
   const body = parsed.data;
+  if (body.currency !== undefined && !isAppCurrency(body.currency)) return NextResponse.json({ error: CURRENCY_ERROR }, { status: 400 });
   const type = body.type ?? "ONE_TO_ONE";
   // A 1:1 service holds a single seat; a group's capacity must be explicit (default to 2 to be a real group).
   const capacity = type === "GROUP" ? body.capacity ?? 2 : 1;
@@ -92,7 +95,7 @@ export async function POST(req: Request) {
       description: body.description ?? null,
       durationMin: body.durationMin,
       priceMinor: body.priceMinor,
-      currency: body.currency ?? "INR",
+      currency: APP_CURRENCY,
       type,
       capacity,
       active: body.active ?? true,
@@ -110,7 +113,7 @@ export async function POST(req: Request) {
     action: "service.created",
     targetType: "service",
     targetId: service.id,
-    detail: { serviceId: service.id, title: body.title, priceTo: body.priceMinor, currency: body.currency ?? "INR", activeTo: body.active ?? true },
+    detail: { serviceId: service.id, title: body.title, priceTo: body.priceMinor, currency: APP_CURRENCY, activeTo: body.active ?? true },
     req,
   });
   return NextResponse.json({ serviceId: service.id, warning: meetLimitWarning(type, body.durationMin) }, { status: 201 });
@@ -126,6 +129,7 @@ export async function PATCH(req: Request) {
   }
 
   const body = parsed.data;
+  if (body.currency !== undefined && !isAppCurrency(body.currency)) return NextResponse.json({ error: CURRENCY_ERROR }, { status: 400 });
   // Ownership check: the service must belong to this influencer, else 404.
   const existing = await prisma.service.findFirst({
     where: { id: body.serviceId, influencerId },
@@ -172,7 +176,7 @@ export async function PATCH(req: Request) {
       ...(body.description !== undefined ? { description: body.description } : {}),
       ...(body.durationMin !== undefined ? { durationMin: body.durationMin } : {}),
       ...(body.priceMinor !== undefined ? { priceMinor: body.priceMinor } : {}),
-      ...(body.currency !== undefined ? { currency: body.currency } : {}),
+      ...(body.currency !== undefined ? { currency: APP_CURRENCY } : {}),
       ...(body.type !== undefined ? { type: body.type } : {}),
       ...(body.capacity !== undefined ? { capacity: body.capacity } : {}),
       ...(body.active !== undefined ? { active: body.active } : {}),

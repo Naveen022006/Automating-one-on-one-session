@@ -228,11 +228,11 @@ test("P1 GET /api/public/profiles/:slug: a live page is public, with exactly the
   assert.equal(out.status, 200);
   assert.equal(out.headers.get("cache-control"), "private, no-store");
   assert.equal(out.headers.get("access-control-allow-origin"), null);
-  assert.deepEqual(keys(out.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug", "timezone"]);
+  assert.deepEqual(keys(out.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug"]);
   assert.equal(out.body.slug, liveSlug);
   assert.equal(out.body.name, `Spa Live ${run}`);
   assert.equal(out.body.bio, "Line one\nLine two");
-  assert.equal(out.body.timezone, "Asia/Kolkata");
+  assert.ok(!("timezone" in out.body), "there is no time zone to show: everything is IST");
   assert.equal(out.body.preview, false);
   assert.deepEqual(out.body.blockers, [], "what is still missing is only for the owner's preview");
 
@@ -275,7 +275,7 @@ test("P1: a page that is not live is a 404 for strangers and other hosts, and a 
   assert.equal(owner.body.slug, ownerSlug);
   assert.ok(Array.isArray(owner.body.blockers) && (owner.body.blockers as string[]).length > 0, "the preview lists what is still to do");
   assert.ok((owner.body.blockers as unknown[]).every((b) => typeof b === "string"));
-  assert.deepEqual(keys(owner.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug", "timezone"]);
+  assert.deepEqual(keys(owner.body), ["bio", "blockers", "name", "photoUrl", "preview", "services", "slug"]);
   assert.equal((owner.body.services as unknown[]).length, 1);
   assertNoSecretKeys(owner.body);
   const text = JSON.stringify(owner.body);
@@ -326,8 +326,9 @@ test("P2: a valid link for a booking that does not exist is `not-found`", { skip
   assert.deepEqual(out.body, { state: "not-found" });
 });
 
-test("P2: a paid booking is `booked`, with the customer's time zone and a working manage link", { skip }, async () => {
+test("P2: a paid booking is `booked`, with the time in IST whatever zone the booking row carries and a working manage link", { skip }, async () => {
   for (const status of ["PAID", "SCHEDULED", "COMPLETED"] as const) {
+    // A booking made before the India-only change may still carry the customer's own zone: it is no longer used for the text.
     const b = await seed(svc.full, { status, customerTz: "America/New_York" });
     const out = await getPay(payToken(b.booking.id));
     assert.equal(out.status, 200, status);
@@ -335,16 +336,17 @@ test("P2: a paid booking is `booked`, with the customer's time zone and a workin
     assert.equal(out.body.state, "booked");
     assert.equal(out.body.hostName, `Spa Host ${run}`);
     assert.equal(out.body.serviceTitle, "Full refund session");
-    assert.equal(out.body.whenText, formatSessionTime(b.start, "America/New_York"), "the customer's own time zone");
+    assert.equal(out.body.whenText, formatSessionTime(b.start), "Indian Standard Time, not the zone stored on the row");
+    assert.match(out.body.whenText as string, / IST$/);
     const manageUrl = out.body.manageUrl as string;
     assert.ok(manageUrl.startsWith(`${process.env.APP_URL!.replace(/\/$/, "")}/manage/`));
     assert.equal(verifySelfServiceToken(decodeURIComponent(manageUrl.split("/manage/")[1])), b.booking.id, "the link opens THIS booking");
     assertNoCustomer(out, b);
   }
 
-  // Without a time zone of its own the booking uses the host's.
+  // Without a time zone of its own the text is the same: IST.
   const b = await seed(svc.full, { status: "PAID" });
-  assert.equal((await getPay(payToken(b.booking.id))).body.whenText, formatSessionTime(b.start, HOST_TZ));
+  assert.equal((await getPay(payToken(b.booking.id))).body.whenText, formatSessionTime(b.start));
 
   // No APP_URL (a link cannot be built): the page simply has no "Manage your booking" link.
   const appUrl = process.env.APP_URL;
@@ -440,8 +442,9 @@ test("P2: a booking that can still be paid is `payable`, with exactly the fields
     assert.equal(out.body.hostName, `Spa Host ${run}`);
     assert.equal(out.body.serviceTitle, "Full refund session");
     assert.equal(out.body.amountText, formatMoney(49900, "INR"), "the price comes from the service row");
-    assert.equal(out.body.whenText, formatSessionTime(b.start, "Europe/London"));
-    assert.equal(out.body.payByText, formatSessionTime(holdExpiresAt, "Europe/London"));
+    assert.equal(out.body.whenText, formatSessionTime(b.start));
+    assert.equal(out.body.payByText, formatSessionTime(holdExpiresAt));
+    assert.match(out.body.payByText as string, / IST$/);
     assert.equal(out.body.prepNotes, "Bring a laptop");
     assert.ok(verifyBookingPollToken(b.booking.id, out.body.pollToken as string), "the poll token is valid for this booking");
     assert.ok(!verifyBookingPollToken("another-booking", out.body.pollToken as string), "and for no other");

@@ -4,6 +4,7 @@ import { Alert, Card, Stat } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminOverviewView } from "@/lib/views/admin-overview";
+import { formatDateTime } from "@/lib/india";
 
 type Money = Jsonify<AdminOverviewView>["overview"]["captured"];
 
@@ -86,7 +87,7 @@ export function OverviewView({ data }: { data: Jsonify<AdminOverviewView> }) {
                   <strong>{a.adminEmail}</strong> · {a.action}
                   {a.targetType ? ` · ${a.targetType}` : ""}
                 </span>
-                <span className="subtle">{new Date(a.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</span>
+                <span className="subtle">{formatDateTime(new Date(a.createdAt), { weekday: false })}</span>
               </li>
             ))}
           </ul>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildPortalExport, resolvePortalToken } from "@/lib/customer-portal";
+import { istDate } from "@/lib/india";
 import { jsonView } from "@/lib/views/http";
 
 // "Download my data": everything stored about the address behind the link, as one JSON file (lib/customer-portal.ts buildPortalExport).
@@ -12,7 +13,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
   return new NextResponse(JSON.stringify(data, null, 2), {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "Content-Disposition": `attachment; filename="my-bookings-${now.toISOString().slice(0, 10)}.json"`,
+      "Content-Disposition": `attachment; filename="my-bookings-${istDate(now)}.json"`,
       "Cache-Control": "private, no-store",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",

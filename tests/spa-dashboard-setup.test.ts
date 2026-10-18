@@ -401,7 +401,7 @@ test("ServicesView and AvailabilityView render from JSON, including hidden servi
 
   const avail = render(
     createElement(AvailabilityView, {
-      data: { timezone: "Asia/Kolkata", rules: [{ id: "r1", weekday: 1, startTime: "09:00", endTime: "12:00", timezone: "Asia/Kolkata" }], blocked: [{ id: "b1", date: "2030-01-05", reason: "Diwali" }, { id: "b2", date: "2030-01-02", reason: null }] },
+      data: { rules: [{ id: "r1", weekday: 1, startTime: "09:00", endTime: "12:00", timezone: "Asia/Kolkata" }], blocked: [{ id: "b1", date: "2030-01-05", reason: "Diwali" }, { id: "b2", date: "2030-01-02", reason: null }] },
     }),
   );
   assert.ok(avail.includes("Monday") && avail.includes("Weekly hours") && avail.includes("Days off") && avail.includes("Diwali"));
@@ -410,7 +410,7 @@ test("ServicesView and AvailabilityView render from JSON, including hidden servi
 test("SettingsView renders every panel from JSON: anchors for #google and #whatsapp, the outcome banner, the address field, the verify banner", async () => {
   const { SettingsView } = await import("../web/src/components/views/dashboard/SettingsView");
   const data: DashboardSettingsView = {
-    profile: { name: "Pat Doe", bio: "Hello", photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
+    profile: { name: "Pat Doe", bio: "Hello", photoUrl: null, slug: "pat", notifyByEmail: true },
     google: { state: "connected", email: "pat@gmail.com", connectedAt: when, gmailSend: true, liveEvents: 0, gmailFailing: false },
     whatsapp: { displayPhone: "+91 98765 43210", verifiedName: "Pat Studio", source: "manual", status: "ACTIVE", lastError: null, templates: [{ name: "reschedule", status: "APPROVED", reason: null }], ready: false },
     embedded: null,
@@ -434,7 +434,7 @@ test("SettingsView renders every panel from JSON: anchors for #google and #whats
 test("OnboardingView renders the step from the URL with Google's outcome, and every step is reachable", async () => {
   const { OnboardingView } = await import("../web/src/components/views/dashboard/OnboardingView");
   const data: DashboardOnboardingView = {
-    profile: { name: "Pat Doe", bio: null, photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
+    profile: { name: "Pat Doe", bio: null, photoUrl: null, slug: "pat", notifyByEmail: true },
     services: [],
     rules: [],
     blocked: [],
@@ -550,12 +550,11 @@ test("D6 GET /api/dashboard/services: the owner's services (hidden ones too) wit
 
 /* ---------- D7 ---------- */
 
-test("D7 GET /api/dashboard/availability: the owner's zone, rules ordered by day and time, and days off as YYYY-MM-DD", { skip }, async () => {
+test("D7 GET /api/dashboard/availability: rules ordered by day and time, and days off as YYYY-MM-DD", { skip }, async () => {
   const out = await ask(routes.availability, A.cookie);
   assert.equal(out.status, 200);
   assert.equal(out.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual(keys(out.body), ["blocked", "rules", "timezone"]);
-  assert.equal(out.body.timezone, "Asia/Kolkata");
+  assert.deepEqual(keys(out.body), ["blocked", "rules"]);
   const rules = out.body.rules as Record<string, unknown>[];
   assert.deepEqual(rules.map((r) => [r.weekday, r.startTime, r.endTime]), [[1, "09:00", "12:00"], [1, "14:00", "16:00"], [3, "10:00", "11:00"]]);
   for (const r of rules) assert.deepEqual(keys(r), ["endTime", "id", "startTime", "timezone", "weekday"]);
@@ -564,7 +563,7 @@ test("D7 GET /api/dashboard/availability: the owner's zone, rules ordered by day
   for (const b of blocked) assert.deepEqual(keys(b), ["date", "id", "reason"]);
   assertOnlyOwn(out.body, A, B, C);
   assertOnlyOwn((await ask(routes.availability, B.cookie)).body, B, A, C);
-  assert.deepEqual((await ask(routes.availability, C.cookie)).body, { timezone: "Asia/Kolkata", rules: [], blocked: [] });
+  assert.deepEqual((await ask(routes.availability, C.cookie)).body, { rules: [], blocked: [] });
 });
 
 /* ---------- D8 ---------- */
@@ -617,7 +616,6 @@ test("D9 GET /api/dashboard/settings: profile, the three Google states, WhatsApp
       name: A.name,
       bio: `Alpha bio ${run}`,
       photoUrl: `https://img.example.com/alpha-${run}.png`,
-      timezone: "Asia/Kolkata",
       slug: A.slug,
       notifyByEmail: true,
     });

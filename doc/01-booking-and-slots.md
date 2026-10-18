@@ -13,9 +13,9 @@ A customer can see available slots for an influencer's service and hold one.
 - [x] Cron/worker job to expire stale holds
 
 ## Key rules
-- Store all times in UTC, show in customer's timezone.
+- Store all times in UTC, show them in Indian Standard Time (IST). The product is India-only: there is no time zone to choose (doc/14-india-localisation.md).
 - Prevent double booking with a DB unique constraint on `(service_id, start_time)` for 1:1, or a transaction that checks capacity for groups.
-- Validate phone numbers server-side.
+- Validate phone numbers server-side: Indian mobile numbers only, stored as `+91XXXXXXXXXX`.
 
 ## Done when
 Two browsers cannot hold the same slot, and a hold expires after 10 minutes.

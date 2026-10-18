@@ -97,7 +97,6 @@ const profile = (over: Partial<PublicProfile> = {}): PublicProfile => ({
   name: "Demo Creator",
   bio: "Line one\nLine two",
   photoUrl: null,
-  timezone: "Asia/Kolkata",
   preview: false,
   blockers: [],
   services: [service(), service({ id: "svc_2", title: "Small Group Workshop", type: "GROUP", capacity: 5, priceMinor: 19900 })],
@@ -170,7 +169,7 @@ test("book page: `?service=` reaches the booking flow, the host and the services
   assert.ok(flow);
   assert.equal(flow.initialServiceId, "svc_2");
   assert.equal(flow.preview, false);
-  assert.deepEqual(flow.host, { name: "Demo Creator", photoUrl: null, slug: "demo", timezone: "Asia/Kolkata" });
+  assert.deepEqual(flow.host, { name: "Demo Creator", photoUrl: null, slug: "demo" });
   assert.deepEqual((flow.services as Array<{ id: string }>).map((s) => s.id), ["svc_1", "svc_2"]);
   assert.ok(!html.includes("Holding a slot is disabled"));
 

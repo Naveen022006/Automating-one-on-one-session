@@ -11,6 +11,7 @@ import { after, before, mock, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { prisma } from "../lib/db";
+import { istDate, istMonthStart } from "../lib/india";
 import { matchRouteRule } from "../lib/rate-limit/policies";
 import { EARNINGS_ROW_CAP, MAX_REPORT_DAY, MIN_REPORT_DAY, parsePageParam, parseReportDay } from "../lib/views/dashboard-params";
 import { parseMessageStatus } from "../lib/views/dashboard-messages";
@@ -76,7 +77,7 @@ async function seed(o: Owner) {
   await prisma.message.create({ data: { bookingId: upcoming.id, channel: "WHATSAPP", template: "booking-confirmation", status: "FAILED", error: failedError(o) } });
 
   const past = await booking((await session(-2 * DAY)).id, "Past", "COMPLETED");
-  await payment(past.id, "past", o.pay.past, { createdAt: new Date("2024-03-31T23:30:00.000Z"), ...(o.pay.pastRefund ? { refundAmountMinor: o.pay.pastRefund, refundStatus: "processed" } : {}) });
+  await payment(past.id, "past", o.pay.past, { createdAt: new Date("2024-03-31T18:00:00.000Z"), ...(o.pay.pastRefund ? { refundAmountMinor: o.pay.pastRefund, refundStatus: "processed" } : {}) });
   await prisma.message.create({ data: { bookingId: past.id, channel: "EMAIL", template: "receipt", status: "PENDING" } });
 
   await booking((await session(4 * DAY)).id, "Request", "REQUESTED", { holdExpiresAt: new Date(Date.now() + DAY) });
@@ -356,7 +357,7 @@ test("D4 GET /api/dashboard/customers: the owner's customers grouped by email, s
 
 /* ---------- D5 ---------- */
 
-test("D5 GET /api/dashboard/earnings: dates default to this month (UTC), the range is inclusive of its last day, nothing of the other owner is counted", { skip }, async () => {
+test("D5 GET /api/dashboard/earnings: dates default to this month (IST), the range is inclusive of its last day, nothing of the other owner is counted", { skip }, async () => {
   const before = new Date();
   const out = await ask(routes.earnings, "", A.cookie);
   const after = new Date();
@@ -365,9 +366,9 @@ test("D5 GET /api/dashboard/earnings: dates default to this month (UTC), the ran
   assert.deepEqual(keys(out.body), ["from", "paymentCount", "refundedCount", "summary", "to", "truncated"]);
   assert.equal(out.body.truncated, false);
   assert.deepEqual(keys(out.body.summary), ["byService", "totalsByCurrency"]);
-  const monthStart = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString().slice(0, 10);
-  assert.ok([monthStart(before), monthStart(after)].includes(out.body.from as string), "from = the 1st of this month (UTC)");
-  assert.ok([before.toISOString().slice(0, 10), after.toISOString().slice(0, 10)].includes(out.body.to as string), "to = today (UTC)");
+  // Days are Indian Standard Time days (doc/14-india-localisation.md): midnight IST is 18:30 UTC.
+  assert.ok([istMonthStart(before), istMonthStart(after)].includes(out.body.from as string), "from = the 1st of this month (IST)");
+  assert.ok([istDate(before), istDate(after)].includes(out.body.to as string), "to = today (IST)");
   assert.equal(out.body.paymentCount, 1, "this month only the upcoming booking's payment");
   assert.deepEqual((out.body.summary as { totalsByCurrency: unknown }).totalsByCurrency, [{ currency: "INR", amountMinor: A.pay.upcoming }]);
 
@@ -382,7 +383,7 @@ test("D5 GET /api/dashboard/earnings: dates default to this month (UTC), the ran
   assert.deepEqual(keys(summary.byService[0]), ["amountMinor", "count", "currency", "serviceTitle"], "no service id");
   assertOnlyOwn(march.body, A, B);
 
-  // The last day counts in full (a payment at 23:30 UTC on the 31st), the day before does not include it.
+  // The last day counts in full (a payment at 23:30 IST on the 31st, 18:00 UTC), the day before does not include it.
   const to30 = await ask(routes.earnings, "?from=2024-03-01&to=2024-03-30", A.cookie);
   assert.equal(to30.body.paymentCount, 1);
   assert.deepEqual((to30.body.summary as typeof summary).totalsByCurrency, [{ currency: "INR", amountMinor: A.pay.cancelled }]);
@@ -429,10 +430,13 @@ test("D5: loadEarningsView fills in this month from the clock it is given", { sk
   assert.equal(view.from, "2031-05-01");
   assert.equal(view.to, "2031-05-20");
   assert.equal(view.paymentCount, 0);
-  // A month that starts at midnight UTC: the first of the month is both ends.
-  const first = await loadEarningsView(A.influencerId, {}, new Date("2031-06-01T00:00:00.000Z"));
+  // A month starts at midnight IST, which is 18:30 UTC the evening before: the first of the month is both ends.
+  const first = await loadEarningsView(A.influencerId, {}, new Date("2031-05-31T18:30:00.000Z"));
   assert.equal(first.from, "2031-06-01");
   assert.equal(first.to, "2031-06-01");
+  const lastMs = await loadEarningsView(A.influencerId, {}, new Date("2031-05-31T18:29:59.999Z"));
+  assert.equal(lastMs.from, "2031-05-01", "one millisecond earlier it is still May in India");
+  assert.equal(lastMs.to, "2031-05-31");
 });
 
 test("D5: the ends of the day window are accepted, and one request never sums more than the row cap", { skip }, async () => {
@@ -471,6 +475,9 @@ test("D5 CSV export: the owner's rows only, and the same day rules as the page (
   assert.equal(march.headers.get("content-disposition"), 'attachment; filename="earnings-2024-03-01-to-2024-03-31.csv"');
   const lines = march.text.trim().split("\r\n");
   assert.equal(lines.length, 3, "the header and the two March payments");
+  assert.ok(lines[0].startsWith("paid_at_ist,") && lines[0].includes(",session_start_ist,"), "the time columns say IST");
+  assert.match(lines[1], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+05:30,/, "ISO with the +05:30 offset");
+  assert.ok(lines[2].startsWith("2024-03-31T23:30:00.000+05:30,"), "the 31 March payment (18:00 UTC) reads 23:30 IST");
   assert.ok(march.text.includes(customerName(A, "Past")) && !march.text.includes("Bravo"));
 
   for (const odd of ["?from=0000-01-01", "?from=0001-01-01&to=9999-12-30", "?to=9999-12-31", "?from=1999-12-31&to=2101-01-01", "?from=abc&to=2026-02-31", ""]) {

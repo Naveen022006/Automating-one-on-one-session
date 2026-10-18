@@ -24,7 +24,7 @@ import {
   Tooltip,
   describedBy,
 } from "@web/components/ui/primitives";
-import { Calendar, TimeSlotPicker, monthOf, todayIn } from "@web/components/ui/scheduling";
+import { Calendar, TimeSlotPicker, monthOf, todayIst } from "@web/components/ui/scheduling";
 
 function Swatch({ name }: { name: string }) {
   return (
@@ -51,7 +51,7 @@ function Showcase() {
   const [drawer, setDrawer] = useState(false);
   const [sw, setSw] = useState(true);
   const [tab, setTab] = useState("one");
-  const today = todayIn("UTC");
+  const today = todayIst();
   const [month, setMonth] = useState(monthOf(today));
   const [day, setDay] = useState<string | null>(today);
   const [slot, setSlot] = useState<string | null>(null);
@@ -192,9 +192,9 @@ function Showcase() {
         <Section title="Date and time pickers">
           <div className="picker">
             <Calendar month={month} onMonthChange={setMonth} value={day} onChange={setDay} availableDays={null} minDay={today} />
-            <TimeSlotPicker slots={slots} value={slot} onChange={(s) => setSlot(s.start)} tz="Asia/Kolkata" showSeats />
+            <TimeSlotPicker slots={slots} value={slot} onChange={(s) => setSlot(s.start)} showSeats />
           </div>
-          <TimeSlotPicker slots={null} value={null} onChange={() => {}} tz="UTC" />
+          <TimeSlotPicker slots={null} value={null} onChange={() => {}} />
         </Section>
 
         <Section title="Overlays and feedback">

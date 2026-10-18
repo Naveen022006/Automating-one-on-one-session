@@ -1,9 +1,11 @@
 import { Button } from "@web/components/ui/primitives";
 import { formatMoney } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/india";
 import type { ReceiptView } from "@/lib/receipts";
 
+// Indian Standard Time, whoever prints it: "Mon, 12 Oct 2026, 11:00 AM IST", and the payment day "12 Oct 2026".
 function when(iso: string, withTime: boolean) {
-  return new Intl.DateTimeFormat(undefined, withTime ? { dateStyle: "full", timeStyle: "short" } : { dateStyle: "long" }).format(new Date(iso));
+  return withTime ? formatDateTime(new Date(iso)) : formatDate(new Date(iso), { weekday: false });
 }
 
 /**

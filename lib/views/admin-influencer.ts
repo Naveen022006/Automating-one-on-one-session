@@ -131,7 +131,7 @@ export interface AdminInfluencerPayoutView {
 }
 
 export interface AdminInfluencerView {
-  influencer: { id: string; name: string; email: string; slug: string; timezone: string; onboardedAt: Date | null; createdAt: Date; emailVerified: boolean };
+  influencer: { id: string; name: string; email: string; slug: string; onboardedAt: Date | null; createdAt: Date; emailVerified: boolean };
   /** The go-live checklist, as the influencer's own dashboard shows it. */
   readinessItems: Pick<ReadinessItem, "key" | "label" | "state" | "required">[];
   connections: {
@@ -181,7 +181,6 @@ export async function loadAdminInfluencerView(id: string, adminEmail: string): P
       name: i.name,
       email: i.email,
       slug: i.slug,
-      timezone: i.timezone,
       onboardedAt: i.onboardedAt,
       createdAt: i.createdAt,
       emailVerified: i.user?.emailVerifiedAt != null,
