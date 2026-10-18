@@ -71,26 +71,28 @@ test("queueRequestMessage: queues only when a route to the customer exists; says
   assert.equal(lines.length, 3);
   assert.ok(lines[0].includes('could not queue "request-approved" for booking bk_1'));
   assert.ok(lines[2].includes("could not work out how to reach the customer"));
-  assert.ok(!lines.join("\n").includes("/pay/") && lines[0].includes("[payment link]"), lines.join("\n"));
+  assert.ok(!lines.join("\n").includes("/pay/") && lines[0].includes("[link removed]"), lines.join("\n"));
 });
 
-test("the worker's send-message job keeps a payment link out of the reason of a failed request message, and leaves every other error alone", async () => {
+test("the worker's send-message job keeps payment and manage links out of the reason of a failed message, and leaves an error without one alone", async () => {
   let fail: () => Error = () => new Error(`WhatsApp refused ${LINK} as a parameter`);
   mock.module("../lib/messaging", { namedExports: { sendMessageForBooking: async () => Promise.reject(fail()) } });
   const { handleSendMessage } = await import("../worker/jobs/sendMessage");
   const job = (template: string) => ({ data: { bookingId: "bk_1", template } }) as never;
 
   // The message is the whole story that BullMQ keeps in Redis and the health page shows.
-  await assert.rejects(handleSendMessage(job("request-approved")), (e: unknown) => e instanceof Error && e.message === "WhatsApp refused [payment link] as a parameter");
+  await assert.rejects(handleSendMessage(job("request-approved")), (e: unknown) => e instanceof Error && e.message === "WhatsApp refused [link removed] as a parameter");
   await assert.rejects(handleSendMessage(job("request-declined")), (e: unknown) => e instanceof Error && !e.message.includes("/pay/"));
 
   const plain = new Error("WhatsApp is down");
   fail = () => plain;
   await assert.rejects(handleSendMessage(job("request-approved")), (e: unknown) => e === plain, "an error without a link is passed on untouched (same object, same stack)");
-  // Another message's error is not rewritten, whatever it says (only the booking-request messages carry a payment link).
-  const other = new Error(`odd text with ${LINK}`);
-  fail = () => other;
-  await assert.rejects(handleSendMessage(job("booking-confirmation")), (e: unknown) => e === other);
+  // Any message: the manage link is a bearer link too, and the QR texts of the booking events carry it.
+  const manage = new Error("Graph said: https:\\/\\/app.example.com\\/manage\\/eyJiIjoiYmtfMSJ9.abc");
+  fail = () => manage;
+  await assert.rejects(handleSendMessage(job("booking-confirmation")), (e: unknown) => e instanceof Error && e.message === "Graph said: [link removed]");
+  fail = () => new Error("an error without any link");
+  await assert.rejects(handleSendMessage(job("booking-confirmation")), (e: unknown) => e instanceof Error && e.message === "an error without any link");
 });
 
 test("the triggers are wired where the design says, and each one is best effort", () => {

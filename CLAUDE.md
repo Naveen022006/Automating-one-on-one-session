@@ -150,7 +150,7 @@ unchanged e-mails: `request-received` (hold route), `request-approved` with the 
 (`declineRequest`), `request-expired` (the worker's `expireStaleHoldsAndNotify`), then the usual `booking-confirmation` after payment.
 `messageMayBeSent` in `lib/message-kinds.ts` is the ONE table of "which booking states may each message be sent in", read by
 `lib/messaging.ts` and by the linked number's `booking-guard.ts`. A job is `{ bookingId, template }` only: the payment link (a bearer link)
-is built when the message is sent, never stored or logged, and `redactPayLinks` takes it out of any stored or logged error. Queueing is best
+is built when the message is sent, never stored or logged, and `redactBearerLinks` takes it (and the manage link) out of any stored, logged or thrown error, in its plain, JSON-escaped and percent-encoded spellings. Queueing is best
 effort and happens after the database change committed; tests must not reach a real queue (`delete process.env.REDIS_URL` or pass the
 `deps`/`enqueue` seam). Nothing is queued unless `customerMessageRoute` (`lib/message-route.ts`) finds a route to the customer (linked number, official connection with the template approved, SMS set up for it); the decision answer has `messageRoute` and `messageQueued`.
 

@@ -8,7 +8,9 @@ import {
   REQUEST_RECEIVED_TEMPLATE,
   isRequestMessageKind,
   messageMayBeSent,
-  redactPayLinks,
+  LINK_REMOVED,
+  bearerLinkSecrets,
+  redactBearerLinks,
   statusesFor,
   type BookingFacts,
 } from "../lib/message-kinds";
@@ -139,14 +141,38 @@ test("request-expired: EXPIRED, never decided, a service that needs approval, ne
   for (const route of ["sender", "queue"] as const) assert.equal(messageMayBeSent(REQUEST_EXPIRED_TEMPLATE, facts({ status: "EXPIRED", requiresApproval: true, receivedDelivered: false }), NOW, route), false, route);
 });
 
-test("a payment link in any piece of text is taken out, wherever a provider echoed it", () => {
-  const link = "https://app.example.com/pay/eyJiIjoiYmtfMSJ9.abc-DEF_123";
-  assert.equal(redactPayLinks(`WhatsApp refused: ${link} is not allowed`), "WhatsApp refused: [payment link] is not allowed");
-  assert.equal(redactPayLinks(`SMS failed (400): {"body":"Pay here: ${link}"}`), 'SMS failed (400): {"body":"Pay here: [payment link]"}');
-  assert.equal(redactPayLinks("see /pay/abc123 now"), "see [payment link] now");
-  assert.equal(redactPayLinks("http://localhost:3000/pay/tok%2Ex and https://x.test/pay/y"), "[payment link] and [payment link]");
-  assert.equal(redactPayLinks("https://x.test/manage/abc and /payouts/1 and 'pay later'"), "https://x.test/manage/abc and /payouts/1 and 'pay later'", "other links and words stay");
-  assert.equal(redactPayLinks(""), "");
+test("bearer links (payment and manage) are taken out of any text, in every spelling a provider can echo them", () => {
+  const pay = "https://app.example.com/pay/eyJiIjoiYmtfMSJ9.abc-DEF_123xyz";
+  const manage = "https://app.example.com/manage/eyJiIjoiYmtfMiJ9.qrs-TUV_456uvw";
+  const escaped = (u: string) => u.replace(/\//g, "\\/"); // https:\/\/host\/pay\/TOKEN, as PHP-based APIs (MSG91) write JSON
+  const twice = (u: string) => u.replace(/\//g, "\\\\/"); // JSON inside a JSON string
+  for (const [name, link] of [["pay", pay], ["manage", manage]] as const) {
+    for (const [form, text] of [["plain", link], ["json-escaped", escaped(link)], ["escaped twice", twice(link)], ["percent-encoded", encodeURIComponent(link)]] as const) {
+      assert.equal(redactBearerLinks(`WhatsApp refused: ${text} is not allowed`), `WhatsApp refused: ${LINK_REMOVED} is not allowed`, `${name} ${form}`);
+      assert.equal(redactBearerLinks(`SMS failed (400): {"body":"Open ${text}"}`), `SMS failed (400): {"body":"Open ${LINK_REMOVED}"}`, `${name} ${form} in a JSON body`);
+    }
+  }
+  // Path-only and partly encoded spellings.
+  assert.equal(redactBearerLinks("see /pay/abc123 now"), `see ${LINK_REMOVED} now`);
+  assert.equal(redactBearerLinks("see \\/manage\\/abc123 and %2Fpay%2Fabc123 and %2fmanage%2fabc123"), `see ${LINK_REMOVED} and ${LINK_REMOVED} and ${LINK_REMOVED}`);
+  assert.equal(redactBearerLinks("http://localhost:3000/pay/tok%2Ex and https://x.test/manage/y"), `${LINK_REMOVED} and ${LINK_REMOVED}`);
+  assert.equal(redactBearerLinks(`${pay} then ${manage}`), `${LINK_REMOVED} then ${LINK_REMOVED}`);
+  // Other links and words stay.
+  assert.equal(redactBearerLinks("https://x.test/payouts/1 and /payments/2 and 'pay later' and /dashboard/manage-x and https://x.test/api/pay"), "https://x.test/payouts/1 and /payments/2 and 'pay later' and /dashboard/manage-x and https://x.test/api/pay");
+  assert.equal(redactBearerLinks(""), "");
+});
+
+test("the exact links of one send also catch a token quoted without its path, and short strings are never treated as secrets", () => {
+  const pay = "https://app.example.com/pay/eyJiIjoiYmtfMSJ9.abc-DEF_123xyz";
+  const manage = "https://app.example.com/manage/eyJiIjoiYmtfMiJ9.qrs-TUV_456uvw";
+  const known = bearerLinkSecrets([pay, manage, null, undefined, ""]);
+  assert.ok(known.includes(pay) && known.includes(manage));
+  assert.ok(known.includes("eyJiIjoiYmtfMSJ9.abc-DEF_123xyz") && known.includes("eyJiIjoiYmtfMiJ9.qrs-TUV_456uvw"), "the tokens");
+  assert.ok(known.includes(encodeURIComponent(pay)) && known.includes(pay.replace(/\//g, "\\/")), "the encoded and JSON-escaped URLs");
+  assert.deepEqual([...known].sort((a, b) => b.length - a.length), known, "longest first, so a URL goes before its own token");
+  assert.equal(redactBearerLinks("invalid parameter eyJiIjoiYmtfMSJ9.abc-DEF_123xyz in body", known), `invalid parameter ${LINK_REMOVED} in body`);
+  assert.equal(redactBearerLinks("invalid parameter eyJiIjoiYmtfMSJ9.abc-DEF_123xyz in body"), "invalid parameter eyJiIjoiYmtfMSJ9.abc-DEF_123xyz in body", "without the list a bare token is not recognisable");
+  assert.deepEqual(bearerLinkSecrets(["/pay/abc"]), [], "too short to replace everywhere");
 });
 
 // ---- the definitions of the four messages ----------------------------------------------------------------------------------------

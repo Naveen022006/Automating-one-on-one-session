@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 import { sweepExpiredAuthRows } from "../lib/auth/sweep";
-import { isRequestMessageKind, redactPayLinks } from "../lib/message-kinds";
+import { redactBearerLinks } from "../lib/message-kinds";
 import { reportError } from "../lib/observability";
 import { expireStaleHoldsAndNotify } from "../lib/request-messages";
 import { sweepExpiredBuckets } from "../lib/rate-limit/sweep";
@@ -93,8 +93,8 @@ if (!process.env.REDIS_URL) {
     // Only act once the retries are exhausted and the error was transient (not wrapped UnrecoverableError).
     const exhausted = job.attemptsMade >= (job.opts.attempts ?? 1);
     if (!exhausted || err instanceof UnrecoverableError) return;
-    // A booking-request message may carry a payment link (a bearer link): log only its redacted reason, never the error object.
-    console.error(`[worker] send-message gave up on booking ${job.data.bookingId} (${job.data.template})`, isRequestMessageKind(job.data.template) ? redactPayLinks(err.message) : err);
+    // A message may carry a payment or manage link (bearer links): log only its redacted reason, never the error object.
+    console.error(`[worker] send-message gave up on booking ${job.data.bookingId} (${job.data.template})`, redactBearerLinks(err.message));
     void reportMessageFailure(job.data.bookingId, job.data.template, err.message).catch((e) =>
       console.error("[worker] could not record message failure", e),
     );

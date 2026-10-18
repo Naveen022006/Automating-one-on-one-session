@@ -112,11 +112,47 @@ export function messageMayBeSent(template: string, f: BookingFacts, now: Date, r
   }
 }
 
+/** What a removed link is replaced with. */
+export const LINK_REMOVED = "[link removed]";
+
+// A "/" as it can appear in text a provider sends back: plain, JSON-escaped (`\/`, as PHP-based APIs write it), escaped twice (`\\/`, JSON
+// inside a JSON string) or percent-encoded (`%2F`, a URL inside a query string).
+const SLASH = "(?:\\\\*/|%2[fF])";
+const BEARER_LINK = new RegExp(`(?:https?(?::|%3[aA])${SLASH}${SLASH}[^\\s"'<>]*?)?${SLASH}(?:pay|manage)${SLASH}[^\\s"'<>]+`, "gi");
+
 /**
- * Takes anything that looks like a payment link out of a piece of text. The payment link is a bearer link (whoever has it can pay for
- * the booking), so it must never reach a log line, a stored error, an alert or a failed job's reason, even when a provider echoes the
- * message back in its error.
+ * The exact strings that identify the bearer links of one send, in the forms they can come back in: each full URL (as is, percent-encoded,
+ * JSON-escaped) and the token after `/pay/` or `/manage/` (as is and percent-encoded). Short strings are left out: replacing a few
+ * characters everywhere would damage the text around them.
  */
-export function redactPayLinks(text: string): string {
-  return text.replace(/(?:https?:\/\/[^\s"'<>]*)?\/pay\/[^\s"'<>]+/gi, "[payment link]");
+export function bearerLinkSecrets(urls: readonly (string | null | undefined)[]): string[] {
+  const out = new Set<string>();
+  for (const url of urls) {
+    if (!url) continue;
+    const token = /\/(?:pay|manage)\/([^\s?#]+)/.exec(url)?.[1];
+    for (const base of [url, token]) {
+      if (!base) continue;
+      let decoded = base;
+      try {
+        decoded = decodeURIComponent(base);
+      } catch {
+        /* keep the raw form */
+      }
+      for (const form of [base, decoded, encodeURIComponent(decoded), base.replace(/\//g, "\\/"), base.replace(/\//g, "\\\\/")]) out.add(form);
+    }
+  }
+  return [...out].filter((x) => x.length >= 16).sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Takes the bearer links out of a piece of text: the customer's payment link (`/pay/<token>`) and manage link (`/manage/<token>`). Whoever
+ * has one can act on the booking (pay for it; reschedule, cancel or erase it), so it must never reach a log line, a stored error, an
+ * alert or a failed job's reason, even when a provider echoes the message back in its error. The pattern covers the plain,
+ * JSON-escaped and percent-encoded spellings of a link; `known` adds the exact strings of the links of THIS send (see
+ * bearerLinkSecrets), which also catches a token quoted without its path.
+ */
+export function redactBearerLinks(text: string, known: readonly string[] = []): string {
+  let out = text;
+  for (const secret of known) if (secret) out = out.split(secret).join(LINK_REMOVED);
+  return out.replace(BEARER_LINK, LINK_REMOVED);
 }

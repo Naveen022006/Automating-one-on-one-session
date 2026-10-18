@@ -1,7 +1,7 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import { formatSessionTime } from "@/lib/format";
-import { isRequestMessageKind, messageMayBeSent, redactPayLinks } from "@/lib/message-kinds";
+import { bearerLinkSecrets, isRequestMessageKind, messageMayBeSent, redactBearerLinks } from "@/lib/message-kinds";
 import {
   CONFIRMATION_TEMPLATE,
   smsBody,
@@ -251,9 +251,23 @@ async function tryWhatsAppWeb(
   return result.retryable ? { kind: "later" } : null;
 }
 
-/** An error as text for a log line or a stored row. Never carries a payment link, even if a provider echoed the message back. */
-function errText(e: unknown): string {
-  return redactPayLinks(e instanceof Error ? e.message : String(e));
+/**
+ * An error as text for a log line or a stored row. Never carries a payment or manage link, even if a provider echoed the message back
+ * (`secrets`: the exact links of this send, see bearerLinkSecrets).
+ */
+function errText(e: unknown, secrets: readonly string[] = []): string {
+  return redactBearerLinks(e instanceof Error ? e.message : String(e), secrets);
+}
+
+/** The same error with the links of this send taken out of its message and stack, so whatever catches it (a log, BullMQ's failed reason) never sees them. */
+function withoutLinks(e: unknown, secrets: readonly string[]): unknown {
+  if (!(e instanceof Error)) return e;
+  const message = redactBearerLinks(e.message, secrets);
+  if (message === e.message) return e;
+  const clean = new Error(message);
+  clean.name = e.name;
+  clean.stack = e.stack ? redactBearerLinks(e.stack, secrets) : undefined;
+  return clean;
 }
 
 /** The customer's manage/status link, or null when APP_URL / APP_SECRET are missing: no link rather than no message. */
@@ -281,6 +295,17 @@ export async function sendMessageForBooking(
   template: string,
   overrides: Partial<MessagingDeps> = {},
 ): Promise<MessageOutcome> {
+  // The exact payment and manage links of this send, filled in once the message is built. Whatever fails after that is thrown with
+  // them taken out, so no log, stored error, alert or failed job's reason carries one, however a provider spelled it back.
+  const secrets: string[] = [];
+  try {
+    return await deliverMessage(bookingId, template, overrides, secrets);
+  } catch (e) {
+    throw withoutLinks(e, secrets);
+  }
+}
+
+async function deliverMessage(bookingId: string, template: string, overrides: Partial<MessagingDeps>, secrets: string[]): Promise<MessageOutcome> {
   const deps = { ...defaultDeps, ...overrides };
 
   const booking = await prisma.booking.findUnique({
@@ -361,6 +386,7 @@ export async function sendMessageForBooking(
     }
     Object.assign(context, extra);
   }
+  secrets.push(...bearerLinkSecrets([context.payUrl, context.manageUrl]));
   const body = smsBody(template, context);
 
   // First choice, only when the influencer linked their own number by QR code and it is connected right now. Any refusal falls
@@ -390,14 +416,14 @@ export async function sendMessageForBooking(
     if (whatsappError instanceof WhatsAppNotConnectedError) {
       // WhatsApp was not even tried (no healthy connection, or this template is not approved yet), so there is no
       // failed attempt to record: go straight to SMS and say why in the log.
-      console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError)}); sending by SMS`);
+      console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError, secrets)}); sending by SMS`);
       officialTried = false;
     } else {
       console.warn(
-        `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
+        `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError, secrets)}`,
       );
       // Record the WhatsApp failure on its own row so the dashboard shows the attempt, then try SMS.
-      await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
+      await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError, secrets));
     }
     channel = "SMS";
     try {
@@ -409,10 +435,10 @@ export async function sendMessageForBooking(
       // the Meet link must still alert the host. An official send that really failed, or a linked number that is expected back, is retried.)
       if (smsError instanceof NoMessageRouteError && isRequestMessageKind(template) && !officialTried && !linkedMayRecover) {
         await recordNoRoute(bookingId, template);
-        console.info(`[send-message] booking ${bookingId}: no route for "${template}" (${errText(smsError)}); recorded, not retried`);
+        console.info(`[send-message] booking ${bookingId}: no route for "${template}" (${errText(smsError, secrets)}); recorded, not retried`);
         return "skipped";
       }
-      await recordFailure(bookingId, "SMS", template, errText(smsError)); // transient: worker alerts after final attempt
+      await recordFailure(bookingId, "SMS", template, errText(smsError, secrets)); // transient: worker alerts after final attempt
       throw smsError;
     }
   }
@@ -480,7 +506,7 @@ export async function reportMessageFailure(
   });
   if (!booking) return;
 
-  const detail = redactPayLinks(`Could not deliver "${template}" message after repeated failures: ${message}`).slice(0, 500);
+  const detail = redactBearerLinks(`Could not deliver "${template}" message after repeated failures: ${message}`).slice(0, 500);
   // Reaching the final failure means both channels failed; the SMS fallback is the last resort, so its row
   // carries the terminal FAILED state for the dashboard. (The WhatsApp attempt already left its own row.)
   await prisma.message.upsert({

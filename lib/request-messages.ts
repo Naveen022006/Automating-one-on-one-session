@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { expireStaleHolds } from "@/lib/holds";
-import { REQUEST_EXPIRED_TEMPLATE, redactPayLinks, type DeliveryRoute, type RequestMessageKind } from "@/lib/message-kinds";
+import { REQUEST_EXPIRED_TEMPLATE, redactBearerLinks, type DeliveryRoute, type RequestMessageKind } from "@/lib/message-kinds";
 import { customerMessageRoute } from "@/lib/message-route";
 import { enqueueSendMessage } from "@/lib/queue";
 import { within } from "@/lib/timeout";
@@ -62,7 +62,7 @@ export async function queueRequestMessage(booking: { id: string; influencerId: s
   try {
     route = await (deps.route ?? customerMessageRoute)(booking.influencerId, template);
   } catch (e) {
-    console.error(`[request-messages] could not work out how to reach the customer for "${template}" (booking ${booking.id}): ${redactPayLinks(e instanceof Error ? e.message : String(e))}`);
+    console.error(`[request-messages] could not work out how to reach the customer for "${template}" (booking ${booking.id}): ${redactBearerLinks(e instanceof Error ? e.message : String(e))}`);
     return { route: "none", queued: false };
   }
   if (route === "none") return { route, queued: false };
@@ -70,7 +70,7 @@ export async function queueRequestMessage(booking: { id: string; influencerId: s
     await (deps.enqueue ?? enqueueRequestMessage)(booking.id, template);
     return { route, queued: true };
   } catch (e) {
-    console.error(`[request-messages] could not queue "${template}" for booking ${booking.id}: ${redactPayLinks(e instanceof Error ? e.message : String(e))}`);
+    console.error(`[request-messages] could not queue "${template}" for booking ${booking.id}: ${redactBearerLinks(e instanceof Error ? e.message : String(e))}`);
     return { route, queued: false };
   }
 }

@@ -1,5 +1,5 @@
 import { type Job } from "bullmq";
-import { isRequestMessageKind, redactPayLinks } from "../../lib/message-kinds";
+import { redactBearerLinks } from "../../lib/message-kinds";
 import { sendMessageForBooking, type MessageOutcome } from "../../lib/messaging";
 
 export interface SendMessageData {
@@ -19,10 +19,11 @@ export async function handleSendMessage(job: Job<SendMessageData>): Promise<Mess
   try {
     outcome = await sendMessageForBooking(job.data.bookingId, job.data.template);
   } catch (e) {
-    // A booking-request message may carry the customer's payment link (a bearer link). BullMQ keeps a failed job's reason in Redis and the
-    // health page shows it, so a provider that echoed the message back in its error must not leave the link there.
-    if (isRequestMessageKind(job.data.template) && e instanceof Error && redactPayLinks(e.message) !== e.message) {
-      throw new Error(redactPayLinks(e.message));
+    // A message may carry the customer's payment or manage link (bearer links). BullMQ keeps a failed job's reason in Redis and the health
+    // page shows it, so a provider that echoed the message back in its error must not leave a link there. (sendMessageForBooking already
+    // scrubs the exact links of the send; this is the backstop for the spellings the pattern knows.)
+    if (e instanceof Error && redactBearerLinks(e.message) !== e.message) {
+      throw new Error(redactBearerLinks(e.message));
     }
     throw e;
   }

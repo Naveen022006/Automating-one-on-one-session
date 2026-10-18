@@ -1116,39 +1116,56 @@ test("end to end through the real manager and the fake transport: the accepted m
 
 // ---- 7. the payment link is a bearer link: it is not in logs, rows, alerts or errors ------------------------------------------------
 
-test("the payment link never reaches a log line, a stored error or an alert, even when a provider echoes the message back in its error", { skip }, async () => {
+test("neither the payment link nor the manage link reaches a log line, a stored error, an alert or a failed job's reason, however a provider spells it back", { skip }, async () => {
   const bookingId = await requestBooking();
   await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
-  const alerts: string[] = [];
-  const f = fakes();
-  f.ctl.ready = false;
-  const echoed: string[] = [];
-  f.deps.sendWhatsApp = async (input) => {
-    const link = (input.components?.[0] as { parameters: { text: string }[] }).parameters[5].text;
-    echoed.push(link);
-    throw new Error(`Meta rejected the message: parameter 6 was ${link}`);
-  };
-  f.deps.sendSMS = async (input) => {
-    echoed.push(payLinkIn(input.body)!);
-    throw new Error(`SMS refused: {"body":"${input.body}"}`);
-  };
-  f.deps.alert = async (_id, a) => void alerts.push(a.detail ?? "");
+  const spellings = [
+    (u: string) => u,
+    (u: string) => u.replace(/\//g, "\\/"), // JSON-escaped slashes, as MSG91 and Graph error bodies may write them
+    (u: string) => encodeURIComponent(u), // inside a query string
+    (u: string) => u.slice(u.lastIndexOf("/") + 1), // the bare token
+  ];
+  for (const [round, spell] of spellings.entries()) {
+    const alerts: string[] = [];
+    const f = fakes();
+    f.ctl.ready = false;
+    const echoed: string[] = [];
+    f.deps.sendWhatsApp = async (input) => {
+      const params = (input.components?.[0] as { parameters: { text: string }[] }).parameters.map((p) => p.text);
+      echoed.push(...params.filter((p) => p.includes("/pay/") || p.includes("/manage/")));
+      throw new Error(`Meta rejected the message: parameters were ${params.filter((p) => p.includes("/")).map(spell).join(" and ")}`);
+    };
+    f.deps.sendSMS = async (input) => {
+      echoed.push(payLinkIn(input.body)!);
+      throw new Error(`SMS refused: ${JSON.stringify({ body: spell(input.body) })} / ${spell(payLinkIn(input.body)!)} / ${spell(/https?:\/\/\S+\/manage\/\S+/.exec(input.body)?.[0] ?? "https://none.invalid/manage/none")}`);
+    };
+    f.deps.alert = async (_id, a) => void alerts.push(a.detail ?? "");
+    await prisma.message.deleteMany({ where: { bookingId } });
 
-  await assert.rejects(sendMessageForBooking(bookingId, "request-approved", f.deps));
-  assert.equal(echoed.length, 2);
-  const link = echoed[0];
-  assert.ok(link.includes("/pay/"));
-  const rows = await prisma.message.findMany({ where: { bookingId } });
-  assert.ok(rows.length >= 1);
-  for (const r of rows) assert.ok(!(r.error ?? "").includes("/pay/") && !(r.error ?? "").includes(link), `a stored error carries no link: ${r.error}`);
-
-  // The final failure of the job: the row, the booking and the alert.
-  await reportMessageFailure(bookingId, "request-approved", `SMS refused: ${link}`, async (_id, a) => void alerts.push(a.detail ?? ""));
-  const after = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
-  assert.ok(after.lastError && !after.lastError.includes("/pay/"), `booking.lastError: ${after.lastError}`);
-  for (const a of alerts) assert.ok(!a.includes("/pay/"), `an alert carries no link: ${a}`);
-  assert.ok(alerts.length >= 1);
-  for (const r of await prisma.message.findMany({ where: { bookingId } })) assert.ok(!(r.error ?? "").includes("/pay/"), r.error ?? "");
+    const failure = await sendMessageForBooking(bookingId, "request-approved", f.deps).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    assert.ok(failure instanceof Error, "every channel failed");
+    const payTokenText = payLinkIn(echoed[0])!.split("/pay/")[1];
+    assert.ok(echoed.length >= 2 && payTokenText.length > 20, `round ${round}: the fakes saw the real links`);
+    // What leaves the function: the thrown error (BullMQ keeps its message as the failed reason).
+    for (const text of [failure.message, failure.stack ?? ""]) {
+      assert.ok(!/\/pay\/|\\\/pay\\\/|%2Fpay%2F|\/manage\/|%2Fmanage%2F/i.test(text), `round ${round}: the thrown error carries a link: ${text}`);
+      assert.ok(!text.includes(payTokenText), `round ${round}: nor the bare token`);
+    }
+    // What is stored.
+    for (const r of await prisma.message.findMany({ where: { bookingId } })) {
+      assert.ok(!/\/pay\/|\/manage\/|%2Fpay|%2Fmanage/i.test(r.error ?? "") && !(r.error ?? "").includes(payTokenText), `round ${round}: a stored error carries a link: ${r.error}`);
+    }
+    // The final failure of the job: the row, the booking and the alert.
+    await reportMessageFailure(bookingId, "request-approved", failure.message, async (_id, a) => void alerts.push(a.detail ?? ""));
+    const after = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
+    assert.ok(after.lastError && !/\/pay\/|\/manage\//.test(after.lastError) && !after.lastError.includes(payTokenText), `booking.lastError: ${after.lastError}`);
+    assert.ok(alerts.length >= 1);
+    for (const a of alerts) assert.ok(!/\/pay\/|\/manage\//.test(a) && !a.includes(payTokenText), `an alert carries a link: ${a}`);
+    for (const r of await prisma.message.findMany({ where: { bookingId } })) assert.ok(!(r.error ?? "").includes(payTokenText), r.error ?? "");
+  }
 });
 
 test("nothing logged during this whole file contains a payment link", { skip }, async () => {

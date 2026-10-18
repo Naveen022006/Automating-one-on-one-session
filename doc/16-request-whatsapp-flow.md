@@ -138,10 +138,15 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 
 ## 4. Security and privacy
 
-- The payment link is a bearer link. It is built when the message is sent, goes to the booking's own number only, and is never logged,
-  stored, put in an activity or audit row, in a job, in `Message.error`, `booking.lastError`, an alert or a failed job's reason. Where an
-  error could echo it (a provider repeating the message), `redactPayLinks` takes `…/pay/<token>` out before the error is stored or logged,
-  and the worker's `send-message` wrapper rethrows a redacted error for the four request messages. Development-only loggers
+- The payment link is a bearer link, and so is the manage link that several messages carry (a Meta parameter, the SMS body, the linked-number
+  texts). The payment link is built when the message is sent, goes to the booking's own number only, and is never logged, stored, put in an
+  activity or audit row, in a job, in `Message.error`, `booking.lastError`, an alert or a failed job's reason. Where an error could echo a
+  link (a provider repeating the message), `redactBearerLinks` takes it out before the error is stored, logged or thrown: the pattern knows
+  `…/pay/<token>` and `…/manage/<token>` in their plain, JSON-escaped (`https:\/\/host\/pay\/…`, as PHP-based APIs such as MSG91 write
+  them), escaped-twice and percent-encoded (`%2Fpay%2F`) spellings, and `sendMessageForBooking` also passes the EXACT links and tokens of the
+  send (`bearerLinkSecrets`), which catches a token quoted without its path. Everything that leaves `sendMessageForBooking` as an error is
+  scrubbed that way (so BullMQ's failed reason, the worker log and the alert text never see a link), and the worker's `send-message`
+  wrapper and the final-failure alert apply the pattern again as a backstop, for every message type. Development-only loggers
   (`MESSAGING_DRY_RUN`, the fake QR transport, `EMAIL_PROVIDER=log`) print message bodies by design; production refuses all of them.
 - Only the booking's own customer number is messaged; the per-number daily cap, the send gap, the booking guard and the circuit breaker of
   the linked number apply as to every other message. Customers who did not opt in, have no number, or were erased get nothing.
