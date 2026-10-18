@@ -274,7 +274,8 @@ paying; the booking is `REQUESTED` and holds the seat for up to 48 hours. The in
 
 - **Approve** -> `HELD` with a payment deadline (24 hours, never later than 15 minutes before the session). The customer
   is emailed a signed link to `/pay/<token>` where they pay through the normal Razorpay checkout, and sent the same link on WhatsApp
-  (with the amount and the pay-by time in IST).
+  or by SMS (with the amount and the pay-by time in IST) when a route to them exists; the dashboard says which, and when there is none the host is
+  given the link to send themselves.
 - **Decline** -> `CANCELLED`, the customer is told by e-mail and on WhatsApp, with the host's note if there is one. Nothing was ever charged, so there is nothing to refund.
 - An unanswered request expires with the normal expiry job and the seat is released; the customer is told on WhatsApp.
 - The customer also gets a WhatsApp message when the request is received, and after paying the usual confirmation with the Meet link.

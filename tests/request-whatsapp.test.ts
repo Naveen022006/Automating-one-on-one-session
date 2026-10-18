@@ -11,6 +11,7 @@ import { after, before, beforeEach, mock, test } from "node:test";
 import { prisma } from "../lib/db";
 import { createHold } from "../lib/holds";
 import { addDays, formatDateTime, istDayStart, istToday } from "../lib/india";
+import { customerMessageRoute as customerRoute } from "../lib/message-route";
 import { sendMessageForBooking, type MessagingDeps } from "../lib/messaging";
 import type { SendResult } from "../lib/sms";
 import { setActiveSender, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "../lib/whatsapp-web/send";
@@ -21,7 +22,11 @@ const skip = process.env.DATABASE_URL && process.env.TOKEN_ENCRYPTION_KEY && pro
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
 const PHONE = "+919876543210";
 const MEET = "https://meet.google.com/abc-defg-hij";
-const ENV_KEYS = ["REDIS_URL", "RATE_LIMIT_STORE", "READINESS_REQUIRED", "READINESS_BYPASS", "MESSAGING_DRY_RUN", "WHATSAPP_QR_ENABLED", "WHATSAPP_QR_FAKE", "APP_URL", "EMAIL_PROVIDER", "ADMIN_ALERT_EMAILS"] as const;
+const ENV_KEYS = [
+  "REDIS_URL", "RATE_LIMIT_STORE", "READINESS_REQUIRED", "READINESS_BYPASS", "MESSAGING_DRY_RUN", "WHATSAPP_QR_ENABLED", "WHATSAPP_QR_FAKE", "APP_URL", "EMAIL_PROVIDER", "ADMIN_ALERT_EMAILS",
+  // The delivery route reads these (lib/message-route.ts): every test starts with no SMS and no official WhatsApp unless it sets them.
+  "SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL", "MSG91_TEMPLATE_DEFAULT", "MSG91_TEMPLATE_REQUEST_APPROVED", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "TWILIO_MESSAGING_SERVICE_SID", "WHATSAPP_PLATFORM_FALLBACK", "WHATSAPP_DISABLED",
+] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 let envSaved = false;
 
@@ -148,6 +153,10 @@ function fakes(): Fakes {
   return { deps, calls, qrSends, official, sms, ctl };
 }
 
+/** What the approval flow gets from the queue when a message is on its way / when nothing is (the real thing is `queueRequestMessage`). */
+const queuedOk = { queueMessage: async () => ({ route: "whatsapp-linked" as const, queued: true }) };
+const queuedNo = { queueMessage: async () => ({ route: "none" as const, queued: false }) };
+
 const row = (bookingId: string, channel: "WHATSAPP" | "WHATSAPP_WEB" | "SMS", template: string) =>
   prisma.message.findUnique({ where: { bookingId_channel_template: { bookingId, channel, template } } });
 
@@ -158,7 +167,7 @@ before(async () => {
   if (skip) return;
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   envSaved = true;
-  delete process.env.REDIS_URL; // no test here may reach a real queue
+  for (const k of ENV_KEYS) delete process.env[k]; // a clean slate: no queue, no SMS, no official WhatsApp (set again below or per test)
   process.env.RATE_LIMIT_STORE = "memory";
   process.env.READINESS_REQUIRED = ""; // a page is live without Google and payout details (read when lib/public.ts is first imported)
   process.env.READINESS_BYPASS = "true";
@@ -305,14 +314,14 @@ test("hold of an approval service: one request-received job (booking id and temp
   // The job runs again (a retry, or the same hold enqueued twice): nothing goes out a second time, on any channel.
   assert.equal(await sendMessageForBooking(bookingId, "request-received", f.deps), "already-sent");
   assert.deepEqual(f.calls, ["qr"]);
-  await requestMessages.queueRequestMessage({ id: bookingId, whatsappOptIn: true, whatsappE164: PHONE, redactedAt: null }, "request-received");
+  await requestMessages.queueRequestMessage({ id: bookingId, influencerId, whatsappOptIn: true, whatsappE164: PHONE, redactedAt: null }, "request-received");
   assert.equal(jobsFor(bookingId, "request-received").length, 1, "the same job id is one job");
 });
 
 /** A request booking put in the state in which `kind` is otherwise allowed (so a skip can only be about the customer). */
 async function inStateFor(kind: string, over: { optIn?: boolean } = {}): Promise<string> {
   const id = await requestBooking(over);
-  const noop = { queueMessage: async () => false };
+  const noop = queuedNo;
   if (kind === "request-approved") await approvalLib.approveRequest(influencerId, id, new Date(), noop);
   if (kind === "request-declined") await approvalLib.declineRequest(influencerId, id, null, new Date(), noop);
   if (kind === "request-expired") await prisma.booking.update({ where: { id }, data: { status: "EXPIRED" } });
@@ -322,9 +331,10 @@ async function inStateFor(kind: string, over: { optIn?: boolean } = {}): Promise
 test("a customer who did not opt in, has no number or was erased gets nothing: no job, no send", { skip }, async () => {
   const jobsBefore = jobs.length;
   const queue = requestMessages.queueRequestMessage;
-  assert.equal(await queue({ id: "x1", whatsappOptIn: false, whatsappE164: PHONE, redactedAt: null }, "request-approved"), false);
-  assert.equal(await queue({ id: "x2", whatsappOptIn: true, whatsappE164: "", redactedAt: null }, "request-approved"), false);
-  assert.equal(await queue({ id: "x3", whatsappOptIn: true, whatsappE164: PHONE, redactedAt: new Date() }, "request-approved"), false);
+  const nobody = { route: "none", queued: false };
+  assert.deepEqual(await queue({ id: "x1", influencerId, whatsappOptIn: false, whatsappE164: PHONE, redactedAt: null }, "request-approved"), nobody);
+  assert.deepEqual(await queue({ id: "x2", influencerId, whatsappOptIn: true, whatsappE164: "", redactedAt: null }, "request-approved"), nobody);
+  assert.deepEqual(await queue({ id: "x3", influencerId, whatsappOptIn: true, whatsappE164: PHONE, redactedAt: new Date() }, "request-approved"), nobody);
   assert.equal(jobs.length, jobsBefore);
 
   // A job that exists anyway (queued before the customer asked to be forgotten, or an opt-in that was withdrawn) is skipped when it runs.
@@ -354,7 +364,7 @@ test("the hold route queues nothing for a service that does not need approval", 
 let approvedBookingId = "";
 let approvedPayBy: Date;
 
-test("approve through the decision route: whatsappQueued, one request-approved job, and the text built at send time carries a working payment link, the amount in rupees, the IST deadline", { skip }, async () => {
+test("approve through the decision route: the route and the queued job, one request-approved job, and the text built at send time carries a working payment link, the amount in rupees, the IST deadline", { skip }, async () => {
   const start = nextSlot();
   const hold = await postHold(start);
   assert.equal(hold.status, 201, JSON.stringify(hold.body));
@@ -363,10 +373,11 @@ test("approve through the decision route: whatsappQueued, one request-approved j
 
   const res = await decide(bookingId, { action: "approve" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.deepEqual(Object.keys(res.body).sort(), ["emailed", "ok", "payBy", "whatsappQueued"], "payLink is only returned when the customer could not be e-mailed");
+  assert.deepEqual(Object.keys(res.body).sort(), ["emailed", "messageQueued", "messageRoute", "ok", "payBy"], "payLink is only returned when nobody else will deliver it");
   assert.equal(res.body.ok, true);
   assert.equal(res.body.emailed, true);
-  assert.equal(res.body.whatsappQueued, true);
+  assert.equal(res.body.messageRoute, "whatsapp-linked", "the number is linked and wanted");
+  assert.equal(res.body.messageQueued, true);
   assert.deepEqual(jobsFor(bookingId, "request-approved"), [{ bookingId, template: "request-approved" }], "the job holds no payment link");
   assert.ok(sentEmails.slice(emailsBefore).some((m) => /Approved: pay to confirm/.test(m.subject) && m.html.includes("/pay/")), "the e-mail with the payment link still goes out");
 
@@ -403,7 +414,7 @@ test("approve through the decision route: whatsappQueued, one request-approved j
 
 test("without the linked number the official WhatsApp carries request-approved with seven parameters, and SMS falls back with the same values", { skip }, async () => {
   const bookingId = await requestBooking();
-  await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
   const payBy = (await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).holdExpiresAt!;
 
   const f = fakes();
@@ -429,7 +440,7 @@ test("without the linked number the official WhatsApp carries request-approved w
 
 test("with no official connection for this influencer the request messages go straight to SMS, as the other messages do (nothing is tried that cannot work)", { skip }, async () => {
   const bookingId = await requestBooking();
-  await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
   // The DEFAULT official sender resolves the influencer's own connection; none exists here, so it refuses before any network call.
   const f = fakes();
   f.ctl.ready = false;
@@ -517,7 +528,7 @@ test("a request-approved message is not sent once the time to pay has passed, an
   const f = fakes();
   assert.equal(await sendMessageForBooking(bookingId, "request-approved", f.deps), "skipped", "a REQUESTED booking has nothing to pay yet");
 
-  await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
   await prisma.booking.update({ where: { id: bookingId }, data: { holdExpiresAt: new Date(Date.now() - 1_000) } });
   assert.equal(await sendMessageForBooking(bookingId, "request-approved", f.deps), "skipped", "the pay-by time has gone: no link to a page that refuses payment");
   assert.deepEqual(f.calls, []);
@@ -526,13 +537,13 @@ test("a request-approved message is not sent once the time to pay has passed, an
 
 // ---- 4. the host declines -----------------------------------------------------------------------------------------------------
 
-test("decline through the route: whatsappQueued, one request-declined job, the text carries the host's note, nothing charged, and the booking page to pick another time", { skip }, async () => {
+test("decline through the route: the route and the queued job, one request-declined job, the text carries the host's note, nothing charged, and the booking page to pick another time", { skip }, async () => {
   const hold = await postHold(nextSlot());
   const bookingId = String(hold.body.bookingId);
   const emailsBefore = sentEmails.length;
   const res = await decide(bookingId, { action: "decline", reason: "  I am away that week  " });
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.deepEqual(res.body, { ok: true, whatsappQueued: true });
+  assert.deepEqual(res.body, { ok: true, messageRoute: "whatsapp-linked", messageQueued: true });
   assert.deepEqual(jobsFor(bookingId, "request-declined"), [{ bookingId, template: "request-declined" }]);
   assert.ok(sentEmails.slice(emailsBefore).some((m) => /was not accepted/i.test(m.subject)), "the e-mail still goes out");
 
@@ -559,52 +570,208 @@ test("decline through the route: whatsappQueued, one request-declined job, the t
 
   // A decline with no note says there was none; nothing is made up.
   const plain = await requestBooking();
-  assert.deepEqual(await approvalLib.declineRequest(influencerId, plain, null, new Date(), { queueMessage: async () => true }), { whatsappQueued: true });
+  assert.deepEqual(await approvalLib.declineRequest(influencerId, plain, null, new Date(), queuedOk), { messageRoute: "whatsapp-linked", messageQueued: true });
   const h = fakes();
   await sendMessageForBooking(plain, "request-declined", h.deps);
   assert.ok(!h.qrSends[0].text.includes("Note from"), h.qrSends[0].text);
 });
 
-test("declining or approving a customer who did not opt in queues nothing and says so (whatsappQueued false)", { skip }, async () => {
+test("declining or approving a customer who did not opt in queues nothing and says so (no route, nothing queued)", { skip }, async () => {
   const noOptIn = await requestBooking({ optIn: false });
   const before = jobs.length;
   const res = await decide(noOptIn, { action: "approve" });
   assert.equal(res.status, 200);
-  assert.equal(res.body.whatsappQueued, false);
+  assert.equal(res.body.messageRoute, "none");
+  assert.equal(res.body.messageQueued, false);
   const other = await requestBooking({ optIn: false });
   const declined = await decide(other, { action: "decline" });
-  assert.deepEqual(declined.body, { ok: true, whatsappQueued: false });
+  assert.deepEqual(declined.body, { ok: true, messageRoute: "none", messageQueued: false });
   assert.equal(jobs.length, before, "nothing was queued for either");
 });
 
-test("a queue that is down never breaks the answer: approve and decline still work, whatsappQueued is false, and the failure is logged without any link", { skip }, async () => {
+test("a queue that is down never breaks the answer: approve and decline still work, nothing is queued, and the failure is logged without any link", { skip }, async () => {
   const bookingId = await requestBooking();
-  const down = { queueMessage: (b: Parameters<typeof requestMessages.queueRequestMessage>[0], t: Parameters<typeof requestMessages.queueRequestMessage>[1]) => requestMessages.queueRequestMessage(b, t, async () => { throw new Error("Redis is down"); }) };
+  const down = {
+    queueMessage: (b: Parameters<typeof requestMessages.queueRequestMessage>[0], t: Parameters<typeof requestMessages.queueRequestMessage>[1]) =>
+      requestMessages.queueRequestMessage(b, t, {
+        route: async () => "whatsapp-linked",
+        enqueue: async () => {
+          throw new Error("Redis is down");
+        },
+      }),
+  };
   const approved = await approvalLib.approveRequest(influencerId, bookingId, new Date(), down);
-  assert.equal(approved.whatsappQueued, false);
+  assert.equal(approved.messageQueued, false);
+  assert.equal(approved.messageRoute, "whatsapp-linked", "a route existed; the queue did not take the job");
   assert.equal(approved.emailed, true);
   assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).status, "HELD");
   const other = await requestBooking();
-  assert.deepEqual(await approvalLib.declineRequest(influencerId, other, "no", new Date(), down), { whatsappQueued: false });
+  assert.deepEqual(await approvalLib.declineRequest(influencerId, other, "no", new Date(), down), { messageRoute: "whatsapp-linked", messageQueued: false });
   assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: other } })).status, "CANCELLED");
   assert.ok(logged.some((l) => l.includes(`could not queue "request-approved" for booking ${bookingId}: Redis is down`)));
 });
 
-test("the host gets the payment link on screen when the customer could not be e-mailed, whether or not WhatsApp is on its way", { skip }, async () => {
-  const bookingId = await requestBooking();
-  process.env.EMAIL_PROVIDER = "none"; // doc/15: no platform e-mail, and this influencer has no Gmail connection
+/** Runs `fn` with the e-mail transport that refuses (doc/15: no platform e-mail, no Gmail), so the customer is never e-mailed. */
+async function withoutEmail<T>(fn: () => Promise<T>): Promise<T> {
+  process.env.EMAIL_PROVIDER = "none";
   emailLib.setEmailSender(null); // the recorder would hide that: use the real (refusing) transport of the environment
   try {
-    const approved = await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
-    assert.equal(approved.emailed, false);
-    assert.equal(approved.whatsappQueued, true);
-    assert.match(String(approved.payUrl), /^http:\/\/localhost:3000\/pay\//, "returned to the host for the screen, never logged");
+    return await fn();
   } finally {
     process.env.EMAIL_PROVIDER = "log";
     emailLib.setEmailSender(async (m) => {
       sentEmails.push(m as never);
       return { providerMessageId: null };
     });
+  }
+}
+
+/** Puts the world in the state of one delivery route and returns a function that puts it back. */
+async function arrangeRoute(route: "whatsapp-linked" | "whatsapp-official" | "sms" | "none"): Promise<() => Promise<void>> {
+  const undo: (() => Promise<void> | void)[] = [];
+  const setEnv = (name: (typeof ENV_KEYS)[number], value: string) => {
+    const before = process.env[name];
+    process.env[name] = value;
+    undo.push(() => (before === undefined ? void delete process.env[name] : void (process.env[name] = before)));
+  };
+  if (route !== "whatsapp-linked") {
+    setEnv("WHATSAPP_QR_ENABLED", "false");
+  }
+  if (route === "whatsapp-official") {
+    await prisma.whatsAppConnection.create({
+      data: { influencerId, wabaId: `waba-${run}`, phoneNumberId: `pn-${run}`, tokenEnc: "not-a-token", status: "ACTIVE", templates: { "request-approved": { status: "APPROVED", language: "en" }, "request-declined": { status: "APPROVED", language: "en" }, "request-received": { status: "APPROVED", language: "en" } } },
+    });
+    undo.push(async () => {
+      await prisma.whatsAppConnection.deleteMany({ where: { influencerId } });
+    });
+  }
+  if (route === "sms") {
+    setEnv("SMS_PROVIDER", "generic");
+    setEnv("SMS_API_URL", "https://sms.invalid/send");
+    setEnv("SMS_API_KEY", "not-a-key");
+  }
+  return async () => {
+    for (const fn of undo.reverse()) await fn();
+  };
+}
+
+test("each delivery route decides what is queued and what the host is told; with no route nothing is queued and the host gets the payment link", { skip }, async () => {
+  const cases = [
+    { route: "whatsapp-linked", queued: true },
+    { route: "whatsapp-official", queued: true },
+    { route: "sms", queued: true },
+    { route: "none", queued: false },
+  ] as const;
+  for (const c of cases) {
+    const restore = await arrangeRoute(c.route);
+    try {
+      const bookingId = await requestBooking();
+      const jobsBefore = jobs.length;
+      // The customer could not be e-mailed, so the host's answer shows whether anything else will reach them.
+      const approved = await withoutEmail(() => approvalLib.approveRequest(influencerId, bookingId));
+      assert.equal(approved.emailed, false, c.route);
+      assert.equal(approved.messageRoute, c.route);
+      assert.equal(approved.messageQueued, c.queued, c.route);
+      assert.equal(jobs.length - jobsBefore, c.queued ? 1 : 0, `${c.route}: ${c.queued ? "one job" : "no job at all"}`);
+      if (c.queued) assert.equal(approved.payUrl, null, `${c.route}: a message is on its way, the host is not asked to send the link`);
+      else assert.match(String(approved.payUrl), /^http:\/\/localhost:3000\/pay\//, "no route: the link goes to the host's screen (never logged)");
+
+      const declined = await requestBooking();
+      const out = await approvalLib.declineRequest(influencerId, declined, null);
+      assert.deepEqual(out, { messageRoute: c.route, messageQueued: c.queued }, c.route);
+    } finally {
+      await restore();
+    }
+  }
+});
+
+test("the decision route with no way to reach the customer: the red 'send it yourself' answer, the link for the host, and no job", { skip }, async () => {
+  const restore = await arrangeRoute("none");
+  try {
+    const hold = await postHold(nextSlot());
+    assert.equal(hold.status, 201, JSON.stringify(hold.body));
+    const bookingId = String(hold.body.bookingId);
+    assert.deepEqual(jobsFor(bookingId), [], "no route: the request-received message was not even queued");
+
+    const res = await withoutEmail(() => decide(bookingId, { action: "approve" }));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(Object.keys(res.body).sort(), ["emailed", "messageQueued", "messageRoute", "ok", "payBy", "payLink"]);
+    assert.equal(res.body.emailed, false);
+    assert.equal(res.body.messageRoute, "none");
+    assert.equal(res.body.messageQueued, false);
+    assert.match(String(res.body.payLink), /^http:\/\/localhost:3000\/pay\//);
+    assert.deepEqual(jobsFor(bookingId), [], "and nothing was queued for the payment link");
+    const customerLink = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
+    assert.equal(customerLink.status, "HELD", "approved all the same");
+  } finally {
+    await restore();
+  }
+});
+
+test("a template Meta has not approved yet is not a route: the official connection counts only with the template approved", { skip }, async () => {
+  const restore = await arrangeRoute("none");
+  try {
+    const connection = await prisma.whatsAppConnection.create({
+      data: { influencerId, wabaId: `waba-p-${run}`, phoneNumberId: `pn-p-${run}`, tokenEnc: "not-a-token", status: "ACTIVE", templates: { "request-approved": { status: "PENDING", language: "en" } } },
+    });
+    const routeFor = (template: string) => customerRoute(influencerId, template);
+    assert.equal(await routeFor("request-approved"), "none", "PENDING at Meta: the message would only fall through to SMS, which is not set up");
+    await prisma.whatsAppConnection.update({ where: { id: connection.id }, data: { templates: { "request-approved": { status: "REJECTED", language: "en" } } } });
+    assert.equal(await routeFor("request-approved"), "none");
+    await prisma.whatsAppConnection.update({ where: { id: connection.id }, data: { templates: { "request-approved": { status: "APPROVED", language: "en" } } } });
+    assert.equal(await routeFor("request-approved"), "whatsapp-official");
+    assert.equal(await routeFor("request-declined"), "none", "another template's approval says nothing about this one");
+    await prisma.whatsAppConnection.update({ where: { id: connection.id }, data: { templates: { "request-approved": { status: "FLAGGED", language: "en" } } } });
+    assert.equal(await routeFor("request-approved"), "whatsapp-official", "Meta keeps delivering a flagged template, as the sender does");
+    await prisma.whatsAppConnection.update({ where: { id: connection.id }, data: { status: "ERROR" } });
+    assert.equal(await routeFor("request-approved"), "none", "a connection that needs renewing is not a route");
+    await prisma.whatsAppConnection.update({ where: { id: connection.id }, data: { status: "ACTIVE" } });
+    // The linked number comes first when there is one.
+    process.env.WHATSAPP_QR_ENABLED = "true";
+    assert.equal(await routeFor("request-approved"), "whatsapp-linked");
+    process.env.WHATSAPP_QR_ENABLED = "false";
+    await prisma.whatsAppConnection.deleteMany({ where: { influencerId } });
+  } finally {
+    await restore();
+  }
+});
+
+test("SMS is a route only when the provider is set up for that message", { skip }, async () => {
+  const restore = await arrangeRoute("none");
+  const env = (pairs: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(pairs)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  try {
+    const routeFor = (template: string) => customerRoute(influencerId, template);
+    env({ SMS_PROVIDER: "msg91", SMS_API_KEY: "k" });
+    assert.equal(await routeFor("request-approved"), "none", "MSG91 without a flow id for this message cannot send it");
+    env({ MSG91_TEMPLATE_REQUEST_APPROVED: "flow-approved" });
+    assert.equal(await routeFor("request-approved"), "sms");
+    assert.equal(await routeFor("request-declined"), "none", "its own flow id, not another message's");
+    env({ MSG91_TEMPLATE_DEFAULT: "flow-default" });
+    assert.equal(await routeFor("request-declined"), "sms", "the default flow carries any message");
+    env({ SMS_API_KEY: undefined });
+    assert.equal(await routeFor("request-approved"), "none", "no key");
+    env({ SMS_PROVIDER: "twilio", TWILIO_ACCOUNT_SID: "AC1", TWILIO_AUTH_TOKEN: "t" });
+    assert.equal(await routeFor("request-received"), "none", "Twilio without a sender");
+    env({ TWILIO_FROM: "+15550001111" });
+    assert.equal(await routeFor("request-received"), "sms");
+    env({ SMS_PROVIDER: "generic", SMS_API_URL: "https://sms.invalid/x", SMS_API_KEY: "k" });
+    assert.equal(await routeFor("request-expired"), "sms");
+    env({ SMS_API_URL: undefined });
+    assert.equal(await routeFor("request-expired"), "none");
+    // A dry run only logs: the official route is reported (nothing is sent, nothing can fail).
+    env({ MESSAGING_DRY_RUN: "true" });
+    assert.equal(await routeFor("request-expired"), "whatsapp-official");
+    env({ MESSAGING_DRY_RUN: "false" });
+    env({ WHATSAPP_DISABLED: "true", SMS_API_URL: "https://sms.invalid/x" });
+    assert.equal(await routeFor("request-expired"), "sms");
+  } finally {
+    for (const k of ["SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL", "MSG91_TEMPLATE_DEFAULT", "MSG91_TEMPLATE_REQUEST_APPROVED", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "WHATSAPP_DISABLED"]) delete process.env[k];
+    await restore();
   }
 });
 
@@ -620,7 +787,7 @@ test("expiry: each unanswered request is expired and queued once for request-exp
   const lapsed = await requestBooking();
   const lapsedNoOptIn = await requestBooking({ optIn: false });
   const approvedLapsed = await requestBooking();
-  await approvalLib.approveRequest(influencerId, approvedLapsed, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, approvedLapsed, new Date(), queuedOk);
   const plainHold = await requestBooking({ serviceId: plainServiceId, requestApproval: false });
   const stillOpen = await requestBooking();
   const past = new Date(Date.now() - 60_000);
@@ -687,13 +854,13 @@ test("expiry: a queue that is down does not stop the sweep (the requests are exp
 test("the linked number's queue asks the same question as the sender for the four request messages", { skip }, async () => {
   const requested = await requestBooking();
   const approved = await requestBooking();
-  await approvalLib.approveRequest(influencerId, approved, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, approved, new Date(), queuedOk);
   const declined = await requestBooking();
-  await approvalLib.declineRequest(influencerId, declined, "no", new Date(), { queueMessage: async () => true });
+  await approvalLib.declineRequest(influencerId, declined, "no", new Date(), queuedOk);
   const expired = await requestBooking();
   await prisma.booking.update({ where: { id: expired }, data: { status: "EXPIRED" } });
   const paid = await requestBooking();
-  await approvalLib.approveRequest(influencerId, paid, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, paid, new Date(), queuedOk);
   await prisma.booking.update({ where: { id: paid }, data: { status: "PAID", holdExpiresAt: null } });
 
   const kinds = ["request-received", "request-approved", "request-declined", "request-expired"];
@@ -717,7 +884,7 @@ test("the linked number's queue asks the same question as the sender for the fou
 
 test("end to end through the real manager and the fake transport: the accepted message, with the payment link, goes out from the linked number once", { skip, timeout: 120_000 }, async () => {
   const bookingId = await requestBooking();
-  await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
   const h = harness({ config: { minGapMs: 0 }, clock: new ManualClock(Date.now()) });
   want(h, influencerId);
   await h.tick();
@@ -749,7 +916,7 @@ test("end to end through the real manager and the fake transport: the accepted m
 
 test("the payment link never reaches a log line, a stored error or an alert, even when a provider echoes the message back in its error", { skip }, async () => {
   const bookingId = await requestBooking();
-  await approvalLib.approveRequest(influencerId, bookingId, new Date(), { queueMessage: async () => true });
+  await approvalLib.approveRequest(influencerId, bookingId, new Date(), queuedOk);
   const alerts: string[] = [];
   const f = fakes();
   f.ctl.ready = false;

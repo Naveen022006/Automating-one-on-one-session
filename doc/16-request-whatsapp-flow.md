@@ -98,10 +98,17 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   `request-expired` for each unanswered request it expires. Job ids are deterministic (`send-message-<template>-<bookingId>`) and the messages
   table remembers what was sent, so a repeat sends nothing. A queue that is down costs one log line (never a link) and never changes the
   answer: the hold is created, the request approved or declined.
-- **The decision answer** (`POST /api/dashboard/bookings/:id/decision`) gains `whatsappQueued`. It is true only when the customer opted in,
-  has a number, is not erased AND the job is really on the queue (stricter than "opted in", so the dashboard never says "on its way" when it
-  is not). `payLink` is still returned to the host when the customer could not be e-mailed, whether or not WhatsApp is queued: with WhatsApp
-  on its way the dashboard keeps it as a backup (`web/src/lib/request-flow-ui.ts`, tested), without it the link is the only route.
+- **A route first, then a job** (`lib/message-route.ts`, one shared helper). Before anything is queued, `customerMessageRoute(influencerId,
+  template)` says how the message can reach the customer right now: `whatsapp-linked` (the feature is on and the influencer's number is
+  LINKED and wanted), `whatsapp-official` (their official connection is ACTIVE AND this template is approved or flagged at Meta, the same
+  decision as `resolveSendCredentials`), `sms` (the provider is set up for this message: `smsConfigProblem` in `lib/sms.ts`, the same check
+  `sendSMS` makes), or `none`. With `none` nothing is queued at all, for any of the four messages. A dry run reports the official route.
+- **The decision answer** (`POST /api/dashboard/bookings/:id/decision`) carries `messageRoute` (the four values above) and `messageQueued`
+  (the job is really on the queue). The dashboard says "on its way to the customer's WhatsApp" only for the two WhatsApp routes, "by SMS" for
+  `sms`, and for `none` (or a route whose job the queue did not take) shows the red "send it yourself" answer. `payLink` is returned to the host
+  exactly when the customer was not e-mailed AND no message is on its way (`web/src/lib/request-flow-ui.ts`, tested). This replaces the first
+  version's `whatsappQueued`, which was true whenever the customer opted in and the job was queued, even on a site where the job could only
+  fail (no linked number, official templates still PENDING, no SMS).
 - **Expiry** (`expireStaleHoldsAndNotify`): the unanswered `REQUESTED` bookings are expired first, in batches of 200 (at most 25 batches per
   tick), and the ones this sweep really moved to `EXPIRED` with `decidedAt` null are queued; everything else (a held or pending hold that
   lapsed) is expired by the unchanged `expireStaleHolds`, which the old tests keep calling. A request declined or approved while the sweep
@@ -136,7 +143,7 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 1. **Two tables stay two views of one table.** The brief says one module for the sender and the queue guard. The five existing events had
    different rules in the two places (a reminder for a `PAID` booking was sent by the sender but refused by the queue). Unifying them would
    have changed today's behaviour, so the module has a sender view and a queue view for the five, and one rule for the four new messages.
-2. **`whatsappQueued` means "on the queue"**, not only "opted in with a number" (see above).
+2. **`messageRoute` + `messageQueued` instead of `whatsappQueued`** (see above): the dashboard must not say "on its way" when no route exists.
 3. **`request-declined` and `request-expired` also check "no payment ever"**, because a cancelled booking with `decidedAt` set can also
    be an approved, paid and later cancelled booking. `request-expired` also checks that the service needs approval (an expired one with
    `decidedAt` null can be a plain hold); `request-declined` does not, so a host who turned approval off can still decline the backlog.

@@ -1,7 +1,8 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { expireStaleHolds } from "@/lib/holds";
-import { REQUEST_EXPIRED_TEMPLATE, redactPayLinks, type RequestMessageKind } from "@/lib/message-kinds";
+import { REQUEST_EXPIRED_TEMPLATE, redactPayLinks, type DeliveryRoute, type RequestMessageKind } from "@/lib/message-kinds";
+import { customerMessageRoute } from "@/lib/message-route";
 import { enqueueSendMessage } from "@/lib/queue";
 import { within } from "@/lib/timeout";
 
@@ -36,22 +37,41 @@ export function canMessageOnWhatsApp(b: WhatsAppContact): boolean {
   return b.whatsappOptIn && !!b.whatsappE164 && b.redactedAt === null;
 }
 
+/** What happened to one message: how it could reach the customer, and whether a job is on the queue for it. */
+export interface QueueOutcome {
+  /** `none` also covers a customer who cannot be messaged at all (no opt-in, no number, erased) and a route that could not be worked out. */
+  route: DeliveryRoute;
+  queued: boolean;
+}
+
+export interface QueueDeps {
+  enqueue?: RequestEnqueue;
+  /** Works out how the message can reach the customer (lib/message-route.ts). A test replaces it. */
+  route?: (influencerId: string, template: RequestMessageKind) => Promise<DeliveryRoute>;
+}
+
 /**
- * Queues one booking-request message. True only when the customer can be messaged AND the job is on the queue (or was already);
- * false when they did not opt in, have no number, were erased, or the queue could not be reached. Never throws and never logs a link.
+ * Queues one booking-request message, but only when a route to the customer exists: their linked WhatsApp number, their official
+ * connection with this template approved, or SMS set up for it. Without one a job could only fail, so nothing is queued and the answer
+ * says `none` (the dashboard then shows the host what to do). `queued` is true only when the job is really on the queue (or was already).
+ * Never throws and never logs a link.
  */
-export async function queueRequestMessage(
-  booking: { id: string } & WhatsAppContact,
-  template: RequestMessageKind,
-  enqueue: RequestEnqueue = enqueueRequestMessage,
-): Promise<boolean> {
-  if (!canMessageOnWhatsApp(booking)) return false;
+export async function queueRequestMessage(booking: { id: string; influencerId: string } & WhatsAppContact, template: RequestMessageKind, deps: QueueDeps = {}): Promise<QueueOutcome> {
+  if (!canMessageOnWhatsApp(booking)) return { route: "none", queued: false };
+  let route: DeliveryRoute;
   try {
-    await enqueue(booking.id, template);
-    return true;
+    route = await (deps.route ?? customerMessageRoute)(booking.influencerId, template);
+  } catch (e) {
+    console.error(`[request-messages] could not work out how to reach the customer for "${template}" (booking ${booking.id}): ${redactPayLinks(e instanceof Error ? e.message : String(e))}`);
+    return { route: "none", queued: false };
+  }
+  if (route === "none") return { route, queued: false };
+  try {
+    await (deps.enqueue ?? enqueueRequestMessage)(booking.id, template);
+    return { route, queued: true };
   } catch (e) {
     console.error(`[request-messages] could not queue "${template}" for booking ${booking.id}: ${redactPayLinks(e instanceof Error ? e.message : String(e))}`);
-    return false;
+    return { route, queued: false };
   }
 }
 
@@ -84,6 +104,13 @@ export async function expireStaleHoldsAndNotify(
 ): Promise<ExpiryResult> {
   const enqueue = opts.enqueue ?? enqueueRequestMessage;
   const scope = opts.scope ? [opts.scope] : [];
+  // One route lookup per influencer per sweep, however many of their requests lapsed.
+  const routes = new Map<string, Promise<DeliveryRoute>>();
+  const routeOf = (influencerId: string, template: RequestMessageKind) => {
+    let known = routes.get(influencerId);
+    if (!known) routes.set(influencerId, (known = customerMessageRoute(influencerId, template)));
+    return known;
+  };
   let requests = 0;
   let queued = 0;
   let lost = 0;
@@ -105,7 +132,7 @@ export async function expireStaleHoldsAndNotify(
     if (count === 0) continue; // all of them were decided meanwhile; the next round looks again
     const unanswered = await prisma.booking.findMany({
       where: { id: { in: ids }, status: "EXPIRED", decidedAt: null },
-      select: { id: true, whatsappOptIn: true, whatsappE164: true, redactedAt: true },
+      select: { id: true, whatsappOptIn: true, whatsappE164: true, redactedAt: true, session: { select: { service: { select: { influencerId: true } } } } },
     });
     for (const b of unanswered) {
       if (!canMessageOnWhatsApp(b)) continue;
@@ -113,8 +140,9 @@ export async function expireStaleHoldsAndNotify(
         lost += 1;
         continue;
       }
-      if (await queueRequestMessage(b, REQUEST_EXPIRED_TEMPLATE, enqueue)) queued += 1;
-      else {
+      const outcome = await queueRequestMessage({ ...b, influencerId: b.session.service.influencerId }, REQUEST_EXPIRED_TEMPLATE, { enqueue, route: routeOf });
+      if (outcome.queued) queued += 1;
+      else if (outcome.route !== "none") {
         queueDown = true; // one failure is enough to stop waiting on a dead queue for the rest of this sweep
         lost += 1;
       }

@@ -152,7 +152,7 @@ unchanged e-mails: `request-received` (hold route), `request-approved` with the 
 `lib/messaging.ts` and by the linked number's `booking-guard.ts`. A job is `{ bookingId, template }` only: the payment link (a bearer link)
 is built when the message is sent, never stored or logged, and `redactPayLinks` takes it out of any stored or logged error. Queueing is best
 effort and happens after the database change committed; tests must not reach a real queue (`delete process.env.REDIS_URL` or pass the
-`deps`/`enqueue` seam). The decision answer has `whatsappQueued` ("the message is on the queue").
+`deps`/`enqueue` seam). Nothing is queued unless `customerMessageRoute` (`lib/message-route.ts`) finds a route to the customer (linked number, official connection with the template approved, SMS set up for it); the decision answer has `messageRoute` and `messageQueued`.
 
 **Provider simulator (doc/11).** `scripts/mock-providers` fakes Google (OAuth, Calendar/Meet, Gmail) and Meta (Graph, templates,
 Embedded Signup). `MOCK_PROVIDERS_URL` is honoured only in development with a local `APP_URL` (`lib/provider-endpoints.ts` decides

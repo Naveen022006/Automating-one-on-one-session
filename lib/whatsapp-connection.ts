@@ -500,6 +500,24 @@ export interface SendCredentials {
   phoneNumberId: string;
 }
 
+/** The stored status of one of our templates in a connection's `templates` column (NOT_SUBMITTED when it has none). */
+function templateStatusOf(raw: unknown, template: string): string {
+  return viewTemplates(raw).find((t) => t.name === template)?.status ?? "NOT_SUBMITTED";
+}
+
+/**
+ * Whether `resolveSendCredentials` would find a way to send `template` for this influencer through the official API: the same decision,
+ * without decrypting anything. False for a template Meta has not approved (yet), a connection that needs renewing, or no connection.
+ * Read by lib/message-route.ts so a message that could only fail is not queued.
+ */
+export async function officialRouteAvailable(influencerId: string, template: string, env = process.env): Promise<boolean> {
+  if (env.WHATSAPP_DISABLED === "true") return false; // the development switch that forces the SMS fallback
+  if (env.MESSAGING_DRY_RUN === "true") return true; // nothing is sent; the dry run logs
+  const row = await prisma.whatsAppConnection.findUnique({ where: { influencerId }, select: { status: true, templates: true } });
+  if (row && row.status === "ACTIVE") return isSendableStatus(templateStatusOf(row.templates, template));
+  return env.WHATSAPP_PLATFORM_FALLBACK === "true" && !!env.WHATSAPP_TOKEN && !!env.WHATSAPP_PHONE_NUMBER_ID;
+}
+
 /**
  * Credentials to send an influencer's customer messages with. Their own connected number when it is healthy and, if
  * a `template` is given, that template is approved on their account; otherwise a WhatsAppNotConnectedError saying why,
@@ -513,7 +531,7 @@ export async function resolveSendCredentials(influencerId: string, env = process
     // Meta refuses a template message whose template is not approved, so do not try: it would only fail, and leave a
     // failed WhatsApp row behind for every message.
     if (template) {
-      const status = viewTemplates(row.templates).find((t) => t.name === template)?.status ?? "NOT_SUBMITTED";
+      const status = templateStatusOf(row.templates, template);
       if (!isSendableStatus(status)) throw new WhatsAppNotConnectedError(`The "${template}" WhatsApp template is not approved yet (${status})`);
     }
     return { token: decryptSecret(row.tokenEnc, aad(influencerId)), phoneNumberId: row.phoneNumberId };

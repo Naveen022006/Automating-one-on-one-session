@@ -105,8 +105,8 @@ test("approving makes it payable with a deadline, once, and only for the owner",
   const { booking } = await request(6 * DAY);
   await assert.rejects(approveRequest(stranger, booking.id), (e: unknown) => e instanceof ApprovalError && e.status === 404, "another influencer cannot approve");
 
-  const { payBy, whatsappQueued } = await approveRequest(owner, booking.id);
-  assert.equal(whatsappQueued, false, "no queue to put the WhatsApp message on here: said honestly, the approval itself stands");
+  const { payBy, messageQueued } = await approveRequest(owner, booking.id);
+  assert.equal(messageQueued, false, "no queue to put the message on here (and perhaps no route): said honestly, the approval itself stands");
   const row = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } });
   assert.equal(row.status, "HELD");
   assert.equal(row.holdExpiresAt!.getTime(), payBy.getTime());

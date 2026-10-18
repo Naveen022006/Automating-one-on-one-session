@@ -8,7 +8,7 @@ import { canMessageOnWhatsApp, queueRequestMessage } from "../lib/request-messag
 // failed job's reason, and the wiring of the triggers. The end-to-end flow is tests/request-whatsapp.test.ts.
 
 const LINK = "https://app.example.com/pay/eyJiIjoiYmtfMSIsImV4cCI6MX0.c2ln-NATURE_123";
-const contact = { id: "bk_1", whatsappOptIn: true, whatsappE164: "+919876543210", redactedAt: null };
+const contact = { id: "bk_1", influencerId: "inf_1", whatsappOptIn: true, whatsappE164: "+919876543210", redactedAt: null };
 const src = (rel: string) => readFileSync(path.join(import.meta.dirname, "..", rel), "utf8");
 
 test("canMessageOnWhatsApp: opted in, a number, and not erased", () => {
@@ -19,15 +19,33 @@ test("canMessageOnWhatsApp: opted in, a number, and not erased", () => {
   assert.equal(canMessageOnWhatsApp({ ...contact, redactedAt: new Date() }), false);
 });
 
-test("queueRequestMessage: true only when the customer can be messaged and the job is queued; never throws; the log line has no link", async () => {
+test("queueRequestMessage: queues only when a route to the customer exists; says which route and whether the job is on the queue; never throws; the log lines have no link", async () => {
   const calls: [string, string][] = [];
   const ok = async (id: string, template: string) => void calls.push([id, template]);
-  assert.equal(await queueRequestMessage(contact, "request-received", ok), true);
-  assert.deepEqual(calls, [["bk_1", "request-received"]]);
+  const routeCalls: string[] = [];
+  const via = (route: "whatsapp-linked" | "whatsapp-official" | "sms" | "none") => async (influencerId: string, template: string) => {
+    routeCalls.push(`${influencerId}:${template}`);
+    return route;
+  };
 
-  assert.equal(await queueRequestMessage({ ...contact, whatsappOptIn: false }, "request-received", ok), false);
-  assert.equal(await queueRequestMessage({ ...contact, redactedAt: new Date() }, "request-approved", ok), false);
-  assert.equal(calls.length, 1, "nothing was queued for the two that cannot be messaged");
+  for (const route of ["whatsapp-linked", "whatsapp-official", "sms"] as const) {
+    calls.length = 0;
+    assert.deepEqual(await queueRequestMessage(contact, "request-received", { enqueue: ok, route: via(route) }), { route, queued: true });
+    assert.deepEqual(calls, [["bk_1", "request-received"]], route);
+  }
+  assert.deepEqual(routeCalls.slice(0, 1), ["inf_1:request-received"], "the route is worked out for THIS influencer and THIS message");
+
+  // No route: nothing is queued at all (a job could only fail).
+  calls.length = 0;
+  assert.deepEqual(await queueRequestMessage(contact, "request-approved", { enqueue: ok, route: via("none") }), { route: "none", queued: false });
+  assert.deepEqual(calls, []);
+
+  // A customer who cannot be messaged: no route lookup, no job.
+  routeCalls.length = 0;
+  for (const c of [{ ...contact, whatsappOptIn: false }, { ...contact, redactedAt: new Date() }, { ...contact, whatsappE164: "" }, { ...contact, whatsappE164: null }]) {
+    assert.deepEqual(await queueRequestMessage(c, "request-received", { enqueue: ok, route: via("whatsapp-linked") }), { route: "none", queued: false });
+  }
+  assert.deepEqual([calls.length, routeCalls.length], [0, 0], "not even looked at");
 
   const lines: string[] = [];
   const realError = console.error;
@@ -36,16 +54,22 @@ test("queueRequestMessage: true only when the customer can be messaged and the j
     const failing = async () => {
       throw new Error(`connect ECONNREFUSED; payload ${LINK}`);
     };
-    assert.equal(await queueRequestMessage(contact, "request-approved", failing), false);
+    assert.deepEqual(await queueRequestMessage(contact, "request-approved", { enqueue: failing, route: via("whatsapp-linked") }), { route: "whatsapp-linked", queued: false }, "a route existed; the queue did not take it");
     const stuck = async () => {
       throw "a string, not an Error";
     };
-    assert.equal(await queueRequestMessage(contact, "request-declined", stuck), false);
+    assert.deepEqual(await queueRequestMessage(contact, "request-declined", { enqueue: stuck, route: via("sms") }), { route: "sms", queued: false });
+    // The route lookup itself failing (the database) is also survived: nothing is queued, and the line says why without the error's other text.
+    const broken = async () => {
+      throw new Error(`database said ${LINK}`);
+    };
+    assert.deepEqual(await queueRequestMessage(contact, "request-declined", { enqueue: ok, route: broken }), { route: "none", queued: false });
   } finally {
     console.error = realError;
   }
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 3);
   assert.ok(lines[0].includes('could not queue "request-approved" for booking bk_1'));
+  assert.ok(lines[2].includes("could not work out how to reach the customer"));
   assert.ok(!lines.join("\n").includes("/pay/") && lines[0].includes("[payment link]"), lines.join("\n"));
 });
 
@@ -70,13 +94,13 @@ test("the worker's send-message job keeps a payment link out of the reason of a 
 
 test("the triggers are wired where the design says, and each one is best effort", () => {
   const hold = src("app/api/bookings/hold/route.ts");
-  assert.match(hold, /await queueRequestMessage\(booking, REQUEST_RECEIVED_TEMPLATE\);\s*\n\s*await notifyRequestCreated\(booking\.id\);/, "request-received is queued next to the e-mail receipt, in the request branch only");
+  assert.match(hold, /await queueRequestMessage\(\{ \.\.\.booking, influencerId: service\.influencerId \}, REQUEST_RECEIVED_TEMPLATE\);\s*\n\s*await notifyRequestCreated\(booking\.id\);/, "request-received is queued next to the e-mail receipt, in the request branch only");
   assert.ok(hold.indexOf("await queueRequestMessage(") > hold.indexOf("await createHold("), "after the hold is committed");
 
   const approval = src("lib/booking-approval.ts");
-  assert.match(approval, /deps\.queueMessage\(b, REQUEST_APPROVED_TEMPLATE\)/);
-  assert.match(approval, /deps\.queueMessage\(b, REQUEST_DECLINED_TEMPLATE\)/);
-  assert.ok(approval.indexOf("if (count === 0) throw new ApprovalError(\"This request changed while you were approving it") < approval.indexOf("deps.queueMessage(b, REQUEST_APPROVED_TEMPLATE)"), "queued only after the conditional update succeeded");
+  assert.match(approval, /deps\.queueMessage\(\{ \.\.\.b, influencerId \}, REQUEST_APPROVED_TEMPLATE\)/);
+  assert.match(approval, /deps\.queueMessage\(\{ \.\.\.b, influencerId \}, REQUEST_DECLINED_TEMPLATE\)/);
+  assert.ok(approval.indexOf("if (count === 0) throw new ApprovalError(\"This request changed while you were approving it") < approval.indexOf("deps.queueMessage({ ...b, influencerId }, REQUEST_APPROVED_TEMPLATE)"), "queued only after the conditional update succeeded");
   assert.ok(!/\$transaction/.test(approval), "never inside a database transaction that could still roll back");
 
   const worker = src("worker/index.ts");
@@ -84,7 +108,8 @@ test("the triggers are wired where the design says, and each one is best effort"
   assert.ok(!/expireStaleHolds\(\)/.test(worker));
 
   const decision = src("app/api/dashboard/bookings/[id]/decision/route.ts");
-  assert.match(decision, /whatsappQueued/);
+  assert.match(decision, /messageRoute, messageQueued/);
+  assert.ok(!/whatsappQueued/.test(decision), "the answer names the route and whether a job is queued, not a WhatsApp-only flag");
 
   // The job data is the booking id and the template, nothing else (lib/queue.ts enqueueSendMessage).
   assert.match(src("lib/queue.ts"), /"send-message",\s*\{ bookingId, template \}/);

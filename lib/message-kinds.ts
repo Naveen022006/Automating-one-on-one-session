@@ -43,7 +43,15 @@ export interface BookingFacts {
 }
 
 /** `sender`: lib/messaging.ts. `queue`: the linked number's booking check, asked again right before each send. */
-export type MessageRoute = "sender" | "queue";
+export type SendPath = "sender" | "queue";
+
+/**
+ * How a customer message can actually reach the customer for one influencer right now (lib/message-route.ts): their linked WhatsApp
+ * number, their official WhatsApp connection WITH the template approved, SMS configured for that message, or nothing. `none` means a
+ * queued job could only fail, so nothing is queued and the dashboard says so.
+ */
+export const DELIVERY_ROUTES = ["whatsapp-linked", "whatsapp-official", "sms", "none"] as const;
+export type DeliveryRoute = (typeof DELIVERY_ROUTES)[number];
 
 const PAID_OR_AFTER = ["PAID", "SCHEDULED", "COMPLETED"] as const;
 
@@ -60,7 +68,7 @@ const BOOKING_EVENT_STATUSES: Record<string, { sender: readonly string[]; queue:
 const UNLISTED: { sender: readonly string[]; queue: readonly string[] } = { sender: PAID_OR_AFTER, queue: [...PAID_OR_AFTER, "CANCELLED"] };
 
 /** The states a template may be sent in, for the five booking events (and any unlisted template). Null for a request message, whose rule reads more than the status. */
-export function statusesFor(template: string, route: MessageRoute): readonly string[] | null {
+export function statusesFor(template: string, route: SendPath): readonly string[] | null {
   if (isRequestMessageKind(template)) return null;
   return (BOOKING_EVENT_STATUSES[template] ?? UNLISTED)[route];
 }
@@ -84,7 +92,7 @@ function holdAlive(f: BookingFacts, now: Date): boolean {
  *    decision, so the service's setting is what tells a request from it (the worker only queues this for a booking it expired from
  *    REQUESTED; the check guards against a stray job). An approved hold that lapsed unpaid is NOT this message: the host decided.
  */
-export function messageMayBeSent(template: string, f: BookingFacts, now: Date, route: MessageRoute = "sender"): boolean {
+export function messageMayBeSent(template: string, f: BookingFacts, now: Date, route: SendPath = "sender"): boolean {
   switch (template) {
     case REQUEST_RECEIVED_TEMPLATE:
       return f.status === "REQUESTED" && holdAlive(f, now);

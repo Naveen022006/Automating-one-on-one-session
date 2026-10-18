@@ -120,9 +120,9 @@ export async function POST(req: Request) {
       requestApproval: service.requiresApproval,
     });
     if (service.requiresApproval) {
-      // A request: nothing to pay yet. The customer gets a receipt on WhatsApp (a queued message, best effort; the booking is committed
-      // by now) and by e-mail, and the influencer an alert.
-      await queueRequestMessage(booking, REQUEST_RECEIVED_TEMPLATE);
+      // A request: nothing to pay yet. The customer gets a receipt by e-mail and, when a route to them exists, as a queued message (best
+      // effort; the booking is committed by now), and the influencer an alert.
+      await queueRequestMessage({ ...booking, influencerId: service.influencerId }, REQUEST_RECEIVED_TEMPLATE);
       await notifyRequestCreated(booking.id);
       return NextResponse.json(
         { bookingId: booking.id, requiresApproval: true, holdExpiresAt: booking.holdExpiresAt, decideWithinHours: REQUEST_TTL_HOURS },
