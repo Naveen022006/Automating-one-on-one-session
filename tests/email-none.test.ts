@@ -318,21 +318,36 @@ test("customer e-mail through the influencer's Gmail: a failing Gmail leaves a F
   assert.ok(after.state === "connected" && after.gmailFailing === false);
   assert.ok(googleCalls.some((u) => u.startsWith("https://gmail.googleapis.com/")));
 
-  // A forced resend (or a second reschedule) that finds no route must not wipe or downgrade the record of the e-mail that WAS sent.
+  // A forced resend whose Gmail send really FAILS: the earlier e-mail was sent, so the row keeps its status, but the failure is on it where the
+  // influencer and the Google panel can see it (the old behaviour put the row back with no error, so a broken resend looked like it worked).
   tokenMode = "down";
   await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
   const afterFailedResend = await messages();
   assert.equal(afterFailedResend.length, 1);
   assert.equal(afterFailedResend[0].status, "SENT", "never downgraded");
   assert.equal(afterFailedResend[0].providerMessageId, "gmail:gm-1");
-  assert.equal(afterFailedResend[0].error, null);
   assert.ok(afterFailedResend[0].sentAt);
+  assert.ok(afterFailedResend[0].error?.startsWith(gmailLib.GMAIL_FAILED_PREFIX), String(afterFailedResend[0].error));
+  const failing = await tokensLib.getGoogleStatus(influencerId, { details: true });
+  assert.ok(failing.state === "connected" && failing.gmailFailing === true, "gmailSendingFailing sees the failed resend");
+  assert.equal(await countFailedMessages(new Date(Date.now() - 86_400_000), influencerId), 0, "the row is SENT, so it is not counted as a failed message either");
+  // The next resend that works clears the note and the warning.
+  tokenMode = "ok";
+  await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
+  const healed = await messages();
+  assert.equal(healed[0].status, "SENT");
+  assert.equal(healed[0].error, null);
+  const ok2 = await tokensLib.getGoogleStatus(influencerId, { details: true });
+  assert.ok(ok2.state === "connected" && ok2.gmailFailing === false);
+
+  // A forced resend that finds NO route at all (nothing was tried) must not wipe, downgrade or annotate the record of the e-mail that WAS sent.
   await prisma.googleToken.deleteMany({ where: { influencerId } });
   await emailLib.sendBookingEmail(bookingId, "booking-confirmation", { force: true });
   const afterNoRoute = await messages();
   assert.equal(afterNoRoute.length, 1, "not deleted either");
   assert.equal(afterNoRoute[0].status, "SENT");
   assert.equal(afterNoRoute[0].providerMessageId, "gmail:gm-1");
+  assert.equal(afterNoRoute[0].error, null, "exactly as it was");
 });
 
 test("an approved request: the host is handed the pay link when the customer could not be e-mailed, and decline does not throw", { skip }, async () => {

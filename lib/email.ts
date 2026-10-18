@@ -75,13 +75,18 @@ interface PriorSent {
 /** The reason on the row of an e-mail that had no way to go out at all (no Gmail, and EMAIL_PROVIDER=none). */
 export { NO_EMAIL_ROUTE_REASON };
 
-/** Puts a row that recorded a sent e-mail back as it was after an attempt that did not send (best effort, never throws). */
-async function restoreSentRow(messageId: string | null, prior: PriorSent): Promise<void> {
+/**
+ * Puts a row that recorded a sent e-mail back as it was after an attempt that did not send (best effort, never throws). `note` is for an
+ * attempt that really FAILED (Gmail or the provider refused): the row keeps its status (the earlier e-mail was sent) but its `error` records
+ * the failure, so the influencer sees it and lib/google-tokens.ts (gmailSendingFailing) still sees a Gmail failure that is newer than the
+ * send. No note (the "no route at all" case, where nothing was tried): the row is exactly as it was.
+ */
+async function restoreSentRow(messageId: string | null, prior: PriorSent, note?: string): Promise<void> {
   if (!messageId) return;
   try {
     await prisma.message.update({
       where: { id: messageId },
-      data: { status: prior.status as "SENT" | "DELIVERED" | "READ", error: null, sentAt: prior.sentAt, providerMessageId: prior.providerMessageId },
+      data: { status: prior.status as "SENT" | "DELIVERED" | "READ", error: note ? note.slice(0, 500) : null, sentAt: prior.sentAt, providerMessageId: prior.providerMessageId },
     });
   } catch (e) {
     console.error("[email:customer] could not restore the record of an earlier sent e-mail", e instanceof Error ? e.message : e);
@@ -179,7 +184,9 @@ export async function sendBookingEmail(
       // Gmail tried and failed: say so on the row (the Google panel reads it to show "Gmail not working", see lib/google-tokens.ts).
       // Gmail not in use at all: the row says so too (FAILED with the reason; the enum has no "skipped"), never left as "queued" and never
       // deleted. An e-mail that WAS sent earlier keeps its SENT row. Either way the customer is still reached by WhatsApp or SMS.
-      if (prior) await restoreSentRow(messageId, prior);
+      // Nothing was tried (no route at all): an earlier SENT row goes back exactly as it was. Gmail WAS tried and failed: the earlier row keeps
+      // its status and records the failure (a note the Google panel reads), because the resend did not work and the influencer must be able to see it.
+      if (prior) await restoreSentRow(messageId, prior, result.fallbackReason ? `${GMAIL_FAILED_PREFIX} ${result.fallbackReason}` : undefined);
       else await markMessageFailed(messageId, result.fallbackReason ? `${GMAIL_FAILED_PREFIX} ${result.fallbackReason}` : NO_EMAIL_ROUTE_REASON);
       console.log(`[email:customer] ${kind} not sent for booking ${bookingId}: ${result.fallbackReason ? "Gmail failed" : "no Gmail connection"} and the platform sends no e-mail`);
       return;
@@ -194,7 +201,8 @@ export async function sendBookingEmail(
     }
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
-    if (prior) await restoreSentRow(messageId, prior);
+    // A real failure of a resend: the earlier e-mail was sent, so the row keeps its status, with the failure noted on it.
+    if (prior) await restoreSentRow(messageId, prior, `Resend failed: ${detail}`);
     else await markMessageFailed(messageId, detail);
     console.error("[email:customer] failed to send booking email", detail);
   }
