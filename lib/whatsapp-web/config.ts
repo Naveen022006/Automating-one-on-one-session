@@ -20,6 +20,12 @@ export const QR_DEFAULTS = {
 
 /** The smallest spacing the variable accepts: below this a number would send in bursts, which is what gets numbers banned. */
 export const QR_MIN_GAP_FLOOR_MS = 1_000;
+/**
+ * The largest spacing that is honoured. A request that would wait longer than 20 s for its turn is refused at once as "busy" (the send
+ * queue, so it never holds a worker job), and with a gap of 20 s or more every message that arrives inside the gap would be: almost
+ * everything would silently go the other way. A larger value is lowered to this one, with a warning at start-up (`qrGapClamp`).
+ */
+export const QR_MIN_GAP_CEILING_MS = 14_000;
 
 export interface WhatsAppQrConfig {
   /** Platform switch (WHATSAPP_QR_ENABLED). Off by default: nothing connects, nothing is sent this way. */
@@ -57,13 +63,22 @@ export function qrFakeRefusal(env: EnvRecord = process.env): string | null {
   return null;
 }
 
+/** Why WHATSAPP_QR_MIN_GAP_MS is lowered, or null when it is used as it is. For the start-up warning (lib/env.ts). */
+export function qrGapClamp(env: EnvRecord = process.env): string | null {
+  const raw = text(env, "WHATSAPP_QR_MIN_GAP_MS");
+  if (raw === undefined || !/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n <= QR_MIN_GAP_CEILING_MS || n > 3_600_000) return null;
+  return `is lowered to ${QR_MIN_GAP_CEILING_MS} ms: a gap of 20 s or more would make every message that arrives inside it go another way at once`;
+}
+
 export function readQrConfig(env: EnvRecord = process.env): WhatsAppQrConfig {
   return {
     enabled: flag(env, "WHATSAPP_QR_ENABLED"),
     fake: flag(env, "WHATSAPP_QR_FAKE") && qrFakeRefusal(env) === null,
     maxSessions: wholeNumber(env, "WHATSAPP_QR_MAX_SESSIONS", QR_DEFAULTS.maxSessions, 1, 1_000),
     dailyCap: wholeNumber(env, "WHATSAPP_QR_DAILY_CAP", QR_DEFAULTS.dailyCap, 1, 10_000),
-    minGapMs: wholeNumber(env, "WHATSAPP_QR_MIN_GAP_MS", QR_DEFAULTS.minGapMs, QR_MIN_GAP_FLOOR_MS, 3_600_000),
+    minGapMs: Math.min(QR_MIN_GAP_CEILING_MS, wholeNumber(env, "WHATSAPP_QR_MIN_GAP_MS", QR_DEFAULTS.minGapMs, QR_MIN_GAP_FLOOR_MS, 3_600_000)),
     keepAuthWhenDisabled: flag(env, "WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED"),
   };
 }

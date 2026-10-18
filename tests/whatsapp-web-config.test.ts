@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { KNOWN_ENV_VARS, validateEnv, type EnvRecord } from "../lib/env";
 import { GLOBAL_API_RULE, ROUTE_RULES, matchRouteRule, scaled } from "../lib/rate-limit/policies";
 import { consume, MemoryStore } from "../lib/rate-limit/core";
-import { QR_DEFAULTS, QR_MIN_GAP_FLOOR_MS, qrFakeRefusal, readQrConfig } from "../lib/whatsapp-web/config";
+import { QR_DEFAULTS, QR_MIN_GAP_CEILING_MS, QR_MIN_GAP_FLOOR_MS, qrFakeRefusal, qrGapClamp, readQrConfig } from "../lib/whatsapp-web/config";
 import { CONSENT_VERSION, RISK_TEXT } from "../lib/whatsapp-web/types";
 
 // Pure tests: nothing here reads the real environment, the database or Redis.
@@ -68,6 +68,22 @@ test("values are read as given, and a bad value falls back to the default instea
   assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: String(QR_MIN_GAP_FLOOR_MS - 1) }).minGapMs, QR_DEFAULTS.minGapMs, "a spacing under the floor is not honoured");
   assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: String(QR_MIN_GAP_FLOOR_MS) }).minGapMs, QR_MIN_GAP_FLOOR_MS);
   assert.equal(readQrConfig({ WHATSAPP_QR_ENABLED: "yes" }).enabled, false, "only the word true switches it on");
+});
+
+test("the spacing is capped below 15 s: a larger value is lowered, with a warning, because a gap over 20 s would make every message inside it go another way", () => {
+  assert.equal(QR_MIN_GAP_CEILING_MS, 14_000);
+  assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: "14000" }).minGapMs, 14_000);
+  assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: "14001" }).minGapMs, 14_000);
+  assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: "60000" }).minGapMs, 14_000);
+  assert.equal(readQrConfig({ WHATSAPP_QR_MIN_GAP_MS: "3600000" }).minGapMs, 14_000);
+  assert.equal(qrGapClamp({ WHATSAPP_QR_MIN_GAP_MS: "14000" }), null);
+  assert.equal(qrGapClamp({}), null);
+  assert.equal(qrGapClamp({ WHATSAPP_QR_MIN_GAP_MS: "abc" }), null);
+  assert.match(qrGapClamp({ WHATSAPP_QR_MIN_GAP_MS: "60000" })!, /lowered to 14000 ms/);
+  const r = validateEnv({ ...production, WHATSAPP_QR_MIN_GAP_MS: "60000" });
+  assert.ok(r.warnings.some((w) => /^WHATSAPP_QR_MIN_GAP_MS: is lowered to 14000 ms/.test(w)), "the start-up warning");
+  assert.ok(!r.errors.some((e) => e.startsWith("WHATSAPP_QR_MIN_GAP_MS")), "and not an error: the process starts");
+  assert.ok(!validateEnv({ ...production, WHATSAPP_QR_MIN_GAP_MS: "9000" }).warnings.some((w) => w.startsWith("WHATSAPP_QR_MIN_GAP_MS")));
 });
 
 test("the simulator is accepted only outside production with a local APP_URL", () => {

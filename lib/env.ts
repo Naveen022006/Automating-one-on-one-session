@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { keyFingerprint, parseKeyBytes } from "./crypto";
 import { mockProvidersOverride } from "./provider-endpoints";
-import { QR_MIN_GAP_FLOOR_MS, qrFakeRefusal } from "./whatsapp-web/config";
+import { QR_MIN_GAP_FLOOR_MS, qrFakeRefusal, qrGapClamp } from "./whatsapp-web/config";
 import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell";
 
 /**
@@ -341,6 +341,8 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     else if (parsed.WHATSAPP_QR_ENABLED !== true) warnings.push("WHATSAPP_QR_FAKE: has no effect without WHATSAPP_QR_ENABLED=true");
     else warnings.push("WHATSAPP_QR_FAKE: ACTIVE. The QR-code WhatsApp mode uses a local simulator; nothing reaches WhatsApp (development only)");
   }
+  const gapClamp = qrGapClamp(input);
+  if (gapClamp) warn("WHATSAPP_QR_MIN_GAP_MS", gapClamp);
   if (parsed.WHATSAPP_QR_ENABLED === true && production) {
     warn("WHATSAPP_QR_ENABLED", "is true: influencers may link their own WhatsApp by QR code. This is an unofficial method that WhatsApp's terms do not allow; linked numbers can be restricted or banned (doc/14-whatsapp-qr-deviations.md, doc/08-deployment.md)");
   }
