@@ -200,8 +200,9 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### Google (Calendar, Meet, Gmail)
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | for Meet | none | Without them nobody can connect Google, so no Meet links (start-up warning). The Cloud project needs the **Google Calendar API** and the **Gmail API** enabled (section 11) |
-| `GOOGLE_REDIRECT_URI` | for Meet | none | Must exactly match an authorised redirect URI: `<APP_URL>/api/google/callback` |
+| `GOOGLE_CLIENT_MODE` | no | `own` | `own`: every influencer creates their OWN Google Cloud OAuth client and pastes its Client ID and Secret on their Settings page (the secret is stored encrypted, covered by key rotation). `platform`: only the shared pair below. `either`: the influencer's own client when saved, else the shared pair. Empty is the default. See `doc/15-influencer-google-credentials.md` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | only for `platform` / `either` | none | The shared client. Not needed in mode `own` (start-up warns if they are set but unused). Grants made earlier with it keep using it while it stays configured. The Cloud project needs the **Google Calendar API** and the **Gmail API** enabled (section 11) |
+| `GOOGLE_REDIRECT_URI` | no | `<APP_URL>/api/google/callback` | The ONE callback URL every influencer adds to their own client, shown on their Settings page. Set it only if it must differ from the default; start-up warns when its host differs from `APP_URL` |
 | `GOOGLE_REQUEST_GMAIL_SEND` | no | `true` | Set `false` until the restricted `gmail.send` scope is approved (section 11) |
 
 ### WhatsApp and SMS
@@ -225,8 +226,8 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 ### Email
 | Variable | Req | Default | Notes |
 |---|---|---|---|
-| `EMAIL_PROVIDER` | yes | `log` | `resend` or `postmark`. **`log` is Dev** (prints emails instead of sending); refused in production |
-| `EMAIL_FROM` | yes | none | e.g. `Bookings <bookings@yourdomain.com>`; SPF and DKIM must be set up for the domain |
+| `EMAIL_PROVIDER` | yes | `log` | `resend`, `postmark` or `none`. **`none`**: the platform sends no e-mail of its own (accepted in production with one start-up warning; no `EMAIL_FROM` or API key needed): account e-mails (verification, password reset, notices) are not delivered, an administrator verifies accounts and creates one-time password-reset links on the influencer's admin page, and customer e-mail goes only through the influencer's own connected Gmail. **`log` is Dev** (prints emails instead of sending); refused in production |
+| `EMAIL_FROM` | for resend / postmark | none | e.g. `Bookings <bookings@yourdomain.com>`; SPF and DKIM must be set up for the domain |
 | `RESEND_API_KEY` / `POSTMARK_SERVER_TOKEN` | per provider | none | `POSTMARK_MESSAGE_STREAM` defaults to `outbound` |
 
 ### Product settings, monitoring and misc
@@ -503,16 +504,25 @@ once they are re-sent. Changing `APP_SECRET` without `APP_SECRET_PREVIOUS` inval
 Meet links are created on each influencer's own Google Calendar through OAuth, with the scopes in `lib/google.ts`:
 `calendar.events` (sensitive), `gmail.send` (**restricted**, unless `GOOGLE_REQUEST_GMAIL_SEND=false`) and `openid email`.
 
+**With `GOOGLE_CLIENT_MODE=own` (the default) none of the verification work below is yours:** each influencer owns their Google
+client and publishes it for their own use (`doc/15-influencer-google-credentials.md` has the guide that the Settings page shows).
+For personal use Google needs no verification (the influencer sees an "unverified app" warning once and the app is capped at 100
+users, which here is one). Everything below applies to a SHARED client (`platform` / `either`), and the checks about enabled APIs
+and the 7-day Testing expiry apply to each influencer's own project too; the app tells them in the guide. A grant whose own client
+was deleted or changed shows up as "Reconnect needed" with the reason "Your Google client was removed or is no longer valid".
+
 - **Enable the APIs, not just the scopes.** In the Cloud project open APIs & Services > Library and enable the
   **Google Calendar API** and, unless `GOOGLE_REQUEST_GMAIL_SEND=false`, the **Gmail API**. They are separate switches. With
   the Gmail API off, every send answers 403 `accessNotConfigured`, every customer email silently goes out from the platform
-  address instead (influencer as Reply-To), and only two signs remain: the Google panel in Settings shows "Gmail not
+  address instead (influencer as Reply-To; with `EMAIL_PROVIDER=none` the customer simply gets no email and the message is
+  recorded as failed), and only two signs remain: the Google panel in Settings shows "Gmail not
   working", and the web/worker log has one `Gmail sending is not working for influencer ...` line per influencer per hour
   with Google's reason. Check it after the first real customer email of a new deployment.
 - The worker checks every connected Google account once a day and two minutes after it starts (`worker/google-health.ts`,
   log lines `[worker] google health:`). A grant Google reports as revoked or expired is flagged "Reconnect needed" (the
-  booking page goes offline, one alert email to the influencer); network errors, Google outages and a wrong
-  `GOOGLE_CLIENT_SECRET` are logged as `could not check N of N connection(s)` and never disconnect anyone. This is what
+  booking page goes offline, one alert email to the influencer when the platform sends email; an influencer whose own
+  Google client was deleted or whose secret changed gets the same flag, with the plain reason); network errors, Google
+  outages and a wrong shared `GOOGLE_CLIENT_SECRET` are logged as `could not check N of N connection(s)` and never disconnect anyone. This is what
   catches the 7-day expiry below before a paying customer does.
 - While the consent screen is in **Testing**, only listed test users can connect and **refresh tokens expire after 7 days**,
   so every influencer would have to reconnect weekly. Publish the app to **In production** before launch.

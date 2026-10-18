@@ -57,6 +57,10 @@ tunnel URL in the Razorpay webhook, or a mismatched `RAZORPAY_WEBHOOK_SECRET`).
   individually needs Razorpay Route (linked accounts, KYC per influencer). Out of scope unless the owner says otherwise.
 
 ### A2. Google Calendar and automatic Meet links
+**Superseded for credentials by `doc/15-influencer-google-credentials.md`:** the platform has no Google app of its own by
+default; every influencer creates their own OAuth client and pastes its ID and secret in Settings (`GOOGLE_CLIENT_MODE`).
+Steps 1 to 3 below describe the shared-client setup (`GOOGLE_CLIENT_MODE=platform` or `either`).
+
 Already implemented (`lib/google.ts`, `lib/meeting.ts`, `worker/jobs/createMeeting.ts`, `/api/google/connect|callback`).
 What remains is configuration, onboarding UX and verification:
 1. Google Cloud: create a project, enable **Google Calendar API**, configure the OAuth consent screen, create an OAuth

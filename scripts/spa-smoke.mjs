@@ -162,7 +162,7 @@ async function main() {
     } catch {
       /* reported below */
     }
-    check(`GET ${path}: ${name} session check answers { authenticated: false }`, r.status === 200 && body !== null && body.authenticated === false && Object.keys(body).length === 1, `${r.status} ${r.body.slice(0, 80)}`);
+    check(`GET ${path}: ${name} session check answers { authenticated: false }`, r.status === 200 && body !== null && body.authenticated === false && Object.keys(body).sort().join() === "authenticated,emailEnabled" && typeof body.emailEnabled === "boolean", `${r.status} ${r.body.slice(0, 80)}`);
     check(`GET ${path}: private, no-store and no CORS header`, /private/.test(header(r, "cache-control")) && /no-store/.test(header(r, "cache-control")) && header(r, "access-control-allow-origin") === "", header(r, "cache-control"));
   }
   const csrf = await get("/api/auth/logout", { method: "POST", headers: { Origin: "https://evil.example" } });

@@ -9,7 +9,7 @@ export function Component() {
   return (
     <>
       <PageTitle title="Find your bookings" />
-      <FindBookingsView emailEnabled={session.data?.emailEnabled !== false} />
+      <FindBookingsView emailEnabled={session.data?.emailEnabled !== false} loading={session.data === undefined && session.isPending} />
     </>
   );
 }

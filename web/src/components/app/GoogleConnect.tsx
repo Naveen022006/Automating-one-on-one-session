@@ -392,7 +392,7 @@ function ConnectStep({
       </a>
     );
 
-  const needsClientFix = status.state === "reconnect-needed" && /google client/i.test(status.reason ?? "");
+  const needsClientFix = status.state === "reconnect-needed" && /google client was removed or is no longer valid/i.test(status.reason ?? "");
 
   return (
     <div className="stack">

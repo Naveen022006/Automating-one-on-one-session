@@ -478,8 +478,8 @@ Every error body uses Google's two formats, which `readError` parses (`lib/googl
 - Query parameters: `client_id`, `redirect_uri`, `response_type=code`, `scope`, `include_granted_scopes`, `login_hint?`,
   `access_type=offline`, `prompt=consent`, `state`.
 - Validation:
-  - `client_id` must equal `fixtures.GOOGLE_CLIENT_ID`. Otherwise show an error page "Error 401: invalid_client". Do not
-    redirect; Google does not.
+  - `client_id` must equal `fixtures.GOOGLE_CLIENT_ID` or look like a real Google client ID (doc/15: influencers use their own
+    clients). Otherwise show an error page "Error 401: invalid_client". Do not redirect; Google does not.
   - `redirect_uri` must be registered. The registered list is `[<appUrl>/api/google/callback]`. Otherwise show an error
     page "Error 400: redirect_uri_mismatch". This catches a wrong `GOOGLE_REDIRECT_URI` the same way Google would.
   - `response_type` must be `code`.
@@ -504,8 +504,13 @@ Every error body uses Google's two formats, which `readError` parses (`lib/googl
 
 - `grant_type=authorization_code` (`exchangeCode`, `lib/google.ts:403-435`, reads `refresh_token`, `scope` and
   `id_token`):
-  - Check `client_id` and `client_secret`. If wrong, return 401
-    `{"error":"invalid_client","error_description":"The OAuth client was not found."}`.
+  - Check `client_id` and `client_secret`. **Since doc/15 the mock accepts ANY client pair an influencer pasted** (they each
+    bring their own Google client) and records the client ID (never the secret): an ID shaped like a real one
+    (`1234567890-abc.apps.googleusercontent.com`) or the built-in fixture ID is known; anything else, a missing secret or a
+    secret that is exactly `bad-secret` (or starts with `bad-secret-`, which passes the app's 20-character format check) returns 401 `{"error":"invalid_client","error_description":"Unauthorized"}`
+    (`...was not found.` for an unknown ID); the fixture client still needs the fixture secret. A made-up code with an
+    accepted pair is `invalid_grant`, which is how the app's "Save and check" tells a good pair from a bad one. A code and a
+    refresh token only work with the client they were issued to (otherwise `invalid_grant`).
   - Check the code: unknown, used, expired or `redirect_uri` differs returns 400
     `{"error":"invalid_grant","error_description":"Bad Request"}`.
   - Success returns 200:
@@ -1191,7 +1196,7 @@ steps) so they finish in seconds. The pure tests need no network beyond loopback
   | Fault | Expected error |
   |---|---|
   | refresh `invalid_grant` | `GoogleReconnectError` |
-  | refresh `invalid_client` | `GoogleTransientError` |
+  | refresh `invalid_client` | `GoogleTransientError` for the shared client; `GoogleReconnectError` ("Your Google client was removed or is no longer valid") for an influencer's own client (doc/15) |
   | calendar `401` | `GoogleReconnectError` |
   | calendar `403_accessNotConfigured` | `GoogleTransientError` |
   | calendar `403_insufficientPermissions` | `GoogleReconnectError` |

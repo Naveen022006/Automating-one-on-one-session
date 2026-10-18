@@ -112,8 +112,18 @@ const okView = (over: Partial<Ok> = {}): CustomerPortalView => ({
   ...over,
 });
 
+// Changed with doc/15: the page now waits for the session answer, which also says whether the platform sends e-mail at all, before it
+// offers the form (a form that then turned into "we cannot e-mail you a link" would be a promise taken back). So this test holds the
+// session answer (e-mail on); the waiting state and the no-e-mail state are asserted right after it.
+test("find page: while the session answer is pending nothing is offered, and without e-mail there is no form", async () => {
+  const pending = await render(find, "/bookings", "/bookings", keys.session(), "pending");
+  assert.ok(pending.includes("Loading") && !pending.includes("<form") && count(pending, "<h1") === 1);
+  const noMail = await render(find, "/bookings", "/bookings", keys.session(), { data: { authenticated: false, emailEnabled: false } });
+  assert.ok(!noMail.includes("<form") && noMail.includes("We cannot e-mail you a link") && !noMail.includes("E-mail me a link"));
+});
+
 test("find page: the route's title, one form with an e-mail field, no data, a note on what the link allows", async () => {
-  const html = await render(find, "/bookings", "/bookings", keys.session(), "pending");
+  const html = await render(find, "/bookings", "/bookings", keys.session(), { data: { authenticated: false, emailEnabled: true } });
   assert.ok(html.includes(`<title>${routeTitle("customer-bookings")} · Session Automation</title>`));
   assert.equal(count(html, "<h1"), 1);
   assert.equal(count(html, '<main id="main"'), 1);

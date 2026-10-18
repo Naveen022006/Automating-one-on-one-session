@@ -129,7 +129,9 @@ function checkClient(rt: Runtime, form: URLSearchParams): string {
   const secret = form.get("client_secret") ?? "";
   if (!clientId) throw oauthError(400, "invalid_request", "Missing required parameter: client_id");
   if (!knownClientId(clientId)) throw oauthError(401, "invalid_client", "The OAuth client was not found.");
-  if (!secret || secret === BAD_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
+  // `bad-secret` exactly, or anything that starts with it (the app's own format check wants 20 characters, so a demo types
+  // "bad-secret-0123456789" to see the wrong-pair message).
+  if (!secret || secret === BAD_CLIENT_SECRET || secret.startsWith(`${BAD_CLIENT_SECRET}-`)) throw oauthError(401, "invalid_client", "Unauthorized");
   if (clientId === GOOGLE_CLIENT_ID && secret !== GOOGLE_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
   const clients = (rt.state.google.clients ??= {});
   const now = new Date(rt.now()).toISOString();

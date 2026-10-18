@@ -14,7 +14,16 @@ const BAD_EMAIL = "Please enter a valid e-mail address.";
  * A refused address is an error on the field (linked to the input, which gets the focus); the confirmation takes the focus.
  * `initial` is for tests of the two end states, which a static render cannot reach.
  */
-export function FindBookingsView({ initial, emailEnabled = true }: { initial?: { sent?: boolean; fieldError?: string }; emailEnabled?: boolean }) {
+export function FindBookingsView({
+  initial,
+  emailEnabled = true,
+  loading = false,
+}: {
+  initial?: { sent?: boolean; fieldError?: string };
+  emailEnabled?: boolean;
+  /** The answer to "does this site send e-mail?" is still on its way: nothing is offered or promised until it is here. */
+  loading?: boolean;
+}) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(initial?.sent ?? false);
   const [fieldError, setFieldError] = useState<string | null>(initial?.fieldError ?? null);
@@ -53,6 +62,18 @@ export function FindBookingsView({ initial, emailEnabled = true }: { initial?: {
     }
   }
 
+  if (loading) {
+    return (
+      <FocusedLayout>
+        <div className="stack stack--lg">
+          <h1 className="focused__title">Find your bookings</h1>
+          <p className="muted" role="status">
+            Loading…
+          </p>
+        </div>
+      </FocusedLayout>
+    );
+  }
   // The platform sends no e-mail (doc/15): do not offer a link that cannot arrive.
   if (!emailEnabled) {
     return (
