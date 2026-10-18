@@ -1,4 +1,5 @@
 import { AppLink } from "@web/lib/link";
+import type { ReactNode } from "react";
 import { ExportLink, exportUrl } from "@web/components/admin/ExportControls";
 import { PageHead } from "@web/components/app/AppShell";
 import { IconArrowsLeftRight } from "@web/components/icons";
@@ -166,6 +167,19 @@ function Reference({ row }: { row: Row }) {
   return row.referenceTail ? <>Razorpay {row.referenceTail}</> : <span className="subtle">—</span>;
 }
 
+/**
+ * A table cell. On a phone `table--stack` makes every `td` a flex row (the label, then what the cell holds), and each child of the cell would
+ * become its own flex item beside the others, which makes the row wider than the screen. One wrapper element is one item that may shrink and
+ * wrap (long names, an e-mail address), so the stacked rows fit the width; on a desktop the wrapper changes nothing.
+ */
+function Cell({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <td data-label={label} className={className}>
+      <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>{children}</div>
+    </td>
+  );
+}
+
 function LedgerTable({ rows }: { rows: Row[] }) {
   return (
     <div className="table-wrap">
@@ -184,17 +198,17 @@ function LedgerTable({ rows }: { rows: Row[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.key}>
-              <td data-label="When (IST)">{formatDateTime(new Date(r.at), { weekday: false })}</td>
-              <td data-label="Movement"><Movement row={r} /></td>
-              <td data-label="Who and what"><Who row={r} /></td>
-              <td data-label="Status"><StatusBadge row={r} /></td>
-              <td data-label="Amount" className="num">
+              <Cell label="When (IST)">{formatDateTime(new Date(r.at), { weekday: false })}</Cell>
+              <Cell label="Movement"><Movement row={r} /></Cell>
+              <Cell label="Who and what"><Who row={r} /></Cell>
+              <Cell label="Status"><StatusBadge row={r} /></Cell>
+              <Cell label="Amount" className="num">
                 <span className="sr-only">{r.direction === "in" ? "In " : "Out "}</span>
                 {r.direction === "in" ? "+" : "−"}
                 {formatMoney(r.amountMinor, r.currency)}
                 {r.kind === "payout" && <div className="subtle">after the fee</div>}
-              </td>
-              <td data-label="Reference"><Reference row={r} /></td>
+              </Cell>
+              <Cell label="Reference"><Reference row={r} /></Cell>
             </tr>
           ))}
         </tbody>
@@ -221,18 +235,18 @@ function ScheduledTable({ scheduled }: { scheduled: MoneyData["scheduled"] }) {
         <tbody>
           {scheduled.rows.map((p) => (
             <tr key={p.id}>
-              <td data-label="Created (IST)">{formatDateTime(new Date(p.createdAt), { weekday: false })}</td>
-              <td data-label="Influencer"><AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink></td>
-              <td data-label="Send to">{p.destination}</td>
-              <td data-label="Status">
+              <Cell label="Created (IST)">{formatDateTime(new Date(p.createdAt), { weekday: false })}</Cell>
+              <Cell label="Influencer"><AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink></Cell>
+              <Cell label="Send to">{p.destination}</Cell>
+              <Cell label="Status">
                 {p.approved ? <Badge tone="success">Approved, not sent yet</Badge> : <Badge tone="warning">Not sent yet</Badge>}
                 {p.approvedBy && <div className="subtle">Approved by {p.approvedBy}</div>}
-              </td>
-              <td data-label="To send" className="num">
+              </Cell>
+              <Cell label="To send" className="num">
                 {formatMoney(p.netMinor, p.currency)}
                 <div className="subtle">fee {formatMoney(p.feeMinor, p.currency)}</div>
-              </td>
-              <td data-label="Open"><AppLink href={`/admin/payouts?status=PENDING#payout-${p.id}`}>Open in Payouts</AppLink></td>
+              </Cell>
+              <Cell label="Open"><AppLink href={`/admin/payouts?status=PENDING#payout-${p.id}`}>Open in Payouts</AppLink></Cell>
             </tr>
           ))}
         </tbody>
