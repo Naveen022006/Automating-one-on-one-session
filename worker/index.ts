@@ -14,7 +14,7 @@ import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
 import { startReminderReconcile } from "./reminder-reconcile";
 import { startWhatsAppSync } from "./whatsapp-sync";
-import { startWhatsAppWeb } from "./whatsapp-web";
+import { startWhatsAppWebMessaging } from "./whatsapp-web-messaging";
 import type { WhatsAppWebManager } from "./whatsapp-web-manager";
 
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
@@ -129,7 +129,7 @@ startReminderReconcile(); // re-creates missing reminder jobs after a Redis/work
 // Optional QR-code WhatsApp mode (worker/whatsapp-web.ts): holds the linked devices' sockets. Off unless WHATSAPP_QR_ENABLED=true; when off
 // it only applies the kill switch (deletes stored logins). A failure here must never stop the rest of the worker.
 let whatsappWeb: WhatsAppWebManager | null = null;
-startWhatsAppWeb()
+startWhatsAppWebMessaging()
   .then((m) => (whatsappWeb = m))
   .catch((e) => reportError(e, { where: "worker:whatsapp-web-start" }));
 

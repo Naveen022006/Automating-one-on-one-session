@@ -404,6 +404,8 @@ enum MessageChannel {
   SMS
   EMAIL
   LOG
+  // The optional QR-code WhatsApp mode (lib/whatsapp-web/*): the influencer's own linked number, free-form text.
+  WHATSAPP_WEB
 }
 
 // Lifecycle: PENDING -> SENT -> DELIVERED/READ (via the WhatsApp provider status webhook, Phase 4) ; FAILED
