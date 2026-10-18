@@ -380,7 +380,7 @@ export class WhatsAppWebManager {
         live.nextPruneRequestsAt = now + PRUNE_REQUESTS_EVERY_MS;
         const phones = parsePruneRequests(await this.d.kv.drain(kvKeys.prune(id)));
         if (phones.length > 0) {
-          const removed = live.auth.mutateKeys((keys) => pruneContacts(keys, phones));
+          const removed = live.auth.mutateLogin(({ keys, creds }) => pruneContacts(keys, phones, creds));
           this.log(`session ${id}: forgot ${removed} stored key(s) of ${phones.length} erased customer(s)`);
         }
       }
@@ -389,7 +389,7 @@ export class WhatsAppWebManager {
         const keep = [...(await this.d.keepContacts(id))];
         const me = (live.auth.getCreds() as { me?: { id?: unknown; lid?: unknown } } | undefined)?.me;
         const own = [live.phoneE164, jidUser(me?.id), jidUser(me?.lid)].filter((v): v is string => typeof v === "string" && v !== "");
-        const removed = live.auth.mutateKeys((keys) => pruneAllExcept(keys, [...keep, ...own]));
+        const removed = live.auth.mutateLogin(({ keys, creds }) => pruneAllExcept(keys, [...keep, ...own], creds));
         if (removed > 0) this.log(`session ${id}: forgot ${removed} stored key(s) of contacts without a booking`);
       }
     } catch (e) {

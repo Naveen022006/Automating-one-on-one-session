@@ -173,6 +173,14 @@ export class EncryptedAuthState implements WhatsAppAuthStore {
     return removed;
   }
 
+  /** Like `mutateKeys`, for a change that also touches the credentials object (for example the history list). The same single writer. */
+  mutateLogin(change: (login: { keys: Record<string, Record<string, unknown>>; creds: unknown }) => number): number {
+    if (this.disposed) return 0;
+    const removed = change({ keys: this.blob.keys, creds: this.blob.creds });
+    if (removed > 0) this.markDirty();
+    return removed;
+  }
+
   private markDirty(): void {
     this.dirty = true;
     if (this.timer !== null) return; // coalesce: one pending write covers every change until it runs

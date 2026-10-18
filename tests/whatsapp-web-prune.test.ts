@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { EncryptedAuthState, openAuthBlob } from "../lib/whatsapp-web/auth-state";
 import { kvKeys } from "../lib/whatsapp-web/kv";
-import { contactsIn, digitsOf, jidUser, keyOwner, pruneAllExcept, pruneContacts, type KeyTables } from "../lib/whatsapp-web/prune";
+import { ACCOUNTED_KEY_TYPES, ADDRESS_FREE_TABLES, contactsIn, digitsOf, jidUser, keyOwner, pruneAllExcept, pruneContacts, type KeyTables } from "../lib/whatsapp-web/prune";
 import { PRUNE_ALL_EVERY_MS, PRUNE_REQUESTS_EVERY_MS } from "../worker/whatsapp-web-manager";
 import { parsePruneRequests, PRUNE_REQUEST_TTL_MS } from "../lib/whatsapp-web/prune-requests";
 import { harness, settle, want } from "./helpers/whatsapp-web";
@@ -30,7 +30,14 @@ function tables(): KeyTables {
   return {
     "pre-key": { "1": { pub: Buffer.from("x") }, "2": { pub: Buffer.from("y") } },
     "app-state-sync-key": { AAAA: { keyData: Buffer.from("k") } },
-    "sender-key": { [`1203630000000000@g.us::${A_PN}::0`]: Buffer.from("group sender key") },
+    // A group the account is in, with customer A and customer B as members.
+    "sender-key": {
+      [`1203630000000000@g.us::${A_PN}::0`]: Buffer.from("group sender key a"),
+      [`1203630000000000@g.us::${A_LID}_1::2`]: Buffer.from("group sender key a lid"),
+      [`1203630000000000@g.us::${B_PN}::0`]: Buffer.from("group sender key b"),
+    },
+    "sender-key-memory": { "1203630000000000@g.us": { [`${A_PN}@s.whatsapp.net`]: true, [`${A_LID}@lid`]: true, [`${B_PN}@s.whatsapp.net`]: true } },
+    "identity-key": { [`${A_PN}.0`]: Buffer.from("id-a"), [`${A_LID}_1.0`]: Buffer.from("id-a-lid"), [`${B_PN}.0`]: Buffer.from("id-b"), [`${C_PN}.0`]: Buffer.from("id-c"), [`${OWN_PN}.0`]: Buffer.from("id-own") },
     session: {
       [`${A_PN}.0`]: "sess-a0",
       [`${A_PN}.3`]: "sess-a3",
@@ -59,6 +66,19 @@ function tables(): KeyTables {
   };
 }
 
+/** The credentials object with a processed-history list naming customer A, B and a stranger. */
+function credsFixture() {
+  return {
+    me: { id: `${OWN_PN}:3@s.whatsapp.net`, lid: `${OWN_LID}:3@lid` },
+    processedHistoryMessages: [
+      { key: { remoteJid: `${A_PN}@s.whatsapp.net`, fromMe: false, id: "H1" }, messageTimestamp: 1 },
+      { key: { remoteJid: "1203630000000000@g.us", participant: `${A_LID}@lid`, id: "H2" }, messageTimestamp: 2 },
+      { key: { remoteJid: `${B_PN}@s.whatsapp.net`, fromMe: true, id: "H3" }, messageTimestamp: 3 },
+      { key: { remoteJid: `${C_PN}@s.whatsapp.net`, fromMe: true, id: "H4" }, messageTimestamp: 4 },
+    ],
+  };
+}
+
 const ids = (keys: KeyTables, type: string) => Object.keys(keys[type] ?? {}).sort();
 const everythingText = (keys: KeyTables) => JSON.stringify(keys, (_k, v) => (v && v.type === "Buffer" ? Buffer.from(v.data).toString() : v));
 
@@ -73,7 +93,12 @@ test("the naming patterns: which key ids belong to a contact", () => {
   assert.equal(keyOwner("tctoken", "919876500101@s.whatsapp.net"), "919876500101");
   assert.equal(keyOwner("tctoken", "123456789012345@lid"), "123456789012345");
   assert.equal(keyOwner("tctoken", "__index"), null);
-  for (const own of ["pre-key", "app-state-sync-key", "sender-key", "sender-key-memory", "app-state-sync-version"]) assert.equal(keyOwner(own, "919876500101"), null, `${own} is never a contact table`);
+  assert.equal(keyOwner("identity-key", "919876500101.0"), "919876500101", "identity-key ids are named like sessions");
+  assert.equal(keyOwner("identity-key", "123456789012345_1.0"), "123456789012345");
+  assert.equal(keyOwner("sender-key", "1203630000000000@g.us::919876500101::0"), "919876500101");
+  assert.equal(keyOwner("sender-key", "1203630000000000@g.us::123456789012345_1::2"), "123456789012345");
+  assert.equal(keyOwner("sender-key", "garbage"), null);
+  for (const own of ["pre-key", "app-state-sync-key", "sender-key-memory", "app-state-sync-version"]) assert.equal(keyOwner(own, "919876500101"), null, `${own} has no contact in its ids`);
   assert.equal(digitsOf("+91 98765 00101"), "919876500101");
   assert.equal(jidUser("919876500001:12@s.whatsapp.net"), "919876500001");
   assert.equal(jidUser("555500001111@lid"), "555500001111");
@@ -82,11 +107,17 @@ test("the naming patterns: which key ids belong to a contact", () => {
 
 test("erasing one customer drops every key named after their number AND their LID, and nothing of anyone else", () => {
   const keys = tables();
-  const removed = pruneContacts(keys, ["+919876500101"]);
-  assert.ok(removed >= 9, `removed ${removed}`);
+  const creds = credsFixture();
+  const removed = pruneContacts(keys, ["+919876500101"], creds);
+  assert.ok(removed >= 14, `removed ${removed}`);
   const text = everythingText(keys);
-  assert.ok(!text.includes(A_PN.slice(2)) || /group sender key/.test(text), "the number is gone from the contact tables");
+  assert.ok(!text.includes(A_PN), "the number is nowhere in the key tables any more: sessions, identity keys, sender keys, member maps, tokens");
   assert.ok(!text.includes(A_LID));
+  assert.ok(!JSON.stringify(creds).includes(A_PN) && !JSON.stringify(creds).includes(A_LID), "nor in the credentials' history list");
+  assert.deepEqual(creds.processedHistoryMessages.map((e) => e.key.id), ["H3", "H4"]);
+  assert.deepEqual(ids(keys, "identity-key"), [`${B_PN}.0`, `${C_PN}.0`, `${OWN_PN}.0`].sort());
+  assert.deepEqual(ids(keys, "sender-key"), [`1203630000000000@g.us::${B_PN}::0`]);
+  assert.deepEqual(Object.keys(keys["sender-key-memory"]["1203630000000000@g.us"] as object), [`${B_PN}@s.whatsapp.net`]);
   assert.deepEqual(ids(keys, "session"), [`${B_LID}_1.2`, `${B_PN}.0`, `${C_PN}.0`, `${OWN_LID}_1.0`, `${OWN_PN}.0`].sort());
   assert.deepEqual(ids(keys, "device-list"), [B_PN, C_PN, OWN_PN].sort());
   assert.deepEqual(ids(keys, "lid-mapping"), [B_PN, `${B_LID}_reverse`, OWN_PN, `${OWN_LID}_reverse`].sort());
@@ -96,7 +127,6 @@ test("erasing one customer drops every key named after their number AND their LI
   // The account's own keys, and the group tables, are untouched.
   assert.deepEqual(ids(keys, "pre-key"), ["1", "2"]);
   assert.deepEqual(ids(keys, "app-state-sync-key"), ["AAAA"]);
-  assert.equal(ids(keys, "sender-key").length, 1);
   // Doing it twice, or for a number we hold nothing for, changes nothing.
   assert.equal(pruneContacts(keys, ["+919876500101", "+10000000000"]), 0);
 });
@@ -116,6 +146,7 @@ test("the periodic clean-up keeps the customers with a booking and the account's
   const removed = pruneAllExcept(keys, [`+${B_PN}`, `+${OWN_PN}`, OWN_LID]);
   assert.ok(removed > 0);
   assert.deepEqual(contactsIn(keys).has(A_PN) || contactsIn(keys).has(A_LID) || contactsIn(keys).has(C_PN), false, "customer A and the stranger are gone");
+  assert.ok(!everythingText(keys).includes(A_PN) && !everythingText(keys).includes(C_PN), "from every table, member maps included");
   for (const kept of [B_PN, B_LID, OWN_PN, OWN_LID]) assert.ok(contactsIn(keys).has(kept), `${kept} is kept`);
   assert.deepEqual(ids(keys, "tctoken"), [`${B_PN}@s.whatsapp.net`, "__index"].sort());
   assert.equal(pruneAllExcept(keys, [`+${B_PN}`, `+${OWN_PN}`, OWN_LID]), 0, "idempotent");
@@ -148,7 +179,7 @@ test("on the sealed login: after the clean-up and a flush, no copy of the number
   await auth.flush();
   const text = JSON.stringify(openAuthBlob("inf-prune", stored!).keys);
   assert.ok(!text.includes(A_LID));
-  assert.ok(!Object.entries(openAuthBlob("inf-prune", stored!).keys).some(([type, e]) => type !== "sender-key" && JSON.stringify(e).includes(A_PN) && type !== "device-list"), "only the group's sender key (not a contact record) still names the number");
+  assert.ok(!JSON.stringify(openAuthBlob("inf-prune", stored!).keys).includes(A_PN), "the number is not in the stored blob at all");
   assert.equal(auth.mutateKeys(() => 0), 0);
   await auth.close();
   assert.equal(auth.mutateKeys(() => 5), 0, "a closed login accepts no change");
@@ -248,6 +279,19 @@ function openAuthBlobKeys(h: ReturnType<typeof harness>): KeyTables {
   return openAuthBlob(INF, h.repo.row(INF).authStateEnc!).keys as KeyTables;
 }
 
+test("every key type the library declares is either covered by the clean-up or known to hold no contact address", () => {
+  const dir = join(process.cwd(), "node_modules", "@whiskeysockets", "baileys");
+  const file = join(dir, "lib", "Types", "Auth.d.ts");
+  if (!existsSync(file)) return;
+  const source = readFileSync(file, "utf8");
+  const block = /SignalDataTypeMap = \{([\s\S]*?)\n\};/.exec(source)?.[1];
+  assert.ok(block, "the declaration was found");
+  const declared = [...block.matchAll(/^ {4}'?([a-z-]+)'?:/gm)].map((m) => m[1]);
+  assert.ok(declared.length >= 10, declared.join(","));
+  for (const type of declared) assert.ok(ACCOUNTED_KEY_TYPES.includes(type), `a new key type "${type}": does its id or value contain a contact address? Add it to lib/whatsapp-web/prune.ts`);
+  for (const free of ADDRESS_FREE_TABLES) assert.ok(declared.includes(free), `${free} no longer exists in the library`);
+});
+
 test("the library's key names are still the ones lib/whatsapp-web/prune.ts was written against (recheck prune.ts when this fails)", () => {
   const dir = join(process.cwd(), "node_modules", "@whiskeysockets", "baileys");
   if (!existsSync(join(dir, "package.json"))) return; // the library is not installed in this checkout
@@ -258,6 +302,9 @@ test("the library's key names are still the ones lib/whatsapp-web/prune.ts was w
   assert.match(signal, /signalUser = domainType !== WAJIDDomains\.WHATSAPP \? `\$\{user\}_\$\{domainType\}` : user/, "session ids: <user>[_<domainType>].<device>");
   assert.match(signal, /new libsignal\.ProtocolAddress\(signalUser, finalDevice\)/);
   assert.match(signal, /get\('device-list', \[user\]\)/, "device-list ids are the bare user");
+  assert.match(signal, /keys\.get\('identity-key', \[wireJid\]\)/, "identity keys use the same wire address as sessions");
+  assert.match(read("Signal/Group/sender-key-name.js"), /`\$\{this\.groupId\}::\$\{this\.sender\.id\}::\$\{this\.sender\.deviceId\}`/, "sender-key ids: <group>::<user>::<device>");
+  assert.match(read("Socket/messages-send.js"), /'sender-key-memory': \{ \[jid\]: senderKeyMap \}/, "sender-key-memory: id = the group, value = map of member jids");
   const lid = read("Signal/lid-mapping.js");
   assert.match(lid, /batchData\[pnUser\] = lidUser;/);
   assert.match(lid, /batchData\[`\$\{lidUser\}_reverse`\] = pnUser;/);
