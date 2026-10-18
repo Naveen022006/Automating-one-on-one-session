@@ -103,7 +103,35 @@ const QR_IN_FLIGHT = "in-flight";
  */
 export const QR_UNKNOWN_DELIVERY = "unknown-delivery";
 
-/** What the influencer reads on a linked-number row that was not sent from that number (the message went the next way). */
+/**
+ * Refusals where the linked number never TRIED to send: it was busy, not connected, over its daily limit, paused, the message was too
+ * late, or the check before the send said no. The official route records nothing for a connection it did not use
+ * (WhatsAppNotConnectedError), and neither does this one: the in-flight row is removed, so a group session's reminders that went by
+ * SMS because the linked number was busy leave no "failed" rows behind. Every other reason is a real attempt that failed (the library
+ * or WhatsApp refused it) and keeps a FAILED row with the reason.
+ */
+const NOT_ATTEMPTED = new Set([
+  "busy",
+  "queue-full",
+  "not-connected",
+  "not-linked",
+  "manager-not-running",
+  "qr-disabled",
+  "daily-cap",
+  "circuit-open",
+  "expired",
+  "not-sendable",
+  "limits-unavailable",
+  "guard-unavailable",
+  "no-booking",
+  "not-on-whatsapp",
+  "invalid-number",
+  "empty-text",
+  "missing-booking",
+  "queue-error",
+]);
+
+/** What the influencer reads on a linked-number row whose send was attempted and failed (the message went the next way). */
 function describeWebRefusal(reason: string): string {
   switch (reason) {
     case "busy":
@@ -203,6 +231,11 @@ async function tryWhatsAppWeb(
     await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template } }); // nothing was sent: leave no row, like any skipped message
     console.info(`[send-message] booking ${bookingId}: "${template}" dropped (${result.reason}); not sent anywhere`);
     return { kind: "skip" };
+  }
+  if (NOT_ATTEMPTED.has(result.reason)) {
+    await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template, status: "PENDING", error: QR_IN_FLIGHT } });
+    console.info(`[send-message] booking ${bookingId}: the linked WhatsApp did not try (${result.reason}); trying the next channel`);
+    return null;
   }
   await prisma.message.update({ where, data: { status: "FAILED", error: `${describeWebRefusal(result.reason)}; sent another way.`.slice(0, 500) } });
   console.info(`[send-message] booking ${bookingId}: not sent from the linked WhatsApp (${result.reason}); trying the next channel`);

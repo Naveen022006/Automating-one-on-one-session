@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { countFailedMessages } from "@/lib/failed-messages";
 import { isEntityId } from "@/lib/http";
 import { approvalRequired, buildPublicInfluencerWhere, evaluateReadiness, isLiveBlocker, readinessInput, type ReadinessInput } from "@/lib/readiness";
 
@@ -63,7 +64,7 @@ export async function getOverview(): Promise<Overview> {
       prisma.payment.count({ where: { needsRefund: true, status: "CAPTURED" } }),
       prisma.payment.count({ where: mismatchWhere }),
       prisma.googleToken.count({ where: { status: "RECONNECT_NEEDED" } }),
-      prisma.message.count({ where: { status: "FAILED", updatedAt: { gte: weekAgo } } }),
+      countFailedMessages(weekAgo),
     ]);
 
   return {
