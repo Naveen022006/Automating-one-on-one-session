@@ -1,4 +1,5 @@
-import { listFailedJobs, listRecoveredPayments, type FailedJobsView, type RecoveredPaymentRow } from "@/lib/admin/health-data";
+import { countActiveSharedGoogleGrants, listFailedJobs, listRecoveredPayments, type FailedJobsView, type RecoveredPaymentRow } from "@/lib/admin/health-data";
+import { googleClientMode, platformGoogleCredentials } from "@/lib/google-credentials";
 import { collectSnapshot, evaluateHealth, formatAge, thresholdsFromEnv, type ConditionStatus, type HealthSnapshot, type HealthThresholds } from "@/lib/health";
 import { QUEUE_NAMES } from "@/lib/queue";
 
@@ -87,6 +88,11 @@ export interface AdminHealthView {
   };
   /** The last payment-recovery run; null when none was recorded. */
   recovery: { lastRunAt: number; lastCandidates: number; lastRecovered: number } | null;
+  /**
+   * Connections made with the shared Google client (doc/15). `warning` is set only when there are some AND the shared pair is no longer
+   * configured while the site is not meant to run on it: they can no longer be refreshed and will be flagged "reconnect needed".
+   */
+  sharedGoogle: { activeGrants: number; warning: string | null };
   queueNames: string[];
   queues: Record<string, { waiting: number; active: number; delayed: number; failed: number } | null>;
   recovered: {
@@ -109,10 +115,20 @@ export interface AdminHealthView {
 
 /** The measurements in, the page's data out. Pure, so a test can feed it a snapshot with a stale heartbeat. */
 export function buildAdminHealthView(
-  input: { snapshot: HealthSnapshot; thresholds: HealthThresholds; recovered: RecoveredPaymentRow[]; failed: FailedJobsView; queueNames: readonly string[] },
+  input: {
+    snapshot: HealthSnapshot;
+    thresholds: HealthThresholds;
+    recovered: RecoveredPaymentRow[];
+    failed: FailedJobsView;
+    queueNames: readonly string[];
+    /** ACTIVE connections made with the shared Google client (countActiveSharedGoogleGrants); 0 when not measured. */
+    sharedGoogleGrants?: number;
+  },
   env: Record<string, string | undefined> = process.env,
 ): AdminHealthView {
   const { snapshot, thresholds, recovered, failed } = input;
+  const sharedGrants = input.sharedGoogleGrants ?? 0;
+  const sharedGone = sharedGrants > 0 && googleClientMode(env) !== "platform" && platformGoogleCredentials(env) === null;
   const report = evaluateHealth(snapshot, thresholds);
   const worker = report.conditions.find((c) => c.id === "worker-heartbeat")!;
   const lastBeat = snapshot.heartbeat.state === "ok" ? snapshot.heartbeat.at : null;
@@ -153,6 +169,12 @@ export function buildAdminHealthView(
     },
     // The card only shows a run that happened; without one it says "No run recorded yet".
     recovery: recovery?.lastRunAt ? { lastRunAt: recovery.lastRunAt, lastCandidates: recovery.lastCandidates, lastRecovered: recovery.lastRecovered } : null,
+    sharedGoogle: {
+      activeGrants: sharedGrants,
+      warning: sharedGone
+        ? `${sharedGrants} influencer connection${sharedGrants === 1 ? " was" : "s were"} made with the shared Google client, which is no longer configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). ${sharedGrants === 1 ? "It" : "They"} cannot refresh any more and will be flagged "Reconnect needed" at the next daily check; those influencers must save their own Google client and connect again.`
+        : null,
+    },
     queueNames: [...input.queueNames],
     queues: Object.fromEntries(
       Object.entries(snapshot.queues).map(([name, q]) => [name, q ? { waiting: q.waiting, active: q.active, delayed: q.delayed, failed: q.failed } : null]),
@@ -183,6 +205,11 @@ export function buildAdminHealthView(
 
 export async function loadAdminHealthView(): Promise<AdminHealthView> {
   const thresholds = thresholdsFromEnv();
-  const [snapshot, recovered, failed] = await Promise.all([collectSnapshot({ thresholds }), listRecoveredPayments(10), listFailedJobs(10)]);
-  return buildAdminHealthView({ snapshot, thresholds, recovered, failed, queueNames: QUEUE_NAMES });
+  const [snapshot, recovered, failed, sharedGoogleGrants] = await Promise.all([
+    collectSnapshot({ thresholds }),
+    listRecoveredPayments(10),
+    listFailedJobs(10),
+    countActiveSharedGoogleGrants().catch(() => 0),
+  ]);
+  return buildAdminHealthView({ snapshot, thresholds, recovered, failed, queueNames: QUEUE_NAMES, sharedGoogleGrants });
 }

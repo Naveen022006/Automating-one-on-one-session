@@ -74,7 +74,7 @@ test("no client yet: the guide is open with the exact values to copy, the form i
   assert.match(html, /<label[^>]*>Client ID/);
   assert.match(html, /<label[^>]*>Client Secret/);
   assert.match(html, /type="password"[^>]*autoComplete="off"|autoComplete="off"[^>]*type="password"|type="password"/);
-  assert.ok(/name="clientSecret"/.test(html) && /type="password"/.test(html.slice(html.indexOf('name="clientSecret"') - 200, html.indexOf('name="clientSecret"') + 200)), "the secret field is a password field");
+  assert.ok(/name="google-client-secret"/.test(html) && /type="password"/.test(html.slice(html.indexOf('name="google-client-secret"') - 200, html.indexOf('name="google-client-secret"') + 200)), "the secret field is a password field");
   assert.ok(t.includes("Stored encrypted and never shown again"));
   assert.ok(t.includes("Save and check"));
   // Step 3 is locked: no connect link at all.
@@ -163,6 +163,24 @@ test("accessibility: every step is a labelled section with a heading, controls h
   }
   // Long values wrap instead of widening the page (375 px, no horizontal scroll).
   assert.ok(html.includes("overflow-wrap:anywhere"));
+});
+
+test("the Client ID and Client Secret inputs cannot be filled with the site login: distinctive names, new-password, password-manager opt-outs", () => {
+  const html = card(NOT_CONNECTED, NO_CLIENT);
+  const input = (name: string) => new RegExp(`<input[^>]*name="${name}"[^>]*>`).exec(html)?.[0] ?? "";
+  const id = input("google-client-id");
+  const secret = input("google-client-secret");
+  assert.ok(id && secret, "the fields are named google-client-id and google-client-secret");
+  assert.ok(html.indexOf("google-client-id") < html.indexOf("google-client-secret"), "the Client ID comes first");
+  assert.ok(!/name="(clientId|clientSecret|password|username|email)"/.test(html));
+  for (const [what, tag] of [["id", id], ["secret", secret]] as const) {
+    assert.ok(tag.includes('data-1p-ignore'), `${what}: 1Password opt-out`);
+    assert.ok(tag.includes('data-lpignore="true"'), `${what}: LastPass opt-out`);
+    assert.ok(tag.includes('autoComplete="off"') || tag.includes('autocomplete="off"') || tag.includes('autoComplete="new-password"') || tag.includes('autocomplete="new-password"'), what);
+  }
+  assert.ok(/autoComplete="new-password"|autocomplete="new-password"/.test(secret), "Chrome ignores off on password fields: new-password");
+  assert.ok(/type="password"/.test(secret) && !/type="password"/.test(id));
+  assert.ok(!/autoComplete="current-password"|autocomplete="current-password"|autocomplete="username"/.test(html));
 });
 
 test("the card never contains a secret: not in the markup of any state", () => {

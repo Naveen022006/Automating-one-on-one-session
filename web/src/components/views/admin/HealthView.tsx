@@ -55,6 +55,12 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
         </Alert>
       )}
 
+      {data.sharedGoogle?.warning && (
+        <Alert tone="warning" title="Connections made with the shared Google client">
+          {data.sharedGoogle.warning}
+        </Alert>
+      )}
+
       <Card title="Background worker">
         {worker.status === "critical" && (
           <Alert tone="danger" title="Worker is not running">

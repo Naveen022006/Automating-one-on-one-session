@@ -136,12 +136,14 @@ export interface GoogleAccountRecord {
   email: string | null;
   sub: string | null;
   refreshToken: string | null;
+  /** Which OAuth client issued the stored grant; absent when nothing is connected. */
+  clientKind?: GoogleClientKind;
 }
 
 export async function getGoogleAccountRecord(influencerId: string): Promise<GoogleAccountRecord> {
   const row = await prisma.googleToken.findUnique({
     where: { influencerId },
-    select: { googleEmail: true, googleSub: true, refreshTokenEnc: true },
+    select: { googleEmail: true, googleSub: true, refreshTokenEnc: true, clientKind: true },
   });
   if (row) {
     let refreshToken: string | null = null;
@@ -150,7 +152,7 @@ export async function getGoogleAccountRecord(influencerId: string): Promise<Goog
     } catch {
       /* unreadable: nothing to revoke */
     }
-    return { connected: true, email: row.googleEmail, sub: row.googleSub, refreshToken };
+    return { connected: true, email: row.googleEmail, sub: row.googleSub, refreshToken, clientKind: toClientKind(row.clientKind) };
   }
   const influencer = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { disconnectedGoogleEmail: true } });
   return { connected: false, email: influencer?.disconnectedGoogleEmail ?? null, sub: null, refreshToken: null };

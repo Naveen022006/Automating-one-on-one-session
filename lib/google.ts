@@ -17,6 +17,18 @@ export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 
+/**
+ * What Google answers when it refuses an OAuth CLIENT (not a grant): the pair is wrong or was regenerated (invalid_client), the client was
+ * deleted in Google Cloud (deleted_client), or it is not allowed to do this, for example it is not a Web application client
+ * (unauthorized_client). For an influencer's own client each of them means "fix your Google client".
+ */
+export const CLIENT_REJECTIONS: ReadonlySet<string> = new Set(["invalid_client", "deleted_client", "unauthorized_client"]);
+
+/** Whether an error message from a token call names one of CLIENT_REJECTIONS. */
+export function isClientRejection(message: string): boolean {
+  return [...CLIENT_REJECTIONS].some((r) => message.includes(r));
+}
+
 export class GoogleReconnectError extends Error {}
 export class GoogleTransientError extends Error {}
 export class GoogleRequestError extends Error {}
@@ -235,8 +247,12 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch, resolveCrede
         const resolved = await resolveCredentials(grant);
         if (!resolved.ok) {
           // An influencer's own client that was removed or cannot be read is theirs to fix: reconnect needed, with the plain reason.
-          // A missing platform pair is the operator's problem: transient, the connection is not held against the influencer.
           if (grant.clientKind === "own") throw new GoogleReconnectError(resolved.message);
+          // A grant made with the shared client whose pair is gone from the environment cannot be refreshed again, ever. Unless the site is
+          // meant to run on the shared client (mode "platform", where a missing pair is a misconfiguration to fix, so: transient) the
+          // influencer is told to move to their own client; left "transient" it would stay ACTIVE and live while every meeting job failed.
+          const mode = (process.env.GOOGLE_CLIENT_MODE ?? "").trim().toLowerCase();
+          if (mode !== "platform") throw new GoogleReconnectError(resolved.message);
           throw new GoogleTransientError(resolved.message);
         }
         credentials = resolved.credentials;
@@ -258,8 +274,9 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch, resolveCrede
         const { reason, message } = await readError(res);
         // invalid_grant = revoked, expired (unused 6 months / testing-mode 7 days), or password changed.
         if (reason === "invalid_grant") throw new GoogleReconnectError(`Refresh token rejected: ${message}`);
-        // invalid_client on an influencer's OWN client: they deleted it in Google Cloud or regenerated its secret. That is theirs to fix.
-        if (reason === "invalid_client" && kind === "own") {
+        // invalid_client, deleted_client or unauthorized_client on an influencer's OWN client: they deleted it in Google Cloud, regenerated its
+        // secret or it is not a Web application client. That is theirs to fix.
+        if (CLIENT_REJECTIONS.has(reason) && kind === "own") {
           throw new GoogleReconnectError("Your Google client was removed or is no longer valid. Save your Google client again, then reconnect.");
         }
         // Anything else (invalid_client of the platform pair, 5xx...) is our configuration or Google being down, not the influencer.

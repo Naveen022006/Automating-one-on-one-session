@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordActivity } from "@/lib/activity";
 import { getAuth } from "@/lib/auth/session";
-import { CALENDAR_SCOPE, exchangeCode, revokeToken } from "@/lib/google";
+import { CALENDAR_SCOPE, exchangeCode, isClientRejection, revokeToken } from "@/lib/google";
 import { hasGmailSendScope } from "@/lib/gmail";
 import { compareAccounts, mayRevokeOther, outcomeTarget, type GoogleAccountRef, type GoogleOutcome } from "@/lib/google-connect";
 import { getGoogleCredentials, toClientKind } from "@/lib/google-credentials";
@@ -94,12 +94,19 @@ export async function GET(req: NextRequest) {
     // A confirmed switch to another account replaces the stored refresh token, so the old account's grant would stay
     // authorised at Google with nobody able to use or revoke it any more (our copy is gone), whatever its status (a grant
     // flagged "reconnect needed" usually still is). `record` holds it from before the overwrite. Never the token just issued.
-    const replaced = record.connected && record.refreshToken && record.refreshToken !== refreshToken && differentAccount && mayRevoke ? record.refreshToken : null;
+    // The same goes for a grant made with ANOTHER KIND of client (doc/15, 4.9: the first own client replaces a connection made with the
+    // shared one, here and only here, after Google accepted the consent): its token belongs to a different app, so revoking it cannot
+    // hurt the new connection even for the same Google account.
+    const kindChanged = record.connected && record.clientKind !== undefined && record.clientKind !== creds.kind;
+    const replaced =
+      record.connected && record.refreshToken && record.refreshToken !== refreshToken && ((differentAccount && mayRevoke) || kindChanged) ? record.refreshToken : null;
     await saveGoogleToken(state.i, refreshToken, scope, email, sub, creds.kind);
     connectedAccount = email ?? null;
     if (replaced) {
-      // Best effort and after the new connection is safe: skipped, like a disconnect, while another profile uses that account.
-      await revokeUnlessShared(state.i, replaced, record).catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
+      // Best effort and after the new connection is safe. A token of the shared client is skipped, like a disconnect, while another profile
+      // uses that account (Google's revoke is per account and app); one of an influencer's own client is theirs alone.
+      const revoke = record.clientKind === "own" && kindChanged ? revokeToken(replaced) : revokeUnlessShared(state.i, replaced, record);
+      await revoke.catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
     }
     // Gmail is optional: people can untick it, and customer emails then go out from the platform address instead.
     gmailMissing = state.g === 1 && !hasGmailSendScope(scope);
@@ -107,7 +114,7 @@ export async function GET(req: NextRequest) {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[google:callback] connect failed", message);
     // Google refusing the influencer's own client at the code exchange (deleted, wrong secret, changed since the page loaded).
-    return back(req, returnTo, creds.kind === "own" && /invalid_client/.test(message) ? "client-rejected" : "failed");
+    return back(req, returnTo, creds.kind === "own" && isClientRejection(message) ? "client-rejected" : "failed");
   }
 
   await recordActivity({ influencerId: state.i, action: "google.connected", detail: { account: connectedAccount }, req });

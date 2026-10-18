@@ -361,6 +361,8 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     const pairSet = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
     if (googleMode === "platform" && !pairSet) {
       warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are not both set while GOOGLE_CLIENT_MODE=platform: influencers cannot connect Google Calendar, so no Meet links");
+    } else if (googleMode === "either" && !pairSet) {
+      warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are not both set while GOOGLE_CLIENT_MODE=either: only influencers with their own Google client can connect, and connections made earlier with the shared client are flagged \"reconnect needed\" (the admin Health page counts them)");
     } else if (googleMode === "own" && (env.GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_SECRET)) {
       warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are set but GOOGLE_CLIENT_MODE=own: new connections use each influencer's own Google client and ignore them (only grants made earlier with the shared client keep using it)");
     }

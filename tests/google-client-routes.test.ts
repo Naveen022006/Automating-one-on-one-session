@@ -413,7 +413,7 @@ test("callback: a state signed before own clients existed (no kind) means the sh
   assert.equal(googleCalls.length, before);
 });
 
-test("replacing the client with the SAME ID and a new secret keeps the connection; a DIFFERENT ID flags it, revokes the old token and says why", { skip }, async () => {
+test("replacing the own client: the SAME ID with a new secret keeps the connection; a DIFFERENT ID needs the confirmation when events exist and never writes to the connection itself", { skip }, async () => {
   // Same ID, new secret (rotated in Google Cloud): the grant is untouched.
   const rotated = await save(A, idOf("a"), "GOCSPX-Arotated0123456789abcdefgh");
   assert.equal(rotated.status, 200);
@@ -422,21 +422,65 @@ test("replacing the client with the SAME ID and a new secret keeps the connectio
   assert.equal(decryptSecret((await rowOf(A))!.clientSecretEnc, credsLib.googleClientAad(A.influencerId)), "GOCSPX-Arotated0123456789abcdefgh");
   assert.deepEqual(revokes(), []);
 
-  // A different client: the old grant cannot be refreshed with it.
-  const replaced = await save(A, idOf("a2"), secretOf("A2"));
+  // An upcoming booking with a calendar event: a different client ID is refused until the influencer confirms, and nothing is saved.
+  const service = await prisma.service.create({ data: { influencerId: A.influencerId, title: `Gcr A ${run}`, durationMin: 30, priceMinor: 1000 } });
+  const start = new Date(Date.now() + 3 * 86_400_000);
+  const session = await prisma.session.create({ data: { serviceId: service.id, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000) } });
+  await prisma.booking.create({ data: { sessionId: session.id, status: "SCHEDULED", customerName: "Gcr Customer", customerEmail: `gcr-a-${run}@example.com`, whatsappE164: "+919876543210", eventId: `evta${run}` } });
+  const before = tokenCalls().length;
+  const refused = await save(A, idOf("a2"), secretOf("A2"));
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.needsConfirmation, true);
+  assert.equal(refused.body.liveEvents, 1);
+  assert.equal(tokenCalls().length, before, "Google was not even asked");
+  assert.equal((await rowOf(A))?.clientId, idOf("a"));
+
+  const replaced = await postJson(A, { action: "save-client", clientId: idOf("a2"), clientSecret: secretOf("A2"), confirm: true });
   assert.equal(replaced.status, 200);
-  assert.equal(replaced.body.replacedConnection, true);
-  const grant = await grantOf(A);
-  assert.equal(grant?.status, "RECONNECT_NEEDED");
-  assert.match(String(grant?.reconnectReason), /changed your Google client/);
-  assert.deepEqual(revokes(), [`rt-${idOf("a")}`], "the old token was revoked at Google");
+  assert.equal(replaced.body.replacedConnection, true, "the response says the connection made with the old client stops working");
   assert.equal((await rowOf(A))?.clientId, idOf("a2"));
-  const view = await getView(A);
-  assert.equal((view.body.connection as { state: string }).state, "reconnect-needed");
+  // The save itself never wrote to the connection or revoked anything: the old token fails at its next refresh (Google ties it to the old client)
+  // and the existing path flags it then.
+  assert.equal((await grantOf(A))?.status, "ACTIVE");
+  assert.deepEqual(revokes(), []);
 
   const saved = await activities(A, "google.client_saved");
   assert.deepEqual(saved.map((r) => (r.detail as { replaced: boolean }).replaced), [false, true, true]);
   for (const r of saved) assert.ok(!JSON.stringify(r).includes("secret") && !JSON.stringify(r).includes(secretOf("A2")));
+});
+
+test("the FIRST own client leaves a connection made with the shared client alone; the callback replaces it, revokes its token, and a failed callback changes nothing", { skip }, async () => {
+  await tokensLib.saveGoogleToken(C.influencerId, "rt-shared-first", `openid email ${CALENDAR}`, "c-first@example.com", "sub-c-first", "platform");
+  const before = googleCalls.length;
+  const first = await save(C, idOf("c"), secretOf("C"));
+  assert.equal(first.status, 200);
+  assert.equal(first.body.replacedConnection, false);
+  assert.equal((await grantOf(C))?.status, "ACTIVE", "saving never flags the shared-client connection");
+  assert.equal((await grantOf(C))?.clientKind, "platform");
+  assert.equal(googleCalls.slice(before).filter((c) => c.kind === "revoke").length, 0, "and never revokes its token");
+  const view = await getView(C);
+  assert.equal((view.body.connection as { state: string }).state, "connected");
+  assert.equal((view.body.client as { grantClient: string }).grantClient, "platform");
+
+  // A callback that fails (a bad code) leaves the old connection exactly as it was.
+  asUser(C);
+  const failed = await callbackRoute.GET(callbackReq(C, "own", "not-a-real-code"));
+  assert.equal(locationOf(failed).searchParams.get("google"), "failed");
+  assert.equal((await grantOf(C))?.status, "ACTIVE");
+  assert.equal((await grantOf(C))?.clientKind, "platform");
+  assert.ok(!revokes().includes("rt-shared-first"));
+
+  // A successful one swaps the connection to the own client and only then revokes the shared one's token.
+  const ok = await callbackRoute.GET(callbackReq(C, "own"));
+  assert.equal(locationOf(ok).searchParams.get("google"), "connected");
+  const after = await grantOf(C);
+  assert.equal(after?.clientKind, "own");
+  assert.equal(after?.status, "ACTIVE");
+  assert.equal(decryptSecret(after!.refreshTokenEnc, tokensLib.googleTokenAad(C.influencerId)), `rt-${idOf("c")}`);
+  assert.ok(revokes().includes("rt-shared-first"), "the previous (shared-client) token was revoked after the new connection was safe");
+  assert.ok(!revokes().includes(`rt-${idOf("c")}`), "never the token just issued");
+  await prisma.googleToken.deleteMany({ where: { influencerId: C.influencerId } });
+  await credsLib.deleteGoogleClient(C.influencerId);
 });
 
 test("GOOGLE_CLIENT_MODE=platform: there is no own client to save", { skip }, async () => {

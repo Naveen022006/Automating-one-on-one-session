@@ -68,9 +68,92 @@ test("an own client that is missing means 'reconnect needed' with the plain reas
   assert.equal(forms.length, 0, "Google was never called, with anybody's credentials");
 });
 
-test("a missing shared pair is the operator's problem (transient), not the influencer's", async () => {
+// Changed with doc/15 4.10: a grant made with the shared client whose pair is gone used to be "transient" for ever (ACTIVE, live, never flagged).
+// Now it is "reconnect needed" unless the site is meant to run on the shared client (mode "platform"), where a missing pair is a misconfiguration.
+test("a grant made with the shared client whose pair is gone is 'reconnect needed' with the plain reason, except in mode platform (the operator's problem)", async () => {
   const none: GrantCredentialResolver = async () => ({ ok: false, reason: "no-platform-client", message: CREDENTIAL_FAILURE_MESSAGES["no-platform-client"] });
-  await assert.rejects(createGoogleClient(tokenFetch(ok).f, none).refreshAccessToken("rt", { influencerId: "inf-a", clientKind: "platform" }), GoogleTransientError);
+  const saved = process.env.GOOGLE_CLIENT_MODE;
+  try {
+    for (const mode of [undefined, "", "own", "either"]) {
+      if (mode === undefined) delete process.env.GOOGLE_CLIENT_MODE;
+      else process.env.GOOGLE_CLIENT_MODE = mode;
+      await assert.rejects(createGoogleClient(tokenFetch(ok).f, none).refreshAccessToken("rt", { influencerId: "inf-a", clientKind: "platform" }), (e) => {
+        assert.ok(e instanceof GoogleReconnectError, String(mode));
+        assert.equal((e as Error).message, "The shared Google connection is no longer available. Save your own Google client in Settings and connect again.");
+        return true;
+      });
+    }
+    process.env.GOOGLE_CLIENT_MODE = "platform";
+    await assert.rejects(createGoogleClient(tokenFetch(ok).f, none).refreshAccessToken("rt", { influencerId: "inf-a", clientKind: "platform" }), GoogleTransientError);
+  } finally {
+    if (saved === undefined) delete process.env.GOOGLE_CLIENT_MODE;
+    else process.env.GOOGLE_CLIENT_MODE = saved;
+  }
+});
+
+test("the health check flags such a connection as dead (and alerts once) instead of leaving it ACTIVE", async () => {
+  const none: GrantCredentialResolver = async () => ({ ok: false, reason: "no-platform-client", message: CREDENTIAL_FAILURE_MESSAGES["no-platform-client"] });
+  const client = createGoogleClient(tokenFetch(ok).f, none);
+  const marked: string[] = [];
+  const saved = process.env.GOOGLE_CLIENT_MODE;
+  delete process.env.GOOGLE_CLIENT_MODE;
+  try {
+    const summary = await checkGoogleConnections({
+      listActive: async () => ["inf-old"],
+      load: async () => ({ refreshToken: "t", connectedAt: new Date(1), clientKind: "platform" as const }),
+      refresh: async (t, g) => void (await client.refreshAccessToken(t, g)),
+      markDead: async (id, reason) => (marked.push(`${id}: ${reason}`), true),
+      alert: async () => {},
+    });
+    assert.equal(summary.dead, 1);
+    assert.equal(summary.unknown, 0);
+    assert.match(marked[0], /shared Google connection is no longer available/);
+  } finally {
+    if (saved !== undefined) process.env.GOOGLE_CLIENT_MODE = saved;
+  }
+});
+
+test("the admin health page counts those connections, and warns only when the pair is gone and the site is not meant to run on it", async () => {
+  const { buildAdminHealthView } = await import("../lib/views/admin-health");
+  const { DEFAULT_THRESHOLDS } = await import("../lib/health");
+  const snapshot = {
+    at: Date.now(),
+    heartbeat: { state: "ok", at: Date.now() },
+    recovery: null,
+    queues: {},
+    meetingStuck: 0,
+    paymentsUnrecovered: 0,
+  } as unknown as Parameters<typeof buildAdminHealthView>[0]["snapshot"];
+  const view = (grants: number | undefined, env: Record<string, string | undefined>) =>
+    buildAdminHealthView({ snapshot, thresholds: DEFAULT_THRESHOLDS, recovered: [], failed: { jobs: [], unavailable: [] }, queueNames: [], ...(grants === undefined ? {} : { sharedGoogleGrants: grants }) }, env).sharedGoogle;
+  const pair = { GOOGLE_CLIENT_ID: "1-a.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "secret-0123456789abcdefgh" };
+  assert.deepEqual(view(undefined, {}), { activeGrants: 0, warning: null });
+  assert.equal(view(0, {}).warning, null, "nobody connected with it: nothing to say");
+  assert.match(view(3, {}).warning ?? "", /^3 influencer connections were made with the shared Google client, which is no longer configured/);
+  assert.match(view(1, { GOOGLE_CLIENT_MODE: "either" }).warning ?? "", /^1 influencer connection was made/);
+  assert.equal(view(3, pair).warning, null, "the pair is still configured");
+  assert.equal(view(3, { GOOGLE_CLIENT_MODE: "platform" }).warning, null, "mode platform: a missing pair is reported by start-up and the connect flow");
+  assert.equal(view(3, {}).activeGrants, 3);
+});
+
+/* ---------- other ways Google refuses a client (G3) ---------- */
+
+test("deleted_client and unauthorized_client are 'reconnect needed' for an own client everywhere, and transient for the shared pair", async () => {
+  const { isClientRejection, CLIENT_REJECTIONS } = await import("../lib/google");
+  assert.deepEqual([...CLIENT_REJECTIONS].sort(), ["deleted_client", "invalid_client", "unauthorized_client"]);
+  for (const error of ["invalid_client", "deleted_client", "unauthorized_client"]) {
+    const f = tokenFetch(() => err(401, error)).f;
+    await assert.rejects(createGoogleClient(f, resolver).refreshAccessToken("rt", { influencerId: "inf-a", clientKind: "own" }), (e) => {
+      assert.ok(e instanceof GoogleReconnectError, error);
+      assert.match((e as Error).message, /Google client was removed or is no longer valid/);
+      return true;
+    });
+    await assert.rejects(createGoogleClient(f, resolver).refreshAccessToken("rt", { influencerId: "inf-a", clientKind: "platform" }), GoogleTransientError, error);
+    // The callback's exchange error names the code, and the callback maps all three to the "client-rejected" outcome.
+    await assert.rejects(exchangeCode("c", f, OWN_A), (e) => e instanceof GoogleRequestError && isClientRejection((e as Error).message));
+  }
+  assert.equal(isClientRejection("Code exchange failed (400 invalid_grant): Bad Request"), false);
+  assert.equal(isClientRejection("Code exchange failed (401 access_denied)"), false);
 });
 
 test("invalid_client from Google: reconnect needed for an own client (they deleted it or changed its secret), transient for the shared pair", async () => {

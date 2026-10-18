@@ -185,12 +185,13 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
 
   const connectedWithOwn = connected && client.grantClient === "own";
 
-  async function save() {
+  async function save(confirmed = false) {
     setBusy(true);
     setError(null);
     setOkMessage(null);
+    // `confirm` is the answer to the replace dialog; the server asks for it itself when upcoming bookings have calendar events.
     const r = await api<{ replacedConnection?: boolean }>("/api/dashboard/google-client", {
-      body: { action: "save-client", clientId: clientId.trim(), clientSecret: secret.trim() },
+      body: { action: "save-client", clientId: clientId.trim(), clientSecret: secret.trim(), ...(confirmed ? { confirm: true } : {}) },
     });
     setBusy(false);
     setDialog(null);
@@ -204,16 +205,19 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
     setEditing(false);
     setOkMessage(
       r.data.replacedConnection
-        ? "Google accepted these and they are saved. Because the client changed, connect Google again in step 3."
-        : "Google accepted these and they are saved. Now connect Google in step 3.",
+        ? "Google accepted these and they are saved. Because the client changed, your connection stops working: connect Google again in step 3."
+        : connected && client.grantClient === "platform"
+          ? "Google accepted these and they are saved. Your current connection keeps working until you connect again in step 3, which moves it to your own client."
+          : "Google accepted these and they are saved. Now connect Google in step 3.",
     );
     router.refresh();
   }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    // A different client ID cannot keep the old connection: say so before it happens. The same ID with a new secret keeps it.
-    if (client.hasOwnClient && connected && clientId.trim() !== client.clientId) setDialog("replace");
+    // A different client ID cannot keep a connection made with the old OWN client: say so before it happens. The same ID with a new secret
+    // keeps it, and saving a first own client leaves a connection made with the shared one alone.
+    if (client.hasOwnClient && connectedWithOwn && clientId.trim() !== client.clientId) setDialog("replace");
     else void save();
   }
 
@@ -265,7 +269,7 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
         <form className="stack" onSubmit={submit} ref={formRef} noValidate>
           {client.hasOwnClient && (
             <Alert tone="warning" title="Replacing your Google client">
-              {connected
+              {connectedWithOwn
                 ? "If you enter a different Client ID, your current Google connection stops working and your booking page goes offline until you connect again in step 3. The same Client ID with a new secret keeps it working."
                 : "Enter the new Client ID and Client Secret."}
             </Alert>
@@ -274,8 +278,11 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
           <Field id={idFieldId} label="Client ID" error={error?.field === "clientId" ? error.message : null} help="Ends in .apps.googleusercontent.com">
             <Input
               {...describedBy(idFieldId, { error: error?.field === "clientId" ? error.message : null, help: true })}
-              name="clientId"
+              name="google-client-id"
               autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               autoCapitalize="off"
               spellCheck={false}
               required
@@ -292,9 +299,14 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
           >
             <Input
               {...describedBy(secretFieldId, { error: error?.field === "clientSecret" ? error.message : null, help: true })}
-              name="clientSecret"
+              name="google-client-secret"
               type="password"
-              autoComplete="off"
+              // Chrome ignores autocomplete="off" on password fields and may fill the site login password here (which would then be sent to
+              // Google) or offer to overwrite the saved login: "new-password" and the password managers' own opt-outs prevent both.
+              autoComplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               autoCapitalize="off"
               spellCheck={false}
               required
@@ -328,7 +340,7 @@ function ClientStep({ client, connected, liveEvents, email }: { client: GoogleCl
       <ConfirmDialog
         open={dialog === "replace"}
         onClose={() => setDialog(null)}
-        onConfirm={() => void save()}
+        onConfirm={() => void save(true)}
         busy={busy}
         danger
         title="Replace your Google client?"
@@ -488,7 +500,7 @@ function ConnectStep({
         </div>
       )}
       {status.state === "connected" && client.grantClient === "platform" && client.mode !== "platform" && (
-        <Alert tone="info">This connection was made with the site&rsquo;s shared Google app. Save your own Google client above, then connect again to move to it.</Alert>
+        <Alert tone="info">This connection was made with the site&rsquo;s shared Google app. Save your own Google client above, then connect again to move to it. Until you do, this connection keeps working.</Alert>
       )}
 
       <ConfirmDialog

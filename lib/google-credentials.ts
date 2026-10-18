@@ -72,7 +72,7 @@ export type CredentialResult =
 /** Plain-English reasons, stored as the "reconnect needed" reason and shown to the influencer. */
 export const CREDENTIAL_FAILURE_MESSAGES: Record<CredentialFailure, string> = {
   "no-own-client": "Your Google client was removed or is no longer valid. Save your Google client again, then reconnect.",
-  "no-platform-client": "This site no longer has a shared Google app. Create your own Google client in Settings, then connect.",
+  "no-platform-client": "The shared Google connection is no longer available. Save your own Google client in Settings and connect again.",
   "no-client": "No Google client is set up yet. Create your own Google client in Settings, then connect.",
   unreadable: "Your saved Google client could not be read. Save your Google client again, then reconnect.",
 };

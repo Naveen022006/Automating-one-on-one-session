@@ -37,6 +37,9 @@ const bad = (reason: ClientCheckFailure, message: string): ClientCheck => ({ ok:
 export const INVALID_CLIENT_MESSAGE =
   "Google did not accept this Client ID and Client Secret together. Check that both come from the same OAuth client, copy them again without spaces, and that the client type is Web application.";
 
+/** Google's `deleted_client` and `unauthorized_client`: the client itself is the problem, whatever the secret is. */
+export const CLIENT_UNUSABLE_MESSAGE = "Google says this client is invalid, deleted or not a Web application client. Check it in Google Cloud, Credentials, or create a new Web application client.";
+
 export async function verifyGoogleClient(
   clientId: string,
   clientSecret: string,
@@ -75,6 +78,7 @@ export async function verifyGoogleClient(
   }
   if (error === "invalid_grant") return { ok: true };
   if (error === "invalid_client") return bad("invalid-client", INVALID_CLIENT_MESSAGE);
+  if (error === "deleted_client" || error === "unauthorized_client") return bad("invalid-client", CLIENT_UNUSABLE_MESSAGE);
   if (res.status >= 500 || res.status === 429) return bad("unreachable", "Google is busy right now. Nothing was saved. Try again in a minute.");
   return bad("unexpected", `Google answered something we did not expect${error ? ` (${error.slice(0, 40)})` : ` (HTTP ${res.status})`}. Nothing was saved. Check the client type is Web application and try again.`);
 }

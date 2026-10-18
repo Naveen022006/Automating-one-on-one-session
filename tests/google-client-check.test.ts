@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clientIdProblem, clientSecretProblem, INVALID_CLIENT_MESSAGE, verifyGoogleClient } from "../lib/google-client-check";
+import { CLIENT_UNUSABLE_MESSAGE, clientIdProblem, clientSecretProblem, INVALID_CLIENT_MESSAGE, verifyGoogleClient } from "../lib/google-client-check";
 
 /**
  * doc/15, section C: the pasted Client ID and Client Secret are checked by posting a deliberately invalid authorization code to Google's
@@ -47,6 +47,17 @@ test("invalid_client means the ID and the secret do not belong together, and say
   assert.ok(!r.message.includes(SECRET) && !r.message.includes(ID));
 });
 
+test("deleted_client and unauthorized_client mean the client itself is unusable, and say so", async () => {
+  for (const error of ["deleted_client", "unauthorized_client"]) {
+    const r = await verifyGoogleClient(ID, SECRET, fakeFetch(() => json(401, { error, error_description: "x" })).f);
+    assert.ok(!r.ok && r.reason === "invalid-client", error);
+    if (!r.ok) {
+      assert.equal(r.message, CLIENT_UNUSABLE_MESSAGE);
+      assert.match(r.message, /^Google says this client is invalid, deleted or not a Web application client/);
+    }
+  }
+});
+
 test("a network error, a timeout and a Google outage are 'could not check', never 'wrong credentials'", async () => {
   for (const make of [
     () => Promise.reject(new TypeError("fetch failed")),
@@ -64,10 +75,10 @@ test("a network error, a timeout and a Google outage are 'could not check', neve
 });
 
 test("an answer nobody expected is reported as such, with the error name but never the secret", async () => {
-  const odd = await verifyGoogleClient(ID, SECRET, fakeFetch(() => json(400, { error: "unauthorized_client", error_description: `client ${SECRET} not allowed` })).f);
+  const odd = await verifyGoogleClient(ID, SECRET, fakeFetch(() => json(400, { error: "invalid_scope", error_description: `client ${SECRET} not allowed` })).f);
   assert.ok(!odd.ok && odd.reason === "unexpected");
   if (!odd.ok) {
-    assert.match(odd.message, /unauthorized_client/);
+    assert.match(odd.message, /invalid_scope/);
     assert.ok(!odd.message.includes(SECRET));
   }
   const html = await verifyGoogleClient(ID, SECRET, fakeFetch(() => new Response("nope", { status: 403 })).f);
