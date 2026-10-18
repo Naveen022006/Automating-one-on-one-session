@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { describeRefundPolicy, refundDecision } from "@/lib/refund-policy";
 import { buildReceipt, type ReceiptView } from "@/lib/receipts";
 import { verifySelfServiceToken } from "@/lib/self-service";
@@ -26,6 +27,8 @@ export interface ManageBookingData {
   cancelRefundText: string | null;
   /** The printable receipt, once the booking has a captured payment (also after a refund); null for a booking that was never paid. */
   receipt: ReceiptView | null;
+  /** False when the platform sends no e-mail (EMAIL_PROVIDER=none): the page then offers "Download my data" and "Erase my data" itself (doc/15). */
+  emailEnabled?: boolean;
 }
 
 /**
@@ -77,6 +80,7 @@ export async function loadManageView(token: string): Promise<ManageView> {
             : "If you cancel now, no refund is due under this session's policy.",
       bookingId: booking.id,
       receipt: buildReceipt({ id: booking.id, customerName: booking.customerName, session }, booking.payments),
+      emailEnabled: platformEmailEnabled(),
     },
   };
 }

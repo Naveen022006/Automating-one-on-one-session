@@ -239,6 +239,37 @@ test("admin: the account help buttons exist, say what they do, and the reset lin
   assert.ok(!/reset-password\?token/.test(unverified + verified), "a link only exists after the click, in a dialog, once");
 });
 
+test("the manage page offers 'Download my data' and 'Erase my data' only when the site sends no e-mail", async () => {
+  const { ManageBooking } = await import("../web/src/pages/booking/ManageBooking");
+  const data = {
+    token: "tok.en",
+    bookingId: "bk1",
+    serviceId: "svc1",
+    serviceTitle: "Career call",
+    serviceType: "ONE_TO_ONE" as const,
+    durationMin: 30,
+    influencerName: "Asha",
+    customerName: "Ravi",
+    status: "PAID",
+    startTime: "2030-01-01T10:00:00.000Z",
+    meetLink: null,
+    canManage: true,
+    canReschedule: true,
+    hostSuspended: false,
+    refundPolicyText: "Full refund",
+    cancelRefundText: null,
+    receipt: null,
+  };
+  const on = render(createElement(ManageBooking, { data: { ...data, emailEnabled: true } }));
+  assert.ok(!on.includes("Download my data") && !on.includes("Erase my data"));
+  const undef = render(createElement(ManageBooking, { data }));
+  assert.ok(!undef.includes("Erase my data"), "an answer without the field means e-mail is on");
+  const off = render(createElement(ManageBooking, { data: { ...data, emailEnabled: false } }));
+  assert.ok(off.includes("Download my data") && off.includes("Erase my data"));
+  assert.ok(off.includes('href="/api/manage/tok.en/data"') && off.includes("download"), "the download is a plain link to the export");
+  assert.ok(text(off).includes("This site does not send e-mail"));
+});
+
 test("the pages read the platform's answer from the session: source-level guard for the glue the static renders cannot reach", async () => {
   const { readFileSync } = await import("node:fs");
   const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");

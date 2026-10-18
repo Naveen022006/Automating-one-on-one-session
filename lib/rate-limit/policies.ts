@@ -89,6 +89,10 @@ export const ROUTE_RULES: RouteRule[] = [
   // Same budget as the booking status poll: tokens are signed (not guessable), and a customer behind a shared NAT must not be
   // locked out of paying while their hold runs down.
   { name: "pay-view", pattern: /^\/api\/pay\/[^/]+$/, methods: ["GET", "HEAD"], limit: 120, windowMs: 5 * MIN, by: "ip" },
+  // Data export and erasure through the manage link (doc/15, 4.12): they read or erase everything stored about an address, so they get the
+  // portal's tight budgets. Listed before the general self-service rules.
+  { name: "manage-data", pattern: /^\/api\/manage\/[^/]+\/data$/, methods: ["GET", "HEAD"], limit: 10, windowMs: HOUR, by: "ip" },
+  { name: "manage-erase", pattern: /^\/api\/manage\/[^/]+\/erase$/, methods: ["POST"], limit: 5, windowMs: HOUR, by: "ip" },
   // Listed before self-service so that opening the manage page does not use up the 20 per 10 minutes meant for actions.
   { name: "self-service-view", pattern: /^\/api\/manage\/[^/]+$/, methods: ["GET", "HEAD"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
