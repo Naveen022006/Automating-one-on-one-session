@@ -24,8 +24,8 @@ export function TermsView() {
       </ul>
       <h2>3. Bookings and payments</h2>
       <p>
-        A booking is confirmed only when Razorpay confirms the payment. Prices are shown before payment, including the
-        currency. Payment processing is subject to Razorpay&rsquo;s terms.
+        A booking is confirmed only when Razorpay confirms the payment. Prices are shown in Indian rupees (INR) before payment. Times are in Indian Standard Time (IST).
+        Payment processing is subject to Razorpay&rsquo;s terms.
       </p>
       <h2>4. Cancellations and refunds</h2>
       <p>

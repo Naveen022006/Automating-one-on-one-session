@@ -97,7 +97,6 @@ const profile = (over: Partial<PublicProfile> = {}): PublicProfile => ({
   name: "Demo Creator",
   bio: "Line one\nLine two",
   photoUrl: null,
-  timezone: "Asia/Kolkata",
   preview: false,
   blockers: [],
   services: [service(), service({ id: "svc_2", title: "Small Group Workshop", type: "GROUP", capacity: 5, priceMinor: 19900 })],

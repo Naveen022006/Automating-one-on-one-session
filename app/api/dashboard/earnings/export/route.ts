@@ -4,22 +4,24 @@ import { isSameOriginRequest } from "@/lib/auth/csrf";
 import { requireApiAuth } from "@/lib/auth/session";
 import { toCsv } from "@/lib/dashboard";
 import { prisma } from "@/lib/db";
+import { addDays, istDayStart, istIso } from "@/lib/india";
 import { EARNINGS_ROW_CAP, parseReportDay } from "@/lib/views/dashboard-params";
 
-// The same day rules as the Earnings page: a real calendar day from 2000-01-01 to 2100-12-31, else that end of the range is open.
-function parseDay(value: string | null): Date | null {
-  const day = parseReportDay(value);
-  return day ? new Date(`${day}T00:00:00.000Z`) : null;
+// The same day rules as the Earnings page: a real calendar day from 2000-01-01 to 2100-12-31 (an Indian Standard Time day), else that end of the range is open.
+function parseDay(value: string | null): string | null {
+  return parseReportDay(value);
 }
 
-// GET /api/dashboard/earnings/export?from=YYYY-MM-DD&to=YYYY-MM-DD -> CSV of captured/refunded payments.
+// GET /api/dashboard/earnings/export?from=YYYY-MM-DD&to=YYYY-MM-DD -> CSV of captured/refunded payments. Days are IST days and the
+// time columns are ISO 8601 with the +05:30 offset (columns paid_at_ist and session_start_ist).
 export async function GET(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
   const params = new URL(req.url).searchParams;
-  const from = parseDay(params.get("from"));
+  const fromDay = parseDay(params.get("from"));
   const toDay = parseDay(params.get("to"));
-  const to = toDay ? new Date(toDay.getTime() + 86_400_000) : null;
+  const from = fromDay ? istDayStart(fromDay) : null;
+  const to = toDay ? istDayStart(addDays(toDay, 1)) : null;
 
   const payments = await prisma.payment.findMany({
     where: {
@@ -33,15 +35,15 @@ export async function GET(req: Request) {
   });
 
   const rows: (string | number | null)[][] = [
-    ["paid_at", "booking_id", "customer", "service", "session_start_utc", "currency", "amount", "refunded", "net", "status", "payment_reference"],
+    ["paid_at_ist", "booking_id", "customer", "service", "session_start_ist", "currency", "amount", "refunded", "net", "status", "payment_reference"],
     ...payments.map((p) => {
       const refunded = p.refundAmountMinor ?? (p.status === "REFUNDED" ? p.amountMinor : 0);
       return [
-        p.createdAt.toISOString(),
+        istIso(p.createdAt),
         p.booking.id,
         p.booking.redactedAt ? "(erased)" : p.booking.customerName,
         p.booking.session.service.title,
-        p.booking.session.startTime.toISOString(),
+        istIso(p.booking.session.startTime),
         p.currency,
         (p.amountMinor / 100).toFixed(2),
         (refunded / 100).toFixed(2),

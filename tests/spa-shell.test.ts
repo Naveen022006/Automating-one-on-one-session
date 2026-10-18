@@ -161,7 +161,7 @@ test("head: the landing page has the absolute title, canonical, Open Graph, Twit
   assert.equal(h.title, "Acme: get paid for your time, send the Meet link automatically");
   assert.equal(h.canonical, "https://app.example.com/");
   assert.equal(h.robots, "index");
-  assert.deepEqual(h.jsonLd, { "@context": "https://schema.org", "@type": "Organization", name: "Acme", url: "https://app.example.com", email: "help@acme.example" });
+  assert.deepEqual(h.jsonLd, { "@context": "https://schema.org", "@type": "Organization", name: "Acme", url: "https://app.example.com", email: "help@acme.example", areaServed: "IN", knowsLanguage: "en-IN" });
   const html = renderHead(h, "Acme", NONCE);
   assert.ok(html.includes("<title>Acme: get paid for your time, send the Meet link automatically</title>"));
   assert.ok(html.includes('<link rel="canonical" href="https://app.example.com/">'));
@@ -169,6 +169,7 @@ test("head: the landing page has the absolute title, canonical, Open Graph, Twit
   assert.ok(html.includes('property="og:image:width" content="1200"') && html.includes('property="og:image:height" content="630"'));
   assert.ok(html.includes('name="twitter:card" content="summary_large_image"'));
   assert.ok(html.includes('property="og:type" content="website"') && html.includes('property="og:site_name" content="Acme"'));
+  assert.ok(html.includes('property="og:locale" content="en_IN"'), "India only: the Open Graph locale is en_IN");
   assert.ok(html.includes(`<script type="application/ld+json" nonce="${NONCE}">`));
   assert.ok(!html.includes('name="robots"'), "an indexable page carries no robots meta");
 });

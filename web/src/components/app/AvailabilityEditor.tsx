@@ -3,24 +3,21 @@ import { useMemo, useState } from "react";
 import { IconChevronLeft, IconChevronRight, IconPlus, IconTrash } from "@web/components/icons";
 import { useToast } from "@web/components/ui/overlays";
 import { Alert, Button, Card, Field, Input, Select } from "@web/components/ui/primitives";
-import { addMonths, daysInMonth, monthOf, timezoneOptions, todayIn, ymd } from "@web/components/ui/scheduling";
+import { addMonths, daysInMonth, monthOf, todayIst, ymd } from "@web/components/ui/scheduling";
+import { APP_TIME_ZONE, APP_TIME_ZONE_NOTE, formatClock, formatDay } from "@/lib/india";
 import type { BlockedRow, RuleRow } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
 
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const TIMES = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);
 
-function label(t: string) {
-  const [h, m] = t.split(":").map(Number);
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(new Date(Date.UTC(2000, 0, 1, h, m)));
-}
+const label = formatClock;
 
 /** Weekly grid editor: one row per weekday with its time ranges. */
-export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: string }) {
+export function WeeklyHours({ rules }: { rules: RuleRow[] }) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
-  const [tz, setTz] = useState(timezone);
   const [adding, setAdding] = useState<number | null>(null);
   const [start, setStart] = useState("10:00");
   const [end, setEnd] = useState("13:00");
@@ -30,14 +27,15 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
     for (const r of rules) m.set(r.weekday, [...(m.get(r.weekday) ?? []), r].sort((a, b) => a.startTime.localeCompare(b.startTime)));
     return m;
   }, [rules]);
-  const mixedZones = new Set(rules.map((r) => r.timezone)).size > 1;
+  // Hours saved before the product went India-only may still carry another zone: they keep their meaning until re-entered.
+  const legacy = rules.filter((r) => r.timezone !== APP_TIME_ZONE);
 
   async function add(weekday: number) {
     if (end <= start) return toast("The end time must be after the start time.", "error");
     const overlaps = (byDay.get(weekday) ?? []).some((r) => start < r.endTime && end > r.startTime);
     if (overlaps) return toast("That overlaps hours you already have on this day.", "error");
     setBusy(true);
-    const r = await api("/api/dashboard/availability", { body: { weekday, startTime: start, endTime: end, timezone: tz } });
+    const r = await api("/api/dashboard/availability", { body: { weekday, startTime: start, endTime: end } });
     setBusy(false);
     if (!r.ok) return toast(r.data.error ?? "Could not add the hours.", "error");
     setAdding(null);
@@ -45,12 +43,13 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
   }
 
   async function copyToWeekdays(weekday: number) {
-    const source = byDay.get(weekday) ?? [];
-    if (source.length === 0) return;
+    // Only IST hours are copied: a copy of an older rule in another zone would silently turn into IST.
+    const source = (byDay.get(weekday) ?? []).filter((r) => r.timezone === APP_TIME_ZONE);
+    if (source.length === 0) return toast("Those hours were saved in another time zone. Add them again to copy.", "error");
     setBusy(true);
     for (let d = 1; d <= 5; d++) {
       if (d === weekday || (byDay.get(d) ?? []).length > 0) continue;
-      for (const r of source) await api("/api/dashboard/availability", { body: { weekday: d, startTime: r.startTime, endTime: r.endTime, timezone: r.timezone } });
+      for (const r of source) await api("/api/dashboard/availability", { body: { weekday: d, startTime: r.startTime, endTime: r.endTime } });
     }
     setBusy(false);
     toast("Copied to the empty weekdays.");
@@ -66,22 +65,13 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
   }
 
   return (
-    <Card
-      title="Weekly hours"
-      actions={
-        <Field id="tz" label={<span className="sr-only">Time zone for new hours</span>}>
-          <Select id="tz" value={tz} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTz(e.target.value)} style={{ minWidth: 220 }}>
-            {timezoneOptions(tz).map((z) => (
-              <option key={z} value={z}>
-                {z.replace(/_/g, " ")}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      }
-    >
+    <Card title="Weekly hours" actions={<span className="subtle">{APP_TIME_ZONE_NOTE}</span>}>
       <div className="stack">
-        {mixedZones && <Alert tone="info">Some hours use a different time zone. Each range shows its own zone.</Alert>}
+        {legacy.length > 0 && (
+          <Alert tone="warning" title="Some hours were saved in another time zone">
+            {legacy.length === 1 ? "One range below keeps" : `${legacy.length} ranges below keep`} the zone shown next to it, so customers still see the same moments as before. This service now works in Indian Standard Time only: remove the range and add it again to set it in IST.
+          </Alert>
+        )}
         {rules.length === 0 && <Alert tone="info" title="No hours yet">Add the times you are available each week. Customers can only book inside them.</Alert>}
         <div className="table-wrap">
           <table className="table">
@@ -103,7 +93,7 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
                             <span className="tabular">
                               {label(r.startTime)} – {label(r.endTime)}
                             </span>
-                            {(mixedZones || r.timezone !== tz) && <span className="subtle">{r.timezone}</span>}
+                            {r.timezone !== APP_TIME_ZONE && <span className="subtle">{r.timezone.replace(/_/g, " ")}</span>}
                             <Button variant="ghost" size="sm" className="btn--icon" aria-label={`Remove ${name} ${r.startTime} to ${r.endTime}`} onClick={() => remove(r.id)} disabled={busy}>
                               <IconTrash size={16} />
                             </Button>
@@ -158,11 +148,11 @@ export function WeeklyHours({ rules, timezone }: { rules: RuleRow[]; timezone: s
 }
 
 /** Month calendar where a click blocks or unblocks a day. */
-export function BlockedDays({ blocked, timezone }: { blocked: BlockedRow[]; timezone: string }) {
+export function BlockedDays({ blocked }: { blocked: BlockedRow[] }) {
   const api = useApi();
   const toast = useToast();
   const router = useRouter();
-  const today = useMemo(() => todayIn(timezone), [timezone]);
+  const today = useMemo(() => todayIst(), []);
   const [month, setMonth] = useState(() => monthOf(today));
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -170,7 +160,7 @@ export function BlockedDays({ blocked, timezone }: { blocked: BlockedRow[]; time
   const firstDow = (new Date(Date.UTC(month.y, month.m - 1, 1)).getUTCDay() + 6) % 7;
   const cells: (string | null)[] = [...Array(firstDow).fill(null)];
   for (let d = 1; d <= daysInMonth(month.y, month.m); d++) cells.push(ymd(month.y, month.m, d));
-  const label = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(month.y, month.m - 1, 1)));
+  const label = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(month.y, month.m - 1, 1)));
   const upcoming = blocked.filter((b) => b.date >= today);
 
   async function toggle(day: string) {
@@ -236,9 +226,7 @@ export function BlockedDays({ blocked, timezone }: { blocked: BlockedRow[]; time
                 {upcoming.map((b) => (
                   <li key={b.id} className="row row--between">
                     <span>
-                      <span className="tabular">
-                        {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(`${b.date}T12:00:00Z`))}
-                      </span>
+                      <span className="tabular">{formatDay(b.date, { weekday: false })}</span>
                       {b.reason && <span className="subtle"> · {b.reason}</span>}
                     </span>
                     <Button size="sm" variant="ghost" onClick={() => toggle(b.date)} loading={busy === b.date}>

@@ -15,8 +15,7 @@ import {
   Calendar,
   TimeSlotPicker,
   monthOf,
-  timezoneOptions,
-  todayIn,
+  todayIst,
   addMonths,
   daysInMonth,
   ymd,
@@ -25,6 +24,18 @@ import {
 import { focusFirstInvalid, headingToFocus } from "@web/components/ui/focus";
 import { checkoutRefusalOutcome } from "@web/lib/checkout-refusal";
 import { Alert, Avatar, Button, Card, Checkbox, Field, Input, Select, Stepper, Textarea, describedBy } from "@web/components/ui/primitives";
+import { formatMoney } from "@/lib/format";
+import {
+  APP_CALLING_CODE,
+  APP_TIME_ZONE_NOTE,
+  INDIAN_MOBILE_ERROR,
+  INDIAN_MOBILE_PATTERN,
+  formatDateTime,
+  formatDay,
+  formatDuration,
+  indianMobileDigits,
+  parseIndianMobile,
+} from "@/lib/india";
 import type { IntakeQuestion } from "@/lib/intake";
 
 interface ServiceView {
@@ -45,7 +56,6 @@ interface Host {
   name: string;
   photoUrl: string | null;
   slug: string;
-  timezone: string;
 }
 interface HoldResult {
   bookingId: string;
@@ -85,14 +95,11 @@ function loadRazorpay(): Promise<boolean> {
   });
 }
 
-function money(minor: number, currency: string) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / 100);
-}
-function duration(min: number) {
-  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}`;
-}
-function when(iso: string, tz: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short", timeZone: tz }).format(new Date(iso));
+// Money, durations and times come from lib/india.ts through lib/format.ts: rupees with Indian grouping, and every time in IST.
+const money = formatMoney;
+const duration = formatDuration;
+function when(iso: string) {
+  return formatDateTime(new Date(iso));
 }
 
 export function BookingFlow({
@@ -106,13 +113,11 @@ export function BookingFlow({
   initialServiceId: string | null;
   preview: boolean;
 }) {
-  const browserTz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
-  const [tz, setTz] = useState(browserTz);
   const initial = services.find((s) => s.id === initialServiceId) ?? (services.length === 1 ? services[0] : null);
   const [service, setService] = useState<ServiceView | null>(initial);
   const [step, setStep] = useState<Step>(initial ? 1 : 0);
-  const today = useMemo(() => todayIn(tz), [tz]);
-  const [month, setMonth] = useState(() => monthOf(todayIn(browserTz)));
+  const today = useMemo(() => todayIst(), []);
+  const [month, setMonth] = useState(() => monthOf(todayIst()));
   const [days, setDays] = useState<Set<string> | null>(null);
   const [daysLoading, setDaysLoading] = useState(false);
   const [date, setDate] = useState<string | null>(null);
@@ -147,7 +152,7 @@ export function BookingFlow({
       return;
     }
     setDaysLoading(true);
-    fetch(`/api/slots/days?${new URLSearchParams({ serviceId: service.id, from, to, tz })}`)
+    fetch(`/api/slots/days?${new URLSearchParams({ serviceId: service.id, from, to })}`)
       .then(async (r) => {
         const data = await r.json();
         if (!r.ok) throw new Error(data.error ?? "Could not load available days");
@@ -158,7 +163,7 @@ export function BookingFlow({
     return () => {
       cancelled = true;
     };
-  }, [service, month, tz, today, step]);
+  }, [service, month, today, step]);
 
   // Pick the first available day automatically so the customer sees times straight away.
   useEffect(() => {
@@ -175,7 +180,7 @@ export function BookingFlow({
     let cancelled = false;
     setSlots(null);
     setSlot(null);
-    fetch(`/api/slots?${new URLSearchParams({ serviceId: service.id, date, tz })}`)
+    fetch(`/api/slots?${new URLSearchParams({ serviceId: service.id, date })}`)
       .then(async (r) => {
         const data = await r.json();
         if (!r.ok) throw new Error(data.error ?? "Could not load times");
@@ -185,7 +190,7 @@ export function BookingFlow({
     return () => {
       cancelled = true;
     };
-  }, [service, date, tz]);
+  }, [service, date]);
 
   // After a step change, move focus to the new step's heading: the button that was pressed is gone, and without this the keyboard
   // focus falls back to the top of the document (and a screen reader reads nothing about the new step). Only when the step really
@@ -265,7 +270,7 @@ export function BookingFlow({
     const local: Record<string, string> = {};
     if (!name.trim()) local.name = "Enter your name.";
     if (!/^\S+@\S+\.\S+$/.test(email)) local.email = "Enter a valid email address.";
-    if (whatsapp.replace(/\D/g, "").length < 8) local.whatsapp = "Enter your WhatsApp number with the country code.";
+    if (!indianMobileDigits(whatsapp)) local.whatsapp = `${INDIAN_MOBILE_ERROR}.`;
     if (!optIn) local.optIn = "Tick this so we can send your link and reminders on WhatsApp.";
     for (const q of service.intakeQuestions) {
       if (q.required && !(answers[q.id] ?? "").trim()) local[`q:${q.id}`] = "Please answer this question.";
@@ -283,7 +288,7 @@ export function BookingFlow({
       const res = await fetch("/api/bookings/hold", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serviceId: service.id, startTime: slot.start, name, email, whatsapp, whatsappOptIn: optIn, tz, answers }),
+        body: JSON.stringify({ serviceId: service.id, startTime: slot.start, name, email, whatsapp: parseIndianMobile(whatsapp) ?? whatsapp, whatsappOptIn: optIn, answers }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -423,7 +428,7 @@ export function BookingFlow({
             {slot && (
               <>
                 <dt>When</dt>
-                <dd>{when(slot.start, tz)}</dd>
+                <dd>{when(slot.start)}</dd>
               </>
             )}
             <dt>Price</dt>
@@ -508,7 +513,7 @@ export function BookingFlow({
                     <div className="row row--between">
                       <p style={{ fontWeight: 600 }}>
                         {date
-                          ? new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`))
+                          ? formatDay(date)
                           : daysLoading
                             ? "Finding open days…"
                             : days && days.size === 0
@@ -517,7 +522,7 @@ export function BookingFlow({
                       </p>
                     </div>
                     {date ? (
-                      <TimeSlotPicker slots={slots} value={slot?.start ?? null} onChange={setSlot} tz={tz} showSeats={service.type === "GROUP"} />
+                      <TimeSlotPicker slots={slots} value={slot?.start ?? null} onChange={setSlot} showSeats={service.type === "GROUP"} />
                     ) : (
                       days &&
                       days.size === 0 &&
@@ -532,23 +537,9 @@ export function BookingFlow({
                         </Button>
                       )
                     )}
-                    <Field id="tz" label={<span className="row" style={{ gap: 6 }}><IconGlobe size={16} /> Time zone</span>} help="Times are shown in this time zone.">
-                      <Select
-                        id="tz"
-                        value={tz}
-                        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                          setTz(e.target.value);
-                          setDays(null);
-                          setDate(null);
-                        }}
-                      >
-                        {timezoneOptions(tz).map((z) => (
-                          <option key={z} value={z}>
-                            {z.replace(/_/g, " ")}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
+                    <p className="subtle row" style={{ gap: 6 }}>
+                      <IconGlobe size={16} aria-hidden="true" /> {APP_TIME_ZONE_NOTE}
+                    </p>
                   </div>
                 </div>
               </Card>
@@ -579,8 +570,28 @@ export function BookingFlow({
                     <Field id="email" label="Email" error={errors.email} help="Your confirmation, receipt and calendar invite go here.">
                       <Input {...describedBy("email", { error: errors.email, help: true })} type="email" autoComplete="email" value={email} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)} required />
                     </Field>
-                    <Field id="wa" label="WhatsApp number" error={errors.whatsapp} help="Include the country code, for example +91 98765 43210.">
-                      <Input {...describedBy("wa", { error: errors.whatsapp, help: true })} type="tel" autoComplete="tel" inputMode="tel" value={whatsapp} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhatsapp(e.target.value)} required />
+                    <Field id="wa" label="WhatsApp number" error={errors.whatsapp} help="Your 10-digit Indian mobile number, for example 98765 43210.">
+                      <div className="input-group">
+                        <span className="input-group__addon" aria-hidden="true">
+                          {APP_CALLING_CODE}
+                        </span>
+                        <Input
+                          {...describedBy("wa", { error: errors.whatsapp, help: true })}
+                          type="tel"
+                          autoComplete="tel-national"
+                          inputMode="tel"
+                          pattern={INDIAN_MOBILE_PATTERN}
+                          maxLength={20}
+                          placeholder="98765 43210"
+                          value={whatsapp}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                            const v = e.target.value;
+                            // A pasted +91, 0 or 91 form is reduced to the ten digits the field shows.
+                            setWhatsapp(indianMobileDigits(v) ?? v);
+                          }}
+                          required
+                        />
+                      </div>
                     </Field>
                     <div>
                       <Checkbox
@@ -659,7 +670,7 @@ export function BookingFlow({
                   {expired ? (
                     <>
                       <p className="muted">
-                        We held {when(slot.start, tz)} for you, but the time ran out before payment. No money was taken.
+                        We held {when(slot.start)} for you, but the time ran out before payment. No money was taken.
                       </p>
                       <Button variant="primary" size="lg" onClick={startOver}>
                         Pick a time again
@@ -699,7 +710,7 @@ export function BookingFlow({
           {step === 4 && service && slot && requested && (
             <section aria-labelledby="requested-title" className="stack" aria-live="polite">
               <Alert tone="success" title="Request sent">
-                {service.title} with {host.name}, {when(slot.start, tz)}.
+                {service.title} with {host.name}, {when(slot.start)}.
               </Alert>
               <Card>
                 <div className="stack">
@@ -731,7 +742,7 @@ export function BookingFlow({
           {step === 4 && service && slot && hold && (
             <section aria-labelledby="done-title" className="stack" aria-live="polite">
               <Alert tone="success" title="You're booked">
-                {service.title} with {host.name}, {when(slot.start, tz)}.
+                {service.title} with {host.name}, {when(slot.start)}.
               </Alert>
               {service.prepNotes && (
                 <Alert tone="info" title="Before your session">

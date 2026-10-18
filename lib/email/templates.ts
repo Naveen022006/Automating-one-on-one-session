@@ -11,8 +11,6 @@ export interface BookingEmailData {
   influencerName: string;
   durationMin: number;
   startTime: Date;
-  /** Customer timezone (falls back to the influencer's). */
-  tz: string;
   meetLink: string | null;
   manageUrl: string | null;
   icsUrl: string | null;
@@ -24,7 +22,7 @@ export interface BookingEmailData {
 }
 
 export function bookingEmail(kind: BookingEmailKind, d: BookingEmailData): RenderedEmail {
-  const when = formatSessionTime(d.startTime, d.tz);
+  const when = formatSessionTime(d.startTime);
   const first = d.customerName.split(" ")[0] || d.customerName;
   const baseDetails: [string, string][] = [
     ["Session", d.serviceTitle],
@@ -235,7 +233,6 @@ export interface RequestEmailData {
   serviceTitle: string;
   influencerName: string;
   startTime: Date;
-  tz: string;
   /** Approved: the signed payment link and the deadline, and the amount to pay. */
   payUrl?: string;
   payBy?: Date;
@@ -247,7 +244,7 @@ export interface RequestEmailData {
 }
 
 export function requestEmail(kind: RequestEmailKind, d: RequestEmailData): RenderedEmail {
-  const when = formatSessionTime(d.startTime, d.tz);
+  const when = formatSessionTime(d.startTime);
   const first = d.customerName.split(" ")[0] || d.customerName;
   const details: [string, string][] = [
     ["Session", d.serviceTitle],
@@ -271,7 +268,7 @@ export function requestEmail(kind: RequestEmailKind, d: RequestEmailData): Rende
         preheader: `${d.influencerName} approved your request. Pay to confirm your session.`,
         heading: "Your request was approved",
         paragraphs: [
-          `Hi ${first}, ${d.influencerName} approved your request. To confirm your session, complete the payment${d.payBy ? ` by ${formatSessionTime(d.payBy, d.tz)}` : ""}. Your time is held until then.`,
+          `Hi ${first}, ${d.influencerName} approved your request. To confirm your session, complete the payment${d.payBy ? ` by ${formatSessionTime(d.payBy)}` : ""}. Your time is held until then.`,
         ],
         details: [...details, ...(d.amount ? ([["Amount", formatMoney(d.amount.amountMinor, d.amount.currency)]] as [string, string][]) : [])],
         button: d.payUrl ? { label: "Pay and confirm", url: d.payUrl } : undefined,
@@ -300,7 +297,7 @@ export function adminSecurityMessage(
   d: { at: Date; ip?: string | null; lockedUntil?: Date | null },
 ): RenderedEmail {
   const first = name.split(" ")[0] || name;
-  const details: [string, string][] = [["When", d.at.toUTCString()], ...(d.ip ? ([["From IP address", d.ip]] as [string, string][]) : [])];
+  const details: [string, string][] = [["When", formatSessionTime(d.at)], ...(d.ip ? ([["From IP address", d.ip]] as [string, string][]) : [])];
   const notYou = "If this was not you, someone has your password and a signed-in session. Change your password now and ask the platform owner to review the audit log.";
   switch (event) {
     case "2fa-enabled":
@@ -329,7 +326,7 @@ export function adminSecurityMessage(
         preheader: "Too many incorrect codes were entered.",
         heading: "Authenticator codes are locked for now",
         paragraphs: [
-          `Hi ${first}, too many incorrect authentication codes were entered for your administrator account, so authenticator codes are refused${d.lockedUntil ? ` until ${d.lockedUntil.toUTCString()}` : " for a while"}. You can still sign in with a recovery code.`,
+          `Hi ${first}, too many incorrect authentication codes were entered for your administrator account, so authenticator codes are refused${d.lockedUntil ? ` until ${formatSessionTime(d.lockedUntil)}` : " for a while"}. You can still sign in with a recovery code.`,
           "If you did not try to sign in, someone knows your password. Change it now and tell the platform owner.",
         ],
         details,

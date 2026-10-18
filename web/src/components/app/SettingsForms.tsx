@@ -3,9 +3,9 @@ import { useEffect, useState } from "react";
 import { IconLogOut } from "@web/components/icons";
 import { ConfirmDialog, Switch, useToast } from "@web/components/ui/overlays";
 import { Alert, Avatar, Button, Field, Input, Select, Textarea, describedBy } from "@web/components/ui/primitives";
-import { timezoneOptions } from "@web/components/ui/scheduling";
 import type { ProfileData } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
+import { formatDateTime } from "@/lib/india";
 
 export function ProfileForm({ profile, onSaved, submitLabel = "Save profile" }: { profile: ProfileData; onSaved?: () => void; submitLabel?: string }) {
   const api = useApi();
@@ -14,7 +14,6 @@ export function ProfileForm({ profile, onSaved, submitLabel = "Save profile" }: 
   const [name, setName] = useState(profile.name);
   const [bio, setBio] = useState(profile.bio ?? "");
   const [photoUrl, setPhotoUrl] = useState(profile.photoUrl ?? "");
-  const [timezone, setTimezone] = useState(profile.timezone);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [busy, setBusy] = useState(false);
 
@@ -26,7 +25,7 @@ export function ProfileForm({ profile, onSaved, submitLabel = "Save profile" }: 
     setErrors(local);
     if (Object.keys(local).length) return;
     setBusy(true);
-    const r = await api("/api/dashboard/profile", { method: "PATCH", body: { name, bio: bio || null, photoUrl: photoUrl || null, timezone } });
+    const r = await api("/api/dashboard/profile", { method: "PATCH", body: { name, bio: bio || null, photoUrl: photoUrl || null } });
     setBusy(false);
     if (!r.ok) {
       if (r.data.field) setErrors({ [r.data.field]: r.data.error });
@@ -43,18 +42,9 @@ export function ProfileForm({ profile, onSaved, submitLabel = "Save profile" }: 
         <Avatar name={name || "?"} src={photoUrl || null} size="lg" />
         <p className="subtle">Your photo and bio appear on your public booking page.</p>
       </div>
-      <div className="form-grid form-grid--2">
+      <div className="form-grid">
         <Field id="p-name" label="Name" error={errors.name}>
           <Input {...describedBy("p-name", { error: errors.name })} value={name} maxLength={100} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} autoComplete="name" />
-        </Field>
-        <Field id="p-tz" label="Your time zone" help="Used for your weekly hours and dashboard.">
-          <Select id="p-tz" value={timezone} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTimezone(e.target.value)}>
-            {timezoneOptions(timezone).map((z) => (
-              <option key={z} value={z}>
-                {z.replace(/_/g, " ")}
-              </option>
-            ))}
-          </Select>
         </Field>
       </div>
       <Field id="p-photo" label="Photo link" optional error={errors.photoUrl} help="An https:// link to a square image you host (for example your Instagram or website photo).">
@@ -245,7 +235,7 @@ export function DeviceSessions() {
                   {device(s.userAgent)} {s.current && <span className="subtle">(this device)</span>}
                 </p>
                 <p className="subtle">
-                  Last active {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(s.lastUsedAt))}
+                  Last active {formatDateTime(new Date(s.lastUsedAt), { weekday: false })}
                   {s.ip ? ` · ${s.ip}` : ""}
                 </p>
               </div>

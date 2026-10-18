@@ -8,6 +8,7 @@ import { Alert, Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminPaymentsView, PaymentViewKey } from "@/lib/views/admin-payments";
+import { formatDateTime } from "@/lib/india";
 
 const VIEWS: { key: PaymentViewKey; label: string }[] = [
   { key: "all", label: "All" },
@@ -78,7 +79,7 @@ export function PaymentsView({ data, busy }: { data: Jsonify<AdminPaymentsView>;
                   const paid = p.status === "CAPTURED" || p.status === "REFUNDED";
                   return (
                     <tr key={p.id}>
-                      <td data-label="Date">{new Date(p.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</td>
+                      <td data-label="Date">{formatDateTime(new Date(p.createdAt), { weekday: false })}</td>
                       <td data-label="Influencer / service">
                         <AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink>
                         <div className="subtle">{p.service.title}</div>

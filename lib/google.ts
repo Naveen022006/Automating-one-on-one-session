@@ -7,6 +7,7 @@
  *  - GoogleRequestError:   Google rejected this specific request. Retrying will not help.
  */
 
+import { APP_TIME_ZONE } from "@/lib/india";
 import { googleEndpoints } from "@/lib/provider-endpoints";
 
 /** Narrowest scope that allows creating/updating/deleting events (Phase 5 needs update + delete). */
@@ -236,8 +237,8 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
           id: event.id,
           summary: event.summary,
           description: event.description,
-          start: { dateTime: event.start.toISOString(), timeZone: "UTC" },
-          end: { dateTime: event.end.toISOString(), timeZone: "UTC" },
+          start: { dateTime: event.start.toISOString(), timeZone: APP_TIME_ZONE },
+          end: { dateTime: event.end.toISOString(), timeZone: APP_TIME_ZONE },
           attendees: [{ email: event.attendee.email, displayName: event.attendee.displayName }],
           guestsCanInviteOthers: false,
           guestsCanModify: false,
@@ -328,8 +329,8 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
           method: "PATCH",
           headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            start: { dateTime: times.start.toISOString(), timeZone: "UTC" },
-            end: { dateTime: times.end.toISOString(), timeZone: "UTC" },
+            start: { dateTime: times.start.toISOString(), timeZone: APP_TIME_ZONE },
+            end: { dateTime: times.end.toISOString(), timeZone: APP_TIME_ZONE },
           }),
         },
       );

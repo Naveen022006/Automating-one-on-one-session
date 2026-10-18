@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bookingEmail, passwordResetMessage } from "../lib/email/templates";
 import { escapeHtml } from "../lib/email/layout";
-import { customerZone, formatSessionTime } from "../lib/format";
+import { formatSessionTime } from "../lib/format";
 import { buildIcs } from "../lib/ics";
 import { cleanParam, smsBody, templateParams, whatsappComponents } from "../lib/message-templates";
 import { refundDecision } from "../lib/refund-policy";
@@ -12,15 +12,13 @@ const ctx = {
   link: "https://meet.google.com/abc-defg-hij",
   serviceTitle: "1:1 Career Call",
   influencerName: "Demo Creator",
-  when: formatSessionTime(new Date("2026-10-12T05:30:00Z"), "Asia/Kolkata", "en-IN"),
+  when: formatSessionTime(new Date("2026-10-12T05:30:00Z")),
 };
 
-test("session times are shown in the customer's timezone, never as ISO", () => {
-  assert.match(ctx.when, /12 Oct,? 2026/);
-  assert.match(ctx.when, /11:00/);
+test("session times are shown in Indian Standard Time with the IST label, never as ISO", () => {
+  // 05:30 UTC is 11:00 IST. The old text used the customer's own zone ("customerZone"); there is none now.
+  assert.equal(ctx.when, "Mon, 12 Oct 2026, 11:00 AM IST");
   assert.doesNotMatch(ctx.when, /T05:30|Z$/);
-  assert.equal(customerZone(null, "Asia/Kolkata"), "Asia/Kolkata");
-  assert.equal(customerZone("Not/AZone", "Europe/London"), "Europe/London");
 });
 
 test("WhatsApp templates get link, service, host and time, in a fixed order", () => {
@@ -53,7 +51,6 @@ test("booking emails have html + text, escape user content, and include the mana
     influencerName: "Demo Creator",
     durationMin: 30,
     startTime: new Date("2026-10-12T05:30:00Z"),
-    tz: "Asia/Kolkata",
     meetLink: ctx.link,
     manageUrl: "https://app.example.com/manage/tok",
     icsUrl: "https://app.example.com/api/bookings/b1/ics",
@@ -64,6 +61,8 @@ test("booking emails have html + text, escape user content, and include the mana
   assert.match(email.html, /https:\/\/app\.example\.com\/manage\/tok/);
   assert.match(email.text, /Reschedule or cancel: https:\/\/app\.example\.com\/manage\/tok/);
   assert.match(email.text, /pay_123/);
+  assert.match(email.text, /Mon, 12 Oct 2026, 11:00 AM IST/, "the time in the e-mail is IST");
+  assert.match(email.text, /₹499\.00/, "the amount is in rupees");
   assert.match(email.subject, /Confirmed/);
   const cancelled = bookingEmail("booking-cancelled", {
     customerName: "Ana",
@@ -71,7 +70,6 @@ test("booking emails have html + text, escape user content, and include the mana
     influencerName: "Host",
     durationMin: 30,
     startTime: new Date(),
-    tz: "UTC",
     meetLink: null,
     manageUrl: null,
     icsUrl: null,
@@ -109,7 +107,8 @@ test("calendar file is valid RFC 5545 with escaped text", () => {
     now: new Date("2026-10-01T00:00:00Z"),
   });
   assert.match(ics, /^BEGIN:VCALENDAR\r\n/);
-  assert.match(ics, /DTSTART:20261012T053000Z\r\n/);
+  assert.match(ics, /DTSTART:20261012T053000Z\r\n/, "the instant stays UTC (every calendar app converts it)");
+  assert.match(ics, /X-WR-TIMEZONE:Asia\/Kolkata\r\n/);
   assert.match(ics, /SUMMARY:Call\\, with\\; Host/);
   assert.match(ics, /DESCRIPTION:Line 1\\nLine 2/);
   for (const line of ics.split("\r\n")) assert.ok(Buffer.byteLength(line) <= 75, `folded: ${line}`);

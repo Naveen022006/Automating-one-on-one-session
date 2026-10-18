@@ -6,11 +6,12 @@ import type { AdminInfluencerStatusView } from "@/lib/views/admin-influencer-sta
 import { useApiQuery } from "../../lib/api";
 import type { Jsonify } from "../../lib/jsonify";
 import { queryKeys } from "../../lib/query";
+import { formatDateTime } from "@/lib/india";
 
 type StatusView = Jsonify<AdminInfluencerStatusView>;
 type Action = "suspend" | "reinstate" | "approve";
 
-const when = (iso: string) => new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+const when = (iso: string) => formatDateTime(new Date(iso), { weekday: false });
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /**

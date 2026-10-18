@@ -5,6 +5,7 @@ import { Alert, Badge, Card, EmptyState, Stat } from "@web/components/ui/primiti
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardPayoutsView } from "@/lib/views/dashboard-payouts";
+import { formatDate } from "@/lib/india";
 
 /** The Payouts page body. Rendered by the SPA page from the endpoint's JSON. */
 export function PayoutsView({ data }: { data: Jsonify<DashboardPayoutsView> }) {
@@ -63,7 +64,7 @@ export function PayoutsView({ data }: { data: Jsonify<DashboardPayoutsView> }) {
               <tbody>
                 {summary.history.map((h) => (
                   <tr key={h.id}>
-                    <td data-label="Date">{new Date(h.paidAt ?? h.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                    <td data-label="Date">{formatDate(new Date(h.paidAt ?? h.createdAt), { weekday: false })}</td>
                     <td data-label="Sent to">{h.destination}</td>
                     <td data-label="Sessions" className="num">{h.paymentCount}</td>
                     <td data-label="Fee" className="num">{formatMoney(h.feeMinor, h.currency)}</td>

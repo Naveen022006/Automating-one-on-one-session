@@ -7,12 +7,14 @@ import { AppLink } from "@web/lib/link";
 import type { Jsonify } from "@/lib/jsonify";
 import type { CustomerPortalView as CustomerPortalViewData } from "@/lib/views/customer-portal";
 import { ReceiptCard } from "./ReceiptCard";
+import { formatDateTime, formatTime } from "@/lib/india";
 
 type Ok = Extract<Jsonify<CustomerPortalViewData>, { state: "ok" }>;
 type Booking = Ok["bookings"][number];
 
-const when = (iso: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" }).format(new Date(iso));
-const clock = (iso: string) => new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(new Date(iso));
+// Indian Standard Time throughout ("Mon, 12 Oct 2026, 11:00 AM IST"); the end of a session is its clock time.
+const when = (iso: string) => formatDateTime(new Date(iso));
+const clock = (iso: string) => formatTime(new Date(iso));
 
 /** Sessions that have not finished: shown first. "In progress" has started but is not over, so an erasure keeps it. */
 const isOpen = (b: Booking) => b.statusText === "Upcoming" || b.statusText === "In progress";

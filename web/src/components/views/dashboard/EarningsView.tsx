@@ -5,6 +5,7 @@ import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardEarningsView } from "@/lib/views/dashboard-earnings";
 import { GetForm } from "./GetForm";
+import { formatCount } from "@/lib/india";
 
 /**
  * The Earnings page body. Rendered by the SPA page from the endpoint's JSON. `busy` is set by the SPA page
@@ -24,7 +25,7 @@ export function EarningsView({ data, busy }: { data: Jsonify<DashboardEarningsVi
     <div className="stack stack--lg">
       <PageHead
         title="Earnings"
-        description="Captured payments net of refunds, by the date the payment was made (UTC)."
+        description="Captured payments net of refunds, by the date the payment was made (IST)."
         actions={
           <a className="btn" href={exportHref}>
             <IconDownload size={16} /> Export CSV
@@ -46,7 +47,7 @@ export function EarningsView({ data, busy }: { data: Jsonify<DashboardEarningsVi
       <div className="stack stack--lg" aria-busy={busy || undefined}>
         {data.truncated && (
           <Alert tone="warning" title="Only part of this range is counted">
-            This range has more payments than can be added up at once. The totals below cover the first {data.paymentCount.toLocaleString()} payments,
+            This range has more payments than can be added up at once. The totals below cover the first {formatCount(data.paymentCount)} payments,
             oldest first. Choose a shorter range for exact totals.
           </Alert>
         )}

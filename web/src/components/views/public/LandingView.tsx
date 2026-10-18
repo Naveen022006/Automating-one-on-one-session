@@ -5,9 +5,9 @@ import { ButtonLink } from "@web/components/ui/primitives";
 
 const FEATURES = [
   {
-    title: "Scheduling that respects time zones",
-    body: "Set weekly hours and block days off. Customers see open times in their own time zone, and a slot is held for them while they pay, so two people can never book the same seat.",
-    points: ["Weekly availability and blocked dates", "10-minute holds during checkout", "Daylight saving handled"],
+    title: "Scheduling built for India",
+    body: "Set weekly hours and block days off. Everything runs on Indian Standard Time, so there is no time zone to get wrong, and a slot is held for the customer while they pay, so two people can never book the same seat.",
+    points: ["Weekly availability and blocked dates", "10-minute holds during checkout", "All times in IST, prices in rupees"],
     fragment: <BookingFragment />,
   },
   {
@@ -19,7 +19,7 @@ const FEATURES = [
   {
     title: "WhatsApp first, SMS and email as backup",
     body: "The link goes out on WhatsApp with an SMS fallback, plus an email with a calendar file. Reminders follow 24 hours and 15 minutes before the session.",
-    points: ["Approved WhatsApp templates", "Times in the customer's time zone", "Customers can reschedule or cancel themselves"],
+    points: ["Approved WhatsApp templates", "Indian mobile numbers, times in IST", "Customers can reschedule or cancel themselves"],
     fragment: <WhatsAppFragment />,
   },
   {
@@ -102,7 +102,7 @@ export function LandingView({ loggedIn }: { loggedIn: boolean }) {
             <ol className="steps">
               <li>
                 <h3>The customer picks a slot</h3>
-                <p>From your weekly hours, shown in their own time zone. The slot is held while they pay.</p>
+                <p>From your weekly hours, in Indian Standard Time. The slot is held while they pay.</p>
               </li>
               <li>
                 <h3>They pay with Razorpay</h3>

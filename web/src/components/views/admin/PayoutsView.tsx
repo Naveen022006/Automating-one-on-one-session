@@ -7,6 +7,7 @@ import { Alert, Badge, EmptyState, LinkTabs, Pagination } from "@web/components/
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminPayoutsView, PayoutFilter } from "@/lib/views/admin-payouts";
+import { formatDate } from "@/lib/india";
 
 const FILTERS: { key: PayoutFilter; label: string }[] = [
   { key: "PENDING", label: "To send" },
@@ -63,7 +64,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
               <tbody>
                 {rows.map((p) => (
                   <tr key={p.id}>
-                    <td data-label="Created">{new Date(p.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                    <td data-label="Created">{formatDate(new Date(p.createdAt), { weekday: false })}</td>
                     <td data-label="Influencer">
                       <AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink>
                       {p.influencer.suspended && (

@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { APP_TIME_ZONE } from "@/lib/india";
 
 export interface Rule {
   weekday: number; // ISO: 1 = Monday ... 7 = Sunday
@@ -14,7 +15,8 @@ export function isValidTimezone(tz: string): boolean {
 /**
  * Candidate slot start times (UTC) whose start falls in [from, to).
  * Slots are back-to-back, `durationMin` long, and must fit inside a rule window.
- * Rules are evaluated in their own timezone, so DST shifts are handled.
+ * Rules are evaluated in their own stored timezone. New rules are always saved in Asia/Kolkata (IST, no DST; the API forces it,
+ * doc/14-india-localisation.md); a rule saved before that in another zone keeps producing the same instants, DST shifts included.
  *
  * `blockedDates` is an optional set of "YYYY-MM-DD" calendar days the influencer has blocked off; a rule day
  * whose date (in the rule's own timezone) is in the set produces no slots. Passing the blocked days in keeps
@@ -65,8 +67,8 @@ export function isSlotStart(
 
 /**
  * The set of "YYYY-MM-DD" strings covered by the given blocked dates. A BlockedDate is stored as a calendar
- * day at UTC midnight, and the influencer's availability rules are keyed by the influencer's own timezone
- * (which the blocked day is expressed in too), so reading the stored value back in UTC recovers the right
+ * day at UTC midnight, and the influencer's availability rules are keyed by a timezone (IST for every rule written now;
+ * the blocked day is expressed in it too), so reading the stored value back in UTC recovers the right
  * "YYYY-MM-DD" to compare against generateSlots' rule-timezone day. Keeps the day-math pure and testable.
  */
 export function blockedDaySet(dates: Date[]): Set<string> {
@@ -78,9 +80,9 @@ export function blockedDaySet(dates: Date[]): Set<string> {
   return out;
 }
 
-/** UTC bounds of calendar day `date` ("YYYY-MM-DD") as seen in timezone `tz`. */
-export function dayBoundsUtc(date: string, tz: string): { from: Date; to: Date } | null {
-  const start = DateTime.fromISO(date, { zone: tz }).startOf("day");
+/** UTC bounds of the Indian Standard Time calendar day `date` ("YYYY-MM-DD"): 00:00 IST is 18:30 UTC the evening before. Null for a date that does not exist. */
+export function dayBoundsUtc(date: string): { from: Date; to: Date } | null {
+  const start = DateTime.fromISO(date, { zone: APP_TIME_ZONE }).startOf("day");
   if (!start.isValid) return null;
   return { from: start.toJSDate(), to: start.plus({ days: 1 }).toJSDate() };
 }

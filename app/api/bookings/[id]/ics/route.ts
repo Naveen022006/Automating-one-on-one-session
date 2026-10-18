@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { isEntityId } from "@/lib/http";
+import { formatSessionTime } from "@/lib/format";
 import { buildIcs } from "@/lib/ics";
 import { mayViewMeetingDetails } from "@/lib/self-service";
 
@@ -24,7 +25,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const ics = buildIcs({
     uid: `${booking.id}@session-automation`,
     title: `${session.service.title} with ${session.service.influencer.name}`,
-    description: link ? `Join with Google Meet: ${link}` : "Your Google Meet link will be sent by WhatsApp and email.",
+    // DTSTART stays UTC (every calendar app shows it in the owner's own zone); the description says the time in IST.
+    description: `${formatSessionTime(session.startTime)}. ${link ? `Join with Google Meet: ${link}` : "Your Google Meet link will be sent by WhatsApp and email."}`,
     start: session.startTime,
     end: session.endTime,
     url: link,
