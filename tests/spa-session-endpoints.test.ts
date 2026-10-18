@@ -44,10 +44,13 @@ async function ask(handler: Handler, cookies: Record<string, string> = {}): Prom
 const influencerCookie = (token: string) => ({ [authLib.sessionCookieName()]: token });
 const adminCookie = (token: string) => ({ [sessionLib.adminCookieName()]: token });
 const keys = (o: unknown) => Object.keys(o as object).sort();
+// The answers say whether the site sends e-mail: pinned for the run, not read from the developer's .env (restored in `after`).
+const pinnedEmailProvider = process.env.EMAIL_PROVIDER;
 
 before(async () => {
   if (skip) return;
   process.env.RATE_LIMIT_STORE = "memory";
+  process.env.EMAIL_PROVIDER = "log";
   // GET /api/admin/shell builds the health report, which would open BullMQ/Redis connections that keep the test process alive
   // (and touch the shared Redis). Without REDIS_URL the report degrades exactly as it does in production when Redis is down:
   // `loadAdminShell` then reports 0 health issues.
@@ -98,6 +101,8 @@ after(async () => {
     }
   }
   delete process.env.ADMIN_REQUIRE_2FA;
+  if (pinnedEmailProvider === undefined) delete process.env.EMAIL_PROVIDER;
+  else process.env.EMAIL_PROVIDER = pinnedEmailProvider;
   await prisma.$disconnect();
 });
 

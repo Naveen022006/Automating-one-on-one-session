@@ -33,7 +33,7 @@ the decision. Sections 3 onward describe what was built, the deviations, the set
 | G15 | `lib/google-health*.ts` | Not present as `lib/` files; the health logic is `worker/google-health.ts` (G10). | See G10. |
 | G16 | `lib/key-rotation-db.ts` `ENCRYPTED_COLUMNS` | Lists every `*_enc` column. | Adds `influencer_google_clients.client_secret_enc` with AAD `google-client:<influencerId>`. The coverage test in `tests/key-rotation.test.ts` enforces it. |
 | G17 | `lib/test-data-cleanup.ts` | Enumerates tables hanging off influencers. | Adds `influencer_google_clients` (the FK cascades, but the dry-run counts and the table list are explicit). |
-| G18 | `lib/env.ts` | Warns in production when the env pair is unset. | New `GOOGLE_CLIENT_MODE` (`own` default, `platform`, `either`). In mode `own` no warning about the env pair. In `platform` and `either` the pair is required (`either` only warns). The redirect-host warning stays. |
+| G18 | `lib/env.ts` | Warns in production when the env pair is unset. | New `GOOGLE_CLIENT_MODE` (`own` default, `platform`, `either`). In mode `own` no warning about the env pair. In `platform` a missing pair warns (nobody can connect), in `either` a missing pair also warns (only influencers with their own client can connect, and shared-client connections are flagged), in `own` only a pair that is set but unused warns. The admin Health page counts ACTIVE shared-client connections when the pair is gone (4.10). The redirect-host warning stays. |
 | G19 | `lib/readiness.ts`, `lib/readiness-checks.ts`, `lib/views/dashboard-*` | "google" item: Connect Google Calendar. | Item text becomes the three steps (create your client, paste it, connect). The rule is unchanged (an ACTIVE grant is required). |
 | G20 | `web/src/components/app/GoogleConnect.tsx` (Settings and Onboarding) | Connect button, Gmail toggle, banners (one says "not configured: GOOGLE_CLIENT_ID..."). | Replaced by the three-step card. The "not configured" banner becomes "Save your Google client first". |
 | G21 | `scripts/mock-providers/google.ts`, `fixtures.ts` | Accepts exactly the fixture client pair. | Accepts ANY client pair the influencer gives (recorded), `invalid_client` for a secret exactly `bad-secret`, `invalid_grant` for a bogus code with a good pair. The fixtures pair keeps working for `platform` mode. |
@@ -141,9 +141,10 @@ timeout (10 s), a 5xx or a 429 is "could not check, nothing was saved". Only an 
 - `POST /api/dashboard/google-client` `{ action: "save-client", clientId, clientSecret }` and `{ action: "remove-client", confirm? }`. Both need a
   recent password entry (`requireRecentAuth`, like Disconnect). Rate limits: route rule `dashboard-google-client` (10 per hour per session) and the
   identity rule `google-client-check` (12 per hour per influencer, across devices).
-  - save: refused in mode `platform` (409). A different client ID than the one a grant was made with flags the grant "reconnect needed"
-    ("You changed your Google client, so Google needs to be connected again.") and revokes its old token; the same ID with a new secret keeps the
-    connection. Activity entry `google.client_saved` (masked tail of the ID, `replaced`).
+  - save: refused in mode `platform` (409). Saving NEVER writes to a connection (4.9): the callback replaces it after Google accepted the consent.
+    Only changing the Client ID of an influencer's OWN client breaks the connection made with the old one (its next refresh is refused), so that
+    needs `confirm: true` (409 `needsConfirmation` while upcoming bookings have calendar events); the same ID with a new secret keeps it.
+    Activity entry `google.client_saved` (masked tail of the ID, `replaced`).
   - remove: 404 when there is none. A connection made with this client is removed with it, with the same rule as Disconnect (409 `needsConfirmation`
     while upcoming bookings have calendar events, then `confirm: true`); a connection made with the shared pair is left alone. Activity entries
     `google.client_removed` and, when a connection went, `google.disconnected`.
@@ -159,8 +160,10 @@ timeout (10 s), a 5xx or a 429 is "could not check, nothing was saved". Only an 
   `emailed` and hands the host the pay link when the customer could not be e-mailed, so an approval is never silently stuck).
 - Verification, password reset and the customer-portal link create nothing when nobody can receive them: otherwise a "forgot password" click would
   cancel the one link an administrator handed over (only the newest reset link is valid). Registration still works; the new user is unverified.
-- Customer e-mail: Gmail of the influencer (their grant's own client) or not at all. A booking e-mail with no Gmail route leaves no message row; one
-  that Gmail failed to send leaves a FAILED row starting `Gmail could not send:`, which the Google card reads to show "Gmail not working".
+- Customer e-mail: Gmail of the influencer (their grant's own client) or not at all. A booking e-mail with no Gmail route leaves a FAILED row with the
+  reason ("Not sent: no Gmail connection and this site sends no e-mail ..."), one that Gmail failed to send a FAILED row starting
+  `Gmail could not send:` (which the Google card reads to show "Gmail not working"); a row that already recorded a SENT e-mail is never
+  deleted or downgraded by a later forced resend or reschedule (4.14).
   WhatsApp and SMS are untouched.
 - Health alerts skip the e-mail stage (webhook and log only) instead of "failing" every run.
 - Pages: `emailEnabled` in `GET /api/auth/session` and `GET /api/admin/session` (both variants), the Settings and Onboarding views, the admin
@@ -206,6 +209,33 @@ to. `npm run dev:mock` sets `GOOGLE_CLIENT_MODE=own`.
    `GOOGLE_CLIENT_ID` means no scheduling" now says the check runs; the env "advisory warnings" test expects the shared-pair warning in mode `platform`; the
    find-your-bookings page test holds a session answer; `tests/google-connect.test.ts` sets `GOOGLE_CLIENT_MODE=platform` for its database-free route tests;
    `spa-smoke.mjs` expects `emailEnabled` in the session answers.
+
+9. **Saving a client never touches a connection (review G1).** The first version flagged a shared-client connection "reconnect needed" and revoked its token
+   the moment the first own client was saved, before the new client had been tried at Google's consent screen. Now the callback does the replacing, after a
+   successful code exchange: it saves the new grant and revokes the previous token whenever the kind of client changed (and, as before, when the Google account
+   changed for certain). A failed callback leaves the old connection as it was. The one save that does affect a connection is a different Client ID for an own
+   client that has a connection: Google ties the refresh token to the old client, so the next refresh fails and is flagged by the existing path (an OWN
+   client's ID is not stored per grant, so an old own client's authorization is simply left for the influencer to delete in Google Cloud). That save needs the
+   dialog and, server side, `confirm: true` when upcoming bookings have calendar events.
+10. **Legacy shared-client grants no longer die silently (review G2).** When the mode is not `platform` and the shared pair is missing, a refresh for a
+    `client_kind = platform` grant is "reconnect needed" with "The shared Google connection is no longer available. Save your own Google client in Settings
+    and connect again." (it was "transient": ACTIVE, live, taking payments, no alert). The admin Health page shows how many ACTIVE shared-client connections
+    exist while the pair is gone; `lib/env.ts` warns in `platform` and `either`.
+11. **All three Google client rejections count (review G3).** For an own client `invalid_client`, `deleted_client` and `unauthorized_client` mean "fix your
+    Google client" in the refresh, in the callback (`client-rejected`) and in "Save and check" ("Google says this client is invalid, deleted or not a Web
+    application client."). For the shared pair they stay transient.
+12. **Export and erasure through the manage link when the site sends no e-mail (review G7).** `GET /api/manage/:token/data` and `POST /api/manage/:token/erase`
+    (signed manage token only; the portal's own builders keyed by the booking customer's address; 403 `expired` / 404 `gone`; rate limits `manage-data` 10 and
+    `manage-erase` 5 per hour per address). The manage page shows "Download my data" and "Erase my data" only when `emailEnabled` is false. The portal is unchanged.
+13. **An administrator's reset link does not verify the address (review G5).** The token table has no column for it and a migration was not worth it, so such a
+    token starts with `adm.` (self-requested tokens are base64url and never contain a ".", and the marker is only read from a token whose hash is stored, so it
+    cannot be added or removed). `resetPassword` sets `emailVerifiedAt` only for the other kind. The influencer gets an account-activity entry
+    (`auth.admin_reset_link`, actor `system`, no link) and, when the platform sends e-mail, a notice without the link.
+14. **A missing e-mail route marks the row, it does not delete it (review G6).** FAILED with the reason; a row that already recorded a sent e-mail is put back
+    as it was after any later attempt that did not send. The Gmail item of the go-live checklist (G8) now says "no e-mail at all" only when the site really
+    sends none, and "connect again, the permission was not allowed" when Google is connected without it.
+15. **Autofill (review G4).** The secret input is `autocomplete="new-password"` with the password managers' opt-outs, and the fields are named
+    `google-client-id` / `google-client-secret`, so the site login password is not offered or overwritten.
 
 ## 5. How an influencer sets it up, end to end
 

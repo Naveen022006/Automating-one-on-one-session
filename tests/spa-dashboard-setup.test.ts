@@ -101,7 +101,7 @@ const secrets = {
 const pinsEnc: string[] = [];
 // The tests change process.env; every changed name is put back in `after`. (There is no table of OAuth states to seed: the
 // Google round trip keeps its state in a signed value, not in the database.)
-const savedEnv = { RATE_LIMIT_STORE: process.env.RATE_LIMIT_STORE };
+const savedEnv = { RATE_LIMIT_STORE: process.env.RATE_LIMIT_STORE, EMAIL_PROVIDER: process.env.EMAIL_PROVIDER, GOOGLE_CLIENT_MODE: process.env.GOOGLE_CLIENT_MODE };
 
 async function ask(handler: Handler, cookie?: string): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
   jar.clear();
@@ -159,6 +159,9 @@ before(async () => {
   mockNavigation();
   if (skip) return;
   process.env.RATE_LIMIT_STORE = "memory";
+  // The views say whether the site sends e-mail and whose Google client connects: pinned, not read from the developer's .env (restored in `after`).
+  process.env.EMAIL_PROVIDER = "log";
+  delete process.env.GOOGLE_CLIENT_MODE;
   mock.module("next/headers", {
     namedExports: {
       cookies: async () => ({ get: (name: string) => (jar.has(name) ? { name, value: jar.get(name) } : undefined) }),
@@ -268,8 +271,10 @@ after(async () => {
       await attempt("influencers", () => prisma.influencer.deleteMany({ where: { id: { in: ids } } }));
     }
   } finally {
-    if (savedEnv.RATE_LIMIT_STORE === undefined) delete process.env.RATE_LIMIT_STORE;
-    else process.env.RATE_LIMIT_STORE = savedEnv.RATE_LIMIT_STORE;
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     await prisma.$disconnect();
   }
 });
