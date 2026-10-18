@@ -26,7 +26,7 @@ export interface WhatsAppWebView {
   /** How the linked device appears on the phone, when known. */
   deviceLabel: string | null;
   qrSvg: string | null;
-  /** ISO time after which `qrSvg` stops working; a newer code replaces it while the page keeps polling. */
+  /** ISO time the current code was received plus about 20 s (WhatsApp replaces it then); a newer code replaces it while the page keeps polling. */
   qrExpiresAt: string | null;
   /** When the influencer accepted the risk statement, and which version of it. */
   consentAt: string | null;

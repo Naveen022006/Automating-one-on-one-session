@@ -1,7 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import { istDate, kvKeys, MemoryKv, QR_TTL_MS } from "../lib/whatsapp-web/kv";
+import { istDate, kvKeys, MemoryKv, QR_ROTATE_MS, QR_TTL_MS } from "../lib/whatsapp-web/kv";
 import { renderQrSvg } from "../lib/whatsapp-web/qr-svg";
 import { CONSENT_VERSION, RISK_TEXT } from "../lib/whatsapp-web/types";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
@@ -122,7 +122,15 @@ test("while waiting for the scan the view carries the current code as an SVG tha
   assert.equal(v.status, "waiting-for-scan");
   assert.match(v.qrSvg!, /^<svg /);
   assert.ok(!v.qrSvg!.includes("SECRET-PAYLOAD"));
-  assert.equal(v.qrExpiresAt, new Date(now - 10_000 + QR_TTL_MS).toISOString());
+  assert.equal(v.qrExpiresAt, new Date(now - 10_000 + QR_ROTATE_MS).toISOString(), "received 10 s ago + the ~20 s life of a code, not the store's 60 s");
+  // A newer code restarts the countdown; one that is older than its life is still shown (until the store drops it) but already expired.
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@NEWER", issuedAt: now - 1_000 }), QR_TTL_MS);
+  assert.equal((await view(kv)).qrExpiresAt, new Date(now + 19_000).toISOString());
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@STALE", issuedAt: now - 35_000 }), QR_TTL_MS);
+  const stale = await view(kv);
+  assert.match(stale.qrSvg!, /^<svg /);
+  assert.ok(Date.parse(stale.qrExpiresAt!) < now, "the screen says it is getting a new code");
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@SECRET-PAYLOAD", issuedAt: now - 10_000 }), QR_TTL_MS);
   // A code older than its life is not shown even if the store still has it.
   await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@OLD", issuedAt: now - QR_TTL_MS - 1 }), QR_TTL_MS);
   assert.equal((await view(kv)).qrSvg, null);

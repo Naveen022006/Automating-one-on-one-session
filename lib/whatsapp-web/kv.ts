@@ -42,8 +42,14 @@ export const kvKeys = {
   prune: (influencerId: string) => `wa-web:prune:${influencerId}`,
 };
 
-/** How long a QR payload stays readable. WhatsApp rotates the code every ~20 s; the first one lives ~60 s. */
+/** How long a QR payload stays readable in the store. */
 export const QR_TTL_MS = 60_000;
+/**
+ * How long one QR code is worth showing: WhatsApp replaces the code about every 20 s once linking has started (the first one may last
+ * longer). The view's `qrExpiresAt` is the time the CURRENT code was received plus this, so the countdown on the screen restarts with
+ * every new code and never promises the 60 s the store keeps it for.
+ */
+export const QR_ROTATE_MS = 20_000;
 /** Counters live two days, so a day's count is still there when the next one starts. */
 export const SENT_COUNTER_TTL_MS = 2 * 24 * 60 * 60 * 1000;
 

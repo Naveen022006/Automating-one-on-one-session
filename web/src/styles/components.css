@@ -1161,6 +1161,10 @@
   width: 100%;
   height: 100%;
 }
+/* The code's ~20 s are over and the next one has not arrived yet: it is shown faded so nobody scans an expired picture. */
+.qr-frame--stale img {
+  opacity: 0.25;
+}
 .qr-frame__empty {
   margin: 0;
   text-align: center;

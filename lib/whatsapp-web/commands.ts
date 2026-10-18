@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { readQrConfig } from "./config";
-import { getKv, istDate, kvKeys, QR_TTL_MS, type EphemeralKv } from "./kv";
+import { getKv, istDate, kvKeys, QR_ROTATE_MS, QR_TTL_MS, type EphemeralKv } from "./kv";
 import { renderQrSvg } from "./qr-svg";
 import { CONSENT_VERSION, RISK_TEXT, type WhatsAppWebStatus, type WhatsAppWebView } from "./types";
 
@@ -121,7 +121,8 @@ export async function getWhatsAppWebView(influencerId: string, opts: { kv?: Ephe
     const qr = await readQr(kv, influencerId);
     if (qr && qr.issuedAt + QR_TTL_MS > now) {
       view.qrSvg = renderQrSvg(qr.qr);
-      view.qrExpiresAt = new Date(qr.issuedAt + QR_TTL_MS).toISOString();
+      // When the current code was received plus its ~20 s life (not the store's 60 s): past that time the screen says it is getting a new one.
+      view.qrExpiresAt = new Date(qr.issuedAt + QR_ROTATE_MS).toISOString();
     }
   }
 

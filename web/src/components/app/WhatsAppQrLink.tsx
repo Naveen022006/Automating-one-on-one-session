@@ -126,9 +126,10 @@ function LinkedFacts({ view }: { view: WhatsAppWebView }) {
 function QrImage({ view, starting, now }: { view: WhatsAppWebView; starting: boolean; now: number }) {
   const src = safeQrImageSrc(view.qrSvg);
   const left = secondsLeft(view.qrExpiresAt, now);
+  const stale = src !== null && left === 0;
   return (
     <div className="stack stack--sm">
-      <div className="qr-frame">
+      <div className={stale ? "qr-frame qr-frame--stale" : "qr-frame"} data-qr-stale={stale ? "true" : undefined}>
         {src ? (
           // A data: URL in an <img>: the browser draws it as a picture and runs nothing from it. The text of the code is never on the page.
           <img src={src} alt="QR code to link WhatsApp. Scan it with your phone." />
