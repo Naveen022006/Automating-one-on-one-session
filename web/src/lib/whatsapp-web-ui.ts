@@ -1,3 +1,4 @@
+import type { WhatsAppWebTestAnswer } from "@/lib/whatsapp-web/api-types";
 import type { WhatsAppWebRequest, WhatsAppWebStatus, WhatsAppWebView } from "@/lib/whatsapp-web/types";
 
 /**
@@ -61,6 +62,17 @@ export function canStartLink(consent: boolean, busy: boolean): boolean {
  */
 export function startRequest(view: Pick<WhatsAppWebView, "consentVersion">, consent: boolean): Extract<WhatsAppWebRequest, { action: "start" }> | null {
   return consent ? { action: "start", consent: true, consentVersion: view.consentVersion } : null;
+}
+
+/**
+ * What to tell the influencer about the test message, from the `test` part of the answer (the endpoint reports how the message went:
+ * handed to WhatsApp, not answered yet, or failed). An answer without it (an older server) is taken as "queued".
+ */
+export function testOutcome(answer: unknown): { ok: boolean; text: string } {
+  const test = (answer as Partial<WhatsAppWebTestAnswer> | null)?.test;
+  if (test?.state === "failed") return { ok: false, text: test.message?.trim() || "The test message could not be sent." };
+  if (test?.state === "sent") return { ok: true, text: "Test message sent to your own WhatsApp. Check your phone." };
+  return { ok: true, text: "Test message queued. It has not been confirmed yet; check your own WhatsApp in a moment." };
 }
 
 /** Where messages go while the QR link is not working. The wording depends on whether the official connection is active. */

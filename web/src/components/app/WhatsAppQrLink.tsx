@@ -15,6 +15,7 @@ import {
   shouldMoveFocus,
   startRequest,
   statusAnnouncement,
+  testOutcome,
 } from "@web/lib/whatsapp-web-ui";
 import type { Tone } from "@web/components/ui/primitives";
 import type { WhatsAppWebRequest, WhatsAppWebStatus, WhatsAppWebView } from "@/lib/whatsapp-web/types";
@@ -362,7 +363,7 @@ export function WhatsAppQrLink({ initial }: { initial: WhatsAppWebView }) {
   const later = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (later.current && clearTimeout(later.current)), []);
 
-  async function send(body: WhatsAppWebRequest, key: Exclude<Busy, null>, failure: string): Promise<boolean> {
+  async function send(body: WhatsAppWebRequest, key: Exclude<Busy, null>, failure: string): Promise<{ answer: unknown } | null> {
     setBusy(key);
     setError(null);
     setNotice(null);
@@ -372,11 +373,11 @@ export function WhatsAppQrLink({ initial }: { initial: WhatsAppWebView }) {
     setBusy(null);
     if (!r.ok) {
       setError(r.data.error ?? failure);
-      return false;
+      return null;
     }
     if (isWhatsAppWebView(r.data)) setView(r.data);
     else void refresh();
-    return true;
+    return { answer: r.data };
   }
 
   async function start() {
@@ -389,14 +390,16 @@ export function WhatsAppQrLink({ initial }: { initial: WhatsAppWebView }) {
   }
 
   async function test() {
-    if (await send({ action: "test" }, "test", "Could not send the test message.")) {
-      setNotice("Test message queued. It should reach your own WhatsApp in a moment; the count above updates shortly.");
-      later.current = setTimeout(() => void refresh(), 3000);
-    }
+    const r = await send({ action: "test" }, "test", "Could not send the test message.");
+    if (!r) return;
+    const outcome = testOutcome(r.answer);
+    if (outcome.ok) setNotice(outcome.text);
+    else setError(outcome.text);
+    later.current = setTimeout(() => void refresh(), 3000); // the count of messages sent today
   }
 
   async function disconnect() {
-    const ok = await send({ action: "disconnect" }, "disconnect", "Could not disconnect.");
+    const ok = (await send({ action: "disconnect" }, "disconnect", "Could not disconnect.")) !== null;
     setConfirm(false);
     if (ok) {
       setStartedAt(null);

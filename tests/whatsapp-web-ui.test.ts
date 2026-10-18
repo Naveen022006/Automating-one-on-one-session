@@ -8,6 +8,7 @@ import { before, mock, test } from "node:test";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { renderQrSvg } from "../lib/whatsapp-web/qr-svg";
+import type { AdminWhatsAppWebView } from "../lib/whatsapp-web/api-types";
 import { CONSENT_VERSION, RISK_TEXT, type WhatsAppWebStatus, type WhatsAppWebView } from "../lib/whatsapp-web/types";
 import { queryKeys } from "../web/src/lib/query";
 import * as ui from "../web/src/lib/whatsapp-web-ui";
@@ -301,6 +302,14 @@ test("linked: masked number, device, sent today of the cap, test message, Discon
   assert.match(button(busy, "Disconnect") ?? "", /disabled/);
 });
 
+test("the test message's outcome is told as the server reports it", () => {
+  assert.deepEqual(ui.testOutcome({ ...view({ status: "linked" }), test: { state: "sent", message: null } }), { ok: true, text: "Test message sent to your own WhatsApp. Check your phone." });
+  assert.match(ui.testOutcome({ test: { state: "pending", message: null } }).text, /has not been confirmed yet/);
+  assert.deepEqual(ui.testOutcome({ test: { state: "failed", message: "That number is not on WhatsApp." } }), { ok: false, text: "That number is not on WhatsApp." });
+  assert.equal(ui.testOutcome({ test: { state: "failed", message: null } }).ok, false);
+  assert.equal(ui.testOutcome(view()).ok, true, "an answer without the test part counts as queued");
+});
+
 test("a test message result and a refresh failure are said, not silent", () => {
   const linked = view({ status: "linked", phoneMasked: "+91 ••••••• 210", sentToday: 1 });
   assert.match(text(panel(linked, { notice: "Test message queued." })), /Test message queued\./);
@@ -429,17 +438,24 @@ test("Settings uses the picker in place of the bare official form; onboarding is
 
 /* ---------- the administrator's card ---------- */
 
-function adminView(over: Partial<import("../web/src/components/admin/InfluencerWhatsAppWebPanel").AdminWhatsAppWebPanelView> = {}) {
+function adminView(over: Partial<AdminWhatsAppWebView> = {}): AdminWhatsAppWebView {
   return {
+    influencerId: "inf_1",
     enabled: true,
-    status: "linked" as WhatsAppWebStatus,
+    status: "linked",
+    wantLinked: true,
     phoneMasked: "+91 ••••••• 210",
+    deviceLabel: "Chrome (Mac OS)",
+    consentAt: "2026-11-09T08:00:00.000Z",
+    consentVersion: CONSENT_VERSION,
+    linkedAt: "2026-11-09T08:05:00.000Z",
     lastConnectedAt: "2026-11-09T08:30:00.000Z",
     sentToday: 4,
     dailyCap: 40,
     sentTotal: 311,
     lastError: null,
     suspendedReason: null,
+    canForceDisconnect: true,
     ...over,
   };
 }
@@ -464,13 +480,12 @@ test("admin card: suspended shows the reason; not linked and logged out have not
   const suspended = adminBody(adminView({ status: "suspended", suspendedReason: "WhatsApp refused this number." }));
   assert.match(text(suspended), /Suspended because\s+WhatsApp refused this number\./);
   assert.ok(button(suspended, "Force disconnect"));
-  const none = adminBody(adminView({ status: "not-linked", phoneMasked: null, lastConnectedAt: null, sentTotal: 0 }));
+  const none = adminBody(adminView({ status: "not-linked", phoneMasked: null, deviceLabel: null, lastConnectedAt: null, sentTotal: 0, canForceDisconnect: false }));
   assert.match(text(none), /Not linked/);
   assert.match(text(none), /Last connected\s+Never/);
   assert.ok(!button(none, "Force disconnect"));
-  assert.ok(!button(adminBody(adminView({ status: "logged-out" })), "Force disconnect"));
-  for (const s of ["waiting-for-scan", "linked", "reconnecting", "suspended"] as const) assert.equal(admin.canForceDisconnect(s), true, s);
-  for (const s of ["not-linked", "logged-out"] as const) assert.equal(admin.canForceDisconnect(s), false, s);
+  assert.ok(!button(adminBody(adminView({ status: "logged-out", canForceDisconnect: false })), "Force disconnect"), "the server says there is nothing to disconnect");
+  assert.match(text(adminBody()), /Device\s+Chrome \(Mac OS\)/);
 });
 
 test("admin card: hidden entirely when the platform flag is off, and when the answer has not arrived", () => {

@@ -4,27 +4,10 @@ import { Alert, Badge, Button, Card, Field, Textarea, describedBy } from "@web/c
 import { Dialog, useToast } from "@web/components/ui/overlays";
 import { DISCONNECT_REASON_MAX, disconnectReasonError } from "@web/lib/whatsapp-web-ui";
 import type { Tone } from "@web/components/ui/primitives";
+import type { AdminWhatsAppWebView } from "@/lib/whatsapp-web/api-types";
 import type { WhatsAppWebStatus } from "@/lib/whatsapp-web/types";
 import { useApiQuery } from "../../lib/api";
 import { queryKeys } from "../../lib/query";
-
-/**
- * What GET /api/admin/whatsapp-web?influencerId= answers (the administrator's read of one influencer's QR-code WhatsApp link).
- * Never the stored login and never a full phone number: the number is masked by the server.
- */
-export interface AdminWhatsAppWebPanelView {
-  /** The platform switch WHATSAPP_QR_ENABLED. When false the panel is not drawn at all. */
-  enabled: boolean;
-  status: WhatsAppWebStatus;
-  phoneMasked: string | null;
-  /** ISO time the link last connected, or null. */
-  lastConnectedAt: string | null;
-  sentToday: number;
-  dailyCap: number;
-  sentTotal: number;
-  lastError: { code: string; text: string } | null;
-  suspendedReason: string | null;
-}
 
 const STATUS_BADGE: Record<WhatsAppWebStatus, { label: string; tone: Tone }> = {
   "not-linked": { label: "Not linked", tone: "neutral" },
@@ -35,11 +18,6 @@ const STATUS_BADGE: Record<WhatsAppWebStatus, { label: string; tone: Tone }> = {
   "logged-out": { label: "Logged out by phone", tone: "warning" },
 };
 
-/** States in which there is something to disconnect (a pending code, a live or paused link with a saved login). */
-export function canForceDisconnect(status: WhatsAppWebStatus): boolean {
-  return status === "waiting-for-scan" || status === "linked" || status === "reconnecting" || status === "suspended";
-}
-
 const when = (iso: string) => new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
 /** What the card shows, given the data. Separate from the fetching so every state can be drawn without a server. */
@@ -47,7 +25,7 @@ export function WhatsAppWebPanelBody({
   view,
   onDisconnect,
 }: {
-  view: AdminWhatsAppWebPanelView;
+  view: AdminWhatsAppWebView;
   /** Opens the reason dialog. */
   onDisconnect: () => void;
 }) {
@@ -59,7 +37,7 @@ export function WhatsAppWebPanelBody({
           <Badge tone={badge.tone}>{badge.label}</Badge>
           <Badge tone="warning">Unofficial</Badge>
         </div>
-        {canForceDisconnect(view.status) && (
+        {view.canForceDisconnect && (
           <Button variant="danger" onClick={onDisconnect}>
             Force disconnect
           </Button>
@@ -68,6 +46,12 @@ export function WhatsAppWebPanelBody({
       <dl className="kv">
         <dt>Phone</dt>
         <dd>{view.phoneMasked ?? "Not linked"}</dd>
+        {view.deviceLabel && (
+          <>
+            <dt>Device</dt>
+            <dd>{view.deviceLabel}</dd>
+          </>
+        )}
         <dt>Last connected</dt>
         <dd>{view.lastConnectedAt ? when(view.lastConnectedAt) : "Never"}</dd>
         <dt>Sent today</dt>
@@ -143,7 +127,7 @@ export function ForceDisconnectForm({
 export function InfluencerWhatsAppWebPanel({ influencerId }: { influencerId: string }) {
   const toast = useToast();
   const router = useRouter();
-  const query = useApiQuery<AdminWhatsAppWebPanelView>(
+  const query = useApiQuery<AdminWhatsAppWebView>(
     queryKeys.admin("influencer-whatsapp-web", { id: influencerId }),
     `/api/admin/whatsapp-web?influencerId=${encodeURIComponent(influencerId)}`,
   );
