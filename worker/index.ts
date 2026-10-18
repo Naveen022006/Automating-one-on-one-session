@@ -12,6 +12,7 @@ import { handleCreateMeeting, type CreateMeetingData } from "./jobs/createMeetin
 import { handleSendMessage, type SendMessageData } from "./jobs/sendMessage";
 import { handleSendReminder, type SendReminderData } from "./jobs/sendReminder";
 import { startMonitoring } from "./monitoring";
+import { installProcessGuards } from "./process-guards";
 import { startReminderReconcile } from "./reminder-reconcile";
 import { startWhatsAppSync } from "./whatsapp-sync";
 import { startWhatsAppWebMessaging } from "./whatsapp-web-messaging";
@@ -20,6 +21,8 @@ import type { WhatsAppWebManager } from "./whatsapp-web-manager";
 // deployment-readiness: validate configuration before doing anything (exits 1 with a clear message in production).
 import { initEnvOrExit } from "../lib/env";
 initEnvOrExit("worker");
+
+installProcessGuards(); // an unhandled rejection is logged and survived; an uncaught exception is logged and still ends the process
 
 const INTERVAL_MS = 30_000;
 /** Housekeeping (expired rate-limit buckets, sessions and single-use tokens) runs every SWEEP_EVERY ticks (~10 min). */

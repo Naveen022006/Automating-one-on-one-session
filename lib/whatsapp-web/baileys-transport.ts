@@ -1,4 +1,5 @@
 import type * as BaileysTypes from "@whiskeysockets/baileys";
+import { describeError, safely, safeEvents } from "./safe";
 import {
   WhatsAppWebTransportError,
   type WhatsAppAuthStore,
@@ -17,7 +18,9 @@ import {
  *  - everything it exposes is the neutral interface of lib/whatsapp-web/transport.ts;
  *  - it subscribes to the connection's own events and to the delivery state of messages WE sent. It never subscribes to incoming
  *    messages, chats, contacts or history, and asks the library not to sync history, so nothing a customer writes is read here;
- *  - the library's logger is replaced by a silent one: it can print QR payloads, JIDs (phone numbers) and key material.
+ *  - the library's logger is replaced by a silent one: it can print QR payloads, JIDs (phone numbers) and key material;
+ *  - every callback the library calls (its event handlers, our key store) is wrapped (./safe.ts): a throw or a rejection inside one
+ *    becomes one log line with the error's name, never an unhandled rejection or an uncaught exception in the worker.
  *
  * Plain behaviour only: the browser identification is the library's default, and nothing here simulates typing, presence or any
  * other human behaviour. Sending is paced by the send queue (lib/whatsapp-web/send-queue.ts).
@@ -113,9 +116,15 @@ export class BaileysTransport implements WhatsAppWebTransport {
   private readonly sentIds = new Set<string>();
   private readonly sentMessages = new Map<string, unknown>();
 
-  constructor(private readonly load: BaileysLoader = loadBaileys) {}
+  constructor(
+    private readonly load: BaileysLoader = loadBaileys,
+    /** One line per contained error (the error's name only). */
+    private readonly log: (line: string) => void = () => {},
+  ) {}
 
-  async connect(auth: WhatsAppAuthStore, events: WhatsAppWebTransportEvents): Promise<void> {
+  async connect(auth: WhatsAppAuthStore, rawEvents: WhatsAppWebTransportEvents): Promise<void> {
+    const contained = (what: string) => (e: unknown) => this.log(`adapter: ${what} failed (${describeError(e)})`);
+    const events = safeEvents(rawEvents, contained("an event handler"));
     const b = await this.load();
     this.baileys = b;
     const stored = auth.getCreds() as BaileysTypes.AuthenticationCreds | undefined;
@@ -123,20 +132,32 @@ export class BaileysTransport implements WhatsAppWebTransport {
 
     const keys: BaileysTypes.SignalKeyStore = {
       get: async (type, ids) => {
-        const found = auth.getKeys(type, ids);
         const out: Record<string, never> = {};
-        for (const id of ids) {
-          let value = found[id];
-          if (type === "app-state-sync-key" && value) value = b.proto.Message.AppStateSyncKeyData.fromObject(value as never);
-          out[id] = value as never;
+        try {
+          const found = auth.getKeys(type, ids);
+          for (const id of ids) {
+            let value = found[id];
+            if (type === "app-state-sync-key" && value) value = b.proto.Message.AppStateSyncKeyData.fromObject(value as never);
+            out[id] = value as never;
+          }
+        } catch (e) {
+          contained("reading keys")(e); // the library then sees missing keys, which it handles
         }
         return out;
       },
       set: async (data) => {
-        auth.setKeys(data as unknown as Record<string, Record<string, unknown | null>>);
+        try {
+          auth.setKeys(data as unknown as Record<string, Record<string, unknown | null>>);
+        } catch (e) {
+          contained("saving keys")(e);
+        }
       },
       clear: async () => {
-        auth.clearKeys();
+        try {
+          auth.clearKeys();
+        } catch (e) {
+          contained("clearing keys")(e);
+        }
       },
     };
 
@@ -154,12 +175,12 @@ export class BaileysTransport implements WhatsAppWebTransport {
     });
     this.sock = sock;
 
-    sock.ev.on("creds.update", () => {
+    sock.ev.on("creds.update", safely(() => {
       // Only a linked device has credentials worth keeping: an unfinished scan leaves nothing behind.
       if (creds.me) auth.setCreds(creds);
-    });
+    }, contained("saving credentials")));
 
-    sock.ev.on("connection.update", (update) => {
+    sock.ev.on("connection.update", safely((update: Parameters<Parameters<Sock["ev"]["on"]>[1]>[0] & { qr?: string; connection?: string; lastDisconnect?: { error?: unknown } }) => {
       if (this.ended) return;
       if (update.qr) events.onQr(update.qr);
       if (update.connection === "open") {
@@ -174,17 +195,17 @@ export class BaileysTransport implements WhatsAppWebTransport {
         const statusCode = (update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
         events.onClose(mapDisconnect(statusCode, b.DisconnectReason));
       }
-    });
+    }, contained("a connection update")) as never);
 
     // The delivery state of messages WE sent, matched by id. Anything else in this event is ignored.
-    sock.ev.on("messages.update", (updates) => {
+    sock.ev.on("messages.update", safely((updates: { key?: { id?: string | null; fromMe?: boolean | null }; update?: { status?: unknown } }[]) => {
       for (const u of updates) {
         const id = u.key?.id;
-        if (!id || !u.key.fromMe || !this.sentIds.has(id)) continue;
+        if (!id || !u.key?.fromMe || !this.sentIds.has(id)) continue;
         const status = mapStatus(u.update?.status as number | undefined);
         if (status) events.onDelivery({ providerMessageId: id, status });
       }
-    });
+    }, contained("a delivery update")) as never);
   }
 
   private requireSock(): Sock {
@@ -266,6 +287,6 @@ export class BaileysTransport implements WhatsAppWebTransport {
 }
 
 /** The factory the worker hands to the manager for real WhatsApp connections. */
-export function createBaileysTransportFactory(load: BaileysLoader = loadBaileys): WhatsAppWebTransportFactory {
-  return () => new BaileysTransport(load);
+export function createBaileysTransportFactory(load: BaileysLoader = loadBaileys, log: (line: string) => void = (l) => console.warn(`[whatsapp-web] ${l}`)): WhatsAppWebTransportFactory {
+  return () => new BaileysTransport(load, log);
 }
