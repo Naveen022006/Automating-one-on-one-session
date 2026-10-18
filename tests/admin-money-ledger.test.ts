@@ -72,6 +72,7 @@ type ExportHandler = (req: Request, ctx: { params: Promise<{ kind: string }> }) 
 const jar = new Map<string, string>();
 let GET: Handler;
 let EXPORT: ExportHandler;
+let PAYOUTS: Handler;
 let sessionLib: typeof import("../lib/admin/session");
 let exportsLib: typeof import("../lib/admin/exports");
 let X = "";
@@ -393,6 +394,7 @@ before(async () => {
   });
   GET = (await import("../app/api/admin/money/route")).GET as Handler;
   EXPORT = (await import("../app/api/admin/exports/[kind]/route")).GET as ExportHandler;
+  PAYOUTS = (await import("../app/api/admin/payouts/route")).GET as Handler;
 
   const hash = await hashPassword(PASSWORD);
   X = (await prisma.adminUser.create({ data: { email: emailX, name: "Ledger Admin X", passwordHash: hash } })).id;
@@ -798,6 +800,51 @@ test("the chosen influencer's summary: paid out to date over ALL their payouts (
   assert.equal(e.influencer!.id, infIds.e);
   // Everybody: no summary.
   assert.equal((await view(`?${day()}`, token)).summary, null);
+});
+
+test("GET /api/admin/payouts?id=: the one payout the ledger links to, in any status and the usual shape, behind the same gate; an unknown or malformed id gives no rows", { skip }, async () => {
+  const PAYOUT_ROW_KEYS = ["approval", "createdAt", "currency", "destination", "feeMinor", "feePercentText", "grossAfterRefundsMinor", "hasFlaggedPayment", "id", "influencer", "netMinor", "owedMinor", "reference", "status"];
+  const askPayouts = async (query: string, cookie?: string) => {
+    jar.clear();
+    if (cookie !== undefined) jar.set(sessionLib.adminCookieName(), cookie);
+    const res = await PAYOUTS(new Request(`http://localhost/api/admin/payouts${query}`));
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> & { rows: { id: string; status: string; reference: string | null }[]; single: boolean } };
+  };
+  const token = await sessionLib.createAdminSession(Y);
+  // The gate is the page's: nothing without a session, and nothing for a password-only session of an admin who has 2FA.
+  assert.equal((await askPayouts(`?id=${id.payout1}`)).status, 401);
+  assert.equal((await askPayouts(`?id=${id.payout1}`, "not-a-real-admin-session-token")).status, 401);
+  const stale = await passwordOnlySession(X);
+  const denied = await askPayouts(`?id=${id.payout1}`, stale);
+  assert.equal(denied.status, 403);
+  assert.deepEqual(keys(denied.body), ["error", "mfaAction", "mfaRequired"]);
+
+  // A PAID payout is shown although the default tab is "To send"; so is a PENDING one under ?status=PAID: the id wins.
+  const paid = await askPayouts(`?id=${id.payout1}`, token);
+  assert.equal(paid.status, 200);
+  assert.deepEqual(keys(paid.body), ["counts", "onlyOneAdmin", "page", "pageCount", "rows", "single", "status"]);
+  assertNoSecretKeys(paid.body);
+  assert.equal(paid.body.single, true);
+  assert.deepEqual([paid.body.rows.length, paid.body.page, paid.body.pageCount], [1, 1, 1]);
+  assert.deepEqual(keys(paid.body.rows[0]), PAYOUT_ROW_KEYS.sort());
+  assert.deepEqual([paid.body.rows[0].id, paid.body.rows[0].status, paid.body.rows[0].reference], [id.payout1, "PAID", `UTR${run}0001`]);
+  const pending = await askPayouts(`?id=${id.payout2}&status=PAID&page=7`, token);
+  assert.deepEqual(pending.body.rows.map((r) => [r.id, r.status]), [[id.payout2, "PENDING"]]);
+  assert.equal(pending.body.single, true);
+  // The cancelled one too, and an id that is not the first of anything.
+  assert.deepEqual((await askPayouts(`?id=${id.payout4}`, token)).body.rows.map((r) => r.status), ["CANCELLED"]);
+
+  // Nobody's id, or something that is not shaped like an id: no rows, never the list, never an error.
+  for (const odd of [`nobody-${run}`, "x".repeat(65), "<script>", "a b", "'; DROP TABLE payouts;--"]) {
+    const out = await askPayouts(`?id=${encodeURIComponent(odd)}`, token);
+    assert.equal(out.status, 200, odd);
+    assert.deepEqual([out.body.rows, out.body.single], [[], true], odd);
+  }
+  // Without an id (or an empty one) it is the usual list.
+  for (const q of ["", "?id=", "?id=%20"]) {
+    const out = await askPayouts(q, token);
+    assert.equal(out.body.single, false, q);
+  }
 });
 
 test("the influencer summary and the cards agree wherever they claim the same thing (the Reports definitions, scoped to the influencer)", { skip }, async () => {

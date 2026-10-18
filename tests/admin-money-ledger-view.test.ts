@@ -87,7 +87,7 @@ test("the table: a caption, six column headers, a data-label on every cell, and 
   // Links: the influencer, the booking search by id, the payout on the Payouts page.
   assert.ok(html.includes('href="/admin/influencers/inf1"'));
   assert.ok(html.includes('href="/admin/bookings?q=bk1"'));
-  assert.ok(html.includes('href="/admin/payouts?status=PAID#payout-po1"'));
+  assert.ok(html.includes('href="/admin/payouts?id=po1"'), "the payout itself (the Payouts page shows one payout for ?id=)");
   // Statuses.
   assert.ok(html.includes(">Sent<") && html.includes(">Processed<") && html.includes(">Paid<"));
 });
@@ -235,7 +235,7 @@ test("payouts created and not sent: their own table, with the approval, the sum 
   assert.ok(html.includes('<caption class="sr-only">Payouts created and not sent yet, newest first</caption>'));
   assert.ok(html.includes(">Approved, not sent yet<") && html.includes(">Not sent yet<") && html.includes("Approved by ann@example.com"));
   assert.ok(html.includes("Waiting: ₹120.00 (52 payouts)."));
-  assert.ok(html.includes('href="/admin/payouts?status=PENDING#payout-s1"') && html.includes('href="/admin/payouts?status=PENDING#payout-s2"'));
+  assert.ok(html.includes('href="/admin/payouts?id=s1"') && html.includes('href="/admin/payouts?id=s2"'));
   assert.ok(html.includes("Showing the newest 2 of 52.") && html.includes('href="/admin/payouts?status=PENDING"'));
   assert.ok(render({ scheduled: { shown: true, total: 0, sums: [], rows: [] } }).includes("No payout is waiting to be sent"));
   const hiddenOne = render({ type: "in", scheduled: { shown: false, total: 0, sums: [], rows: [] } });

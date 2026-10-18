@@ -9,7 +9,8 @@ import { queryKeys } from "../../lib/query";
 import { QueryGate } from "../../lib/states";
 
 /**
- * /admin/payouts?status&page. Tabs and pagination are links, so the URL is the state (keepPreviousData: see dashboard Sessions).
+ * /admin/payouts?status&page&id. Tabs and pagination are links, so the URL is the state (keepPreviousData: see dashboard Sessions). `id` shows one
+ * payout (the Money page links to it).
  * What each row lets the viewer do (approve, mark paid) is worked out by the server for this administrator; an action refreshes
  * every active query (`router.refresh()` in PayoutActions), which fetches the rows again with the new approval state.
  */
@@ -17,10 +18,12 @@ export function Component() {
   const [search] = useSearchParams();
   const status = search.get("status");
   const page = search.get("page");
+  const id = search.get("id");
   const params = new URLSearchParams();
   if (status !== null) params.set("status", status);
   if (page !== null) params.set("page", page);
-  const query = useApiQuery<Jsonify<AdminPayoutsView>>(queryKeys.admin("payouts", { status, page }), `/api/admin/payouts?${params}`, {
+  if (id !== null) params.set("id", id);
+  const query = useApiQuery<Jsonify<AdminPayoutsView>>(queryKeys.admin("payouts", { status, page, id }), `/api/admin/payouts?${params}`, {
     placeholderData: keepPreviousData,
   });
   return (

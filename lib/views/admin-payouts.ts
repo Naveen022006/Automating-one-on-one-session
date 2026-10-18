@@ -1,5 +1,6 @@
 import { activeAdminCount, PAGE_SIZE, parsePage } from "@/lib/admin/data";
 import { prisma } from "@/lib/db";
+import { isEntityId } from "@/lib/http";
 import { fourEyesEnabled, flaggedPaymentCounts, formatFeePercent, payoutApprovalView, postPayoutRefunds, recentUnapprovedFor } from "@/lib/payouts";
 
 /**
@@ -52,6 +53,11 @@ export interface AdminPayoutRow {
 
 export interface AdminPayoutsView {
   status: PayoutFilter;
+  /**
+   * `?id=` asked for ONE payout (the Money page links to the payout it shows): `rows` holds that payout, whatever its status, or nothing when no
+   * payout has the id. The tabs and counts are the usual ones.
+   */
+  single: boolean;
   page: number;
   pageCount: number;
   /** The number on each tab. */
@@ -62,12 +68,15 @@ export interface AdminPayoutsView {
 }
 
 export async function loadAdminPayoutsView(
-  params: { status?: string | null; page?: string | null },
+  params: { status?: string | null; page?: string | null; id?: string | null },
   viewerEmail: string,
 ): Promise<AdminPayoutsView> {
   const status = parsePayoutFilter(params.status);
-  const page = parsePage(params.page ?? undefined);
-  const where = status === "all" ? {} : { status };
+  // `?id=` (not empty) shows that one payout, in any status; an id that is not shaped like one matches nothing (it is never turned into the list).
+  const idParam = (params.id ?? "").trim();
+  const single = idParam !== "";
+  const page = single ? 1 : parsePage(params.page ?? undefined);
+  const where = single ? { id: isEntityId(idParam) ? idParam : "" } : status === "all" ? {} : { status };
   const [total, rows, counts] = await Promise.all([
     prisma.payout.count({ where }),
     prisma.payout.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: { influencer: { select: { id: true, name: true, suspendedAt: true } } } }),
@@ -81,6 +90,7 @@ export async function loadAdminPayoutsView(
 
   return {
     status,
+    single,
     page,
     pageCount: Math.max(1, Math.ceil(total / PAGE_SIZE)),
     counts: { PENDING: countOf("PENDING"), PAID: countOf("PAID"), CANCELLED: countOf("CANCELLED"), all: countOf("all") },
@@ -104,7 +114,10 @@ export async function loadAdminPayoutsView(
         approval: {
           required: approval.required,
           approved: approval.approved,
-          // The page names the approver only on a payout still to send ("Approved by ..."); another administrator's address is not sent otherwise.
+          // This page names the approver only on a payout still to send ("Approved by ..."): it sends what an ACTION needs, and another
+          // administrator's address is not needed on a payout that is done. The Money page (lib/views/admin-money.ts) deliberately differs: it is
+          // a ledger of what happened, so a PAID payout there says who approved it and who marked it as sent. That is no new disclosure: the
+          // Audit log already shows those addresses to every administrator who has passed the second factor.
           approvedByEmail: p.status === "PENDING" ? approval.approvedByEmail : null,
           canApprove: approval.canApprove,
           createdByViewer: approval.createdByViewer,

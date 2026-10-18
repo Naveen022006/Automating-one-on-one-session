@@ -159,7 +159,7 @@ function Reference({ row }: { row: Row }) {
         {row.referenceTail ? <div>UTR {row.referenceTail}</div> : <div className="subtle">No reference</div>}
         {row.payoutId && (
           <div className="subtle">
-            <AppLink href={`/admin/payouts?status=PAID#payout-${row.payoutId}`}>Open in Payouts</AppLink>
+            <AppLink href={`/admin/payouts?id=${encodeURIComponent(row.payoutId)}`}>Open in Payouts</AppLink>
           </div>
         )}
       </>
@@ -247,7 +247,7 @@ function ScheduledTable({ scheduled }: { scheduled: MoneyData["scheduled"] }) {
                 {formatMoney(p.netMinor, p.currency)}
                 <div className="subtle">fee {formatMoney(p.feeMinor, p.currency)}</div>
               </Cell>
-              <Cell label="Open"><AppLink href={`/admin/payouts?status=PENDING#payout-${p.id}`}>Open in Payouts</AppLink></Cell>
+              <Cell label="Open"><AppLink href={`/admin/payouts?id=${encodeURIComponent(p.id)}`}>Open in Payouts</AppLink></Cell>
             </tr>
           ))}
         </tbody>

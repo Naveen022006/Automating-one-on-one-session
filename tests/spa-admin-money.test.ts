@@ -482,7 +482,8 @@ test("M6 GET /api/admin/payouts: the tabs and their counts, the destination mask
     return { body: bodies[0], bodies, rows, mine: rows.filter((r) => r.influencer.id === influencerId) };
   };
   const pending = await onTab("", 1);
-  assert.deepEqual(keys(pending.body), ["counts", "onlyOneAdmin", "page", "pageCount", "rows", "status"]);
+  assert.deepEqual(keys(pending.body), ["counts", "onlyOneAdmin", "page", "pageCount", "rows", "single", "status"]);
+  assert.equal(pending.body.single, false);
   assert.deepEqual(keys(pending.body.counts), ["CANCELLED", "PAID", "PENDING", "all"]);
   assert.equal(pending.body.status, "PENDING", "the default tab is 'To send'");
   assert.deepEqual(pending.mine.map((r) => r.id), [payoutPending]);
@@ -972,7 +973,7 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
     feeMinor: 9000, feePercentText: "10%", netMinor: 81000, currency: "INR", status: "PENDING", reference: null, owedMinor: 0, hasFlaggedPayment: false, approval, ...over,
   });
   const data = (over: Record<string, unknown> = {}) =>
-    jsonify({ status: "PENDING" as const, page: 1, pageCount: 1, counts: { PENDING: 2, PAID: 1, CANCELLED: 0, all: 3 }, onlyOneAdmin: false, rows: [row(), row({ id: "po2", status: "PAID", reference: "UTR123456", owedMinor: 30000, approval: { ...approval, canApprove: false, required: false, canMarkPaid: false } })], ...over });
+    jsonify({ status: "PENDING" as const, single: false, page: 1, pageCount: 1, counts: { PENDING: 2, PAID: 1, CANCELLED: 0, all: 3 }, onlyOneAdmin: false, rows: [row(), row({ id: "po2", status: "PAID", reference: "UTR123456", owedMinor: 30000, approval: { ...approval, canApprove: false, required: false, canMarkPaid: false } })], ...over });
 
   const html = renderToStaticMarkup(createElement(PayoutsView, { data: data() }));
   assert.equal(statusLine(html), "To send: 2 payouts, page 1 of 1.");
@@ -986,6 +987,17 @@ test("PayoutsView: the server's approval fields reach the row's buttons untouche
   assert.ok(renderToStaticMarkup(createElement(PayoutsView, { data: data({ onlyOneAdmin: true }) })).includes("Payouts need a second administrator"));
   assert.equal(statusLine(renderToStaticMarkup(createElement(PayoutsView, { data: data({ status: "all", counts: { PENDING: 0, PAID: 0, CANCELLED: 0, all: 0 }, rows: [] }) }))), "All: no payouts, page 1 of 1.");
   assert.ok(!busyAttr(html) && busyAttr(renderToStaticMarkup(createElement(PayoutsView, { data: data(), busy: true }))));
+
+  // `?id=` shows ONE payout (the Money page links to it): a notice with the way back, no tab marked as the current one, a status line that says so.
+  const one = renderToStaticMarkup(createElement(PayoutsView, { data: data({ single: true, status: "PENDING", rows: [row({ id: "po9", status: "PAID", reference: "UTR9" })] }) }));
+  assert.equal(statusLine(one), "One payout.");
+  assert.ok(one.includes("Showing one payout.") && one.includes('href="/admin/payouts"'), "a link back to every payout");
+  assert.ok(!one.includes('aria-current="page"'), "no tab is current while one payout is shown");
+  assert.ok(one.includes("UTR UTR9") && !one.includes("po1"), "the one payout, nothing else");
+  assert.ok(!html.includes("Showing one payout."), "the usual list has no such notice");
+  const none = renderToStaticMarkup(createElement(PayoutsView, { data: data({ single: true, rows: [] }) }));
+  assert.equal(statusLine(none), "No payout has that id.");
+  assert.ok(none.includes("No such payout") && none.includes("No payout has that id."));
 });
 
 test("BookingsView and AuditView: status lines with the filter and page, tab and pagination links, the error text, busy only when told", async () => {
