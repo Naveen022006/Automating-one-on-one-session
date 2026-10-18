@@ -396,7 +396,7 @@ function ConnectStep({
 
   return (
     <div className="stack">
-      {!client.canConnect ? (
+      {status.state === "not-connected" && !client.canConnect ? (
         <p className="subtle">Finish step 2 first. Connecting is possible once Google has accepted your Client ID and Client Secret.</p>
       ) : status.state === "connected" ? (
         <div className="row row--between">
@@ -438,17 +438,20 @@ function ConnectStep({
           tone="danger"
           title="Reconnect needed"
           action={
-            <div className="row">
-              <a className="btn btn--primary btn--sm" href={href}>
-                Reconnect
-              </a>
-              {switchAccount("Switch account")}
-            </div>
+            // No client to reconnect with (it was removed): the way forward is step 2, not a link that would only bounce back.
+            client.canConnect ? (
+              <div className="row">
+                <a className="btn btn--primary btn--sm" href={href}>
+                  Reconnect
+                </a>
+                {switchAccount("Switch account")}
+              </div>
+            ) : undefined
           }
         >
           Google stopped accepting the connection{status.email ? ` for ${status.email}` : ""}
           {status.reason ? ` (${status.reason})` : ""}. Your booking page is offline until you reconnect. Paid bookings wait for their Meet link and are processed automatically once you reconnect.
-          {needsClientFix ? " Fix your Google client in step 2 first." : ""}
+          {needsClientFix || !client.canConnect ? " Fix your Google client in step 2 first." : ""}
         </Alert>
       ) : (
         <div className="stack">

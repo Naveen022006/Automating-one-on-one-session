@@ -344,7 +344,7 @@ test("GET returns the hand-picked fields only", { skip }, async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "private, no-store");
   assert.equal(res.headers.get("access-control-allow-origin"), null);
-  assert.deepEqual(keys(res.body), ["approval", "impact", "status", "suspension"]);
+  assert.deepEqual(keys(res.body), ["approval", "emailEnabled", "impact", "status", "suspension"]);
   assert.equal(res.body.status, "active");
   assert.equal(res.body.suspension, null);
   assert.deepEqual(res.body.approval, { required: false, at: null, byEmail: null });
@@ -399,7 +399,7 @@ test("suspend: 200 with the new view, one audit row, one e-mail with the reason;
   assert.equal(res.body.ok, true);
   assert.equal(res.body.emailed, true, "the e-mail went out, so the console may say so");
   const view = res.body.view as Record<string, unknown>;
-  assert.deepEqual(keys(view), ["approval", "impact", "status", "suspension"]);
+  assert.deepEqual(keys(view), ["approval", "emailEnabled", "impact", "status", "suspension"]);
   assert.equal(view.status, "suspended");
   const suspension = view.suspension as Record<string, unknown>;
   assert.deepEqual(keys(suspension), ["at", "byEmail", "reason"]);

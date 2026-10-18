@@ -176,7 +176,7 @@ test("M4 shape: hand-picked fields, one 'you' row, no ids, never the TOTP secret
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("cache-control"), "private, no-store");
     assert.equal(res.headers.get("access-control-allow-origin"), null);
-    assert.deepEqual(keys(res.body), ["admins", "email", "fourEyes", "fourEyesMinMinor", "mfa", "required"]);
+    assert.deepEqual(keys(res.body), ["admins", "email", "emailEnabled", "fourEyes", "fourEyesMinMinor", "mfa", "required"]);
     assert.equal(res.body.email, emailX);
     assert.equal(res.body.fourEyes, true);
     assert.equal(res.body.fourEyesMinMinor, 123_456);

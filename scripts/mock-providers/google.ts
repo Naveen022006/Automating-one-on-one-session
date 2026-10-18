@@ -111,6 +111,15 @@ function issueAccessToken(rt: Runtime, grantId: string): string {
 export const BAD_CLIENT_SECRET = "bad-secret";
 
 /**
+ * Whether a client ID is one the mock "knows": the built-in fixture client, or anything shaped like a real Google OAuth client ID
+ * (1234567890-abc.apps.googleusercontent.com), which is what every influencer's own client looks like. Anything else (a typo, a made-up
+ * name) is "not found", as it is at Google.
+ */
+function knownClientId(clientId: string): boolean {
+  return clientId === GOOGLE_CLIENT_ID || /^[0-9]+-[A-Za-z0-9_]+\.apps\.googleusercontent\.com$/.test(clientId);
+}
+
+/**
  * Accepts ANY client pair an influencer brings (doc/15: every influencer has their own Google client) and records the client ID, with
  * two exceptions: the secret `bad-secret` is always `invalid_client` ("Unauthorized"), and the built-in fixture client
  * (GOOGLE_CLIENT_ID of the shared mock app) still needs its own secret. Returns the client ID.
@@ -119,6 +128,7 @@ function checkClient(rt: Runtime, form: URLSearchParams): string {
   const clientId = form.get("client_id") ?? "";
   const secret = form.get("client_secret") ?? "";
   if (!clientId) throw oauthError(400, "invalid_request", "Missing required parameter: client_id");
+  if (!knownClientId(clientId)) throw oauthError(401, "invalid_client", "The OAuth client was not found.");
   if (!secret || secret === BAD_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
   if (clientId === GOOGLE_CLIENT_ID && secret !== GOOGLE_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
   const clients = (rt.state.google.clients ??= {});
@@ -227,9 +237,9 @@ function consentPage(c: Ctx): void {
   const q = c.query;
   const redirectUri = q.get("redirect_uri") ?? "";
   // Google shows its error pages (and does not redirect) for a wrong client or an unregistered redirect URI.
-  // Any client ID an influencer made up is "found" (the pair itself is checked at the token endpoint); a missing one is not.
+  // Any client ID shaped like a real one is "found" (the pair itself is checked at the token endpoint); anything else is not.
   const clientId = q.get("client_id") ?? "";
-  if (!clientId) return errorPage(c, 401, "Error 401: invalid_client", "The OAuth client was not found.");
+  if (!knownClientId(clientId)) return errorPage(c, 401, "Error 401: invalid_client", "The OAuth client was not found.");
   if (redirectUri !== `${rt.appUrl}/api/google/callback`) {
     return errorPage(c, 400, "Error 400: redirect_uri_mismatch", `The redirect URI in the request does not match the ones authorized for the OAuth client. The registered one is ${rt.appUrl}/api/google/callback; check GOOGLE_REDIRECT_URI.`);
   }

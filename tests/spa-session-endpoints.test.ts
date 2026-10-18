@@ -104,18 +104,18 @@ after(async () => {
 test("A1 GET /api/auth/session: signed out is a normal 200, signed in has exactly the five hand-picked fields", { skip }, async () => {
   const out = await ask(routes.session);
   assert.equal(out.status, 200);
-  assert.deepEqual(out.body, { authenticated: false });
+  assert.deepEqual(out.body, { authenticated: false, emailEnabled: true });
   assert.equal(out.headers.get("cache-control"), "private, no-store");
   assert.equal(out.headers.get("access-control-allow-origin"), null);
 
   const garbage = await ask(routes.session, influencerCookie("not-a-real-session-token"));
-  assert.deepEqual(garbage.body, { authenticated: false }, "an invalid cookie is signed out, not an error");
+  assert.deepEqual(garbage.body, { authenticated: false, emailEnabled: true }, "an invalid cookie is signed out, not an error");
 
   const token = await authLib.createSession(userId);
   const signedIn = await ask(routes.session, influencerCookie(token));
   assert.equal(signedIn.status, 200);
   assert.equal(signedIn.body.authenticated, true);
-  assert.deepEqual(keys(signedIn.body), ["authenticated", "user"]);
+  assert.deepEqual(keys(signedIn.body), ["authenticated", "emailEnabled", "user"]); // emailEnabled: doc/15, whether the site sends e-mail
   assert.deepEqual(keys(signedIn.body.user), ["email", "emailVerified", "name", "onboarded", "slug"]);
   assert.deepEqual(signedIn.body.user, {
     email: `spa-owner-${run}@example.com`,
@@ -139,9 +139,9 @@ test("A1 GET /api/auth/session: signed out is a normal 200, signed in has exactl
 
 test("A1 does not answer for an administrator cookie, and A2 does not answer for an influencer cookie", { skip }, async () => {
   const adminToken = await sessionLib.createAdminSession(Y);
-  assert.deepEqual((await ask(routes.session, influencerCookie(adminToken))).body, { authenticated: false });
+  assert.deepEqual((await ask(routes.session, influencerCookie(adminToken))).body, { authenticated: false, emailEnabled: true });
   const influencerToken = await authLib.createSession(userId);
-  assert.deepEqual((await ask(routes.adminSession, adminCookie(influencerToken))).body, { authenticated: false });
+  assert.deepEqual((await ask(routes.adminSession, adminCookie(influencerToken))).body, { authenticated: false, emailEnabled: true });
 });
 
 test("A3 GET /api/dashboard/shell: 401 signed out; otherwise the frame data with exactly the hand-picked fields, even before onboarding", { skip }, async () => {
@@ -173,15 +173,15 @@ test("A3 GET /api/dashboard/shell: 401 signed out; otherwise the frame data with
 test("A2 GET /api/admin/session reports the two-factor gate: ok, enroll, verify (never 401, never anything but name, email and gate)", { skip }, async () => {
   const signedOut = await ask(routes.adminSession);
   assert.equal(signedOut.status, 200);
-  assert.deepEqual(signedOut.body, { authenticated: false });
+  assert.deepEqual(signedOut.body, { authenticated: false, emailEnabled: true });
   assert.equal(signedOut.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual((await ask(routes.adminSession, adminCookie("garbage"))).body, { authenticated: false });
+  assert.deepEqual((await ask(routes.adminSession, adminCookie("garbage"))).body, { authenticated: false, emailEnabled: true });
 
   // Neither required nor enabled: ok.
   const plain = await sessionLib.createAdminSession(Y);
   const ok = await ask(routes.adminSession, adminCookie(plain));
   assert.equal(ok.status, 200);
-  assert.deepEqual(ok.body, { authenticated: true, admin: { name: "Spa Admin Y", email: emailY }, gate: "ok" });
+  assert.deepEqual(ok.body, { authenticated: true, admin: { name: "Spa Admin Y", email: emailY }, gate: "ok", emailEnabled: true });
   assertNoSecretKeys(ok.body);
   assert.ok(!JSON.stringify(ok.body).includes(Y), "no administrator id");
 
@@ -191,7 +191,7 @@ test("A2 GET /api/admin/session reports the two-factor gate: ok, enroll, verify 
     const enroll = await ask(routes.adminSession, adminCookie(plain));
     assert.equal(enroll.status, 200);
     assert.equal(enroll.body.gate, "enroll");
-    assert.deepEqual(keys(enroll.body), ["admin", "authenticated", "gate"]);
+    assert.deepEqual(keys(enroll.body), ["admin", "authenticated", "emailEnabled", "gate"]);
 
     // X has two-factor: a password-only session is "verify", a session that passed the second step is "ok".
     const stale = await passwordOnlySession(X);

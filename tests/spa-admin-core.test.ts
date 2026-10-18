@@ -322,7 +322,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "private, no-store");
   assert.equal(res.headers.get("access-control-allow-origin"), null);
-  assert.deepEqual(keys(res.body), ["bookings", "connections", "currencies", "fee", "influencer", "onlyOneAdmin", "payoutAccount", "payouts", "readinessItems", "services", "verified"]);
+  assert.deepEqual(keys(res.body), ["bookings", "connections", "currencies", "emailEnabled", "fee", "influencer", "onlyOneAdmin", "payoutAccount", "payouts", "readinessItems", "services", "verified"]);
   assertNoSecretKeys(res.body);
 
   // The money-handling secrets: no ciphertext, no full number, anywhere in the body.
@@ -349,7 +349,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   const items = res.body.readinessItems as Record<string, unknown>[];
   assert.equal(items.length, 7);
   for (const item of items) assert.deepEqual(keys(item), ["key", "label", "required", "state"], "no detail text, no href");
-  assert.deepEqual(keys(res.body.connections), ["gmailSend", "google", "whatsapp"]);
+  assert.deepEqual(keys(res.body.connections), ["gmailSend", "google", "googleClientSaved", "whatsapp"]);
   assert.deepEqual((res.body.connections as { google: unknown }).google, { state: "reconnect", email: null });
   const whatsapp = (res.body.connections as { whatsapp: { text: string; tone?: string } }).whatsapp;
   assert.ok(whatsapp.text.startsWith("+91 98765 43210, "), `the number and the state, as on the old page: ${whatsapp.text}`);
