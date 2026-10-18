@@ -71,8 +71,9 @@ export async function POST(req: Request) {
   }
 
   if (body.action === "disconnect") {
-    const before = await prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: { status: true, wantLinked: true, phoneE164: true } });
-    const hadSomething = Boolean(before && (before.wantLinked || before.status !== "NOT_LINKED"));
+    const before = await prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: { wantLinked: true, phoneE164: true } });
+    // `wantLinked` is what the influencer asked for and has not undone: a repeat while the worker is still finishing records nothing.
+    const hadSomething = Boolean(before?.wantLinked);
     await disconnectLink(influencerId);
     if (hadSomething) await recordActivity({ influencerId, action: "whatsapp_web.disconnected", detail: { phone: maskE164(before?.phoneE164), reason: "influencer" }, req });
     return jsonView(await getWhatsAppWebView(influencerId));
