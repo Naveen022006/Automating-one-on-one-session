@@ -68,7 +68,7 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "google.disconnected": { account: "pat@gmail.example" },
   "whatsapp.connected": { phone: "+91 98765 43210" },
   "whatsapp.disconnected": { phone: "+91 98765 43210" },
-  "whatsapp_web.consent": { version: "wa-web-2026-11-1" },
+  "whatsapp_web.consent": { version: "wa-web-2026-11-2" },
   "whatsapp_web.linked": { phone: "+91 ••••••• 210" },
   "whatsapp_web.disconnected": { phone: "+91 ••••••• 210", reason: "influencer" },
   "whatsapp_web.suspended": { code: "send-failures" },

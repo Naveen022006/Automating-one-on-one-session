@@ -161,6 +161,18 @@ export class EncryptedAuthState implements WhatsAppAuthStore {
     this.markDirty();
   }
 
+  /**
+   * Lets the manager (never the web process: the login has ONE writer) remove entries from the key tables in place, for example a
+   * customer's contact keys (lib/whatsapp-web/prune.ts). `change` returns how many entries it removed; a change goes through the same
+   * coalesced write as the library's own. Returns that number.
+   */
+  mutateKeys(change: (keys: Record<string, Record<string, unknown>>) => number): number {
+    if (this.disposed) return 0;
+    const removed = change(this.blob.keys);
+    if (removed > 0) this.markDirty();
+    return removed;
+  }
+
   private markDirty(): void {
     this.dirty = true;
     if (this.timer !== null) return; // coalesce: one pending write covers every change until it runs

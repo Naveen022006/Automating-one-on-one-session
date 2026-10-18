@@ -52,7 +52,7 @@ export type WhatsAppWebRequest =
  * Bumped whenever RISK_TEXT changes in substance, so an old consent is never taken for the new wording. The server refuses a
  * "start" whose consentVersion differs.
  */
-export const CONSENT_VERSION = "wa-web-2026-11-1";
+export const CONSENT_VERSION = "wa-web-2026-11-2";
 
 /** Plain-language statement shown before linking and stored (by version) with the consent. */
 export const RISK_TEXT =
@@ -61,6 +61,8 @@ export const RISK_TEXT =
   "do not allow it, and WhatsApp may restrict or ban the number, without notice and without a way for us to prevent or reverse it. " +
   "Use a number you can afford to lose, not your only business number. Only messages about a booking that a customer made with you are sent, " +
   "slowly and up to a daily limit. Your customers' replies and your chats are not read or stored. We keep an encrypted login for the " +
-  "linked device so it stays connected, and you can disconnect at any time (we then delete it; remove the device in WhatsApp > Linked devices too). " +
+  "linked device so it stays connected; WhatsApp's encryption keeps small technical records in that login that are named after your " +
+  "customers' phone numbers (no message text), and we remove them when a customer's data is erased and for customers who no longer " +
+  "have a booking with you. You can disconnect at any time (we then delete the login; remove the device in WhatsApp > Linked devices too). " +
   "If sending fails or the link is lost, messages go through the official connection, SMS or e-mail instead. " +
   "The official WhatsApp Business API connection is the safer option and does not put your number at risk.";

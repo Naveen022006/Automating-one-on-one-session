@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { EncryptedAuthState } from "../lib/whatsapp-web/auth-state";
 import type { WhatsAppQrConfig } from "../lib/whatsapp-web/config";
 import { kvKeys, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
+import { jidUser, pruneAllExcept, pruneContacts } from "../lib/whatsapp-web/prune";
+import { parsePruneRequests } from "../lib/whatsapp-web/prune-requests";
 import { realClock, SendQueue, type Clock, type GuardAnswer, type QueuedSend } from "../lib/whatsapp-web/send-queue";
 import { SELF_TEST_BOOKING_ID, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "../lib/whatsapp-web/send";
 import type { SessionRepo, SessionRow } from "../lib/whatsapp-web/session-repo";
@@ -47,6 +49,9 @@ export const PAIRING_WINDOW_MS = 5 * 60_000;
  * it back on shutdown. A worker that does not hold it stays idle and says so once. A crashed holder is replaced once the lease runs out.
  */
 export const LEASE_TTL_MS = 20_000;
+/** How often a connected number looks for "forget this customer" requests, and how often it forgets every contact without a booking. */
+export const PRUNE_REQUESTS_EVERY_MS = 10_000;
+export const PRUNE_ALL_EVERY_MS = 6 * 60 * 60_000;
 export const HEARTBEAT_TTL_MS = 15_000;
 export const SHUTDOWN_BUDGET_MS = 8_000;
 /**
@@ -75,6 +80,11 @@ export interface ManagerDeps {
   log?: (line: string) => void;
   /** This worker's name in the lease. Default: a random one per manager. */
   workerId?: string;
+  /**
+   * The phone numbers (digits) of the customers who still have a non-erased booking with this influencer. Without it the periodic
+   * clean-up of other contacts' keys in the stored login (lib/whatsapp-web/prune.ts) does not run; erase requests are still honoured.
+   */
+  keepContacts?: (influencerId: string) => Promise<Iterable<string>>;
   /** Test hooks for the auth store's write coalescing. */
   authDelayMs?: number;
   authSetTimer?: (fn: () => void, ms: number) => unknown;
@@ -103,6 +113,8 @@ interface Live {
   statusKnown: SessionRow["status"];
   /** Jobs inside `send()` right now (see MAX_JOBS_PER_SESSION). */
   activeSends: number;
+  nextPruneRequestsAt: number;
+  nextPruneAllAt: number;
   /** Database writes and event handlers of one session run one after the other. */
   chain: Promise<void>;
 }
@@ -349,6 +361,38 @@ export class WhatsAppWebManager {
     if (live.phase === "backoff" && live.reconnectAt !== null && this.clock.now() >= live.reconnectAt) {
       await this.connect(live);
     }
+    await this.maintainContacts(live);
+  }
+
+  /**
+   * Customers' contact keys in the stored login (they are named after the customer's phone number): drops the contacts of customers
+   * who asked to be erased (requests published by lib/privacy.ts, taken here so the worker stays the only writer of the login), and
+   * every PRUNE_ALL_EVERY_MS drops each contact that has no non-erased booking with this influencer. Never throws.
+   */
+  private async maintainContacts(live: Live): Promise<void> {
+    if (live.phase === "stopping" || live.auth.isDisposed) return;
+    const now = this.clock.now();
+    const id = live.influencerId;
+    try {
+      if (now >= live.nextPruneRequestsAt) {
+        live.nextPruneRequestsAt = now + PRUNE_REQUESTS_EVERY_MS;
+        const phones = parsePruneRequests(await this.d.kv.drain(kvKeys.prune(id)));
+        if (phones.length > 0) {
+          const removed = live.auth.mutateKeys((keys) => pruneContacts(keys, phones));
+          this.log(`session ${id}: forgot ${removed} stored key(s) of ${phones.length} erased customer(s)`);
+        }
+      }
+      if (this.d.keepContacts && now >= live.nextPruneAllAt && live.auth.hasCreds) {
+        live.nextPruneAllAt = now + PRUNE_ALL_EVERY_MS;
+        const keep = [...(await this.d.keepContacts(id))];
+        const me = (live.auth.getCreds() as { me?: { id?: unknown; lid?: unknown } } | undefined)?.me;
+        const own = [live.phoneE164, jidUser(me?.id), jidUser(me?.lid)].filter((v): v is string => typeof v === "string" && v !== "");
+        const removed = live.auth.mutateKeys((keys) => pruneAllExcept(keys, [...keep, ...own]));
+        if (removed > 0) this.log(`session ${id}: forgot ${removed} stored key(s) of contacts without a booking`);
+      }
+    } catch (e) {
+      this.log(`session ${id}: contact clean-up failed (${errorName(e)})`);
+    }
   }
 
   // ---- starting a session --------------------------------------------------------------------------------------------------
@@ -395,6 +439,8 @@ export class WhatsAppWebManager {
       phoneE164: row.phoneE164,
       statusKnown: row.status,
       activeSends: 0,
+      nextPruneRequestsAt: 0,
+      nextPruneAllAt: 0,
       chain: Promise.resolve(),
       queue: new SendQueue({
         influencerId: id,
@@ -417,6 +463,7 @@ export class WhatsAppWebManager {
       }),
     };
     this.lives.set(id, live);
+    await this.maintainContacts(live); // before the socket exists: a restored login is cleaned first
     // A restored or resumed login shows as "reconnecting" until the socket is open; a first link shows "waiting for scan" once a code exists.
     if (hadLogin) await this.d.repo.update(id, { status: "RECONNECTING", lastErrorCode: null, lastErrorText: null });
     else await this.d.repo.update(id, { lastErrorCode: null, lastErrorText: null });

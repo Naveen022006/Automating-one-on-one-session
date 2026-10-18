@@ -26,7 +26,9 @@ export function PrivacyView() {
         A host can choose to link their own WhatsApp number to the service as a linked device, by scanning a QR code, instead of using the
         official WhatsApp Business connection. This is an unofficial method and WhatsApp may restrict or ban the number. For it we store an
         encrypted login for the linked device (so it stays connected), the linked phone number, the device name, when and in which version the
-        host accepted the risks, and counts of messages sent. Messages are sent only about a booking that a customer made with that host,
+        host accepted the risks, and counts of messages sent. WhatsApp&rsquo;s encryption also keeps small technical records for each contact
+        inside that login, named after the contact&rsquo;s phone number (no message text); we remove a customer&rsquo;s records when their
+        data is erased and, regularly, for customers who no longer have a booking with that host. Messages are sent only about a booking that a customer made with that host,
         from the host&rsquo;s number through WhatsApp. We do not read or store customers&rsquo; replies or the host&rsquo;s chats. When the
         host disconnects, we delete the stored login; the device should also be removed in WhatsApp under Linked devices.
       </p>

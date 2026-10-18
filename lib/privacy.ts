@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { requestContactPrune } from "@/lib/whatsapp-web/prune-requests";
 
 /**
  * The ONE definition of "this booking still has a session to deliver": its status holds a seat (a pending request, a hold, a payment
@@ -30,7 +31,7 @@ export async function eraseCustomerData(
   const email = emailInput.trim().toLowerCase();
   const bookings = await prisma.booking.findMany({
     where: { customerEmail: email, redactedAt: null, session: { service: { influencerId } } },
-    select: { id: true, status: true, session: { select: { endTime: true } } },
+    select: { id: true, status: true, whatsappE164: true, session: { select: { endTime: true } } },
   });
   const erasable = bookings.filter((b) => !isKeptBooking(b, now));
 
@@ -58,5 +59,8 @@ export async function eraseCustomerData(
     });
     erased += changed;
   }
+  // The linked WhatsApp (if the influencer has one) keeps per-contact keys named after the customer's phone number: ask the worker to
+  // forget them. Best effort and never part of the erasure's outcome; the worker also clears every contact without a booking every few hours.
+  if (erased > 0) await requestContactPrune(influencerId, erasable.map((b) => b.whatsappE164));
   return { found: bookings.length, erased, blocked: bookings.length - erasable.length };
 }

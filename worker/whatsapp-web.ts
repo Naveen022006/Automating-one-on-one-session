@@ -1,5 +1,6 @@
 import { alertInfluencer } from "../lib/alerts";
 import { reportError } from "../lib/observability";
+import { prisma } from "../lib/db";
 import { bookingAllowsMessage } from "../lib/whatsapp-web/booking-guard";
 import { readQrConfig } from "../lib/whatsapp-web/config";
 import { fakeTransportFactory } from "../lib/whatsapp-web/fake-transport";
@@ -46,6 +47,15 @@ export async function startWhatsAppWeb(overrides: Partial<ManagerDeps> = {}): Pr
     kv: getKv(),
     transportFactory,
     guard: bookingAllowsMessage,
+    // Customers who still have a non-erased booking with this influencer: every other contact's keys are dropped from the stored login.
+    keepContacts: async (influencerId) => {
+      const rows = await prisma.booking.findMany({
+        where: { redactedAt: null, whatsappE164: { not: "" }, session: { service: { influencerId } } },
+        distinct: ["whatsappE164"],
+        select: { whatsappE164: true },
+      });
+      return rows.map((r) => r.whatsappE164);
+    },
     notify: async (influencerId, kind, detail) => {
       await alertInfluencer(influencerId, { kind: kind === "logged-out" ? "whatsapp-qr-logged-out" : "whatsapp-qr-suspended", detail });
     },
