@@ -236,13 +236,13 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `WHATSAPP_QR_ENABLED` | no | `false` | The platform switch. Off: no socket is ever opened, no influencer sees the option, messaging ignores it. Turning it **off** is also the kill switch: at the next worker start every linked number is disconnected and every stored login is deleted (unless `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED=true`). Needs `REDIS_URL` (the web app and the worker share the QR code and the daily counters through it) and exactly **one** worker |
 | `WHATSAPP_QR_MAX_SESSIONS` | no | `10` | Most numbers the worker keeps connected (each is a live socket and some memory). Extra influencers stay "not linked" with an explanation until room appears; numbers that were linked before get the places first |
 | `WHATSAPP_QR_DAILY_CAP` | no | `150` | Messages one linked number may send per Indian calendar day (counted in Redis). Over the cap a message goes by the official connection, SMS or e-mail |
-| `WHATSAPP_QR_MIN_GAP_MS` | no | `4000` | Fixed minimum time between two messages from one number (at least `1000`). A plain throttle to protect the influencer's number; there is no randomness in it |
+| `WHATSAPP_QR_MIN_GAP_MS` | no | `4000` | Fixed minimum time between two messages from one number (at least `1000`, at most `14000`: a larger value is lowered with a start-up warning, because a request that would wait over 20 s is refused at once and sent another way, so a gap of 20 s or more would send almost everything another way). A plain throttle to protect the influencer's number; there is no randomness in it |
 | `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED` | no | `false` | `true`: keep the encrypted logins when `WHATSAPP_QR_ENABLED` is switched off, so switching it on again needs no new scan |
 | `WHATSAPP_QR_FAKE` | no | `false` | **Dev only.** A local simulator instead of WhatsApp: a QR string, "connected" 12 s later as a made-up number, messages are logged. Accepted only when `NODE_ENV` is not production **and** `APP_URL` is a local address; **refused in production** (start-up error) |
 
 What runs where: the web app only records what the influencer asked for and reads the status and QR code; the **worker**
-(`worker/whatsapp-web-manager.ts`) is the only process that opens sockets. A second worker is harmless: a lease in the shared store (`wa-web:manager:lease`, `SET NX PX`, 20 s, renewed
-every pass, released on shutdown) lets only one worker hold the sockets; the other stays idle and logs it once (WhatsApp ends a login that
+(`worker/whatsapp-web-manager.ts`) is the only process that opens sockets. A second worker opens no socket: a lease in the shared store (`wa-web:manager:lease`, `SET NX PX`, 20 s, renewed
+every 5 s on a timer of its own, released on shutdown; sends and login saves require it) lets only one worker hold the sockets; the other stays idle and logs it once (WhatsApp ends a login that
 is used from two places, and two writers would overwrite each other's saved login). The QR payload lives in Redis for 60 s and is never stored in Postgres or logged. The
 login of each linked device (credentials and Signal keys) is one AES-256-GCM blob in `whatsapp_web_sessions.auth_state_enc`
 (AAD `wa-web:<influencerId>`), deleted on disconnect, on logout from the phone, by the kill switch, and with the influencer;
@@ -256,7 +256,7 @@ copy of its login, held for as long as the worker runs. Not measured on a real h
 the worker's memory before raising `WHATSAPP_QR_MAX_SESSIONS`. (3) **Rollouts:** restarting or redeploying the worker drops the
 connections and reconnects every linked number from its stored login shortly after the worker starts, with no new scan; messages that fall in
 that gap go by the official connection, SMS or e-mail. If the new worker starts before the old one has stopped it stays idle until the old one releases
-the lease (at its shutdown) or the lease runs out (20 s after a crash); linked numbers are then restored from the stored login. (4) The influencer-facing and administrator screens are described in `README.md`
+the lease (at its shutdown) or the lease runs out (20 s after a crash); linked numbers are then restored from the stored login. Until then the idle worker's message jobs find no sockets and send the official way, so an overlap during a deploy is not free (it costs the QR route for that time, nothing more). (4) The influencer-facing and administrator screens are described in `README.md`
 ("WhatsApp by QR code") and `doc/12-front-end.md`; the one-time check with a spare phone number is the list in the README.
 
 ### Email

@@ -45,15 +45,14 @@ test("safely: a throw, a rejection and a throwing error handler never escape", a
 test("the process net: an unhandled rejection is one line with the error name and the worker keeps running; an uncaught exception is only observed", () => {
   const proc = new EventEmitter();
   const lines: string[] = [];
-  installProcessGuards(proc as never, (l) => lines.push(l));
+  installProcessGuards(proc as never, (l) => lines.push(l), { report: () => {} });
   assert.equal(proc.listenerCount("unhandledRejection"), 1);
   assert.equal(proc.listenerCount("uncaughtException"), 0, "Node's default (the process exits) is not replaced");
   assert.equal(proc.listenerCount("uncaughtExceptionMonitor"), 1);
   proc.emit("unhandledRejection", new RangeError(SECRET), Promise.resolve());
   proc.emit("uncaughtExceptionMonitor", new TypeError(SECRET), "uncaughtException");
-  assert.equal(lines.length, 2);
   assert.match(lines[0], /unhandled promise rejection \(RangeError\); continuing/);
-  assert.match(lines[1], /uncaught exception \(TypeError, uncaughtException\); the process will exit/);
+  assert.match(lines.at(-1)!, /uncaught exception \(TypeError, uncaughtException\); the process will exit/);
   assert.ok(!lines.join("\n").includes("9999"), "no message text or number in the log");
 });
 
@@ -144,4 +143,78 @@ test("safeEvents wraps all four transport events", async () => {
   wrapped.onDelivery({ providerMessageId: "m", status: "sent" });
   await settle();
   assert.equal(errors.length, 4);
+});
+
+// ---- D5: reporting, scrubbing and the crash-loop exit --------------------------------------------------------------------------
+
+import { REJECTION_LIMIT, REJECTION_WINDOW_MS, scrubbedError, scrubLogText } from "../worker/process-guards";
+
+test("scrubLogText hides environment secrets, URL credentials, bearer tokens, phone numbers and WhatsApp addresses", () => {
+  const saved = process.env.TOKEN_ENCRYPTION_KEY;
+  process.env.TOKEN_ENCRYPTION_KEY = "SUPER-SECRET-KEY-VALUE-123";
+  try {
+    const out = scrubLogText("failed with SUPER-SECRET-KEY-VALUE-123 for +91 98765 43210 and 919876543210@s.whatsapp.net via redis://user:pw@host Bearer abc.def");
+    for (const leak of ["SUPER-SECRET", "98765 43210", "919876543210", "user:pw", "abc.def"]) assert.ok(!out.includes(leak), `${leak} leaked: ${out}`);
+    assert.match(out, /\[number\]/);
+  } finally {
+    if (saved === undefined) delete process.env.TOKEN_ENCRYPTION_KEY;
+    else process.env.TOKEN_ENCRYPTION_KEY = saved;
+  }
+});
+
+test("an unhandled rejection is logged with its scrubbed stack and reported as a scrubbed error; the worker keeps running", () => {
+  const proc = new EventEmitter();
+  const lines: string[] = [];
+  const reports: { error: Error; context: Record<string, unknown> }[] = [];
+  let exited = 0;
+  installProcessGuards(proc as never, (l) => lines.push(l), { report: (error, context) => reports.push({ error: error as Error, context }), exit: () => void exited++ });
+  const failure = new TypeError(`could not send to +919999988888 (${"919999988888"}@s.whatsapp.net)`);
+  proc.emit("unhandledRejection", failure, Promise.resolve());
+  assert.equal(exited, 0);
+  assert.match(lines[0], /unhandled promise rejection \(TypeError\); continuing/);
+  assert.ok(lines.length >= 2 && /TypeError/.test(lines[1]) && /at /.test(lines[1]), "the stack is logged");
+  assert.ok(!lines.join("\n").includes("9999988888"), "no number in the log");
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].context.where, "worker:unhandled-rejection");
+  assert.equal(reports[0].error.name, "TypeError");
+  assert.ok(!reports[0].error.message.includes("9999988888") && !(reports[0].error.stack ?? "").includes("9999988888"), "nor in what is reported");
+  assert.ok(scrubbedError("a plain string rejection").message.length > 0);
+});
+
+test("a crash loop of rejections ends the process (once) so the supervisor sees it; spread-out ones never do", () => {
+  const proc = new EventEmitter();
+  let t = 0;
+  const exits: number[] = [];
+  installProcessGuards(proc as never, () => {}, { report: () => {}, exit: (c) => void exits.push(c), now: () => t });
+  for (let i = 0; i < REJECTION_LIMIT - 1; i++) {
+    t += 1_000;
+    proc.emit("unhandledRejection", new Error("x"));
+  }
+  assert.deepEqual(exits, [], "one short of the limit");
+  t += 1_000;
+  proc.emit("unhandledRejection", new Error("x"));
+  assert.deepEqual(exits, [1]);
+  proc.emit("unhandledRejection", new Error("x"));
+  assert.deepEqual(exits, [1], "asked once");
+
+  // The same number of rejections spread over a long time is not a loop.
+  const slow = new EventEmitter();
+  let u = 0;
+  const slowExits: number[] = [];
+  installProcessGuards(slow as never, () => {}, { report: () => {}, exit: (c) => void slowExits.push(c), now: () => u });
+  for (let i = 0; i < REJECTION_LIMIT * 3; i++) {
+    u += REJECTION_WINDOW_MS / 4;
+    slow.emit("unhandledRejection", new Error("x"));
+  }
+  assert.deepEqual(slowExits, []);
+});
+
+test("a reporter or a logger that throws never breaks the net", () => {
+  const proc = new EventEmitter();
+  installProcessGuards(proc as never, () => {
+    throw new Error("log down");
+  }, { report: () => {
+    throw new Error("webhook down");
+  }, exit: () => {} });
+  assert.doesNotThrow(() => proc.emit("unhandledRejection", new Error("x")));
 });

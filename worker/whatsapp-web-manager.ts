@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { EncryptedAuthState } from "../lib/whatsapp-web/auth-state";
+import { EncryptedAuthState, type AuthBlobStorage } from "../lib/whatsapp-web/auth-state";
 import type { WhatsAppQrConfig } from "../lib/whatsapp-web/config";
-import { kvKeys, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
+import { kvKeys, QR_FIRST_LIFE_MS, QR_ROTATE_MS, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
 import { jidUser, pruneAllExcept, pruneContacts } from "../lib/whatsapp-web/prune";
 import { parsePruneRequests } from "../lib/whatsapp-web/prune-requests";
 import { realClock, SendQueue, type Clock, type GuardAnswer, type QueuedSend } from "../lib/whatsapp-web/send-queue";
@@ -49,6 +49,8 @@ export const PAIRING_WINDOW_MS = 5 * 60_000;
  * it back on shutdown. A worker that does not hold it stays idle and says so once. A crashed holder is replaced once the lease runs out.
  */
 export const LEASE_TTL_MS = 20_000;
+/** How often the lease is renewed, on a timer of its own (not once per reconcile pass, which can take longer than the lease). */
+export const LEASE_RENEW_EVERY_MS = 5_000;
 /** How often a connected number looks for "forget this customer" requests, and how often it forgets every contact without a booking. */
 export const PRUNE_REQUESTS_EVERY_MS = 10_000;
 export const PRUNE_ALL_EVERY_MS = 6 * 60 * 60_000;
@@ -78,6 +80,8 @@ export interface ManagerDeps {
   onDelivery?: (influencerId: string, info: { providerMessageId: string; status: WhatsAppWebDeliveryStatus }) => void;
   /** One line per notable event; never a QR payload, a login, a message text or a customer number. */
   log?: (line: string) => void;
+  /** Longest wait for one call to the transport (default SEND_CALL_TIMEOUT_MS). Tests shorten it. */
+  callTimeoutMs?: number;
   /** This worker's name in the lease. Default: a random one per manager. */
   workerId?: string;
   /**
@@ -113,6 +117,8 @@ interface Live {
   statusKnown: SessionRow["status"];
   /** Jobs inside `send()` right now (see MAX_JOBS_PER_SESSION). */
   activeSends: number;
+  /** QR codes this connection has produced so far (the first lives 60 s, the next ones about 20 s). */
+  qrCount: number;
   nextPruneRequestsAt: number;
   nextPruneAllAt: number;
   /** Database writes and event handlers of one session run one after the other. */
@@ -126,6 +132,7 @@ export class WhatsAppWebManager {
   private readonly clock: Clock;
   private readonly log: (line: string) => void;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private reconciling: Promise<void> | null = null;
   private closed = false;
   private readonly workerId: string;
@@ -147,6 +154,7 @@ export class WhatsAppWebManager {
     const tick = () => void this.reconcile().catch((e) => this.log(`reconcile failed: ${errorName(e)}`));
     tick();
     this.timer = setInterval(tick, RECONCILE_EVERY_MS);
+    this.leaseTimer = setInterval(() => void this.maintainLease().catch((e) => this.log(`lease renewal failed: ${errorName(e)}`)), LEASE_RENEW_EVERY_MS);
   }
 
   /** Stops the loop, flushes every stored login and closes every socket. The sessions stay as they are in the database. */
@@ -154,6 +162,8 @@ export class WhatsAppWebManager {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
     if (this.reconciling) await this.reconciling.catch(ok);
     const work = Promise.all(
       [...this.lives.values()].map(async (live) => {
@@ -188,7 +198,7 @@ export class WhatsAppWebManager {
   /** True when a message for this influencer could go out through their linked number right now. */
   isReady(influencerId: string): boolean {
     const live = this.lives.get(influencerId);
-    return Boolean(live && live.phase === "open" && !live.queue.tripped && this.d.config().enabled);
+    return Boolean(live && live.phase === "open" && !live.queue.tripped && this.d.config().enabled && this.leaseValid());
   }
 
   /** Queues one booking message on the influencer's linked number. Never throws. */
@@ -197,7 +207,8 @@ export class WhatsAppWebManager {
     const live = this.lives.get(req.influencerId);
     if (!live || live.phase === "stopping") return { ok: false, reason: "not-linked", retryable: false };
     if (live.queue.tripped) return { ok: false, reason: "circuit-open", retryable: false };
-    if (live.phase !== "open") return { ok: false, reason: "not-connected", retryable: true };
+    // A worker that cannot show a valid lease must not send: another worker may own this login by now.
+    if (live.phase !== "open" || !this.leaseValid()) return { ok: false, reason: "not-connected", retryable: true };
     if (live.activeSends >= MAX_JOBS_PER_SESSION) return { ok: false, reason: "busy", retryable: true };
     live.activeSends += 1;
     try {
@@ -221,32 +232,71 @@ export class WhatsAppWebManager {
   }
 
   /**
-   * Takes or renews the lease. False means "stay idle this pass". A lease that cannot be renewed (another worker has it) closes every
-   * socket at once, WITHOUT writing the login: the new owner has the newer state. A store that does not answer keeps what is open
-   * until the lease would have run out, and never starts anything new.
+   * The lease is valid while it was renewed (or taken) less than LEASE_TTL_MS ago. The time is that of the START of the successful call,
+   * so a slow answer never makes it look younger than it is. Sends and login saves require it (see `send` and `guardedStorage`).
    */
-  private async holdLease(): Promise<boolean> {
-    const now = this.clock.now();
+  private leaseValid(): boolean {
+    return this.holdsLease && this.clock.now() - this.leaseRenewedAt < LEASE_TTL_MS;
+  }
+
+  /** Renewed recently enough to start anything new (a store that stops answering lets running sockets live a while, but starts nothing). */
+  private leaseFresh(): boolean {
+    return this.holdsLease && this.clock.now() - this.leaseRenewedAt < 2 * LEASE_RENEW_EVERY_MS;
+  }
+
+  private leaseOp: Promise<void> | null = null;
+
+  /**
+   * Renews the lease. Runs on its own timer every LEASE_RENEW_EVERY_MS (independent of the reconcile pass, which can take longer than the
+   * lease: every logout waits up to 10 s and the rows are handled one after another) and at the start of each pass. If it cannot be
+   * renewed because another worker has it, every socket is closed at once WITHOUT writing the login (the new owner has the newer state).
+   * If it ran out but nobody took it, it is taken back and nothing else changes. A store that does not answer changes nothing until
+   * the lease would have run out, then the sockets are closed. Calls never overlap.
+   */
+  maintainLease(): Promise<void> {
+    if (!this.holdsLease) return Promise.resolve();
+    if (this.leaseOp) return this.leaseOp;
+    const op = this.renewLease().finally(() => {
+      this.leaseOp = null;
+    });
+    this.leaseOp = op;
+    return op;
+  }
+
+  private async renewLease(): Promise<void> {
+    const startedAt = this.clock.now();
     try {
-      if (this.holdsLease) {
-        if (await this.d.kv.renew(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
-          this.leaseRenewedAt = now;
-          return true;
-        }
-        // Not renewed: it ran out (this process was stalled for longer than the lease) or another worker took it. If nobody did, take
-        // it straight back and carry on; if somebody did, close every socket now.
-        if (await this.d.kv.setNx(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
-          this.leaseRenewedAt = now;
-          this.log("the lease on the linked numbers had run out; nobody else had taken it, holding it again");
-          return true;
-        }
-        this.holdsLease = false;
-        this.log("the lease on the linked numbers was lost to another worker; closing every socket");
-        await this.abandonAll();
+      if (await this.d.kv.renew(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
+        this.leaseRenewedAt = startedAt;
+        return;
       }
+      // Not renewed: it ran out (this process was stalled for longer than the lease) or another worker took it. If nobody did, take it
+      // straight back and carry on; if somebody did, close every socket now.
+      if (await this.d.kv.setNx(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
+        this.leaseRenewedAt = startedAt;
+        this.log("the lease on the linked numbers had run out; nobody else had taken it, holding it again");
+        return;
+      }
+      await this.loseLease("the lease on the linked numbers was lost to another worker; closing every socket");
+    } catch {
+      if (this.clock.now() - this.leaseRenewedAt >= LEASE_TTL_MS) await this.loseLease("the lease could not be renewed in time; closing every socket");
+    }
+  }
+
+  private async loseLease(why: string): Promise<void> {
+    if (!this.holdsLease) return;
+    this.holdsLease = false;
+    this.log(why);
+    await this.abandonAll();
+  }
+
+  /** Takes the lease when nobody holds it. False means "stay idle this pass" (logged once). */
+  private async acquireLease(): Promise<boolean> {
+    const startedAt = this.clock.now();
+    try {
       if (await this.d.kv.setNx(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
         this.holdsLease = true;
-        this.leaseRenewedAt = now;
+        this.leaseRenewedAt = startedAt;
         this.idleLogged = false;
         this.log("holding the lease on the linked numbers");
         return true;
@@ -255,16 +305,26 @@ export class WhatsAppWebManager {
         this.idleLogged = true;
         this.log("another worker holds the lease on the linked numbers; staying idle");
       }
-      return false;
     } catch {
-      if (this.holdsLease && now - this.leaseRenewedAt < LEASE_TTL_MS) return this.lives.size > 0; // keep what is open, start nothing new
-      if (this.holdsLease) {
-        this.holdsLease = false;
-        this.log("the lease could not be renewed in time; closing every socket");
-        await this.abandonAll();
-      }
-      return false;
+      /* the store does not answer: no lease, no socket */
     }
+    return false;
+  }
+
+  /** The stored login, with writes that need a valid lease: without it the write is skipped and the sockets are closed. */
+  private guardedStorage(influencerId: string): AuthBlobStorage {
+    const inner = this.d.repo.authStorage(influencerId);
+    return {
+      load: () => inner.load(),
+      clear: () => inner.clear(),
+      save: async (sealed) => {
+        if (!this.leaseValid()) {
+          void this.loseLease("a login save was refused because the lease is no longer valid; closing every socket");
+          return; // skipped: whoever holds the numbers now has the newer login
+        }
+        await inner.save(sealed);
+      },
+    };
   }
 
   /** Closes every socket without touching the stored logins or the sessions' status (another worker takes them over). */
@@ -283,7 +343,8 @@ export class WhatsAppWebManager {
   private async pass(): Promise<void> {
     const cfg = this.d.config();
     if (cfg.enabled) {
-      if (!(await this.holdLease())) return;
+      if (this.holdsLease) await this.maintainLease();
+      if (!this.holdsLease && !(await this.acquireLease())) return;
     } else if (this.holdsLease) {
       this.holdsLease = false;
       await this.d.kv.delIfEquals(kvKeys.lease, this.workerId).catch(ok);
@@ -343,6 +404,7 @@ export class WhatsAppWebManager {
         }
         return;
       }
+      if (!this.leaseFresh()) return; // the lease could not be confirmed a moment ago: start nothing new
       await this.startSession(row);
       return;
     }
@@ -358,7 +420,7 @@ export class WhatsAppWebManager {
       return;
     }
 
-    if (live.phase === "backoff" && live.reconnectAt !== null && this.clock.now() >= live.reconnectAt) {
+    if (live.phase === "backoff" && live.reconnectAt !== null && this.clock.now() >= live.reconnectAt && this.leaseFresh()) {
       await this.connect(live);
     }
     await this.maintainContacts(live);
@@ -378,7 +440,7 @@ export class WhatsAppWebManager {
         live.nextPruneRequestsAt = now + PRUNE_REQUESTS_EVERY_MS;
         const phones = parsePruneRequests(await this.d.kv.drain(kvKeys.prune(id)));
         if (phones.length > 0) {
-          const removed = live.auth.mutateKeys((keys) => pruneContacts(keys, phones));
+          const removed = live.auth.mutateLogin(({ keys, creds }) => pruneContacts(keys, phones, creds));
           this.log(`session ${id}: forgot ${removed} stored key(s) of ${phones.length} erased customer(s)`);
         }
       }
@@ -387,7 +449,7 @@ export class WhatsAppWebManager {
         const keep = [...(await this.d.keepContacts(id))];
         const me = (live.auth.getCreds() as { me?: { id?: unknown; lid?: unknown } } | undefined)?.me;
         const own = [live.phoneE164, jidUser(me?.id), jidUser(me?.lid)].filter((v): v is string => typeof v === "string" && v !== "");
-        const removed = live.auth.mutateKeys((keys) => pruneAllExcept(keys, [...keep, ...own]));
+        const removed = live.auth.mutateLogin(({ keys, creds }) => pruneAllExcept(keys, [...keep, ...own], creds));
         if (removed > 0) this.log(`session ${id}: forgot ${removed} stored key(s) of contacts without a booking`);
       }
     } catch (e) {
@@ -403,7 +465,7 @@ export class WhatsAppWebManager {
     try {
       auth = await EncryptedAuthState.open({
         influencerId: id,
-        storage: this.d.repo.authStorage(id),
+        storage: this.guardedStorage(id),
         delayMs: this.d.authDelayMs,
         setTimer: this.d.authSetTimer,
         clearTimer: this.d.authClearTimer,
@@ -439,6 +501,7 @@ export class WhatsAppWebManager {
       phoneE164: row.phoneE164,
       statusKnown: row.status,
       activeSends: 0,
+      qrCount: 0,
       nextPruneRequestsAt: 0,
       nextPruneAllAt: 0,
       chain: Promise.resolve(),
@@ -454,6 +517,12 @@ export class WhatsAppWebManager {
         // linked number (SELF_TEST_BOOKING_ID).
         guard: async (req) => (req.bookingId === SELF_TEST_BOOKING_ID ? live.phoneE164 !== null && req.toE164 === live.phoneE164 : this.d.guard(id, req)),
         onSent: () => this.d.repo.incrementSent(id),
+        callTimeoutMs: this.d.callTimeoutMs,
+        // Two sends in a row got no answer: reconnect, as if the connection had dropped.
+        onStall: () => {
+          this.log(`session ${id}: two sends in a row got no answer; reconnecting`);
+          this.enqueueWork(live, () => this.handleClose(live, { reason: "transient", code: "send-stalled" }));
+        },
         onFailureCount: (n) => this.enqueueWork(live, () => this.d.repo.update(id, { consecutiveFailures: n })),
         onTrip: (reason) =>
           this.enqueueWork(live, () =>
@@ -478,6 +547,7 @@ export class WhatsAppWebManager {
     if (old) await old.end().catch(ok);
     const gen = ++live.generation;
     live.phase = "connecting";
+    live.qrCount = 0;
     live.reconnectAt = null;
     const current = () => gen === live.generation && live.phase !== "stopping";
     const transport = this.d.transportFactory({ influencerId: live.influencerId });
@@ -511,7 +581,8 @@ export class WhatsAppWebManager {
 
   private async handleQr(live: Live, qr: string): Promise<void> {
     if (live.phase === "stopping") return;
-    await this.d.kv.set(kvKeys.qr(live.influencerId), JSON.stringify({ qr, issuedAt: this.clock.now() }), QR_TTL_MS).catch((e) => this.log(`session ${live.influencerId}: could not publish the code (${errorName(e)})`));
+    const lifeMs = live.qrCount++ === 0 ? QR_FIRST_LIFE_MS : QR_ROTATE_MS;
+    await this.d.kv.set(kvKeys.qr(live.influencerId), JSON.stringify({ qr, issuedAt: this.clock.now(), lifeMs }), QR_TTL_MS).catch((e) => this.log(`session ${live.influencerId}: could not publish the code (${errorName(e)})`));
     if (live.statusKnown !== "PENDING_QR") {
       live.statusKnown = "PENDING_QR";
       await this.d.repo.update(live.influencerId, { status: "PENDING_QR", lastErrorCode: null, lastErrorText: null });

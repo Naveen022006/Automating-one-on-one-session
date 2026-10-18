@@ -34,6 +34,8 @@ export function maskPhone(e164: string | null | undefined): string | null {
 interface StoredQr {
   qr: string;
   issuedAt: number;
+  /** How long this code lives (60 s for the first code of a connection, about 20 s for the next ones). */
+  lifeMs: number;
 }
 
 async function readQr(kv: EphemeralKv, influencerId: string): Promise<StoredQr | null> {
@@ -41,7 +43,9 @@ async function readQr(kv: EphemeralKv, influencerId: string): Promise<StoredQr |
     const raw = await kv.get(kvKeys.qr(influencerId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredQr>;
-    return typeof parsed.qr === "string" && typeof parsed.issuedAt === "number" ? { qr: parsed.qr, issuedAt: parsed.issuedAt } : null;
+    if (typeof parsed.qr !== "string" || typeof parsed.issuedAt !== "number") return null;
+    const life = typeof parsed.lifeMs === "number" && Number.isFinite(parsed.lifeMs) ? Math.min(QR_TTL_MS, Math.max(5_000, parsed.lifeMs)) : QR_ROTATE_MS;
+    return { qr: parsed.qr, issuedAt: parsed.issuedAt, lifeMs: life };
   } catch {
     return null;
   }
@@ -122,7 +126,7 @@ export async function getWhatsAppWebView(influencerId: string, opts: { kv?: Ephe
     if (qr && qr.issuedAt + QR_TTL_MS > now) {
       view.qrSvg = renderQrSvg(qr.qr);
       // When the current code was received plus its ~20 s life (not the store's 60 s): past that time the screen says it is getting a new one.
-      view.qrExpiresAt = new Date(qr.issuedAt + QR_ROTATE_MS).toISOString();
+      view.qrExpiresAt = new Date(qr.issuedAt + qr.lifeMs).toISOString();
     }
   }
 

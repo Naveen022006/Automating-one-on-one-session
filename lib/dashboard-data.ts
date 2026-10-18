@@ -1,6 +1,7 @@
 import { parseAnswers } from "@/lib/intake";
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { countFailedMessages, supersededWebFailureIds } from "@/lib/failed-messages";
 import { istDayStart, istMonthStart } from "@/lib/india";
 import { PLATFORM_CANCEL_PREFIX } from "@/lib/refunds";
 import { aggregateEarnings, type EarningsPaymentInput, type EarningsSummary } from "@/lib/dashboard";
@@ -166,9 +167,7 @@ export async function getOverview(influencerId: string, emailVerified: boolean, 
     earningsPayments(influencerId, monthStart, null),
     getGoogleStatus(influencerId),
     prisma.whatsAppConnection.findFirst({ where: { influencerId, status: "ERROR" }, select: { lastError: true } }),
-    prisma.message.count({
-      where: { status: "FAILED", updatedAt: { gte: new Date(now.getTime() - 14 * 86_400_000) }, booking: { session: { service: { influencerId } } } },
-    }),
+    countFailedMessages(new Date(now.getTime() - 14 * 86_400_000), influencerId),
     prisma.payment.count({ where: { needsRefund: true, status: "CAPTURED", booking: { session: { service: { influencerId } } } } }),
     prisma.booking.count({ where: { lastError: { not: null }, status: { in: ["PAID", "SCHEDULED", "FAILED"] }, session: { service: { influencerId } } } }),
     prisma.booking.count({ where: { status: "REQUESTED", holdExpiresAt: { gt: now }, session: { service: { influencerId } } } }),
@@ -302,10 +301,13 @@ export async function listMessages(influencerId: string, opts: { status?: string
   const pageSize = opts.pageSize ?? 50;
   const page = Math.max(1, opts.page ?? 1);
   const statuses = ["PENDING", "SENT", "DELIVERED", "READ", "FAILED"];
+  // The "Failed" filter lists what the overview counts: a linked-number attempt whose message went out the next way is not in it.
+  const superseded = opts.status === "FAILED" ? await supersededWebFailureIds({ influencerId }) : [];
   const where = {
     booking: { session: { service: { influencerId } } },
     channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS", "EMAIL"] as ("WHATSAPP" | "WHATSAPP_WEB" | "SMS" | "EMAIL")[] },
     ...(opts.status && statuses.includes(opts.status) ? { status: opts.status as "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED" } : {}),
+    ...(superseded.length > 0 ? { id: { notIn: superseded } } : {}),
   };
   const [total, rows] = await Promise.all([
     prisma.message.count({ where }),

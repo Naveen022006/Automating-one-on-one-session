@@ -367,10 +367,10 @@ off, none of this exists on any screen.
 1. `WHATSAPP_QR_ENABLED=true` on **both** the web app and the worker (the web app hides the option and the worker opens no
    connection unless both see it). Needs `REDIS_URL` and **one worker** (`npm run worker`): only the worker opens connections. A second worker
    (a rolling deploy that starts the new one first) takes no sockets: the worker that holds the lease in Redis (`wa-web:manager:lease`,
-   renewed every 2 s, 20 s long) is the only one that connects, the other stays idle and says so once, and takes over once the lease is
+   renewed every 5 s, 20 s long) is the only one that connects, the other stays idle and says so once, and takes over once the lease is
    released (clean shutdown) or has run out (crash). Without Redis (development) an in-process lease does the same job for one process.
 2. Optional limits, same environment: `WHATSAPP_QR_DAILY_CAP` (messages per number per Indian calendar day, default 150),
-   `WHATSAPP_QR_MIN_GAP_MS` (fixed gap between two messages from a number, default 4000), `WHATSAPP_QR_MAX_SESSIONS` (numbers the
+   `WHATSAPP_QR_MIN_GAP_MS` (fixed gap between two messages from a number, default 4000, at most 14000), `WHATSAPP_QR_MAX_SESSIONS` (numbers the
    worker keeps connected, default 10), `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED` (keep the stored logins when the switch is turned off).
    The table is in `doc/08-deployment.md`.
 3. Turning the switch **off** is the kill switch: at the next worker start every linked number is disconnected and its stored login

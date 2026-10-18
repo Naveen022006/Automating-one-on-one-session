@@ -16,9 +16,19 @@
  * tables: pre-key, app-state-sync-key, ...).
  *
  *   session          "<user>[_<domainType>].<device>"   e.g. "919876500101.0", "123456789012345_1.0"
+ *   identity-key     the same id as `session` (Signal/libsignal.js loadIdentityKey / saveIdentity use the same wire address)
  *   device-list      "<user>"
  *   lid-mapping      "<pnUser>" -> lidUser,  "<lidUser>_reverse" -> pnUser
  *   tctoken          "<user>[:<device>]@s.whatsapp.net" | "...@lid", plus the index entry "__index" (a JSON list of such ids)
+ *   sender-key       "<groupJid>::<user>[_<domainType>]::<device>"  (a group member's sender key; the id names the member)
+ *   sender-key-memory  id = the group's JID; the VALUE is a map { "<user>@s.whatsapp.net|@lid": true } of members: the member entries are removed
+ *   creds.processedHistoryMessages  [{ key: { remoteJid, participant, id }, ... }]: entries naming the contact are removed (history sync is
+ *                    switched off in the adapter, so this normally stays empty)
+ *
+ * Every key type the library declares (Types/Auth.d.ts SignalDataTypeMap) was checked: pre-key (own numeric pre-key ids),
+ * app-state-sync-key (random key ids) and app-state-sync-version (names such as "regular_high") contain no contact address and are left
+ * alone; every other type is in the tables above. A test reads the declared list from the library and fails when a type appears that is
+ * neither covered nor listed as address-free.
  *
  * Pure: it works on the in-memory key tables (type -> id -> value) of lib/whatsapp-web/auth-state.ts.
  */
@@ -26,7 +36,14 @@
 export type KeyTables = Record<string, Record<string, unknown>>;
 
 /** The tables whose ids name a contact. Everything else (own pre-keys, app-state keys, sender keys of groups) is left alone. */
-const CONTACT_TABLES = ["session", "device-list", "lid-mapping", "tctoken"] as const;
+const CONTACT_TABLES = ["session", "identity-key", "device-list", "lid-mapping", "tctoken", "sender-key"] as const;
+
+/** Key types that hold no contact address (see the header). Exported so the test can compare it with the library's own list. */
+export const ADDRESS_FREE_TABLES = ["pre-key", "app-state-sync-key", "app-state-sync-version"] as const;
+/** The one type whose address is in the VALUE (a map of members), handled by `removeUsers`. */
+const MEMBER_MAP_TABLE = "sender-key-memory";
+/** Every key type this module accounts for. */
+export const ACCOUNTED_KEY_TYPES: readonly string[] = [...CONTACT_TABLES, MEMBER_MAP_TABLE, ...ADDRESS_FREE_TABLES];
 
 const LID_REVERSE = "_reverse";
 const TC_TOKEN_INDEX = "__index";
@@ -35,7 +52,10 @@ const TC_TOKEN_INDEX = "__index";
 export function keyOwner(type: string, id: string): string | null {
   switch (type) {
     case "session":
+    case "identity-key":
       return /^(\d+)(?:_\d+)?\.\d+$/.exec(id)?.[1] ?? null;
+    case "sender-key":
+      return /^[^:]*::(\d+)(?:_\d+)?::\d+$/.exec(id)?.[1] ?? null;
     case "device-list":
       return /^(\d+)$/.exec(id)?.[1] ?? null;
     case "lid-mapping":
@@ -82,9 +102,44 @@ function readIndex(entry: unknown): string[] | null {
   }
 }
 
+/** The entries of `creds.processedHistoryMessages` ({ key: { remoteJid, participant } }) and the users they name. */
+function historyEntries(creds: unknown): { list: unknown[]; owners: (entry: unknown) => (string | null)[] } | null {
+  const list = (creds as { processedHistoryMessages?: unknown } | null | undefined)?.processedHistoryMessages;
+  if (!Array.isArray(list)) return null;
+  return {
+    list,
+    owners: (entry) => {
+      const key = (entry as { key?: { remoteJid?: unknown; participant?: unknown } } | null)?.key;
+      return [jidUser(key?.remoteJid), jidUser(key?.participant)];
+    },
+  };
+}
+
+/** Removes the history entries that name one of `users`. Returns how many were removed. */
+function removeUsersFromCreds(creds: unknown, users: Set<string>): number {
+  const history = historyEntries(creds);
+  if (!history) return 0;
+  const kept = history.list.filter((entry) => !history.owners(entry).some((o) => o !== null && users.has(o)));
+  const removed = history.list.length - kept.length;
+  if (removed > 0) (creds as { processedHistoryMessages: unknown[] }).processedHistoryMessages = kept;
+  return removed;
+}
+
 /** Removes every key that belongs to one of `users`. Returns how many entries were removed or rewritten. */
-function removeUsers(keys: KeyTables, users: Set<string>): number {
-  let removed = 0;
+function removeUsers(keys: KeyTables, users: Set<string>, creds?: unknown): number {
+  let removed = removeUsersFromCreds(creds, users);
+  // The group "who already has my sender key" memory: the members are the keys of the value.
+  for (const value of Object.values(keys[MEMBER_MAP_TABLE] ?? {})) {
+    if (value === null || typeof value !== "object") continue;
+    const members = value as Record<string, unknown>;
+    for (const jid of Object.keys(members)) {
+      const owner = jidUser(jid);
+      if (owner !== null && users.has(owner)) {
+        delete members[jid];
+        removed += 1;
+      }
+    }
+  }
   for (const type of CONTACT_TABLES) {
     const table = keys[type];
     if (!table) continue;
@@ -114,19 +169,28 @@ function removeUsers(keys: KeyTables, users: Set<string>): number {
 }
 
 /** Forgets the contacts for these phone numbers (E.164 or digits), with their LID aliases. Returns the number of entries removed. */
-export function pruneContacts(keys: KeyTables, phones: Iterable<string>): number {
+export function pruneContacts(keys: KeyTables, phones: Iterable<string>, creds?: unknown): number {
   const users = new Set<string>();
   for (const phone of phones) {
     const user = digitsOf(phone);
     if (!user) continue;
     for (const a of aliasesOf(keys, user)) users.add(a);
   }
-  return users.size === 0 ? 0 : removeUsers(keys, users);
+  return users.size === 0 ? 0 : removeUsers(keys, users, creds);
 }
 
 /** Every contact (phone number or LID, digits) the key tables hold something for. */
-export function contactsIn(keys: KeyTables): Set<string> {
+export function contactsIn(keys: KeyTables, creds?: unknown): Set<string> {
   const out = new Set<string>();
+  for (const value of Object.values(keys[MEMBER_MAP_TABLE] ?? {})) {
+    if (value === null || typeof value !== "object") continue;
+    for (const jid of Object.keys(value as object)) {
+      const owner = jidUser(jid);
+      if (owner !== null) out.add(owner);
+    }
+  }
+  const history = historyEntries(creds);
+  if (history) for (const entry of history.list) for (const owner of history.owners(entry)) if (owner !== null) out.add(owner);
   for (const type of CONTACT_TABLES) {
     for (const id of Object.keys(keys[type] ?? {})) {
       const owner = keyOwner(type, id);
@@ -140,7 +204,7 @@ export function contactsIn(keys: KeyTables): Set<string> {
  * Forgets every contact except those in `keep` (the customers' numbers with a non-erased booking, and the account's own addresses).
  * A contact is kept when ANY of its addresses (phone number or LID) is in `keep`. Returns the number of entries removed.
  */
-export function pruneAllExcept(keys: KeyTables, keep: Iterable<string>): number {
+export function pruneAllExcept(keys: KeyTables, keep: Iterable<string>, creds?: unknown): number {
   const keepSet = new Set<string>();
   for (const k of keep) {
     const user = digitsOf(k);
@@ -148,7 +212,7 @@ export function pruneAllExcept(keys: KeyTables, keep: Iterable<string>): number 
     for (const a of aliasesOf(keys, user)) keepSet.add(a);
   }
   const drop = new Set<string>();
-  for (const user of contactsIn(keys)) {
+  for (const user of contactsIn(keys, creds)) {
     if (keepSet.has(user)) continue;
     for (const a of aliasesOf(keys, user)) {
       if (keepSet.has(a)) {
@@ -158,5 +222,5 @@ export function pruneAllExcept(keys: KeyTables, keep: Iterable<string>): number 
     }
     if (!keepSet.has(user)) drop.add(user);
   }
-  return drop.size === 0 ? 0 : removeUsers(keys, drop);
+  return drop.size === 0 ? 0 : removeUsers(keys, drop, creds);
 }

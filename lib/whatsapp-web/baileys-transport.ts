@@ -62,6 +62,16 @@ const silentLogger = {
 
 const SENT_CACHE = 200;
 
+/**
+ * How long ONE request to WhatsApp (an iq query) may wait for its answer. The library's default is 60 s. A text message goes out in
+ * steps: a device lookup (query), the fetch of the recipient's pre-keys (query), and only then the message itself is written to the
+ * socket. A stall in a query step happens BEFORE anything was written, so it must fail fast and let the message go the next way;
+ * with the default 60 s such a stall outlived the send queue's own wait (SEND_CALL_TIMEOUT_MS) and was mistaken for "written, no
+ * answer". With 10 s per step, the queries of one send take at most 3 x 10 s, which is below the queue's wait, so a send that is still
+ * unanswered when the queue gives up has passed every query and been written: only then is its outcome unknown (a test pins the relation).
+ */
+export const QUERY_TIMEOUT_MS = 10_000;
+
 /** Maps the library's disconnect status code onto the neutral close reasons. */
 export function mapDisconnect(statusCode: number | undefined, DisconnectReason: BaileysModule["DisconnectReason"]): WhatsAppWebCloseInfo {
   switch (statusCode) {
@@ -164,6 +174,7 @@ export class BaileysTransport implements WhatsAppWebTransport {
     const sock = b.makeWASocket({
       auth: { creds, keys },
       logger: silentLogger,
+      defaultQueryTimeoutMs: QUERY_TIMEOUT_MS,
       // The phone keeps ringing and showing notifications as usual while this device is connected.
       markOnlineOnConnect: false,
       // Nothing from the user's chats is wanted: no history, no previews.

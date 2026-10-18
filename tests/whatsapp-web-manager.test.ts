@@ -62,6 +62,7 @@ test("start link: a transport is created, the QR code is published for 60 s (nev
   assert.ok(!h.logs.join("\n").includes("SECRET-QR"));
 
   // The scan: the login is stored (encrypted) before the number is called linked.
+  await h.manager.maintainLease(); // what the manager's own timer does every 5 s; the test moved the clock by a minute
   t.emitQr("SECRET-QR-PAYLOAD-3");
   await settle();
   t.authStore.setCreds(CREDS);

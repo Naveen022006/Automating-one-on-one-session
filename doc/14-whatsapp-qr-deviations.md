@@ -208,3 +208,32 @@ Findings of the review of the whole feature and what was done (items W2 to W13; 
   a force-disconnect already did that through `wantLinked = false`.
 - **W3.** The mode picker is gone: the official connection and the QR link are two independent sections, both always visible, with a note on the order.
   The server has no preference.
+
+## 7. Second review (`wa/05-delta-fixes`)
+
+- **D1, what a timeout means.** Baileys sends a text in steps: a device lookup (a query), the fetch of the recipient's pre-keys (a query), then
+  the message itself is written to the socket. The adapter now sets the library's query timeout to 10 s (`QUERY_TIMEOUT_MS`, default 60 s), and the send
+  queue waits 40 s for a send (`SEND_CALL_TIMEOUT_MS`, was 30 s): three steps of at most 10 s fit inside the wait. So a stall BEFORE the write ends as the
+  library's own timeout (status 408, mapped to `not-connected`): that message fails fast, is not counted as a failed send, and goes the next way. A send that is
+  still unanswered when the queue gives up has passed every query step: only that is `unknown-delivery` (SENT, "Not confirmed", never sent another way). We have no
+  signal from the library for "the message was written", so this relation is what carries the distinction (a test pins it). **Decision:** an unknown send is NOT
+  repeated on another channel, for reminders too: the duplicate (a second text or SMS for the same event) is judged worse than the rare lost one, and the e-mail
+  confirmation is sent separately. Two unknowns in a row (`STALL_AFTER_UNKNOWNS`) mean a half-open socket: the manager reconnects the number, and the
+  messages that arrive meanwhile are refused as not connected and go the next way.
+- **D2, failures.** A refusal where the linked number never tried (busy, not connected, over the daily limit, paused, too late, the booking check said no, the
+  customer is not on WhatsApp) deletes the in-flight row: no failure is recorded, like the official route. Only an attempt that failed keeps a `FAILED` row. A
+  `FAILED` linked-number row is also left out of the "not delivered" counts and the Failed filter (dashboard overview, Messages page, admin overview) when another
+  channel's row for the same booking and template is SENT, DELIVERED or READ (`lib/failed-messages.ts`).
+- **D3, contact keys.** `identity-key` (named like `session`), the group `sender-key` (`<group>::<user>::<device>`), the member map inside `sender-key-memory` and the
+  history list in the credentials are cleaned too; `pre-key`, `app-state-sync-key` and `app-state-sync-version` hold no contact address. A test reads the library's
+  declared key types and fails when a new one appears that is neither covered nor listed as address-free.
+- **D4, the lease.** It is renewed on its own timer every 5 s (`LEASE_RENEW_EVERY_MS`), not once per pass (a pass can take longer than the lease: each logout waits
+  up to 10 s). `send()` and `isReady()` require a lease renewed less than 20 s ago, a login save without one is skipped and the sockets are closed, and when the store
+  does not answer no new socket is started (`leaseFresh`: renewed in the last 10 s). **A rolling deploy is not free:** the new worker stays idle until the old one
+  releases the lease at shutdown or it runs out after a crash, and in that time the new worker's message jobs find no sockets and send the official way.
+- **D5.** Unhandled rejections are logged with a scrubbed stack and reported through `reportError` with a scrubbed copy of the error (environment secrets, URL
+  credentials, bearer tokens, phone numbers and WhatsApp addresses are hidden); 10 within 5 minutes end the process with code 1 so the supervisor restarts it.
+- **D6.** The manager publishes each QR code with its own lifetime (`lifeMs`: 60 s for the first code of a connection, about 20 s for the next ones, as in
+  Baileys' QR timers) and `qrExpiresAt` is the time received plus that.
+- **D7.** `WHATSAPP_QR_MIN_GAP_MS` is lowered to 14000 when larger (start-up warning), because a request that would wait over 20 s is refused as busy and
+  almost everything would go another way.

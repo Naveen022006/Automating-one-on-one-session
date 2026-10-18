@@ -200,7 +200,7 @@ export interface Harness {
   restart(): Harness;
 }
 
-export function harness(opts: { config?: Partial<WhatsAppQrConfig>; repo?: MemoryRepo; kv?: MemoryKv; clock?: ManualClock; guard?: (influencerId: string, bookingId: string, toE164: string) => boolean; keepContacts?: ManagerDeps["keepContacts"] } = {}): Harness {
+export function harness(opts: { config?: Partial<WhatsAppQrConfig>; repo?: MemoryRepo; kv?: MemoryKv; clock?: ManualClock; guard?: (influencerId: string, bookingId: string, toE164: string) => boolean; keepContacts?: ManagerDeps["keepContacts"]; callTimeoutMs?: number } = {}): Harness {
   const clock = opts.clock ?? new ManualClock();
   const kv = opts.kv ?? new MemoryKv(clock.now);
   const repo = opts.repo ?? new MemoryRepo();
@@ -236,6 +236,7 @@ export function harness(opts: { config?: Partial<WhatsAppQrConfig>; repo?: Memor
     notify: async (influencerId, kind, detail) => void alerts.push({ influencerId, kind, detail }),
     onDelivery: (influencerId, info) => void deliveries.push({ influencerId, ...info }),
     keepContacts: opts.keepContacts,
+    callTimeoutMs: opts.callTimeoutMs,
     log: (line) => void logs.push(line),
     authDelayMs: 1_000,
     authSetTimer: authTimers.setTimer,

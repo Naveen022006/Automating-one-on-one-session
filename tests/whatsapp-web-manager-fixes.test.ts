@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { kvKeys, MemoryKv, RedisKv, type RedisKvClient } from "../lib/whatsapp-web/kv";
-import { LEASE_TTL_MS } from "../worker/whatsapp-web-manager";
+import { LEASE_RENEW_EVERY_MS, LEASE_TTL_MS } from "../worker/whatsapp-web-manager";
 import { harness, newRow, settle, want, type Harness } from "./helpers/whatsapp-web";
 
 // Fixes from the review of the whole QR-code feature, at the manager's level: in-memory session table, fake transport, hand-moved clock.
@@ -283,4 +283,126 @@ test("the redis store runs each lease operation as one script (atomic)", async (
   assert.deepEqual(calls[0], ["setnx", 1, "l", "a", 20_000]);
   answers.push(["a", "b"]);
   assert.deepEqual(await kv.drain("q"), ["a", "b"]);
+});
+
+// ---- D4: the lease is renewed on its own timer and every send and save depends on it ----------------------------------------------
+
+
+const sendMsg = (n: number, influencerId = INF) => ({ influencerId, toE164: "+919876500010", text: `m${n}`, bookingId: `b${n}`, key: `k${n}`, kind: "booking-confirmation" });
+
+test("a reconcile pass longer than the lease (slow logouts, rows one after another) keeps the lease because it is renewed on its own timer", async () => {
+  const h1 = harness();
+  const a = await linked(h1, "inf-slow-1");
+  const b = await linked(h1, "inf-slow-2");
+  // Both numbers are being disconnected, and the phone does not answer the logout: each waits its 10 s.
+  a.logout = () => new Promise(() => {});
+  b.logout = () => new Promise(() => {});
+  h1.repo.row("inf-slow-1").wantLinked = false;
+  h1.repo.row("inf-slow-2").wantLinked = false;
+  const h2 = h1.restart(); // a standby worker over the same database
+  const pass = h1.manager.reconcile();
+  let passDone = false;
+  void pass.then(() => (passDone = true));
+  for (let waited = 0; waited < 30_000; waited += LEASE_RENEW_EVERY_MS) {
+    await h1.clock.advance(LEASE_RENEW_EVERY_MS);
+    await h1.manager.maintainLease(); // the manager's timer
+    await h2.tick();
+    assert.equal(h2.manager.leaseHeld, false, `the standby did not get the lease after ${waited + LEASE_RENEW_EVERY_MS} ms of a long pass`);
+    assert.equal(h1.manager.leaseHeld, true);
+  }
+  await pass;
+  assert.ok(passDone);
+  assert.equal(h2.transports.length, 0, "the standby opened nothing");
+  await h1.manager.shutdown();
+  await h2.manager.shutdown();
+});
+
+test("a standby takes the numbers over only after the lease has run out, never while the holder keeps renewing", async () => {
+  const h1 = harness();
+  await linked(h1);
+  const h2 = h1.restart();
+  for (let i = 0; i < 8; i++) {
+    await h1.clock.advance(LEASE_RENEW_EVERY_MS);
+    await h1.manager.maintainLease();
+    await h2.tick();
+  }
+  assert.equal(h2.manager.leaseHeld, false);
+  assert.equal(open(h1, h2), 1);
+  // The holder stops renewing (crashed): its socket goes with it.
+  await h1.last(INF).end();
+  await h1.clock.advance(LEASE_TTL_MS - 1_000);
+  await h2.tick();
+  assert.equal(h2.manager.leaseHeld, false, "not before the lease ran out");
+  await h1.clock.advance(2_000);
+  await h2.tick();
+  assert.equal(h2.manager.leaseHeld, true);
+  assert.equal(h2.transports.length, 1);
+  await h2.manager.shutdown();
+});
+
+test("without a valid lease a send is refused as not connected, the number is not ready, a login save is skipped and the sockets are closed", async () => {
+  const h = harness();
+  const t = await linked(h);
+  const stored = h.repo.row(INF).authStateEnc;
+  assert.ok(stored);
+  assert.equal(h.manager.isReady(INF), true);
+  await h.clock.advance(LEASE_TTL_MS + 1_000); // nothing renewed it (the timer did not run, the store is unreachable ...)
+  assert.equal(h.manager.isReady(INF), false);
+  assert.deepEqual(await h.manager.send(sendMsg(1)), { ok: false, reason: "not-connected", retryable: true });
+  assert.equal(t.sent.length, 0);
+  // The library changes the login; the write that follows is refused.
+  t.authStore.setCreds({ ...CREDS, changed: true });
+  await h.authTimers.fire();
+  await settle();
+  assert.equal(h.repo.row(INF).authStateEnc, stored, "the stored login was not overwritten");
+  assert.ok(h.logs.some((l) => /a login save was refused because the lease is no longer valid/.test(l)));
+  assert.equal(t.ended, true);
+  assert.equal(h.manager.leaseHeld, false);
+  await h.manager.shutdown();
+});
+
+test("a store that does not answer: the open socket works until the lease would have run out, and nothing new is started", async () => {
+  const h = harness();
+  await linked(h);
+  want(h, "inf-late"); // wants to link, has no socket yet
+  h.kv.renew = async () => Promise.reject(new Error("redis down"));
+  h.kv.setNx = async () => Promise.reject(new Error("redis down"));
+  await h.clock.advance(LEASE_RENEW_EVERY_MS * 2 + 1_000);
+  await h.manager.maintainLease();
+  await h.tick();
+  assert.equal(h.transports.filter((t) => !t.ended).length, 1, "the running socket is kept");
+  assert.equal(h.transports.length, 1, "and no socket was started for the other number");
+  assert.equal(h.manager.isReady(INF), true, "still inside the lease");
+  await h.clock.advance(LEASE_TTL_MS);
+  await h.manager.maintainLease();
+  assert.equal(h.manager.isReady(INF), false);
+  assert.equal(h.manager.openCount, 0);
+  await h.manager.shutdown();
+});
+
+// ---- D6: each QR code is published with its own lifetime ----
+
+test("the first code of a connection lives 60 s, the next ones about 20 s, and a reconnect starts over", async () => {
+  const { QR_FIRST_LIFE_MS, QR_ROTATE_MS } = await import("../lib/whatsapp-web/kv");
+  const h = harness();
+  want(h, INF);
+  await h.tick();
+  const t = h.last(INF);
+  const life = async () => (JSON.parse((await h.kv.get(kvKeys.qr(INF)))!) as { lifeMs: number; issuedAt: number }).lifeMs;
+  t.emitQr("SECRET-1");
+  await settle();
+  assert.equal(await life(), QR_FIRST_LIFE_MS);
+  t.emitQr("SECRET-2");
+  await settle();
+  assert.equal(await life(), QR_ROTATE_MS);
+  t.emitQr("SECRET-3");
+  await settle();
+  assert.equal(await life(), QR_ROTATE_MS);
+  // WhatsApp asks for a restart after a scan: the next connection gets a first code again.
+  t.emitClose({ reason: "transient", code: "restart-required" });
+  await settle();
+  h.last(INF).emitQr("SECRET-4");
+  await settle();
+  assert.equal(await life(), QR_FIRST_LIFE_MS);
+  await h.manager.shutdown();
 });

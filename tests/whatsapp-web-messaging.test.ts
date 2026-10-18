@@ -240,20 +240,74 @@ test("a template that is not one of the five is never sent through the linked nu
 
 // ---- fall-through ---------------------------------------------------------------------------------------------------------------
 
-test("every refusal of the linked number, retryable or not, falls straight through to the official connection and is recorded", { skip }, async () => {
-  const refusals: [string, boolean][] = [["queue-full", true], ["not-connected", true], ["circuit-open", false], ["daily-cap", false], ["no-booking", false], ["not-on-whatsapp", false], ["limits-unavailable", true]];
+test("every refusal of the linked number, retryable or not, falls straight through to the official connection", { skip }, async () => {
+  const refusals: [string, boolean][] = [["queue-full", true], ["busy", true], ["not-connected", true], ["circuit-open", false], ["daily-cap", false], ["no-booking", false], ["not-on-whatsapp", false], ["limits-unavailable", true], ["expired", false]];
   for (const [reason, retryable] of refusals) {
     const id = await booking();
     const f = fakes();
     f.ctl.qr = () => ({ ok: false, reason, retryable });
     assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent", reason);
     assert.deepEqual(f.calls, ["qr", "whatsapp"], `${reason}: one try, then the next channel at once`);
+    // Nothing was attempted from the linked number, so nothing failed: no row at all (the official route writes none either).
+    assert.equal(await row(id, "WHATSAPP_WEB"), null, `${reason}: no failure is recorded for something that was never tried`);
+    assert.equal((await row(id, "WHATSAPP"))?.status, "SENT", "the channel that delivered is the one recorded as SENT");
+  }
+});
+
+test("a send that was really attempted and failed keeps a FAILED row with the reason, and the message goes the next way", { skip }, async () => {
+  for (const reason of ["send-failed", "number-check-failed", "no-message-id"]) {
+    const id = await booking();
+    const f = fakes();
+    f.ctl.qr = () => ({ ok: false, reason, retryable: true });
+    assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent", reason);
+    assert.deepEqual(f.calls, ["qr", "whatsapp"]);
     const web = await row(id, "WHATSAPP_WEB");
     assert.equal(web?.status, "FAILED", "not a false 'pending' in the Messages view");
     assert.match(web?.error ?? "", /; sent another way\.$/);
     assert.ok(!/in-flight/.test(web?.error ?? ""));
-    assert.equal((await row(id, "WHATSAPP"))?.status, "SENT", "the channel that delivered is the one recorded as SENT");
   }
+});
+
+test("a group session's reminders that went by SMS because the linked number was busy leave no failure behind, and a FAILED attempt whose message was delivered another way is not counted as 'not delivered'", { skip }, async () => {
+  const { countFailedMessages } = await import("../lib/failed-messages");
+  const { listMessages } = await import("../lib/dashboard-data");
+  const since = new Date(Date.now() - 60_000);
+  const before = await countFailedMessages(since, influencerId);
+  // 6 seats: the linked number was busy for all of them; SMS delivered.
+  for (let i = 0; i < 6; i++) {
+    const id = await booking();
+    const f = fakes();
+    f.ctl.qr = () => ({ ok: false, reason: "busy", retryable: true });
+    f.ctl.official = "fail";
+    await sendMessageForBooking(id, "reminder-15m", f.deps);
+    assert.deepEqual(f.calls, ["qr", "whatsapp", "sms"]);
+  }
+  assert.equal(await countFailedMessages(since, influencerId), before, "nothing failed");
+
+  // The linked number tried and failed, and SMS delivered: the attempt is history, not an undelivered message.
+  const delivered = await booking();
+  const f1 = fakes();
+  f1.ctl.qr = () => ({ ok: false, reason: "send-failed", retryable: true });
+  f1.ctl.official = "fail";
+  await sendMessageForBooking(delivered, "booking-confirmation", f1.deps);
+  assert.equal((await row(delivered, "WHATSAPP_WEB"))?.status, "FAILED");
+  assert.equal((await row(delivered, "SMS"))?.status, "SENT");
+  assert.equal(await countFailedMessages(since, influencerId), before);
+
+  // Nothing else delivered it: that one IS a message not delivered, and it is counted and listed.
+  const lost = await booking();
+  const f2 = fakes();
+  f2.ctl.qr = () => ({ ok: false, reason: "send-failed", retryable: true });
+  f2.ctl.official = "fail";
+  f2.ctl.sms = "fail";
+  await assert.rejects(sendMessageForBooking(lost, "booking-confirmation", f2.deps));
+  await prisma.message.updateMany({ where: { bookingId: lost, channel: "SMS" }, data: { status: "FAILED" } });
+  assert.equal(await countFailedMessages(since, influencerId), before + 2, "the SMS row and the linked-number row of the lost message");
+  const listed = await listMessages(influencerId, { status: "FAILED", pageSize: 200 });
+  const ids = new Set(listed.messages.map((m) => m.bookingId));
+  assert.ok(ids.has(lost), "the lost message is listed");
+  assert.ok(!listed.messages.some((m) => m.bookingId === delivered), "the superseded attempt is not listed");
+  assert.equal(listed.total, listed.messages.length);
 });
 
 test("a sender that throws is a refusal; with the official connection down too, SMS carries it", { skip }, async () => {
@@ -266,7 +320,7 @@ test("a sender that throws is a refusal; with the official connection down too, 
   assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
   assert.deepEqual(f.calls, ["qr", "whatsapp", "sms"]);
   assert.equal((await row(id, "SMS"))?.status, "SENT");
-  assert.equal((await row(id, "WHATSAPP_WEB"))?.status, "FAILED");
+  assert.equal((await row(id, "WHATSAPP_WEB"))?.status, "FAILED", "a sender that blew up is an attempt that failed");
   assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /could not send it; sent another way/);
 });
 
@@ -331,7 +385,7 @@ test("a confirmation that waited too long still goes out, by the next channel", 
   f.ctl.qr = () => ({ ok: false, reason: "expired", retryable: false });
   assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
   assert.deepEqual(f.calls, ["qr", "whatsapp"]);
-  assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /^Too late to send from the linked number; sent another way\.$/);
+  assert.equal(await row(id, "WHATSAPP_WEB"), null, "too late is not a failure");
 });
 
 test("a send that gets no answer in time is UNKNOWN: recorded as sent but not confirmed, never repeated, never sent another way", { skip }, async () => {
@@ -473,7 +527,7 @@ test("end to end: the number is refused by the queue (no real booking for it), s
     assert.equal(await sendMessageForBooking(id, "booking-confirmation", rest), "sent");
     assert.equal(t.sent.length, 0);
     assert.deepEqual(f.calls, ["whatsapp"]);
-    assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /No matching booking for the linked number; sent another way/);
+    assert.equal(await row(id, "WHATSAPP_WEB"), null, "refused before any attempt: no row");
   } finally {
     setActiveSender(null);
     await h.manager.shutdown();
