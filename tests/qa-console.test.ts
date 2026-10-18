@@ -361,7 +361,8 @@ test("C13: outcomeTarget keeps the #fragment of returnTo, and Settings asks to c
   assert.deepEqual(outcomeTarget("/dashboard/settings", "connected"), { pathname: "/dashboard/settings", search: "?google=connected" }, "no fragment: the shape the older callers see");
   assert.match(read("web/src/components/views/dashboard/SettingsView.tsx"), /returnTo="\/dashboard\/settings#google"/);
   for (const file of ["app/api/google/callback/route.ts", "app/api/google/connect/route.ts"]) {
-    assert.match(read(file), /url\.hash = hash \?\? ""/, `${file} sets the fragment on the redirect`);
+    // The redirect is built on the public origin (lib/public-url.ts) and must carry the fragment; tests/google-connect.test.ts checks the result.
+    assert.match(read(file), /publicUrl\(pathname, search, hash \?\? ""\)/, `${file} sets the fragment on the redirect`);
   }
 });
 
