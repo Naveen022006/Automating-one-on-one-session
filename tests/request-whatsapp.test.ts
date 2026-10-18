@@ -999,25 +999,72 @@ test("expiry: each unanswered request is expired and queued once for request-exp
   assert.equal(await sendMessageForBooking(stillOpen, "request-expired", g.deps), "skipped");
 });
 
-test("expiry: a queue that is down does not stop the sweep (the requests are expired, the loss is logged once, no link in it)", { skip }, async () => {
+test("expiry: one failed enqueue does not stop the sweep; only a run of failures does (the requests are expired either way, the loss is counted and logged, no link in it)", { skip }, async () => {
   const mine = { session: { service: { influencerId } } };
-  const a = await requestBooking();
-  const b = await requestBooking();
-  await prisma.booking.updateMany({ where: { id: { in: [a, b] } }, data: { holdExpiresAt: new Date(Date.now() - 60_000) } });
+  const mk = async (n: number) => {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) ids.push(await requestBooking());
+    await prisma.booking.updateMany({ where: { id: { in: ids } }, data: { holdExpiresAt: new Date(Date.now() - 60_000) } });
+    return ids;
+  };
+  await requestMessages.expireStaleHoldsAndNotify(new Date(), { enqueue: async () => {}, scope: mine }); // leftovers of earlier tests
+
+  // One timeout among good answers: every other customer is still told.
+  const four = await mk(4);
+  const seen: string[] = [];
+  const logsBefore = logged.length;
+  const flaky = await requestMessages.expireStaleHoldsAndNotify(new Date(), {
+    scope: mine,
+    enqueue: async (id) => {
+      seen.push(id);
+      if (seen.length === 2) throw new Error("queueing the \"request-expired\" message timed out after 2000 ms");
+    },
+  });
+  assert.equal(flaky.requests, 4);
+  assert.equal(flaky.queued, 3, "the failed one is the only one lost");
+  assert.equal(seen.length, 4, "the sweep went on after the failure");
+  assert.ok(logged.slice(logsBefore).some((l) => l.includes('1 "request expired" message(s) could not be queued (1 failed)')), logged.slice(logsBefore).join("\n"));
+  for (const id of four) assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id } })).status, "EXPIRED");
+
+  // A queue that is really down: five failures in a row stop the attempts; the rest are counted, not tried, and still expired.
+  const seven = await mk(7);
   let attempts = 0;
-  const result = await requestMessages.expireStaleHoldsAndNotify(new Date(), {
+  const logsBefore2 = logged.length;
+  const down = await requestMessages.expireStaleHoldsAndNotify(new Date(), {
     scope: mine,
     enqueue: async () => {
       attempts += 1;
       throw new Error("Redis is down");
     },
   });
-  assert.equal(result.requests, 2);
-  assert.equal(result.queued, 0);
-  assert.equal(attempts, 1, "one failure is enough: no waiting on a dead queue for every request");
-  assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: a } })).status, "EXPIRED");
-  assert.ok(logged.some((l) => l.includes('2 "request expired" message(s) could not be queued') || l.includes('1 "request expired" message(s) could not be queued')));
+  assert.equal(down.requests, 7);
+  assert.equal(down.queued, 0);
+  assert.equal(attempts, requestMessages.EXPIRY_MAX_CONSECUTIVE_QUEUE_FAILURES, "no timeout paid for every one of thousands of requests");
+  assert.ok(logged.slice(logsBefore2).some((l) => l.includes('7 "request expired" message(s) could not be queued (5 failed, 2 not tried after 5 failures in a row)')), logged.slice(logsBefore2).join("\n"));
+  for (const id of seven) assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id } })).status, "EXPIRED");
+
+  // Failures that are not in a row never add up to "down": every fourth enqueue fails, all the others get through.
+  const nine = await mk(9);
+  let n = 0;
+  const spread = await requestMessages.expireStaleHoldsAndNotify(new Date(), {
+    scope: mine,
+    enqueue: async () => {
+      n += 1;
+      if (n % 4 === 0) throw new Error("slow answer");
+    },
+  });
+  assert.deepEqual([spread.requests, spread.queued, n], [9, 7, 9]);
+  for (const id of nine) assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id } })).status, "EXPIRED");
+
+  // A timed-out enqueue that lands anyway cannot send twice: the job id is the booking's, so a second add is no job at all (and the messages
+  // table stops a second send even if it were one).
+  const target = nine[0];
+  const jobsBefore = jobs.length;
+  await requestMessages.queueRequestMessage({ id: target, influencerId, whatsappOptIn: true, whatsappE164: PHONE, redactedAt: null }, "request-expired");
+  await requestMessages.queueRequestMessage({ id: target, influencerId, whatsappOptIn: true, whatsappE164: PHONE, redactedAt: null }, "request-expired");
+  assert.equal(jobs.length - jobsBefore, 1, "the same job id is one job");
 });
+
 
 // ---- 5b. abuse: a stranger's number cannot be made to receive messages on demand ------------------------------------------------
 

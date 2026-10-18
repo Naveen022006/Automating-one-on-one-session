@@ -78,6 +78,11 @@ export async function queueRequestMessage(booking: { id: string; influencerId: s
 /** Requests handled per database round trip, and the most rounds one sweep makes (so one sweep stays bounded under any backlog). */
 export const EXPIRY_BATCH = 200;
 export const EXPIRY_MAX_BATCHES = 25;
+/**
+ * The sweep stops queueing after this many failed enqueues IN A ROW: a queue that is really down would otherwise cost a full timeout per
+ * request (thousands of them), while one slow answer among many good ones must not cost every later customer their message.
+ */
+export const EXPIRY_MAX_CONSECUTIVE_QUEUE_FAILURES = 5;
 
 export interface ExpiryResult {
   /** Bookings marked EXPIRED, of every kind (what `expireStaleHolds` returns). */
@@ -95,8 +100,11 @@ export interface ExpiryResult {
  * message yet, see doc/16) are expired exactly as before.
  *
  * A message is queued only for a booking this sweep (or a concurrent one) really moved from REQUESTED to EXPIRED without the host ever
- * deciding, so an approval or a decline that raced the sweep is never contradicted. If the queue is down the sweep carries on: the
- * bookings are expired either way (availability never depends on this), the messages for that sweep are lost and one line says so.
+ * deciding, so an approval or a decline that raced the sweep is never contradicted. A failed enqueue (each one has its own short timeout) is
+ * counted and the sweep goes on with the next request; only EXPIRY_MAX_CONSECUTIVE_QUEUE_FAILURES in a row mean the queue is down, and the
+ * rest of the sweep is then not tried. The bookings are expired either way (availability never depends on this); the messages that did not
+ * get queued are lost, and one line says how many and why. An enqueue that timed out may still have landed: the job id is deterministic,
+ * so nothing is ever sent twice.
  */
 export async function expireStaleHoldsAndNotify(
   now = new Date(),
@@ -113,8 +121,9 @@ export async function expireStaleHoldsAndNotify(
   };
   let requests = 0;
   let queued = 0;
-  let lost = 0;
-  let queueDown = false;
+  let failed = 0; // enqueues that failed
+  let untried = 0; // not tried at all after the queue looked down
+  let inARow = 0;
   for (let round = 0; round < EXPIRY_MAX_BATCHES; round++) {
     const due = await prisma.booking.findMany({
       where: { status: "REQUESTED", holdExpiresAt: { lte: now }, AND: scope },
@@ -136,19 +145,25 @@ export async function expireStaleHoldsAndNotify(
     });
     for (const b of unanswered) {
       if (!canMessageOnWhatsApp(b)) continue;
-      if (queueDown) {
-        lost += 1;
+      if (inARow >= EXPIRY_MAX_CONSECUTIVE_QUEUE_FAILURES) {
+        untried += 1;
         continue;
       }
       const outcome = await queueRequestMessage({ ...b, influencerId: b.session.service.influencerId }, REQUEST_EXPIRED_TEMPLATE, { enqueue, route: routeOf });
-      if (outcome.queued) queued += 1;
-      else if (outcome.route !== "none") {
-        queueDown = true; // one failure is enough to stop waiting on a dead queue for the rest of this sweep
-        lost += 1;
+      if (outcome.queued) {
+        queued += 1;
+        inARow = 0;
+      } else if (outcome.route !== "none") {
+        failed += 1;
+        inARow += 1;
       }
     }
   }
-  if (lost > 0) console.error(`[request-messages] ${lost} "request expired" message(s) could not be queued; the requests are expired anyway`);
+  if (failed + untried > 0) {
+    console.error(
+      `[request-messages] ${failed + untried} "request expired" message(s) could not be queued (${failed} failed${untried ? `, ${untried} not tried after ${EXPIRY_MAX_CONSECUTIVE_QUEUE_FAILURES} failures in a row` : ""}); the requests are expired anyway`,
+    );
+  }
   const rest = await expireStaleHolds(now, { includeRequests: false, scope: opts.scope });
   return { expired: requests + rest, requests, queued };
 }

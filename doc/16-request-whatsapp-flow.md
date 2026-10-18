@@ -115,7 +115,10 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 - **Expiry** (`expireStaleHoldsAndNotify`): the unanswered `REQUESTED` bookings are expired first, in batches of 200 (at most 25 batches per
   tick), and the ones this sweep really moved to `EXPIRED` with `decidedAt` null are queued; everything else (a held or pending hold that
   lapsed) is expired by the unchanged `expireStaleHolds`, which the old tests keep calling. A request declined or approved while the sweep
-  ran is never contradicted (the update is conditional and the notified set is read back).
+  ran is never contradicted (the update is conditional and the notified set is read back). Each enqueue has its own 2 s timeout; a failed one is
+  counted and the sweep goes on with the next request, and only 5 failures IN A ROW mean the queue is down and stop the attempts for the rest of
+  that sweep (one log line says how many failed and how many were not tried). An enqueue that timed out may still have landed; the job id is the
+  booking's, so nothing is sent twice.
 - **Linked-number deadlines** (`webSendDeadline`): `request-received` 30 minutes after it was queued; `request-approved` until the pay-by
   time; `request-declined` and `request-expired` 6 hours. A late message is dropped, not sent: for `request-approved` the linked number's
   "expired" is final on EVERY channel (like a late reminder), because the text and the link built at the start of the run would mislead on
@@ -192,8 +195,8 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 
 - **An approved request that nobody pays.** Its hold lapses, the worker marks it `EXPIRED` and the customer hears nothing on WhatsApp (the
   rule for `request-expired` says "never decided" on purpose). A "your time was released" message for it is the natural next message.
-- **A lost "request expired" message** when the queue is down during the exact sweep that expired the request (logged once). A repair sweep
-  like `reconcileReminders` would close it.
+- **A lost "request expired" message** for the requests whose enqueue failed (a run of 5 failures stops the attempts of that sweep; logged once
+  with the counts). The requests are expired anyway and nothing retries the message. A repair sweep like `reconcileReminders` would close it.
 - **Meta approval takes time** and the four new templates start `PENDING` on every account; until then the official route falls through.
 
 ## 7. Tests
