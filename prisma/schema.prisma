@@ -29,43 +29,44 @@ enum BookingStatus {
 }
 
 model Influencer {
-  id            String    @id @default(cuid())
-  slug          String    @unique
-  name          String
-  email         String    @unique
-  timezone      String    @default("Asia/Kolkata")
-  bio           String?
-  photoUrl      String?   @map("photo_url")
+  id                      String    @id @default(cuid())
+  slug                    String    @unique
+  name                    String
+  email                   String    @unique
+  timezone                String    @default("Asia/Kolkata")
+  bio                     String?
+  photoUrl                String?   @map("photo_url")
   // Set when the influencer finishes the onboarding wizard (Phase 7). Null for accounts still onboarding.
-  onboardedAt   DateTime? @map("onboarded_at")
+  onboardedAt             DateTime? @map("onboarded_at")
   // Notification preferences for influencer alerts (failed messages, Google reconnect, refunds needed).
-  notifyByEmail Boolean   @default(true) @map("notify_by_email")
+  notifyByEmail           Boolean   @default(true) @map("notify_by_email")
   // The Google account that owned the Calendar events when the influencer disconnected Google (the token row is deleted
   // then). Lets the connect callback still tell that a different account is a switch, which strands those events.
   // Cleared by the next successful connect.
-  disconnectedGoogleEmail String? @map("disconnected_google_email")
-  createdAt     DateTime  @default(now()) @map("created_at")
+  disconnectedGoogleEmail String?   @map("disconnected_google_email")
+  createdAt               DateTime  @default(now()) @map("created_at")
 
   services           Service[]
   rules              AvailabilityRule[]
   blockedDates       BlockedDate[]
   googleToken        GoogleToken?
+  googleClient       InfluencerGoogleClient?
   user               User?
   payoutAccount      PayoutAccount?
   whatsappConnection WhatsAppConnection?
   // Platform fee in basis points (1000 = 10%) taken from this influencer's payouts. Null = use the platform default
   // (PLATFORM_FEE_BPS). Decided by the administrator.
-  platformFeeBps     Int?                @map("platform_fee_bps")
+  platformFeeBps     Int?                    @map("platform_fee_bps")
   payouts            Payout[]
 
   // Platform moderation. Suspended: the page is offline, new holds/checkouts/approvals and new payouts are refused.
-  suspendedAt      DateTime? @map("suspended_at")
-  suspendedReason  String?   @map("suspended_reason")
-  suspendedByEmail String?   @map("suspended_by_email")
+  suspendedAt      DateTime?            @map("suspended_at")
+  suspendedReason  String?              @map("suspended_reason")
+  suspendedByEmail String?              @map("suspended_by_email")
   // Set when an administrator approved the page. Only enforced when READINESS_REQUIRED contains "approval".
   // Accounts that had finished onboarding when the column was added are grandfathered (approvedByEmail "system:grandfathered").
-  approvedAt       DateTime? @map("approved_at")
-  approvedByEmail  String?   @map("approved_by_email")
+  approvedAt       DateTime?            @map("approved_at")
+  approvedByEmail  String?              @map("approved_by_email")
   activity         InfluencerActivity[]
 
   @@map("influencers")
@@ -199,12 +200,31 @@ model GoogleToken {
   // same, so "is this a different Google account?" is decided by this when both sides have one. Null on rows connected before
   // it was recorded: they are compared by email only and never trigger a revoke. Server-side only, never sent to the browser.
   googleSub         String?           @map("google_sub")
+  // Which OAuth client the grant was issued with: "own" = the influencer's own Google Cloud client (influencer_google_clients),
+  // "platform" = the platform-wide GOOGLE_CLIENT_ID pair. Every refresh and health check must use the client that issued the grant.
+  clientKind        String            @default("platform") @map("client_kind")
   connectedAt       DateTime          @default(now()) @map("connected_at")
   updatedAt         DateTime          @updatedAt @map("updated_at")
 
   influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 
   @@map("google_tokens")
+}
+
+// The influencer's OWN Google Cloud OAuth client (doc/15). The client ID is not secret; the secret is AES-256-GCM encrypted with
+// lib/crypto.ts (AAD "google-client:<influencerId>") and never leaves the server. `checkedAt` is when Google last accepted the pair.
+model InfluencerGoogleClient {
+  id              String   @id @default(cuid())
+  influencerId    String   @unique @map("influencer_id")
+  clientId        String   @map("client_id")
+  clientSecretEnc String   @map("client_secret_enc")
+  checkedAt       DateTime @map("checked_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@map("influencer_google_clients")
 }
 
 // What a CUSTOMER gets back when they cancel their own booking. An influencer-initiated cancel always refunds in
@@ -265,20 +285,20 @@ model AvailabilityRule {
 // One occurrence of a service at a given instant. 1:1 services have capacity 1;
 // group services share one session across many bookings (Phase 6 builds on this).
 model Session {
-  id        String   @id @default(cuid())
-  serviceId String   @map("service_id")
-  startTime DateTime @map("start_time") // UTC
-  endTime   DateTime @map("end_time") // UTC
+  id              String   @id @default(cuid())
+  serviceId       String   @map("service_id")
+  startTime       DateTime @map("start_time") // UTC
+  endTime         DateTime @map("end_time") // UTC
   // Group sessions share ONE Calendar event: it is created once for the first paid attendee and every other
   // attendee is added to it. These session-level fields are the source of truth; each booking gets a copy of
   // event_id/meet_link for the dashboard and messaging. 1:1 sessions leave these null (the event lives per booking).
-  eventId   String?  @map("event_id")
-  meetLink  String?  @map("meet_link")
+  eventId         String?  @map("event_id")
+  meetLink        String?  @map("meet_link")
   // Google never lets a deleted event's id be reused, so a group session's shared event gets the next id of a
   // deterministic sequence (lib/meeting.ts sessionEventId) each time it is deleted. This is the position in that
   // sequence of the live event, or of the next one to try after the last was deleted; the walk starts here.
-  eventGeneration Int    @default(0) @map("event_generation")
-  createdAt DateTime @default(now()) @map("created_at")
+  eventGeneration Int      @default(0) @map("event_generation")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   service  Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   bookings Booking[]
