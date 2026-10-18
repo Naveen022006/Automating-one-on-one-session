@@ -27,10 +27,12 @@ export async function eraseCustomerData(
   influencerId: string,
   emailInput: string,
   now = new Date(),
+  /** Only this booking (the manage-link erasure of doc/15 4.12 touches one booking, never the address's others). */
+  onlyBookingId?: string,
 ): Promise<{ found: number; erased: number; blocked: number }> {
   const email = emailInput.trim().toLowerCase();
   const bookings = await prisma.booking.findMany({
-    where: { customerEmail: email, redactedAt: null, session: { service: { influencerId } } },
+    where: { customerEmail: email, redactedAt: null, session: { service: { influencerId } }, ...(onlyBookingId ? { id: onlyBookingId } : {}) },
     select: { id: true, status: true, whatsappE164: true, session: { select: { endTime: true } } },
   });
   const erasable = bookings.filter((b) => !isKeptBooking(b, now));

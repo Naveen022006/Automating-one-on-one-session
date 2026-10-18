@@ -239,7 +239,7 @@ test("admin: the account help buttons exist, say what they do, and the reset lin
   assert.ok(!/reset-password\?token/.test(unverified + verified), "a link only exists after the click, in a dialog, once");
 });
 
-test("the manage page offers 'Download my data' and 'Erase my data' only when the site sends no e-mail", async () => {
+test("the manage page offers 'Download this booking's data' and 'Erase this booking's data' only when the site sends no e-mail, and says it is this booking only", async () => {
   const { ManageBooking } = await import("../web/src/pages/booking/ManageBooking");
   const data = {
     token: "tok.en",
@@ -261,11 +261,12 @@ test("the manage page offers 'Download my data' and 'Erase my data' only when th
     receipt: null,
   };
   const on = render(createElement(ManageBooking, { data: { ...data, emailEnabled: true } }));
-  assert.ok(!on.includes("Download my data") && !on.includes("Erase my data"));
+  assert.ok(!text(on).includes("Download this booking's data") && !text(on).includes("Erase this booking's data"));
   const undef = render(createElement(ManageBooking, { data }));
-  assert.ok(!undef.includes("Erase my data"), "an answer without the field means e-mail is on");
+  assert.ok(!text(undef).includes("Erase this booking's data"), "an answer without the field means e-mail is on");
   const off = render(createElement(ManageBooking, { data: { ...data, emailEnabled: false } }));
-  assert.ok(off.includes("Download my data") && off.includes("Erase my data"));
+  assert.ok(text(off).includes("Download this booking's data") && text(off).includes("Erase this booking's data"));
+  assert.ok(text(off).includes("THIS booking") && !text(off).includes("every host") && !text(off).includes("everything stored about your bookings"), "no promise of more than the one booking");
   assert.ok(off.includes('href="/api/manage/tok.en/data"') && off.includes("download"), "the download is a plain link to the export");
   assert.ok(text(off).includes("This site does not send e-mail"));
 });

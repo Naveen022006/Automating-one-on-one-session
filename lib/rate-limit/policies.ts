@@ -151,6 +151,9 @@ export const IDENTITY_RULES = {
   bookingResend: { name: "booking-resend-id", limit: 3, windowMs: HOUR },
   /** "Find your bookings": per e-mail address, so one inbox cannot be mail-bombed from many addresses. */
   customerAccessEmail: { name: "customer-access-email", limit: 3, windowMs: HOUR },
+  /** The manage-link data export and erasure (doc/15, 4.12), per BOOKING (keyed by a hash of its id) on top of the per-IP rules: a leaked link cannot be hammered from many addresses. */
+  manageDataBooking: { name: "manage-data-booking", limit: 5, windowMs: HOUR },
+  manageEraseBooking: { name: "manage-erase-booking", limit: 3, windowMs: HOUR },
 } satisfies Record<string, RateLimitRule>;
 
 export function scaled(rule: RateLimitRule, multiplier: number): RateLimitRule {

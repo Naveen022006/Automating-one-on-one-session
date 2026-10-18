@@ -224,9 +224,15 @@ to. `npm run dev:mock` sets `GOOGLE_CLIENT_MODE=own`.
 11. **All three Google client rejections count (review G3).** For an own client `invalid_client`, `deleted_client` and `unauthorized_client` mean "fix your
     Google client" in the refresh, in the callback (`client-rejected`) and in "Save and check" ("Google says this client is invalid, deleted or not a Web
     application client."). For the shared pair they stay transient.
-12. **Export and erasure through the manage link when the site sends no e-mail (review G7).** `GET /api/manage/:token/data` and `POST /api/manage/:token/erase`
-    (signed manage token only; the portal's own builders keyed by the booking customer's address; 403 `expired` / 404 `gone`; rate limits `manage-data` 10 and
-    `manage-erase` 5 per hour per address). The manage page shows "Download my data" and "Erase my data" only when `emailEnabled` is false. The portal is unchanged.
+12. **Export and erasure of ONE booking through the manage link when the site sends no e-mail (review G7, narrowed after the delta review).**
+    `GET /api/manage/:token/data` and `POST /api/manage/:token/erase` (signed manage token only). The manage link is a forwardable bearer link valid for 30
+    days and booking e-mails are never verified, so unlike the portal (which proves a MAILBOX) it must not reach further than the booking it was issued for:
+    the export has the portal export's fields for that booking only (no other bookings of the address, no other hosts), and the erasure redacts that booking
+    only, honouring the kept-booking rule (an upcoming live session is kept: `blocked` 1) and counting that booking only. Where the platform sends e-mail the
+    endpoints answer a generic 404 (the portal is the way there) before looking at the token. 403 `expired` for an invalid or expired link, 404 `gone` for a
+    missing or erased booking. Limits: per IP at the proxy (`manage-data` 10, `manage-erase` 5 per hour) AND per booking in the handler
+    (`manage-data-booking` 5, `manage-erase-booking` 3 per hour, keyed by a hash of the booking id), so a leaked link cannot be hammered from many addresses.
+    The manage page shows "Download this booking's data" and "Erase this booking's data" only when `emailEnabled` is false. The portal is unchanged.
 13. **An administrator's reset link does not verify the address (review G5).** The token table has no column for it and a migration was not worth it, so such a
     token starts with `adm.` (self-requested tokens are base64url and never contain a ".", and the marker is only read from a token whose hash is stored, so it
     cannot be added or removed). `resetPassword` sets `emailVerifiedAt` only for the other kind. The influencer gets an account-activity entry

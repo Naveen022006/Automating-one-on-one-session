@@ -13,9 +13,10 @@ function when(iso: string) {
 }
 
 /**
- * "Download my data" and "Erase my data" (doc/15, 4.12), only on a site that sends no e-mail. Both work for the address of this booking
- * through the signed link in the page address: the export is the customer portal's, the erasure keeps upcoming sessions until they are
- * cancelled and keeps payment records for accounting, and the answer says how many of each.
+ * "Download this booking's data" and "Erase this booking's data" (doc/15, 4.12), only on a site that sends no e-mail. Both work through the
+ * signed link in the page address and NEVER reach further than this one booking (not the address's other bookings, not other hosts): the
+ * export has the customer portal's fields, the erasure keeps an upcoming live session until it is cancelled or over and keeps payment
+ * records for accounting.
  */
 function MyData({ token }: { token: string }) {
   const [confirm, setConfirm] = useState(false);
@@ -34,7 +35,7 @@ function MyData({ token }: { token: string }) {
         const kept = body.blocked ?? 0;
         setResult({
           tone: "success",
-          text: `${erased} ${erased === 1 ? "booking was" : "bookings were"} erased.${kept > 0 ? ` ${kept} upcoming ${kept === 1 ? "session is" : "sessions are"} kept until ${kept === 1 ? "it is" : "they are"} cancelled or over.` : ""} Payment records stay without your personal details, as the law requires for accounting.`,
+          text: erased > 0 ? "The details of this booking were erased. Its payment record stays without your personal details, as the law requires for accounting." : kept > 0 ? "This session has not happened yet, so its details are kept until it is cancelled or over. Cancel it above first if you want them erased now." : "Nothing was left to erase for this booking.",
         });
       }
     } catch {
@@ -49,15 +50,15 @@ function MyData({ token }: { token: string }) {
     <Card title={<h2 className="card__title">Your data</h2>}>
       <div className="stack">
         <p className="subtle">
-          This site does not send e-mail, so there is no &ldquo;find your bookings&rdquo; link to e-mail you. You can use this page instead: download everything stored about your bookings, or ask for it to be erased.
+          This site does not send e-mail, so there is no &ldquo;find your bookings&rdquo; link to e-mail you. You can use this page instead: download the data stored about THIS booking, or ask for it to be erased. Other bookings have their own links; ask the host if you have lost one.
         </p>
         {result && <Alert tone={result.tone}>{result.text}</Alert>}
         <div className="row">
           <a className="btn" href={`/api/manage/${encodeURIComponent(token)}/data`} download>
-            <IconDownload size={16} /> Download my data
+            <IconDownload size={16} /> Download this booking's data
           </a>
           <Button variant="danger" onClick={() => setConfirm(true)} disabled={busy}>
-            Erase my data
+            Erase this booking's data
           </Button>
         </div>
       </div>
@@ -67,9 +68,9 @@ function MyData({ token }: { token: string }) {
         onConfirm={erase}
         busy={busy}
         danger
-        title="Erase my data?"
-        description="Your name, e-mail address and phone number are removed from your bookings with every host. Sessions that have not happened yet are kept until they are cancelled or over. This cannot be undone."
-        confirmLabel="Erase my data"
+        title="Erase this booking's data?"
+        description="The name, e-mail address and phone number on this booking are removed. Other bookings are not touched. A session that has not happened yet is kept until it is cancelled or over. This cannot be undone."
+        confirmLabel="Erase this booking's data"
         cancelLabel="Keep my data"
       />
     </Card>
