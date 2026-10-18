@@ -42,6 +42,7 @@ export const MONEY_DEFINITIONS: { term: string; text: string }[] = [
   { term: "Payout to influencer (money out)", text: "A payout that was marked as sent, on the day it was marked. The amount is what was sent (after the platform fee); the fee kept is shown beside it. The bank reference is shown by its last four characters." },
   { term: "Created, not sent yet", text: "Payouts that were created (some already approved) and not marked as sent. They are not money out yet, so they are listed apart and are not in the totals; they appear in the ledger on the day they are marked as sent. This list does not depend on the dates." },
   { term: "Totals", text: "The same figures, worked out by the same code, as the Reports page for the same dates (and for the influencer, when one is chosen). The tabs narrow the list of movements, not the totals. \"Still held\" is right now, before the platform fee, and does not depend on the dates." },
+  { term: "Influencer summary", text: "Paid out to date is every payout marked as sent. Payable now is what the next payout would send, after the platform fee. Not payable yet is every payment still waiting for something (reconciliation, the hold period, a refund that is flagged or in progress, a booking that did not take place), with the reasons listed. It is wider than Still held, which counts only money the influencer is owed: not flagged for a refund, not in a sent payout, on a paid, scheduled or completed booking." },
   { term: "Times", text: "Every day starts at 00:00 Indian Standard Time (IST); the end date is included." },
 ];
 
@@ -261,7 +262,8 @@ function ScheduledTable({ scheduled }: { scheduled: MoneyData["scheduled"] }) {
  */
 export function MoneyView({ data, busy }: { data: MoneyData; busy?: boolean }) {
   const { from, to, type, influencer, totals, summary, scheduled } = data;
-  const influencerId = influencer?.id ?? null;
+  // The id the page was asked for (also when nobody has it): the tabs and the pages keep it, so an unknown id never turns into "everybody".
+  const influencerId = data.influencerId;
   const label = typeLabel(type);
   const empty = data.total === 0;
   // A soft navigation to another filter or page is not announced by the browser: this line (a live region whose text changes) does it.
@@ -277,9 +279,10 @@ export function MoneyView({ data, busy }: { data: MoneyData; busy?: boolean }) {
       <PageHead
         title="Money"
         description="Every payment in, refund out and influencer payout, newest first. Each currency is shown on its own; they are never added together."
-        actions={<ExportLink href={exportUrl("money", from, to, { type, influencerId: influencerId ?? "" })} filename={`money-${from}-to-${to}.csv`} label="Export CSV" />}
+        // No export while the influencer is unknown: the file would be the money of everybody, from a page that shows nothing.
+        actions={data.influencerUnknown ? undefined : <ExportLink href={exportUrl("money", from, to, { type, influencerId: influencerId ?? "" })} filename={`money-${from}-to-${to}.csv`} label="Export CSV" />}
       />
-      <FilterForm from={from} to={to} type={type} influencerId={influencerId} options={data.influencers.options} truncated={data.influencers.truncated} />
+      <FilterForm from={from} to={to} type={type} influencerId={influencer?.id ?? null} options={data.influencers.options} truncated={data.influencers.truncated} />
       {data.influencerUnknown && (
         <Alert tone="warning" title="No influencer has that id">
           Nothing is shown. Choose an influencer from the list, or &quot;All influencers&quot;.
@@ -316,7 +319,7 @@ export function MoneyView({ data, busy }: { data: MoneyData; busy?: boolean }) {
             actions={<ButtonLink href={`/admin/influencers/${influencer.id}`}>Open influencer to create a payout</ButtonLink>}
           >
             {summary.currencies.length === 0 ? (
-              <p className="muted">This influencer has no paid-out, payable or held money yet.</p>
+              <p className="muted">This influencer has no paid-out, payable or waiting money yet.</p>
             ) : (
               summary.currencies.map((c) => (
                 <div key={c.currency} className="stack">
@@ -324,9 +327,18 @@ export function MoneyView({ data, busy }: { data: MoneyData; busy?: boolean }) {
                   <div className="grid grid--3">
                     <Stat label="Paid out to date" value={money(c.paidOutMinor, c.currency)} />
                     <Stat label="Payable now" value={money(c.payableMinor, c.currency)} hint={`After the ${summary.feePercentText} platform fee, ready for the next payout`} />
-                    <Stat label="Held, not payable yet" value={money(c.heldMinor, c.currency)} hint="Waiting for reconciliation or for the hold period" />
+                    <Stat label="Not payable yet" value={money(c.notPayableMinor, c.currency)} hint={'Paid by customers, not in a payout yet. Includes payments flagged for a refund or being refunded, which "Still held" leaves out. Reasons below.'} />
                     <Stat label="In pending payouts" value={money(c.pendingMinor, c.currency)} hint="Created, not sent yet" />
                   </div>
+                  {c.notPayable.length > 0 && (
+                    <ul className="subtle" aria-label={`Why ${c.currency} money is not payable yet`}>
+                      {c.notPayable.map((w) => (
+                        <li key={w.reason}>
+                          {w.label}: {plural(w.count, "payment", "payments")}, {formatMoney(w.minor, c.currency)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))
             )}

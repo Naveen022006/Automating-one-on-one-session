@@ -17,7 +17,7 @@ import {
 } from "@/lib/admin/money";
 import { prisma } from "@/lib/db";
 import { isEntityId } from "@/lib/http";
-import { formatFeePercent, influencerPayoutSummary } from "@/lib/payouts";
+import { BLOCKER_LABEL, formatFeePercent, influencerPayoutSummary } from "@/lib/payouts";
 import { parseReportsRange } from "./admin-reports";
 import { parsePageParam } from "./dashboard-params";
 
@@ -70,9 +70,11 @@ export interface AdminMoneyView {
   from: string;
   to: string;
   type: MoneyType;
+  /** The influencer id the page was filtered by, null for everybody. It is echoed even when nobody has that id, so the links and the export keep the filter. */
+  influencerId: string | null;
   /** The influencer the page was filtered by, null for everybody (and when the id matches nobody). */
   influencer: { id: string; name: string } | null;
-  /** An influencer id was asked for and nobody has it: the page is empty on purpose. */
+  /** An influencer id was asked for and nobody has it: the page is empty on purpose (and has no export, which would otherwise be everybody's money). */
   influencerUnknown: boolean;
   generatedAt: Date;
   /** Movements of the filter: page (1-based, never beyond the last), size, the number of pages, the number of movements and their kinds. */
@@ -96,7 +98,17 @@ export interface AdminMoneyView {
   /** The chosen influencer's payout summary (lib/payouts.ts influencerPayoutSummary), or null. */
   summary: {
     feePercentText: string;
-    currencies: { currency: string; paidOutMinor: number; payableMinor: number; heldMinor: number; pendingMinor: number }[];
+    currencies: {
+      currency: string;
+      paidOutMinor: number;
+      /** Ready for the next payout, after the platform fee. */
+      payableMinor: number;
+      /** Paid by customers and not payable yet, whatever the reason: a payment flagged for a refund or with a refund in progress is in it too, which the "still held" card leaves out. */
+      notPayableMinor: number;
+      /** Why, by blocker (the labels of the Influencer page): the payments and their value less refunds. */
+      notPayable: { reason: string; label: string; count: number; minor: number }[];
+      pendingMinor: number;
+    }[];
     lastPayout: { paidAt: Date; netMinor: number; currency: string } | null;
   } | null;
   rows: AdminMoneyRow[];
@@ -162,24 +174,26 @@ export function toMoneyRow(r: MovementRecord): AdminMoneyRow {
 }
 
 export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: number, now = new Date()): Promise<AdminMoneyView> {
-  // The queries run in three short stages, at most four connections at a time (the database has a small connection cap), so the page is
-  // about eight round trips deep instead of seventeen.
+  // The queries run in short stages, never more than TWO connections at a time (the database has a small connection cap; Reports and the
+  // exports run theirs one after the other): the influencer and the list of names; the scheduled payouts; the count and the page; the two
+  // halves of the totals (each runs its three queries in a row); the summary; the last payout.
   const showScheduled = KINDS_OF_TYPE[filter.type].includes("payout");
-  const [selected, choices, scheduled] = await Promise.all([
+  const [selected, choices] = await Promise.all([
     filter.influencerId ? prisma.influencer.findUnique({ where: { id: filter.influencerId }, select: { id: true, name: true } }) : Promise.resolve(null),
     influencerChoices(),
-    showScheduled ? scheduledPayouts(filter.influencerId) : Promise.resolve({ total: 0, sums: [], rows: [] }),
   ]);
   const influencerUnknown = filter.influencerId !== null && selected === null;
   const options = selected && !choices.options.some((o) => o.id === selected.id) ? [...choices.options, selected].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) : choices.options;
   const influencers = { options, truncated: choices.truncated };
 
   if (influencerUnknown) {
-    // Nothing can match, and the summary of an influencer that does not exist would throw: answer an empty page.
+    // Nothing can match, and the summary of an influencer that does not exist would throw: answer an empty page. The requested id is
+    // echoed so the tabs and the (hidden) export of the page keep the filter instead of turning into everybody's money.
     return {
       from: filter.from,
       to: filter.to,
       type: filter.type,
+      influencerId: filter.influencerId,
       influencer: null,
       influencerUnknown: true,
       generatedAt: now,
@@ -196,8 +210,10 @@ export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: num
     };
   }
 
+  const scheduled = showScheduled ? await scheduledPayouts(filter.influencerId) : { total: 0, sums: [], rows: [] };
   const readPage = (p: number) => readMovements(filter, { limit: MONEY_PAGE_SIZE, offset: (p - 1) * MONEY_PAGE_SIZE, order: "desc" });
-  const [counts, firstRead, totals] = await Promise.all([countMovements(filter), readPage(requestedPage), moneyTotals(filter)]);
+  const [counts, firstRead] = await Promise.all([countMovements(filter), readPage(requestedPage)]);
+  const totals = await moneyTotals(filter);
   const pageCount = Math.max(1, Math.ceil(counts.total / MONEY_PAGE_SIZE));
   const page = Math.min(requestedPage, pageCount);
   // A page beyond the last is the last one (a second read, only for a URL that names a page that is not there).
@@ -205,10 +221,18 @@ export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: num
 
   let summary: AdminMoneyView["summary"] = null;
   if (selected) {
-    const [s, lastPayout] = await Promise.all([influencerPayoutSummary(selected.id), lastPaidPayout(selected.id)]);
+    const s = await influencerPayoutSummary(selected.id);
+    const lastPayout = await lastPaidPayout(selected.id);
     summary = {
       feePercentText: formatFeePercent(s.feeBps),
-      currencies: s.currencies.map((c) => ({ currency: c.currency, paidOutMinor: c.paidOutMinor, payableMinor: c.readyMinor, heldMinor: c.waitingMinor, pendingMinor: c.pendingMinor })),
+      currencies: s.currencies.map((c) => ({
+        currency: c.currency,
+        paidOutMinor: c.paidOutMinor,
+        payableMinor: c.readyMinor,
+        notPayableMinor: c.waitingMinor,
+        notPayable: c.waiting.map((w) => ({ reason: w.reason, label: BLOCKER_LABEL[w.reason], count: w.count, minor: w.minor })),
+        pendingMinor: c.pendingMinor,
+      })),
       lastPayout,
     };
   }
@@ -217,6 +241,7 @@ export async function loadAdminMoneyView(filter: MoneyFilter, requestedPage: num
     from: filter.from,
     to: filter.to,
     type: filter.type,
+    influencerId: selected ? selected.id : null,
     influencer: selected,
     influencerUnknown: false,
     generatedAt: now,

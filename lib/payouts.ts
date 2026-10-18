@@ -351,7 +351,10 @@ export interface CurrencyOverview {
   /** Paid by customers but not payable yet. */
   waitingMinor: number;
   waitingCount: number;
+  /** Payments waiting, per blocker. */
   waitingByReason: Partial<Record<Blocker, number>>;
+  /** What those payments are worth (amount less refunds, before the fee), per blocker. */
+  waitingMinorByReason: Partial<Record<Blocker, number>>;
 }
 
 export function summariseCurrencies(rows: PayableRow[], feeBps: number): CurrencyOverview[] {
@@ -362,7 +365,11 @@ export function summariseCurrencies(rows: PayableRow[], feeBps: number): Currenc
     const waiting = list.filter((r) => r.blocker !== null && r.blocker !== "fully-refunded");
     const t = buildPayoutTotals(ready, feeBps);
     const reasons: Partial<Record<Blocker, number>> = {};
-    for (const w of waiting) reasons[w.blocker!] = (reasons[w.blocker!] ?? 0) + 1;
+    const minorByReason: Partial<Record<Blocker, number>> = {};
+    for (const w of waiting) {
+      reasons[w.blocker!] = (reasons[w.blocker!] ?? 0) + 1;
+      minorByReason[w.blocker!] = (minorByReason[w.blocker!] ?? 0) + netOf(w);
+    }
     return {
       currency,
       readyMinor: t.netMinor,
@@ -372,6 +379,7 @@ export function summariseCurrencies(rows: PayableRow[], feeBps: number): Currenc
       waitingMinor: waiting.reduce((n, w) => n + netOf(w), 0),
       waitingCount: waiting.length,
       waitingByReason: reasons,
+      waitingMinorByReason: minorByReason,
     };
   });
 }
@@ -654,26 +662,39 @@ export async function postPayoutRefunds(payoutId: string): Promise<number> {
 
 export interface InfluencerPayoutSummary {
   feeBps: number;
-  currencies: { currency: string; paidOutMinor: number; pendingMinor: number; readyMinor: number; waitingMinor: number }[];
+  currencies: {
+    currency: string;
+    paidOutMinor: number;
+    pendingMinor: number;
+    readyMinor: number;
+    /** Paid by customers and not payable yet, whatever the reason (see `waiting`). */
+    waitingMinor: number;
+    /** Why that money is not payable yet: the payments (and their amount less refunds) for each blocker, in the order of BLOCKER_LABEL. */
+    waiting: { reason: Blocker; count: number; minor: number }[];
+  }[];
   history: { id: string; status: string; currency: string; netMinor: number; feeMinor: number; grossMinor: number; refundsMinor: number; paymentCount: number; destination: string; reference: string | null; paidAt: Date | null; createdAt: Date }[];
 }
 
 export async function influencerPayoutSummary(influencerId: string): Promise<InfluencerPayoutSummary> {
-  const [inf, rows, payouts] = await Promise.all([
+  // At most two reads at once (the database has a small connection cap): the influencer and the payout history, then the payable payments.
+  const [inf, payouts] = await Promise.all([
     prisma.influencer.findUniqueOrThrow({ where: { id: influencerId }, select: { platformFeeBps: true } }),
-    loadPayable(influencerId),
     prisma.payout.findMany({ where: { influencerId }, orderBy: { createdAt: "desc" }, take: 50 }),
   ]);
+  const rows = await loadPayable(influencerId);
   const feeBps = effectiveFeeBps(inf.platformFeeBps);
   const cur = new Map<string, InfluencerPayoutSummary["currencies"][number]>();
   const get = (c: string) => {
     let v = cur.get(c);
-    if (!v) cur.set(c, (v = { currency: c, paidOutMinor: 0, pendingMinor: 0, readyMinor: 0, waitingMinor: 0 }));
+    if (!v) cur.set(c, (v = { currency: c, paidOutMinor: 0, pendingMinor: 0, readyMinor: 0, waitingMinor: 0, waiting: [] }));
     return v;
   };
   for (const o of summariseCurrencies(rows, feeBps)) {
     get(o.currency).readyMinor = o.readyMinor;
     get(o.currency).waitingMinor = o.waitingMinor;
+    get(o.currency).waiting = (Object.keys(BLOCKER_LABEL) as Blocker[])
+      .filter((reason) => o.waitingByReason[reason])
+      .map((reason) => ({ reason, count: o.waitingByReason[reason] ?? 0, minor: o.waitingMinorByReason[reason] ?? 0 }));
   }
   // Paid out to date and pending are summed in the database over ALL the payouts, not over the 50 of `history`: an influencer with more
   // payouts than that would otherwise be shown less than they were sent (the admin Money page reads this figure).

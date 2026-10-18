@@ -34,6 +34,7 @@ import { countMovements, KINDS_OF_TYPE, MONEY_PAGE_SIZE, MONEY_TYPES, maskTail, 
 import { ExportTooLargeError, parseMoneyExportOptions } from "../lib/admin/exports";
 import { influencerPayoutSummary } from "../lib/payouts";
 import { parseMoneyQuery, toMoneyRow, type AdminMoneyView } from "../lib/views/admin-money";
+import { balanceFigures, rangeFigures } from "../lib/admin/reports";
 import { loadAdminReportsView } from "../lib/views/admin-reports";
 import { assertNoSecretKeys } from "./helpers/assert-no-secret-keys";
 
@@ -468,7 +469,7 @@ test("GET /api/admin/money: 401 signed out, 403 enroll / verify, 200 for an admi
 
 /* ---------- the DTO ---------- */
 
-const TOP_KEYS = ["counts", "from", "generatedAt", "influencer", "influencerUnknown", "influencers", "page", "pageCount", "pageSize", "rows", "scheduled", "summary", "to", "total", "totals", "type"].sort();
+const TOP_KEYS = ["counts", "from", "generatedAt", "influencer", "influencerId", "influencerUnknown", "influencers", "page", "pageCount", "pageSize", "rows", "scheduled", "summary", "to", "total", "totals", "type"].sort();
 const ROW_KEYS = ["amountMinor", "approvedBy", "at", "bookingId", "currency", "customerName", "destination", "direction", "feeMinor", "influencer", "key", "kind", "paidBy", "payoutId", "referenceTail", "serviceTitle", "status"].sort();
 const TOTAL_KEYS = ["currency", "feesKeptMinor", "moneyInMinor", "payoutCount", "paymentCount", "payoutsOutMinor", "refundCount", "refundsOutMinor", "stillHeldMinor"].sort();
 
@@ -485,7 +486,10 @@ test("the DTO has exactly the hand-picked keys and passes assertNoSecretKeys; no
   assert.deepEqual(keys(body.counts), ["payments", "refunds", "payouts"].sort());
   for (const t of body.totals) assert.deepEqual(keys(t), TOTAL_KEYS);
   assert.deepEqual(keys(body.summary), ["currencies", "feePercentText", "lastPayout"]);
-  for (const c of body.summary!.currencies) assert.deepEqual(keys(c), ["currency", "heldMinor", "paidOutMinor", "payableMinor", "pendingMinor"]);
+  for (const c of body.summary!.currencies) {
+    assert.deepEqual(keys(c), ["currency", "notPayable", "notPayableMinor", "paidOutMinor", "payableMinor", "pendingMinor"]);
+    for (const w of c.notPayable) assert.deepEqual(keys(w), ["count", "label", "minor", "reason"]);
+  }
   assert.deepEqual(keys(body.summary!.lastPayout), ["currency", "netMinor", "paidAt"]);
   assert.deepEqual(keys(body.scheduled), ["rows", "shown", "sums", "total"]);
   for (const r of body.scheduled.rows) assert.deepEqual(keys(r), ["approved", "approvedBy", "createdAt", "currency", "destination", "feeMinor", "id", "influencer", "netMinor"]);
@@ -610,6 +614,9 @@ test("an unknown influencer id is an empty page, not an error; a malformed one i
   assert.deepEqual(keys(unknown), TOP_KEYS);
   assert.deepEqual([unknown.rows, unknown.totals, unknown.total, unknown.influencer, unknown.summary], [[], [], 0, null, null]);
   assert.equal(unknown.influencerUnknown, true);
+  assert.equal(unknown.influencerId, `nobody-${run}`, "the requested id is echoed, so the page's links and export keep the filter");
+  assert.equal((await view(`?${day()}&influencerId=${infIds.a}`, token)).influencerId, infIds.a);
+  assert.equal((await view(`?${day()}`, token)).influencerId, null);
   assert.deepEqual(unknown.scheduled, { shown: true, total: 0, sums: [], rows: [] });
   assert.equal(unknown.page, 1);
   assertNoSecretKeys(unknown);
@@ -762,7 +769,15 @@ test("the chosen influencer's summary: paid out to date over ALL their payouts (
   const direct = await influencerPayoutSummary(infIds.a);
   const mine = a.summary!.currencies.find((c) => c.currency === C1)!;
   const theirs = direct.currencies.find((c) => c.currency === C1)!;
-  assert.deepEqual([mine.payableMinor, mine.heldMinor, mine.pendingMinor, mine.paidOutMinor], [theirs.readyMinor, theirs.waitingMinor, theirs.pendingMinor, theirs.paidOutMinor], "the page shows what influencerPayoutSummary says");
+  assert.deepEqual([mine.payableMinor, mine.notPayableMinor, mine.pendingMinor, mine.paidOutMinor], [theirs.readyMinor, theirs.waitingMinor, theirs.pendingMinor, theirs.paidOutMinor], "the page shows what influencerPayoutSummary says");
+  // Not payable yet is EVERY payment waiting for something, and the page says why: A's flagged pA2 (50 000) and the three payments nobody has
+  // reconciled (pA0, pA5a, pA5b: 16 000). pA3 is refunded in full and pA1 is in a sent payout: neither waits.
+  assert.equal(mine.notPayableMinor, 66_000);
+  assert.deepEqual(mine.notPayable, [
+    { reason: "flagged-for-refund", label: "Flagged for a refund", count: 1, minor: 50_000 },
+    { reason: "not-reconciled", label: "Waiting for reconciliation", count: 3, minor: 16_000 },
+  ]);
+  assert.equal(mine.notPayable.reduce((n, w) => n + w.minor, 0), mine.notPayableMinor, "the reasons add up to the figure");
   assert.equal(mine.paidOutMinor, 89_550 + 3_000 + 1_111, "payout1, payout5 and payout6 were sent");
   assert.equal(mine.pendingMinor, 12_000, "payout2 and payout3 are waiting");
   assert.deepEqual(a.summary!.lastPayout, { paidAt: at(DAY).toISOString(), netMinor: 3_000, currency: C1 }, "the one most recently marked as sent, whatever the range");
@@ -783,6 +798,31 @@ test("the chosen influencer's summary: paid out to date over ALL their payouts (
   assert.equal(e.influencer!.id, infIds.e);
   // Everybody: no summary.
   assert.equal((await view(`?${day()}`, token)).summary, null);
+});
+
+test("the influencer summary and the cards agree wherever they claim the same thing (the Reports definitions, scoped to the influencer)", { skip }, async () => {
+  const token = await sessionLib.createAdminSession(Y);
+  const a = await view(`?${day()}&influencerId=${infIds.a}`, token);
+  const mine = a.summary!.currencies.find((c) => c.currency === C1)!;
+  const card = a.totals.find((t) => t.currency === C1)!;
+  const scope = { influencerId: infIds.a };
+  const balances = (await balanceFigures(scope)).find((b) => b.currency === C1)!;
+  const allTime = (await rangeFigures("2000-01-01", "2100-12-31", scope)).find((r) => r.currency === C1)!;
+  // Paid out to date is every payout marked as sent: the Reports "paid out" over all time (payout1 + payout5 + payout6).
+  assert.equal(mine.paidOutMinor, allTime.payoutsPaidNetMinor);
+  assert.equal(mine.paidOutMinor, 93_661);
+  // Pending payouts: the summary and the Reports balance are the same sum of net amounts.
+  assert.equal(mine.pendingMinor, balances.inPendingPayoutsMinor);
+  assert.equal(mine.pendingMinor, 12_000);
+  // Payments flagged for a refund: the summary's reason and the Reports "owed to customers" count the same money.
+  assert.equal(mine.notPayable.find((w) => w.reason === "flagged-for-refund")!.minor, balances.owedToCustomersMinor);
+  assert.equal(balances.owedToCustomersMinor, 50_000);
+  // The "Still held" card is NOT the summary's "Not payable yet": held leaves out the flagged payment, so card + owed = not payable here,
+  // where nothing else waits (every other waiting payment is a booking that is scheduled and not reconciled, which both count).
+  assert.equal(card.stillHeldMinor, balances.heldForInfluencersMinor);
+  assert.equal(card.stillHeldMinor, 16_000);
+  assert.equal(card.stillHeldMinor + balances.owedToCustomersMinor, mine.notPayableMinor);
+  assert.ok(mine.notPayableMinor > card.stillHeldMinor, "the summary figure is the wider one, and the page says so");
 });
 
 test("the influencer list of the filter: names only, sorted, and the chosen one is always in it", { skip }, async () => {

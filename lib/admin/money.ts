@@ -6,7 +6,7 @@ import { balanceFigures, istStart, nextDay, rangeFigures, type Day } from "@/lib
  * The queries behind the admin Money page (GET /api/admin/money) and its CSV export: ONE chronological ledger of every money movement
  * of the platform. Nothing is loaded without a bound: the rows come from a single SQL statement (a UNION ALL of three explicit selects,
  * ordered, LIMIT / OFFSET) and the counts and the totals are aggregates. The queries are few and small; the view function runs them in
- * short stages, never more than four connections at a time (the database has a small connection cap).
+ * short stages, never more than two connections at a time (the database has a small connection cap).
  *
  * THREE KINDS OF MOVEMENT, each dated by the one timestamp that is the most exact the schema has, and the same one the Reports page
  * (lib/admin/reports.ts) uses, so the rows of a range add up to the Reports figures of that range:

@@ -52,7 +52,7 @@ const payout = (over: Partial<Row> = {}): Row =>
   });
 
 const base = (over: Partial<AdminMoneyView> = {}): AdminMoneyView => ({
-  from: "2026-10-01", to: "2026-10-31", type: "all", influencer: null, influencerUnknown: false, generatedAt: new Date("2026-10-31T10:00:00Z"),
+  from: "2026-10-01", to: "2026-10-31", type: "all", influencerId: over.influencer ? over.influencer.id : null, influencer: null, influencerUnknown: false, generatedAt: new Date("2026-10-31T10:00:00Z"),
   page: 1, pageSize: 50, pageCount: 1, total: 3, counts: { payments: 1, refunds: 1, payouts: 1 },
   totals: [{ currency: "INR", moneyInMinor: 105_000, paymentCount: 1, refundsOutMinor: 30_000, refundCount: 1, payoutsOutMinor: 89_550, payoutCount: 1, feesKeptMinor: 10_500, stillHeldMinor: 16_000 }],
   summary: null,
@@ -185,19 +185,37 @@ test("one influencer: the summary card with the figures, the last payout and a l
     influencer: { id: "inf1", name: "Ina Fluencer" },
     summary: {
       feePercentText: "10%",
-      currencies: [{ currency: "INR", paidOutMinor: 92_550, payableMinor: 12_000, heldMinor: 8_000, pendingMinor: 5_000 }],
+      currencies: [
+        {
+          currency: "INR",
+          paidOutMinor: 92_550,
+          payableMinor: 12_000,
+          notPayableMinor: 66_000,
+          notPayable: [
+            { reason: "flagged-for-refund", label: "Flagged for a refund", count: 1, minor: 50_000 },
+            { reason: "not-reconciled", label: "Waiting for reconciliation", count: 3, minor: 16_000 },
+          ],
+          pendingMinor: 5_000,
+        },
+      ],
       lastPayout: { paidAt: new Date("2026-10-25T13:00:00Z"), netMinor: 3_000, currency: "INR" },
     },
   });
   assert.ok(html.includes("Ina Fluencer: payouts"));
-  for (const label of ["Paid out to date", "Payable now", "Held, not payable yet", "In pending payouts"]) assert.ok(html.includes(`>${label}<`), label);
-  assert.ok(html.includes("₹925.50") && html.includes("₹120.00") && html.includes("₹80.00") && html.includes("₹50.00"));
+  for (const label of ["Paid out to date", "Payable now", "Not payable yet", "In pending payouts"]) assert.ok(html.includes(`>${label}<`), label);
+  assert.ok(!html.includes("Held, not payable yet"), "the old label said held, which the Still held card means something narrower by");
+  assert.ok(html.includes("₹925.50") && html.includes("₹120.00") && html.includes("₹660.00") && html.includes("₹50.00"));
+  // The reasons, with their payments and value, as on the Influencer page; and the note that Still held is narrower.
+  const reasons = /<ul class="subtle" aria-label="Why INR money is not payable yet">(.*?)<\/ul>/s.exec(html)?.[1] ?? "";
+  assert.deepEqual([...reasons.matchAll(/<li>(.*?)<\/li>/g)].map((x) => unHtml(x[1].replace(/<!-- -->/g, ""))), ["Flagged for a refund: 1 payment, ₹500.00", "Waiting for reconciliation: 3 payments, ₹160.00"]);
+  assert.ok(unHtml(html).includes('which "Still held" leaves out'));
   assert.ok(html.includes("After the 10% platform fee"));
   assert.ok(html.includes("Last payout: ₹30.00 on 25 Oct 2026, 6:30 PM IST."));
   assert.ok(/<a [^>]*href="\/admin\/influencers\/inf1"[^>]*>Open influencer to create a payout<\/a>/.test(html));
   assert.ok(html.includes("Totals, 2026-10-01 to 2026-10-31, Ina Fluencer"));
   const none = render({ influencer: { id: "inf1", name: "Ina Fluencer" }, summary: { feePercentText: "10%", currencies: [], lastPayout: null } });
-  assert.ok(none.includes("No payout has been sent to this influencer yet.") && none.includes("no paid-out, payable or held money yet"));
+  assert.ok(none.includes("No payout has been sent to this influencer yet.") && none.includes("no paid-out, payable or waiting money yet"));
+  assert.ok(!none.includes("Why INR money is not payable yet"), "no list without a reason");
   assert.ok(!render().includes("create a payout"), "no summary for everybody");
 });
 
@@ -224,11 +242,20 @@ test("payouts created and not sent: their own table, with the approval, the sum 
   assert.ok(!hiddenOne.includes("Payouts created, not sent yet"));
 });
 
-test("an unknown influencer: a warning and an empty page, the form still there", () => {
-  const html = render({ influencerUnknown: true, rows: [], total: 0, totals: [], counts: { payments: 0, refunds: 0, payouts: 0 } });
+test("an unknown influencer: a warning and an empty page, the form still there, NO export (it would be everybody's money), and the tabs keep the id", () => {
+  const html = render({ influencerId: "ghost-1", influencerUnknown: true, rows: [], total: 0, totals: [], counts: { payments: 0, refunds: 0, payouts: 0 } });
   assert.ok(html.includes("No influencer has that id"));
   assert.equal(statusLine(html), "No influencer has that id.");
   assert.ok(html.includes('name="from"'));
+  assert.ok(!html.includes("Export CSV") && !html.includes("/api/admin/exports/money"), "no export while the influencer is unknown");
+  const tabs = /<nav class="tabs"[^>]*>.*?<\/nav>/s.exec(html)![0];
+  assert.equal(count(tabs, "influencerId=ghost-1"), 5, "every tab keeps the requested id: it never turns into everybody");
+  // The select shows "All influencers" (there is nothing to select), so submitting the form is the way back.
+  const select = /<select [^>]*name="influencerId"[^>]*>.*?<\/select>/s.exec(html)![0];
+  assert.deepEqual([...select.matchAll(/<option ([^>]*)>/g)].filter((o) => /selected/.test(o[1])).map((o) => o[1].includes('value=""')), [true], "only All influencers is selected");
+  // A known influencer still has its export, with the id.
+  const known = render({ influencer: { id: "inf1", name: "Ina Fluencer" } });
+  assert.ok(known.includes("influencerId=inf1") && known.includes("Export CSV"));
 });
 
 test("the error state keeps the form: the dates and the type stay, a valid influencer id is kept, a malformed one is dropped, Try again only when it may help", () => {
@@ -260,7 +287,8 @@ test("hostile names and titles are escaped in every cell", () => {
 test("the definitions explain every date and amount, and nothing on the page promises more than the rules give", () => {
   const html = render();
   assert.ok(html.includes("What the dates and amounts mean"));
-  assert.equal(m.MONEY_DEFINITIONS.length, 6);
+  assert.equal(m.MONEY_DEFINITIONS.length, 7);
+  assert.ok(m.MONEY_DEFINITIONS.some((d) => d.term === "Influencer summary" && /wider than Still held/.test(d.text)), "the summary's Not payable yet is explained against Still held");
   for (const d of m.MONEY_DEFINITIONS) assert.ok(html.includes(`<dt>${d.term}</dt>`), d.term);
   const text = m.MONEY_DEFINITIONS.map((d) => d.text).join(" ");
   assert.match(text, /created_at|day checkout began/i);
