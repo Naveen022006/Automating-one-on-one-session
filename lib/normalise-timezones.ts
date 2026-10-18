@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { APP_TIME_ZONE, IST_OFFSET_MINUTES } from "@/lib/india";
 import { isValidTimezone } from "@/lib/slots";
 
@@ -86,6 +87,43 @@ export function planInfluencer(
   const rules = influencer.rules.map((rule) => ({ rule, action: planRule(rule, now) }));
   const fullyIst = rules.every((r) => r.action.kind === "already-ist" || r.action.kind === "convert");
   return { influencerId: influencer.id, slug: influencer.slug, influencerTimezone: influencer.timezone, rules, fullyIst };
+}
+
+/** Influencers that have at least one rule outside IST, with their rules, planned. `only` limits it to some influencer ids (tests). */
+export async function loadPlans(db: Pick<PrismaClient, "influencer">, now: Date, only?: string[]): Promise<InfluencerPlan[]> {
+  const rows = await db.influencer.findMany({
+    where: { ...(only ? { id: { in: only } } : {}), rules: { some: { timezone: { not: APP_TIME_ZONE } } } },
+    select: { id: true, slug: true, timezone: true, rules: { select: { id: true, weekday: true, startTime: true, endTime: true, timezone: true }, orderBy: [{ weekday: "asc" }, { startTime: "asc" }] } },
+    orderBy: { slug: "asc" },
+  });
+  return rows.map((r) => planInfluencer(r, now));
+}
+
+/**
+ * Writes the CONVERT lines, one transaction per influencer. Each update is compare-and-set (it only writes a row that still holds the
+ * planned values), so an influencer editing at the same moment is never overwritten; those rows are counted in `skipped`.
+ */
+export async function applyPlans(db: Pick<PrismaClient, "$transaction">, plans: InfluencerPlan[]): Promise<{ written: number; skipped: number }> {
+  let written = 0;
+  let skipped = 0;
+  for (const p of plans) {
+    await db.$transaction(async (tx) => {
+      for (const { rule, action } of p.rules) {
+        if (action.kind !== "convert") continue;
+        const r = await tx.availabilityRule.updateMany({
+          where: { id: rule.id, weekday: rule.weekday, startTime: rule.startTime, endTime: rule.endTime, timezone: rule.timezone },
+          data: { startTime: action.startTime, endTime: action.endTime, timezone: APP_TIME_ZONE },
+        });
+        if (r.count === 1) written++;
+        else skipped++;
+      }
+      if (p.fullyIst && p.influencerTimezone !== APP_TIME_ZONE) {
+        const stillOther = await tx.availabilityRule.count({ where: { influencerId: p.influencerId, timezone: { not: APP_TIME_ZONE } } });
+        if (stillOther === 0) await tx.influencer.update({ where: { id: p.influencerId }, data: { timezone: APP_TIME_ZONE } });
+      }
+    });
+  }
+  return { written, skipped };
 }
 
 export const CONFIRM_VALUE = "NORMALISE-TIMEZONES";

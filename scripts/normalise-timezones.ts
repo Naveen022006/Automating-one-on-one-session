@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { CONFIRM_VALUE, describeAction, parseNormaliseArgs, planInfluencer, type InfluencerPlan } from "../lib/normalise-timezones";
+import { CONFIRM_VALUE, applyPlans, describeAction, loadPlans, parseNormaliseArgs } from "../lib/normalise-timezones";
 
 /**
  * Moves weekly availability rules that were saved in another time zone to Indian Standard Time (doc/14-india-localisation.md, section 4).
@@ -45,13 +45,7 @@ async function main(): Promise<number> {
   const { prisma } = await import("../lib/db");
   try {
     console.log(args.apply ? "MODE: APPLY (one transaction per influencer)" : "MODE: DRY RUN (nothing is changed)");
-    const now = new Date();
-    const rows = await prisma.influencer.findMany({
-      where: { rules: { some: { timezone: { not: "Asia/Kolkata" } } } },
-      select: { id: true, slug: true, timezone: true, rules: { select: { id: true, weekday: true, startTime: true, endTime: true, timezone: true }, orderBy: [{ weekday: "asc" }, { startTime: "asc" }] } },
-      orderBy: { slug: "asc" },
-    });
-    const plans: InfluencerPlan[] = rows.map((r) => planInfluencer(r, now));
+    const plans = await loadPlans(prisma, new Date());
     let convert = 0;
     let refuse = 0;
     for (const p of plans) {
@@ -68,25 +62,7 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    let written = 0;
-    let skipped = 0;
-    for (const p of plans) {
-      await prisma.$transaction(async (tx) => {
-        for (const { rule, action } of p.rules) {
-          if (action.kind !== "convert") continue;
-          const r = await tx.availabilityRule.updateMany({
-            where: { id: rule.id, weekday: rule.weekday, startTime: rule.startTime, endTime: rule.endTime, timezone: rule.timezone },
-            data: { startTime: action.startTime, endTime: action.endTime, timezone: "Asia/Kolkata" },
-          });
-          if (r.count === 1) written++;
-          else skipped++;
-        }
-        if (p.fullyIst && p.influencerTimezone !== "Asia/Kolkata") {
-          const stillOther = await tx.availabilityRule.count({ where: { influencerId: p.influencerId, timezone: { not: "Asia/Kolkata" } } });
-          if (stillOther === 0) await tx.influencer.update({ where: { id: p.influencerId }, data: { timezone: "Asia/Kolkata" } });
-        }
-      });
-    }
+    const { written, skipped } = await applyPlans(prisma, plans);
     console.log(`Converted ${written} rule(s)${skipped ? `; ${skipped} changed while this ran and were left alone (run it again)` : ""}.`);
     return 0;
   } catch (e) {
