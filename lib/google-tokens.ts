@@ -196,7 +196,8 @@ async function lastCustomerEmailSince(influencerId: string, connectedAt: Date, n
   const since = new Date(Math.max(connectedAt.getTime(), now.getTime() - GMAIL_FAILURE_WINDOW_MS));
   const booking = { session: { service: { influencerId } } };
   // The latest e-mail that went out, and the latest one Gmail failed to send when no platform provider could take over (EMAIL_PROVIDER=none
-  // leaves no sent row for a failed Gmail send). Whichever is newer decides.
+  // leaves no sent row for a failed Gmail send; a forced resend that failed leaves the failure as a note on the earlier SENT row). Whichever is
+  // newer decides.
   const [sent, failed] = await Promise.all([
     prisma.message.findFirst({
       where: { channel: "EMAIL", status: { in: ["SENT", "DELIVERED", "READ"] }, sentAt: { gte: since }, booking },
@@ -204,7 +205,7 @@ async function lastCustomerEmailSince(influencerId: string, connectedAt: Date, n
       select: { providerMessageId: true, sentAt: true },
     }),
     prisma.message.findFirst({
-      where: { channel: "EMAIL", status: "FAILED", error: { startsWith: GMAIL_FAILED_PREFIX }, updatedAt: { gte: since }, booking },
+      where: { channel: "EMAIL", error: { startsWith: GMAIL_FAILED_PREFIX }, updatedAt: { gte: since }, booking },
       orderBy: { updatedAt: "desc" },
       select: { updatedAt: true },
     }),

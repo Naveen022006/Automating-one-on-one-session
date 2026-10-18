@@ -272,8 +272,20 @@ function intakeOf(value: unknown): Array<{ question: string; answer: string }> {
  * links, and nothing about other customers (a group session shows only this customer's own booking).
  */
 export async function buildPortalExport(email: string, now: Date = new Date()): Promise<PortalExport> {
+  return exportBookings({ customerEmail: email, redactedAt: null }, email, now);
+}
+
+/**
+ * The same export, field for field, of ONE booking (the manage-link data endpoint, lib/manage-data.ts): nothing about the address's other
+ * bookings or other hosts. `email` must be that booking's own address; a booking that is erased or has another address exports nothing.
+ */
+export async function buildBookingExport(bookingId: string, email: string, now: Date = new Date()): Promise<PortalExport> {
+  return exportBookings({ id: bookingId, customerEmail: email, redactedAt: null }, email, now);
+}
+
+async function exportBookings(where: { id?: string; customerEmail: string; redactedAt: null }, email: string, now: Date): Promise<PortalExport> {
   const rows = await prisma.booking.findMany({
-    where: { customerEmail: email, redactedAt: null },
+    where,
     orderBy: { createdAt: "asc" },
     take: EXPORT_MAX,
     select: {

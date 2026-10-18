@@ -5,6 +5,7 @@ import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
 import { revokeToken } from "@/lib/google";
+import { revokeGrantUnlessShared } from "@/lib/google-revoke";
 import { verifyGoogleClient } from "@/lib/google-client-check";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
 import { deleteGoogleClient, getSavedGoogleClient, googleClientMode, maskClientId, saveGoogleClient } from "@/lib/google-credentials";
@@ -40,6 +41,28 @@ const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("remove-client"), confirm: z.boolean().optional() }),
 ]);
 
+/**
+ * After a confirmed change of the influencer's own Google client: the grant made with the OLD client is dead weight that Google would
+ * otherwise keep listing under the account's connected apps. The new client row is already saved; this only cleans up. Removing the local
+ * row and revoking the old token are both best effort: a failure here (Google unreachable, the row gone already) is logged and never fails
+ * the save. A grant that is no longer an own-client grant (reconnected in the meantime) is left alone.
+ */
+async function dropReplacedOwnGrant(influencerId: string, req: Request): Promise<void> {
+  try {
+    const record = await getGoogleAccountRecord(influencerId);
+    if (!record.connected || record.clientKind !== "own") return;
+    const refreshToken = await deleteGoogleToken(influencerId);
+    await recordActivity({ influencerId, action: "google.disconnected", detail: { account: record.email }, req });
+    if (refreshToken) {
+      await revokeGrantUnlessShared(influencerId, refreshToken, record).catch((e) =>
+        console.error("[google-client] could not revoke the replaced grant", e instanceof Error ? e.message : e),
+      );
+    }
+  } catch (e) {
+    console.error("[google-client] could not remove the replaced grant", e instanceof Error ? e.message : e);
+  }
+}
+
 export async function POST(req: Request) {
   // Both actions are sensitive (a secret goes in, or a connection goes away): a recent password entry is required, like Disconnect.
   const auth = await requireRecentAuth();
@@ -65,9 +88,10 @@ export async function POST(req: Request) {
     ]);
     // Saving NEVER touches an existing connection (doc/15, 4.9): a connection made with the shared client keeps using the shared client, and
     // the callback replaces it (and revokes its token) only after Google accepted the new client's consent. The one connection a save does
-    // affect is the one made with the influencer's OWN client when its ID changes: its refresh token belongs to the old client, so the next
-    // refresh is refused by Google and the connection is flagged by the existing path. That needs the confirmation Disconnect needs when
-    // upcoming bookings have calendar events, and the server asks for it itself.
+    // affect is the one made with the influencer's OWN client when its ID changes: its refresh token belongs to the old client and could
+    // never be refreshed again, so once the new client is saved the old grant is revoked at Google (unless another profile uses that Google
+    // account) and removed here, which shows "reconnect" in the Google panel. That needs the confirmation Disconnect needs when upcoming
+    // bookings have calendar events, and the server asks for it itself.
     const breaksOwnGrant = grant !== null && grant.clientKind === "own" && previous !== null && previous.clientId !== clientId;
     if (breaksOwnGrant) {
       const liveEvents = await countLiveCalendarEvents(influencerId);
@@ -91,6 +115,7 @@ export async function POST(req: Request) {
     }
     await saveGoogleClient(influencerId, clientId, clientSecret);
     await recordActivity({ influencerId, action: "google.client_saved", detail: { client: maskClientId(clientId), replaced: previous !== null }, req });
+    if (breaksOwnGrant) await dropReplacedOwnGrant(influencerId, req);
     return jsonView({ ok: true, replacedConnection: breaksOwnGrant, client: await loadGoogleClientView(influencerId) });
   }
 

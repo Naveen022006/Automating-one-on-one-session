@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { NO_EMAIL_ROUTE_REASON } from "@/lib/messages";
 
 /**
  * "Messages not delivered": the FAILED `messages` rows the influencer's dashboard and the admin overview count and list.
@@ -32,6 +33,12 @@ export async function supersededWebFailureIds(opts: { influencerId?: string; sin
   return rows.map((r) => r.id);
 }
 
+/**
+ * Rows to leave out of every "not delivered" count and list: an e-mail that had no way to go out (no Gmail, platform without e-mail) is recorded
+ * as FAILED with NO_EMAIL_ROUTE_REASON but nothing failed, and resending cannot change it. Rows with no error, another channel or another error stay.
+ */
+export const EXCLUDE_NO_EMAIL_ROUTE = { OR: [{ channel: { not: "EMAIL" as const } }, { error: null }, { error: { not: NO_EMAIL_ROUTE_REASON } }] };
+
 /** FAILED messages since `since` (optionally one influencer's), without the superseded linked-number rows. */
 export async function countFailedMessages(since: Date, influencerId?: string): Promise<number> {
   const superseded = await supersededWebFailureIds({ influencerId, since });
@@ -39,6 +46,7 @@ export async function countFailedMessages(since: Date, influencerId?: string): P
     where: {
       status: "FAILED",
       updatedAt: { gte: since },
+      ...EXCLUDE_NO_EMAIL_ROUTE,
       ...(influencerId ? { booking: { session: { service: { influencerId } } } } : {}),
       ...(superseded.length > 0 ? { id: { notIn: superseded } } : {}),
     },

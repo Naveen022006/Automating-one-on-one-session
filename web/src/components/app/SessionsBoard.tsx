@@ -7,6 +7,7 @@ import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIst, ym
 import { formatMoney } from "@/lib/format";
 import { APP_TIME_ZONE_NOTE, formatDateTime, formatIndianMobile } from "@/lib/india";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
+import { isNoEmailRouteMessage } from "@web/lib/email-route-ui";
 import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from "@web/lib/whatsapp-web-ui";
 import { useApi } from "./ApiProvider";
 
@@ -37,7 +38,7 @@ function MessageSummary({ booking }: { booking: BookingRow }) {
         .filter((m) => m.channel !== "LOG")
         .map((m) => (
           <span key={m.channel} title={`${TEMPLATE[m.template] ?? m.template}${isUnconfirmedMessage(m) ? `: ${UNCONFIRMED_MESSAGE_TEXT}` : m.error ? `: ${m.error}` : ""}`}>
-            <span className="subtle">{CHANNEL[m.channel] ?? m.channel}</span> {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
+            <span className="subtle">{CHANNEL[m.channel] ?? m.channel}</span> {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : isNoEmailRouteMessage(m) ? <Badge>No e-mail route</Badge> : <StatusPill kind="message" status={m.status} />}
           </span>
         ))}
     </span>
@@ -367,11 +368,11 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
                           <td>
                             {TEMPLATE[m.template] ?? m.template}
                             <div className="subtle">{dateTime(m.at)}</div>
-                            {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : m.error && <div className="error-text break">{m.error}</div>}
+                            {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : isNoEmailRouteMessage(m) ? <div className="subtle break">{m.error}</div> : m.error && <div className="error-text break">{m.error}</div>}
                           </td>
                           <td>{CHANNEL[m.channel] ?? m.channel}</td>
                           <td>
-                            {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
+                            {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : isNoEmailRouteMessage(m) ? <Badge>No e-mail route</Badge> : <StatusPill kind="message" status={m.status} />}
                           </td>
                         </tr>
                       ))}

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordActivity } from "@/lib/activity";
 import { getAuth } from "@/lib/auth/session";
-import { CALENDAR_SCOPE, exchangeCode, isClientRejection, revokeToken } from "@/lib/google";
+import { CALENDAR_SCOPE, exchangeCode, isClientRejection } from "@/lib/google";
 import { hasGmailSendScope } from "@/lib/gmail";
 import { compareAccounts, mayRevokeOther, outcomeTarget, type GoogleAccountRef, type GoogleOutcome } from "@/lib/google-connect";
 import { getGoogleCredentials, toClientKind } from "@/lib/google-credentials";
@@ -10,9 +10,9 @@ import {
   OAUTH_STATE_PURPOSE,
   countLiveCalendarEvents,
   getGoogleAccountRecord,
-  googleAccountSharedWithOthers,
   saveGoogleToken,
 } from "@/lib/google-tokens";
+import { revokeGrantUnlessShared } from "@/lib/google-revoke";
 import { safeNextPath } from "@/lib/http";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";
@@ -28,13 +28,8 @@ function back(req: NextRequest, returnTo: string, outcome: GoogleOutcome): NextR
   return res;
 }
 
-/**
- * Revokes a grant we are not keeping. Google's revoke ends the app's access for the whole Google account, so when another
- * influencer profile is connected with the same account the revoke is skipped: it would disconnect that profile too.
- */
-async function revokeUnlessShared(influencerId: string, refreshToken: string, account: GoogleAccountRef): Promise<void> {
-  if (!(await googleAccountSharedWithOthers(influencerId, account.email, account.sub))) await revokeToken(refreshToken);
-}
+/** Revokes a grant we are not keeping, unless another influencer profile uses the same Google account (lib/google-tokens.ts). */
+const revokeUnlessShared = revokeGrantUnlessShared;
 
 // Step 2 of the connect flow: Google redirects here with ?code=...&state=... The outcome is shown on the page the
 // influencer started from (settings or onboarding) through ?google=<outcome>.
@@ -103,10 +98,9 @@ export async function GET(req: NextRequest) {
     await saveGoogleToken(state.i, refreshToken, scope, email, sub, creds.kind);
     connectedAccount = email ?? null;
     if (replaced) {
-      // Best effort and after the new connection is safe. A token of the shared client is skipped, like a disconnect, while another profile
-      // uses that account (Google's revoke is per account and app); one of an influencer's own client is theirs alone.
-      const revoke = record.clientKind === "own" && kindChanged ? revokeToken(replaced) : revokeUnlessShared(state.i, replaced, record);
-      await revoke.catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
+      // Best effort and after the new connection is safe. Skipped, like a disconnect, while another profile uses the same Google account
+      // (Google's revoke ends the app's access for the whole account), whichever kind of client the old token belonged to.
+      await revokeUnlessShared(state.i, replaced, record).catch((e) => console.error("[google:callback] could not revoke the replaced grant", e instanceof Error ? e.message : e));
     }
     // Gmail is optional: people can untick it, and customer emails then go out from the platform address instead.
     gmailMissing = state.g === 1 && !hasGmailSendScope(scope);

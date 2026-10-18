@@ -8,7 +8,8 @@
 //     line or activity row; the activity rows carry a masked tail of the client ID only;
 //   - connect and callback use the signed-in influencer's OWN client, never another's and never the shared pair in the default mode, and a
 //     missing client is a redirect with a plain outcome and no call to Google;
-//   - replacing the client with a different ID flags the connection and revokes the old token; the same ID with a new secret keeps it;
+//   - replacing the client with a different ID (confirmed) saves the new client first, then removes the grant made with the old one and revokes
+//     its token unless another profile uses that Google account (a revoke that fails never fails the save); the same ID with a new secret keeps it;
 //   - removing the client needs the disconnect confirmation when events exist, deletes the connection made with it, and leaves a
 //     connection made with the shared pair alone;
 //   - the save endpoint is rate limited per influencer.
@@ -63,6 +64,9 @@ const googleCalls: GoogleCall[] = [];
 const tokenCalls = () => googleCalls.filter((c) => c.kind === "token");
 const revokes = () => googleCalls.filter((c) => c.kind === "revoke").map((c) => c.token);
 
+/** Called by the fake revoke endpoint before it answers: lets a test look at the database at the moment Google is asked to revoke. */
+let onRevoke: ((token: string) => Promise<void>) | null = null;
+
 function installFakeGoogle() {
   const body = (status: number, o: unknown) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
@@ -83,7 +87,10 @@ function installFakeGoogle() {
       return body(400, { error: "invalid_grant", error_description: "Bad Request" });
     }
     if (u.startsWith("https://oauth2.googleapis.com/revoke")) {
-      googleCalls.push({ kind: "revoke", form: new URLSearchParams(), token: new URL(u).searchParams.get("token") });
+      const token = new URL(u).searchParams.get("token");
+      googleCalls.push({ kind: "revoke", form: new URLSearchParams(), token });
+      if (onRevoke) await onRevoke(token ?? "");
+      if ((token ?? "").includes("REVOKEFAIL")) throw new TypeError("fetch failed");
       return body(200, {});
     }
     throw new Error(`unexpected network call in a test: ${u}`);
@@ -413,7 +420,7 @@ test("callback: a state signed before own clients existed (no kind) means the sh
   assert.equal(googleCalls.length, before);
 });
 
-test("replacing the own client: the SAME ID with a new secret keeps the connection; a DIFFERENT ID needs the confirmation when events exist and never writes to the connection itself", { skip }, async () => {
+test("replacing the own client: the SAME ID with a new secret keeps the connection; a DIFFERENT ID needs the confirmation when events exist, and then removes and revokes the old grant", { skip }, async () => {
   // Same ID, new secret (rotated in Google Cloud): the grant is untouched.
   const rotated = await save(A, idOf("a"), "GOCSPX-Arotated0123456789abcdefgh");
   assert.equal(rotated.status, 200);
@@ -439,10 +446,12 @@ test("replacing the own client: the SAME ID with a new secret keeps the connecti
   assert.equal(replaced.status, 200);
   assert.equal(replaced.body.replacedConnection, true, "the response says the connection made with the old client stops working");
   assert.equal((await rowOf(A))?.clientId, idOf("a2"));
-  // The save itself never wrote to the connection or revoked anything: the old token fails at its next refresh (Google ties it to the old client)
-  // and the existing path flags it then.
-  assert.equal((await grantOf(A))?.status, "ACTIVE");
-  assert.deepEqual(revokes(), []);
+  // The old client's grant is dead weight (its refresh token belongs to the old client): once the new client row is saved it is removed here
+  // and revoked at Google, and the Google panel offers "connect" again.
+  assert.equal(await grantOf(A), null, "the grant made with the old client was removed");
+  assert.deepEqual(revokes(), [`rt-${idOf("a")}`], "and its token revoked, once");
+  assert.equal((await activities(A, "google.disconnected")).length, 1);
+  assert.equal(((await getView(A)).body.connection as { state: string }).state, "not-connected");
 
   const saved = await activities(A, "google.client_saved");
   assert.deepEqual(saved.map((r) => (r.detail as { replaced: boolean }).replaced), [false, true, true]);
@@ -540,6 +549,82 @@ test("removing a client leaves a connection made with the shared pair alone", { 
   assert.equal((await grantOf(C))?.clientKind, "platform");
   assert.ok(!revokes().includes("rt-shared-C"));
   await prisma.googleToken.deleteMany({ where: { influencerId: C.influencerId } });
+});
+
+test("replacing the own client: the new client is saved BEFORE the old grant is revoked; a shared Google account is not revoked; a failing revoke never fails the save", { skip }, async () => {
+  await credsLib.saveGoogleClient(C.influencerId, idOf("c"), secretOf("C"));
+  const sharedEmail = `shared-acct-${run}@example.com`;
+
+  // 1) Another profile (D) is connected with the same Google account: the old token is NOT revoked (Google's revoke is per account), but the
+  //    local grant of C is still removed.
+  await tokensLib.saveGoogleToken(C.influencerId, "rt-own-C1", `openid email ${CALENDAR}`, sharedEmail, `sub-shared-${run}`, "own");
+  await tokensLib.saveGoogleToken(D.influencerId, "rt-D-same-account", `openid email ${CALENDAR}`, sharedEmail.toUpperCase(), `sub-shared-${run}`, "platform");
+  const shared = await save(C, idOf("c2"), secretOf("C2"));
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  assert.equal(shared.body.replacedConnection, true);
+  assert.equal((await rowOf(C))?.clientId, idOf("c2"));
+  assert.equal(await grantOf(C), null);
+  assert.ok(!revokes().includes("rt-own-C1"), "the account is shared with another profile, so Google was not asked to revoke it");
+  assert.equal((await grantOf(D))?.status, "ACTIVE", "and the other profile's connection is untouched");
+  await prisma.googleToken.deleteMany({ where: { influencerId: D.influencerId } });
+
+  // 2) An unshared account: the revoke is attempted, AFTER the new client is saved, and a failing revoke (network down) does not fail the save.
+  await tokensLib.saveGoogleToken(C.influencerId, "rt-own-C2-REVOKEFAIL", `openid email ${CALENDAR}`, `lonely-${run}@example.com`, `sub-lonely-${run}`, "own");
+  const seen: { clientId: string | undefined; grantStillThere: boolean }[] = [];
+  onRevoke = async () => {
+    seen.push({ clientId: (await rowOf(C))?.clientId, grantStillThere: (await grantOf(C)) !== null });
+  };
+  try {
+    const failing = await save(C, idOf("c3"), secretOf("C3"));
+    assert.equal(failing.status, 200, JSON.stringify(failing.body));
+    assert.equal(failing.body.replacedConnection, true);
+  } finally {
+    onRevoke = null;
+  }
+  assert.ok(revokes().includes("rt-own-C2-REVOKEFAIL"));
+  assert.deepEqual(seen, [{ clientId: idOf("c3"), grantStillThere: false }], "at the moment Google was asked, the new client was saved and the old grant already gone");
+  assert.equal((await rowOf(C))?.clientId, idOf("c3"));
+  assert.equal(await grantOf(C), null);
+  assert.equal(((await getView(C)).body.connection as { state: string }).state, "not-connected");
+
+  // 3) A shared-client grant is left alone by a client change (nothing of its own to replace).
+  await tokensLib.saveGoogleToken(C.influencerId, "rt-shared-keep", `openid email ${CALENDAR}`, `keep-${run}@example.com`, `sub-keep-${run}`, "platform");
+  const keep = await save(C, idOf("c4"), secretOf("C4"));
+  assert.equal(keep.body.replacedConnection, false);
+  assert.equal((await grantOf(C))?.status, "ACTIVE");
+  assert.ok(!revokes().includes("rt-shared-keep"));
+  await prisma.googleToken.deleteMany({ where: { influencerId: C.influencerId } });
+  await credsLib.deleteGoogleClient(C.influencerId);
+});
+
+test("callback: an own to shared switch does not revoke the old token while another profile uses that Google account", { skip }, async () => {
+  const sharedEmail = `switch-acct-${run}@example.com`;
+  process.env.GOOGLE_CLIENT_ID = "9-shared.apps.googleusercontent.com";
+  process.env.GOOGLE_CLIENT_SECRET = "shared-secret-0123456789abcdef";
+  process.env.GOOGLE_CLIENT_MODE = "either";
+  try {
+    await credsLib.saveGoogleClient(C.influencerId, idOf("c"), secretOf("C"));
+    await tokensLib.saveGoogleToken(C.influencerId, "rt-own-switch-shared", `openid email ${CALENDAR}`, sharedEmail, `sub-switch-${run}`, "own");
+    await tokensLib.saveGoogleToken(D.influencerId, "rt-D-switch", `openid email ${CALENDAR}`, sharedEmail, `sub-switch-${run}`, "own");
+    asUser(C);
+    const shared = await callbackRoute.GET(callbackReq(C, "platform"));
+    assert.equal(locationOf(shared).searchParams.get("google"), "connected");
+    assert.equal((await grantOf(C))?.clientKind, "platform", "the connection did switch");
+    assert.ok(!revokes().includes("rt-own-switch-shared"), "the account is in use by another profile: no revoke");
+    assert.equal((await grantOf(D))?.status, "ACTIVE");
+
+    // The same switch for an account nobody else uses does revoke the old own-client token.
+    await tokensLib.saveGoogleToken(C.influencerId, "rt-own-switch-alone", `openid email ${CALENDAR}`, `alone-${run}@example.com`, `sub-alone-${run}`, "own");
+    const alone = await callbackRoute.GET(callbackReq(C, "platform"));
+    assert.equal(locationOf(alone).searchParams.get("google"), "connected");
+    assert.ok(revokes().includes("rt-own-switch-alone"));
+  } finally {
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_CLIENT_MODE;
+    await prisma.googleToken.deleteMany({ where: { influencerId: { in: [C.influencerId, D.influencerId] } } });
+    await credsLib.deleteGoogleClient(C.influencerId);
+  }
 });
 
 test("saving is limited per influencer across any number of requests", { skip }, async () => {
