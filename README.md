@@ -339,6 +339,75 @@ Embedded Signup could not be exercised without an approved Meta app. The newer G
 check, webhook subscription, PIN registration, the Graph version) are covered by tests with Graph mocked and still need a pass
 against a real Meta account. The local mock (next section) exercises the app's side only.
 
+## WhatsApp by QR code (optional, unofficial)
+An influencer can instead link their **own** WhatsApp as a linked device (WhatsApp > Settings > Linked devices) by scanning a QR code
+in **Settings > WhatsApp**, and the platform then sends their booking messages (confirmation, the two reminders, reschedule,
+cancellation) to their customers from that device. The official connection above stays the default and the safer option.
+
+**The risks, plainly.** This is **unofficial**. WhatsApp's terms do not allow third-party clients, so a linked number **can be
+restricted or banned at any time, without notice**, and neither we nor the influencer can prevent or reverse that. The protocol is
+not public and can change, which breaks sending until the library is updated. Nothing in this mode tries to avoid detection: it
+sends slowly, one message at a time, up to a daily cap, and only about a booking the customer made, and that is a courtesy to the
+number, not a protection. The influencer must tick a written risk statement before linking (the version is stored with the
+consent) and is told to use a number they can afford to lose. This mode never lowers the fallbacks: a message that cannot go out
+through the linked number goes through the official connection (when active), then SMS or e-mail. Design and deviations:
+`doc/14-whatsapp-qr-deviations.md`; settings and operation: `doc/08-deployment.md` section 4.
+
+**What the influencer sees** (only when the mode is on): two independent sections, both always visible, "Official WhatsApp Business API
+(Meta)" and "Link with QR code (unofficial)", with the note "When a QR link is active, booking messages are sent from it first;
+otherwise the official connection, then SMS and e-mail. To stop using the QR link, disconnect it." (There is no stored preference: an
+active QR link is used first, and disconnecting it is how to stop.) The QR screen shows the risk text in an alert, a required consent checkbox, then **Show QR code**: the code
+(the page asks for the status every 2 seconds, and a new code replaces the old one when it runs out), the steps to scan it, and a Cancel. Once linked it shows the masked
+number, the device, messages sent today against the cap, **Send a test message to my own number** and **Disconnect**. Separate
+screens for reconnecting, paused (with the reason) and "the phone removed the device". Administrators see a card on the Influencer
+page with the same facts and a **Force disconnect** that needs a reason (5 to 300 characters, kept in the audit log). With the mode
+off, none of this exists on any screen.
+
+**Turn it on**
+1. `WHATSAPP_QR_ENABLED=true` on **both** the web app and the worker (the web app hides the option and the worker opens no
+   connection unless both see it). Needs `REDIS_URL` and **one worker** (`npm run worker`): only the worker opens connections. A second worker
+   (a rolling deploy that starts the new one first) takes no sockets: the worker that holds the lease in Redis (`wa-web:manager:lease`,
+   renewed every 2 s, 20 s long) is the only one that connects, the other stays idle and says so once, and takes over once the lease is
+   released (clean shutdown) or has run out (crash). Without Redis (development) an in-process lease does the same job for one process.
+2. Optional limits, same environment: `WHATSAPP_QR_DAILY_CAP` (messages per number per Indian calendar day, default 150),
+   `WHATSAPP_QR_MIN_GAP_MS` (fixed gap between two messages from a number, default 4000), `WHATSAPP_QR_MAX_SESSIONS` (numbers the
+   worker keeps connected, default 10), `WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED` (keep the stored logins when the switch is turned off).
+   The table is in `doc/08-deployment.md`.
+3. Turning the switch **off** is the kill switch: at the next worker start every linked number is disconnected and its stored login
+   deleted. Restarting the worker (a deploy) reconnects the linked numbers without a new scan.
+
+**Requirements.** Redis (the QR code and the daily counters are shared between the web app and the worker through it; without it a
+single process can only be used for tests), one worker, and memory: each linked number is a live connection plus an in-memory copy of
+its login. We have not measured it on a real host; plan for a few tens of megabytes per number and watch the worker's memory before
+raising `WHATSAPP_QR_MAX_SESSIONS`. The login of each device is stored encrypted (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`, covered by
+`keys:rotate`), the QR payload lives in Redis for about a minute and is never logged or stored in Postgres, and customers' replies and
+chats are never read or stored.
+
+**Try it locally without a phone.** `WHATSAPP_QR_ENABLED=true WHATSAPP_QR_FAKE=true` (the simulator is refused in production and with
+a non-local `APP_URL`) with a local Redis and `npm run worker`: the screen shows a **Test mode: no real WhatsApp is used** badge, a
+test code that cannot be scanned, the number "connects" about 12 seconds later as a made-up number, and messages are only logged.
+`npm run dev` and `npm run dev:mock` start no worker, so linking cannot start there (the screen says the background worker is not
+running); start the worker yourself (only one) against a Redis that is yours alone.
+
+**Manual check for the owner, once, before real use** (a spare phone number you can lose, nothing here has been run against real
+WhatsApp):
+1. Switch the mode on, sign in as an influencer, Settings > WhatsApp > Link with QR code, tick the box, Show QR code, scan it.
+   The screen should change to "Linked" with a masked number.
+2. Press **Send a test message to my own number** and confirm it arrives on that phone.
+3. Restart the worker. Shortly after, the dashboard should still say Linked (no new scan), and a test message should still go out.
+4. On the phone, remove the device (WhatsApp > Linked devices > the device > Log out). The dashboard should change to "The linked
+   device was removed", and a booking confirmation made afterwards should go by the official connection, SMS or e-mail.
+5. Link again, set `WHATSAPP_QR_DAILY_CAP=2`, restart the worker, make three test bookings: the third message must not come from the
+   linked number but fall back, and the dashboard should show 2 of 2 sent today.
+6. Press **Disconnect**, confirm the device disappears from the phone's Linked devices list (remove it by hand if it does not), and
+   that Settings shows "Not linked".
+Record the date and the library version (`@whiskeysockets/baileys`) you checked.
+
+**Licence note.** The mode uses `@whiskeysockets/baileys` (MIT), which depends on `libsignal` (**GPL-3.0**) and
+`whatsapp-rust-bridge` (MIT), plus `uqr` (MIT) for the QR image. A GPL dependency is acceptable here because the platform is a
+hosted service that is **not distributed** to users; if you ever distribute the server code or an image containing it (for
+example to a customer to self-host), the GPL-3.0 terms of that dependency apply and you must review them first.
+
 ## Try the integrations without Google or Meta accounts
 `npm run dev:mock` runs a **local mock of Google (OAuth consent, Calendar with Meet links, Gmail) and Meta (the Graph API the
 app calls, the Embedded Signup window, signed webhooks)** next to the app, so you can connect an influencer and follow a booking

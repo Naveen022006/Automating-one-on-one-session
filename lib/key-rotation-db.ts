@@ -3,6 +3,7 @@ import { totpAad } from "@/lib/admin/totp-aad";
 import { googleTokenAad } from "@/lib/google-tokens";
 import type { EncryptedColumn, RotationDb, RotationTx } from "@/lib/key-rotation";
 import { payoutAad } from "@/lib/payout-account";
+import { waWebAad } from "@/lib/whatsapp-web/auth-state";
 import { whatsappLegacyPinAad, whatsappPinAad, whatsappTokenAad } from "@/lib/whatsapp-connection";
 
 /**
@@ -25,6 +26,8 @@ export const ENCRYPTED_COLUMNS: EncryptedColumn[] = [
   { name: "whatsapp_connections.token_enc", table: "whatsapp_connections", column: "token_enc", ownerColumn: "influencer_id", aad: whatsappTokenAad },
   // Superseded by the next entry; any value still in it is read once and moved (getRegistrationPin), but until then it must rotate.
   { name: "whatsapp_connections.registration_pin_enc", table: "whatsapp_connections", column: "registration_pin_enc", ownerColumn: "influencer_id", aad: whatsappLegacyPinAad },
+  // The login of an influencer's QR-linked WhatsApp device (credentials + Signal keys, one blob), see lib/whatsapp-web/auth-state.ts.
+  { name: "whatsapp_web_sessions.auth_state_enc", table: "whatsapp_web_sessions", column: "auth_state_enc", ownerColumn: "influencer_id", aad: waWebAad },
   // The PIN belongs to the phone number: that is both its primary key and what its AAD is derived from.
   { name: "whatsapp_registration_pins.pin_enc", table: "whatsapp_registration_pins", column: "pin_enc", ownerColumn: "phone_number_id", idColumn: "phone_number_id", aad: whatsappPinAad },
   { name: "admin_users.totp_secret_enc", table: "admin_users", column: "totp_secret_enc", ownerColumn: "id", aad: totpAad },

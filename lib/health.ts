@@ -280,7 +280,7 @@ export function stuckMeetingsWhere(now: number, t: HealthThresholds): Prisma.Boo
 
 /** An upcoming paid booking whose confirmation failed on a customer channel and went out on none. */
 export function failedConfirmationsWhere(now: number): Prisma.BookingWhereInput {
-  const confirmation = { template: "booking-confirmation", channel: { in: ["WHATSAPP", "SMS"] as ("WHATSAPP" | "SMS")[] } };
+  const confirmation = { template: "booking-confirmation", channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS"] as ("WHATSAPP" | "WHATSAPP_WEB" | "SMS")[] } };
   return {
     status: { in: ["PAID", "SCHEDULED"] },
     session: { endTime: { gt: new Date(now) } },

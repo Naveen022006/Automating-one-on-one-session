@@ -1,12 +1,13 @@
 import { AppLink } from "@web/lib/link";
 import { IconMessage } from "@web/components/icons";
 import { PageHead } from "@web/components/app/AppShell";
-import { EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
+import { Badge, EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
+import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from "@web/lib/whatsapp-web-ui";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardMessagesView, MessageStatusFilter } from "@/lib/views/dashboard-messages";
 import { formatDateTime } from "@/lib/india";
 
-const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", SMS: "SMS", EMAIL: "Email" };
+const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", WHATSAPP_WEB: QR_CHANNEL_LABEL, SMS: "SMS", EMAIL: "Email" };
 const TEMPLATE: Record<string, string> = {
   "booking-confirmation": "Confirmation",
   "reminder-24h": "24 h reminder",
@@ -67,7 +68,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
                   <tr key={`${m.bookingId}:${m.channel}:${m.template}`}>
                     <td data-label="Message">
                       {TEMPLATE[m.template] ?? m.template}
-                      {m.error && <div className="error-text break">{m.error}</div>}
+                      {isUnconfirmedMessage(m) ? <div className="subtle break">{UNCONFIRMED_MESSAGE_TEXT}</div> : m.error && <div className="error-text break">{m.error}</div>}
                     </td>
                     <td data-label="Customer">
                       <AppLink href={`/dashboard/sessions?view=${new Date(m.sessionStart) > new Date() ? "upcoming" : "past"}&booking=${m.bookingId}`}>{m.customerName}</AppLink>
@@ -75,7 +76,7 @@ export function MessagesView({ data, busy }: { data: Jsonify<DashboardMessagesVi
                     </td>
                     <td data-label="Channel">{CHANNEL[m.channel] ?? m.channel}</td>
                     <td data-label="Status">
-                      <StatusPill kind="message" status={m.status} />
+                      {isUnconfirmedMessage(m) ? <Badge tone="warning">Not confirmed</Badge> : <StatusPill kind="message" status={m.status} />}
                     </td>
                     <td data-label="Updated" className="tabular">{at(m.at)}</td>
                   </tr>

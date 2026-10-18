@@ -2,6 +2,7 @@ import { PageHead } from "@web/components/app/AppShell";
 import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@web/components/ui/primitives";
 import { InfluencerActivityPanel } from "@web/components/admin/InfluencerActivityPanel";
 import { InfluencerStatusPanel } from "@web/components/admin/InfluencerStatusPanel";
+import { InfluencerWhatsAppWebPanel } from "@web/components/admin/InfluencerWhatsAppWebPanel";
 import { PayoutPanel } from "@web/components/admin/PayoutPanel";
 import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } from "@web/components/admin/PayoutActions";
 import { formatMoney } from "@/lib/format";
@@ -203,6 +204,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
         )}
       </Card>
 
+      <InfluencerWhatsAppWebPanel influencerId={i.id} />
       <InfluencerActivityPanel influencerId={i.id} />
     </div>
   );
