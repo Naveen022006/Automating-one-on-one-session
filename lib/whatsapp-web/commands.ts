@@ -143,20 +143,21 @@ export async function requestLink(influencerId: string, input: { consent: unknow
   if (existing?.wantLinked && (existing.status === "PENDING_QR" || existing.status === "LINKED" || existing.status === "RECONNECTING")) {
     return { ok: true }; // already under way: pressing start twice changes nothing
   }
-  const reset = {
-    wantLinked: true,
-    consentAt: now,
-    consentVersion: CONSENT_VERSION,
-    status: "NOT_LINKED" as const,
-    suspendedReason: null,
-    lastErrorCode: null,
-    lastErrorText: null,
-    consecutiveFailures: 0,
-  };
+  // The web side writes only what the influencer asked for and the consent, never the status of a session the worker may be holding
+  // open: pressing "disconnect" and then "start" inside the worker's 2-second loop must not make the database say "not linked" while
+  // the socket is still up.
+  const asked = { wantLinked: true, consentAt: now, consentVersion: CONSENT_VERSION };
   await prisma.whatsAppWebSession.upsert({
     where: { influencerId },
-    create: { influencerId, ...reset },
-    update: reset,
+    create: { influencerId, ...asked },
+    update: asked,
+  });
+  // The one status change allowed here is leaving a state that has NO socket (the worker stopped it on purpose): "start" brings a
+  // suspended or logged-out number back. The update is conditional, so it can never touch a session that is linked, linking or
+  // reconnecting.
+  await prisma.whatsAppWebSession.updateMany({
+    where: { influencerId, status: { in: ["SUSPENDED", "LOGGED_OUT"] } },
+    data: { status: "NOT_LINKED", suspendedReason: null, lastErrorCode: null, lastErrorText: null, consecutiveFailures: 0 },
   });
   return { ok: true };
 }

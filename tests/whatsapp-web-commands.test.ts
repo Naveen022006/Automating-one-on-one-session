@@ -248,3 +248,23 @@ test("asked for but nobody is looking after it: with a shared store and no worke
   }
   assert.equal((await view()).lastError, null, "without a shared store there is nothing to tell");
 });
+
+test("disconnect then start inside the worker's loop: the web side never writes the status, so a socket that is still open keeps its LINKED row", { skip }, async () => {
+  await cmd.requestLink(id, { consent: true, consentVersion: CONSENT_VERSION });
+  await prisma.whatsAppWebSession.update({ where: { influencerId: id }, data: { status: "LINKED", phoneE164: "+919876543210", deviceLabel: "Chrome", lastErrorCode: "x", consecutiveFailures: 1 } });
+  await cmd.disconnectLink(id);
+  await cmd.requestLink(id, { consent: true, consentVersion: CONSENT_VERSION });
+  const row = await prisma.whatsAppWebSession.findUniqueOrThrow({ where: { influencerId: id } });
+  assert.equal(row.status, "LINKED");
+  assert.equal(row.wantLinked, true);
+  assert.equal(row.phoneE164, "+919876543210");
+  assert.equal(row.lastErrorCode, "x", "nothing but the request and the consent was written");
+  assert.equal(row.consecutiveFailures, 1);
+  assert.equal((await view()).status, "linked");
+  // The same for a session that is reconnecting or waiting for a scan.
+  for (const status of ["RECONNECTING", "PENDING_QR"] as const) {
+    await prisma.whatsAppWebSession.update({ where: { influencerId: id }, data: { status, wantLinked: false } });
+    await cmd.requestLink(id, { consent: true, consentVersion: CONSENT_VERSION });
+    assert.equal((await prisma.whatsAppWebSession.findUniqueOrThrow({ where: { influencerId: id } })).status, status);
+  }
+});

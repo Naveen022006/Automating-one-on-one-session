@@ -193,7 +193,9 @@ export class WhatsAppWebManager {
 
     // Sockets whose row is gone (the influencer was deleted): close them, there is nothing left to update.
     for (const live of [...this.lives.values()]) {
-      if (!byId.has(live.influencerId)) await this.teardown(live, { logout: false, wipe: false, status: null });
+      // (An influencer who was deleted: the device is unlinked on the phone too where the socket is open, so it does not stay in
+      // the phone's "Linked devices" list with nobody able to remove it.)
+      if (!byId.has(live.influencerId)) await this.teardown(live, { logout: live.openedOnce, wipe: true, status: null });
     }
 
     if (!cfg.enabled) {
@@ -481,11 +483,21 @@ export class WhatsAppWebManager {
       if (how.logout) await Promise.race([transport.logout().catch(ok), this.clock.sleep(10_000)]);
       await transport.end().catch(ok);
     }
-    if (how.wipe) await live.auth.wipe().catch((e) => this.log(`session ${live.influencerId}: could not delete the stored login (${errorName(e)})`));
-    else await live.auth.close().catch(ok);
+    // A login that could not be deleted must not be reported as gone: the row keeps its status (so it is looked at again, and the delete
+    // is retried) and only a logout by the phone is recorded anyway, because that session cannot be used.
+    let wiped = true;
+    if (how.wipe) {
+      wiped = await live.auth.wipe().then(
+        () => true,
+        (e) => {
+          this.log(`session ${live.influencerId}: could not delete the stored login (${errorName(e)}); will try again`);
+          return false;
+        },
+      );
+    } else await live.auth.close().catch(ok);
     this.lives.delete(live.influencerId);
     await this.d.kv.del(kvKeys.qr(live.influencerId)).catch(ok);
-    if (how.status) {
+    if (how.status && (wiped || how.status === "LOGGED_OUT")) {
       await this.d.repo.update(live.influencerId, {
         status: how.status,
         ...(how.status === "NOT_LINKED" ? { phoneE164: null, deviceLabel: null, linkedAt: null, lastErrorCode: null, lastErrorText: null, suspendedReason: null, consecutiveFailures: 0 } : {}),
@@ -497,8 +509,10 @@ export class WhatsAppWebManager {
 
   /** A session that is not wanted and has no socket in this process, but still shows a link or holds a login: clean it up. */
   private async wipeIdle(row: SessionRow): Promise<void> {
-    if (row.status === "NOT_LINKED" && !row.wantLinked) {
-      // Nothing visible; a login may still be stored from an interrupted teardown. Clearing is idempotent and cheap.
+    if ((row.status === "NOT_LINKED" || row.status === "LOGGED_OUT") && !row.wantLinked) {
+      // Nothing to show or change; a login may still be stored from a delete that failed. Delete it (a failure is logged by the
+      // caller and tried again on the next pass, because the row keeps being listed while a login is stored).
+      if (row.hasLogin) await this.d.repo.authStorage(row.influencerId).clear();
       return;
     }
     await this.d.repo.authStorage(row.influencerId).clear();

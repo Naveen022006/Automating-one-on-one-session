@@ -109,8 +109,8 @@ export class MemoryRepo implements SessionRepo {
   }
   async listManageable() {
     return [...this.rows.values()]
-      .filter((r) => r.wantLinked || ["PENDING_QR", "LINKED", "RECONNECTING", "SUSPENDED"].includes(r.status))
-      .map(({ authStateEnc: _drop, ...row }) => ({ ...row }))
+      .filter((r) => r.wantLinked || ["PENDING_QR", "LINKED", "RECONNECTING", "SUSPENDED"].includes(r.status) || r.authStateEnc !== null)
+      .map(({ authStateEnc, ...row }) => ({ ...row, hasLogin: authStateEnc !== null }))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
   async get(id: string) {

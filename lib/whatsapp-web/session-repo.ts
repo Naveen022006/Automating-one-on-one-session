@@ -28,6 +28,8 @@ export interface SessionRow {
   sentTotal: number;
   createdAt: Date;
   updatedAt: Date;
+  /** A stored login exists for this row (the login itself is never part of a row). Absent means "not known", read as false. */
+  hasLogin?: boolean;
 }
 
 export type SessionPatch = Partial<
@@ -65,18 +67,28 @@ const SELECT = {
   sentTotal: true,
   createdAt: true,
   updatedAt: true,
+  authStateEnc: true,
 } as const;
+
+/** Drops the stored login from a database row, keeping only whether there is one. */
+function toRow(r: { authStateEnc: string | null } & Omit<SessionRow, "hasLogin">): SessionRow {
+  const { authStateEnc, ...row } = r;
+  return { ...row, hasLogin: authStateEnc !== null };
+}
 
 export const prismaSessionRepo: SessionRepo = {
   async listManageable() {
-    return prisma.whatsAppWebSession.findMany({
-      where: { OR: [{ wantLinked: true }, { status: { in: ["PENDING_QR", "LINKED", "RECONNECTING", "SUSPENDED"] } }] },
+    const rows = await prisma.whatsAppWebSession.findMany({
+      // A row whose login is still stored is looked at too, whatever its status: a delete that failed once is retried until it works.
+      where: { OR: [{ wantLinked: true }, { status: { in: ["PENDING_QR", "LINKED", "RECONNECTING", "SUSPENDED"] } }, { authStateEnc: { not: null } }] },
       select: SELECT,
       orderBy: { createdAt: "asc" },
     });
+    return rows.map(toRow);
   },
-  get(influencerId) {
-    return prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: SELECT });
+  async get(influencerId) {
+    const row = await prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: SELECT });
+    return row ? toRow(row) : null;
   },
   async update(influencerId, patch) {
     await prisma.whatsAppWebSession.updateMany({ where: { influencerId }, data: patch });
