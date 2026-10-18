@@ -12,6 +12,10 @@ export type GoogleOutcome =
   | "failed"
   | "expired"
   | "not-configured"
+  /** The influencer has not saved a Google client of their own (and the site has no shared one for them). */
+  | "no-client"
+  /** Google rejected the influencer's saved client during the code exchange (deleted in Google Cloud, or its secret changed). */
+  | "client-rejected"
   | "confirm-switch"
   | "switch-unconfirmed";
 

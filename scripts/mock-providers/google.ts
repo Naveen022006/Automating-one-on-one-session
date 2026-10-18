@@ -72,8 +72,8 @@ function mint(prefix: string): string {
 }
 
 /** The live grant for (client, account), or null. */
-function liveGrant(rt: Runtime, email: string): [string, Grant] | null {
-  for (const [id, g] of Object.entries(rt.state.google.grants)) if (g.clientId === GOOGLE_CLIENT_ID && g.email === email && !g.revokedAt) return [id, g];
+function liveGrant(rt: Runtime, clientId: string, email: string): [string, Grant] | null {
+  for (const [id, g] of Object.entries(rt.state.google.grants)) if (g.clientId === clientId && g.email === email && !g.revokedAt) return [id, g];
   return null;
 }
 
@@ -107,15 +107,38 @@ function issueAccessToken(rt: Runtime, grantId: string): string {
   return token;
 }
 
-function checkClient(form: URLSearchParams): void {
-  if (form.get("client_id") !== GOOGLE_CLIENT_ID) throw oauthError(401, "invalid_client", "The OAuth client was not found.");
-  if (form.get("client_secret") !== GOOGLE_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
+/** The secret that always fails, whatever the client: lets a test or a demo show the "wrong secret" path (doc/15). */
+export const BAD_CLIENT_SECRET = "bad-secret";
+
+/**
+ * Accepts ANY client pair an influencer brings (doc/15: every influencer has their own Google client) and records the client ID, with
+ * two exceptions: the secret `bad-secret` is always `invalid_client` ("Unauthorized"), and the built-in fixture client
+ * (GOOGLE_CLIENT_ID of the shared mock app) still needs its own secret. Returns the client ID.
+ */
+function checkClient(rt: Runtime, form: URLSearchParams): string {
+  const clientId = form.get("client_id") ?? "";
+  const secret = form.get("client_secret") ?? "";
+  if (!clientId) throw oauthError(400, "invalid_request", "Missing required parameter: client_id");
+  if (!secret || secret === BAD_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
+  if (clientId === GOOGLE_CLIENT_ID && secret !== GOOGLE_CLIENT_SECRET) throw oauthError(401, "invalid_client", "Unauthorized");
+  const clients = (rt.state.google.clients ??= {});
+  const now = new Date(rt.now()).toISOString();
+  const known = clients[clientId];
+  if (known) {
+    known.lastSeenAt = now;
+    known.calls += 1;
+  } else {
+    clients[clientId] = { firstSeenAt: now, lastSeenAt: now, calls: 1 };
+    rt.activity(`Google: a new OAuth client was used (${clientId.slice(0, 12)}...)`, "/__mock/google");
+  }
+  rt.save();
+  return clientId;
 }
 
 async function tokenEndpoint(c: Ctx): Promise<void> {
   const rt = c.rt;
   const form = await c.readForm();
-  checkClient(form);
+  const clientId = checkClient(rt, form);
   const grantType = form.get("grant_type");
 
   if (grantType === "authorization_code") {
@@ -123,12 +146,14 @@ async function tokenEndpoint(c: Ctx): Promise<void> {
     if (codeFault === "invalid_grant") throw oauthError(400, "invalid_grant", "Bad Request");
     const code = form.get("code") ?? "";
     const rec = rt.state.google.codes[code];
-    if (!rec || rec.used || rec.expiresAt <= rt.now() || rec.clientId !== GOOGLE_CLIENT_ID || rec.redirectUri !== form.get("redirect_uri")) {
-      throw oauthError(400, "invalid_grant", "Bad Request");
+    // A code belongs to the client it was issued to: any other client (or a made-up code, which is what the credential check of doc/15 sends
+    // on purpose) is invalid_grant, which is how the app tells "the pair is accepted" from "the pair is wrong" (invalid_client above).
+    if (!rec || rec.used || rec.expiresAt <= rt.now() || rec.clientId !== clientId || rec.redirectUri !== form.get("redirect_uri")) {
+      throw oauthError(400, "invalid_grant", "Malformed auth code.");
     }
     rec.used = true;
     // One live grant per (client, account). With include_granted_scopes an earlier grant's scopes are part of the new token.
-    const existing = liveGrant(rt, rec.email);
+    const existing = liveGrant(rt, rec.clientId, rec.email);
     let grantId: string;
     let scopes = rec.scopes;
     if (existing && rec.includeGranted) {
@@ -166,6 +191,9 @@ async function tokenEndpoint(c: Ctx): Promise<void> {
     const grantId = rt.state.google.refreshTokens[form.get("refresh_token") ?? ""];
     const grant = grantId ? rt.state.google.grants[grantId] : undefined;
     if (!grant || grant.revokedAt) throw oauthError(400, "invalid_grant", "Token has been expired or revoked.");
+    // A refresh token only works with the client it was issued to (so an app that uses another influencer's client, or the shared one,
+    // for it finds out here).
+    if (grant.clientId !== clientId) throw oauthError(400, "invalid_grant", "Bad Request");
     return c.sendJson(200, { access_token: issueAccessToken(rt, grantId), expires_in: ACCESS_TOKEN_TTL_S, scope: grant.scopes.join(" "), token_type: "Bearer" });
   }
 
@@ -199,7 +227,9 @@ function consentPage(c: Ctx): void {
   const q = c.query;
   const redirectUri = q.get("redirect_uri") ?? "";
   // Google shows its error pages (and does not redirect) for a wrong client or an unregistered redirect URI.
-  if (q.get("client_id") !== GOOGLE_CLIENT_ID) return errorPage(c, 401, "Error 401: invalid_client", "The OAuth client was not found.");
+  // Any client ID an influencer made up is "found" (the pair itself is checked at the token endpoint); a missing one is not.
+  const clientId = q.get("client_id") ?? "";
+  if (!clientId) return errorPage(c, 401, "Error 401: invalid_client", "The OAuth client was not found.");
   if (redirectUri !== `${rt.appUrl}/api/google/callback`) {
     return errorPage(c, 400, "Error 400: redirect_uri_mismatch", `The redirect URI in the request does not match the ones authorized for the OAuth client. The registered one is ${rt.appUrl}/api/google/callback; check GOOGLE_REDIRECT_URI.`);
   }
@@ -212,7 +242,7 @@ function consentPage(c: Ctx): void {
   const decisionId = mint("dec");
   const hint = q.get("login_hint");
   rt.state.google.pendingDecisions[decisionId] = {
-    clientId: GOOGLE_CLIENT_ID,
+    clientId,
     redirectUri,
     state: q.get("state") ?? "",
     scopes: requested,

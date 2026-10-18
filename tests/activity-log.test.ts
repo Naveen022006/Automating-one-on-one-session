@@ -66,6 +66,8 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "payout_account.updated": { method: "BANK", destination: "XXXXXXXX9012" },
   "google.connected": { account: "pat@gmail.example" },
   "google.disconnected": { account: "pat@gmail.example" },
+  "google.client_saved": { client: "…wxyz", replaced: true },
+  "google.client_removed": { client: "…wxyz" },
   "whatsapp.connected": { phone: "+91 98765 43210" },
   "whatsapp.disconnected": { phone: "+91 98765 43210" },
   "onboarding.completed": {},

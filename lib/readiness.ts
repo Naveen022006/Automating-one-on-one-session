@@ -111,21 +111,21 @@ export function evaluateReadiness(
   });
 
   const items: ReadinessItem[] = [
-    item("email", "Confirm your email", input.emailVerified ? "done" : "todo", input.emailVerified ? "Your email is confirmed." : "Confirm your email so your page can go live.", "/dashboard/settings"),
+    item("email", "Confirm your email", input.emailVerified ? "done" : "todo", input.emailVerified ? "Your email is confirmed." : "Confirm your email so your page can go live. If this site sends no e-mail, an administrator confirms it for you.", "/dashboard/settings"),
     item("service", "Add a service", input.activeServices > 0 ? "done" : "todo", input.activeServices > 0 ? `${input.activeServices} active service${input.activeServices > 1 ? "s" : ""}.` : "Add at least one service customers can book.", "/dashboard/services"),
     item("availability", "Set your weekly hours", input.availabilityRules > 0 ? "done" : "todo", input.availabilityRules > 0 ? "Your weekly hours are set." : "Add the times you are available.", "/dashboard/availability"),
     item(
       "google",
       "Connect Google Calendar",
       input.google === "active" ? "done" : input.google === "reconnect" ? "attention" : "todo",
-      input.google === "active" ? "Meet links are created on your calendar." : input.google === "reconnect" ? "Google stopped accepting the connection. Reconnect to keep creating Meet links." : "Meet links are created on your own Google Calendar.",
+      input.google === "active" ? "Meet links are created on your calendar." : input.google === "reconnect" ? "Google stopped accepting the connection. Reconnect to keep creating Meet links." : "Create your own Google client, save it, then connect Google Calendar. Meet links are created on your own calendar.",
       "/dashboard/settings#google",
     ),
     item(
       "gmail",
       "Send customer emails from your Gmail",
       input.gmailSend && input.google === "active" ? "done" : "todo",
-      input.gmailSend && input.google === "active" ? "Confirmations come from your own address." : "Allow it when you connect Google. Otherwise emails come from our address with your email as Reply-To.",
+      input.gmailSend && input.google === "active" ? "Confirmations come from your own address." : "Allow it when you connect Google. Without it customers are messaged by WhatsApp or SMS and may get no e-mail at all.",
       "/dashboard/settings#google",
     ),
     item(

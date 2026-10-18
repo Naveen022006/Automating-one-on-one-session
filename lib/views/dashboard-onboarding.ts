@@ -1,11 +1,12 @@
 import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { loadReadiness } from "@/lib/readiness";
 import { listBlockedViews, listRuleViews } from "@/lib/views/dashboard-availability";
 import { loadPayoutAccountData } from "@/lib/views/dashboard-payouts";
 import { listServiceViews } from "@/lib/views/dashboard-services";
-import { loadEmbeddedSignupView, loadGoogleStatusView, loadProfileView, loadWhatsAppView, type EmbeddedSignupView } from "@/lib/views/dashboard-settings";
-import type { GoogleStatusView, OnboardingData, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
+import { loadEmbeddedSignupView, loadGoogleClientView, loadGoogleStatusView, loadProfileView, loadWhatsAppView, type EmbeddedSignupView } from "@/lib/views/dashboard-settings";
+import type { GoogleClientView, GoogleStatusView, OnboardingData, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
 
 /**
  * Everything the onboarding wizard needs, except what lives in the URL: the step (`?step=`) and the Google outcome
@@ -21,6 +22,7 @@ export interface DashboardOnboardingView {
   rules: OnboardingData["rules"];
   blocked: OnboardingData["blocked"];
   google: GoogleStatusView;
+  googleClient: GoogleClientView;
   whatsapp: WhatsAppView | null;
   embedded: EmbeddedSignupView | null;
   payout: OnboardingData["payout"];
@@ -30,15 +32,17 @@ export interface DashboardOnboardingView {
   publicUrl: string;
   email: string;
   emailVerified: boolean;
+  emailEnabled: boolean;
 }
 
 export async function loadOnboardingView(auth: AuthContext): Promise<DashboardOnboardingView> {
-  const [profile, services, rules, blocked, google, whatsapp, payout, readiness] = await Promise.all([
+  const [profile, services, rules, blocked, google, googleClient, whatsapp, payout, readiness] = await Promise.all([
     loadProfileView(auth.influencerId),
     listServiceViews(auth.influencerId),
     listRuleViews(auth.influencerId),
     listBlockedViews(auth.influencerId),
     loadGoogleStatusView(auth.influencerId),
+    loadGoogleClientView(auth.influencerId),
     loadWhatsAppView(auth.influencerId),
     loadPayoutAccountData(auth.influencerId),
     loadReadiness(auth.influencerId, auth.emailVerified),
@@ -49,6 +53,7 @@ export async function loadOnboardingView(auth: AuthContext): Promise<DashboardOn
     rules,
     blocked,
     google,
+    googleClient,
     whatsapp,
     embedded: loadEmbeddedSignupView(),
     payout,
@@ -56,5 +61,6 @@ export async function loadOnboardingView(auth: AuthContext): Promise<DashboardOn
     publicUrl: `${appUrl()}/${profile.slug}`,
     email: auth.email,
     emailVerified: auth.emailVerified,
+    emailEnabled: platformEmailEnabled(),
   };
 }

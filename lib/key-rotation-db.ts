@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { totpAad } from "@/lib/admin/totp-aad";
+import { googleClientAad } from "@/lib/google-credentials";
 import { googleTokenAad } from "@/lib/google-tokens";
 import type { EncryptedColumn, RotationDb, RotationTx } from "@/lib/key-rotation";
 import { payoutAad } from "@/lib/payout-account";
@@ -20,6 +21,7 @@ import { whatsappLegacyPinAad, whatsappPinAad, whatsappTokenAad } from "@/lib/wh
  */
 export const ENCRYPTED_COLUMNS: EncryptedColumn[] = [
   { name: "google_tokens.refresh_token_enc", table: "google_tokens", column: "refresh_token_enc", ownerColumn: "influencer_id", aad: googleTokenAad },
+  { name: "influencer_google_clients.client_secret_enc", table: "influencer_google_clients", column: "client_secret_enc", ownerColumn: "influencer_id", aad: googleClientAad },
   { name: "payout_accounts.account_number_enc", table: "payout_accounts", column: "account_number_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "account") },
   { name: "payout_accounts.upi_id_enc", table: "payout_accounts", column: "upi_id_enc", ownerColumn: "influencer_id", aad: (id) => payoutAad(id, "upi") },
   { name: "whatsapp_connections.token_enc", table: "whatsapp_connections", column: "token_enc", ownerColumn: "influencer_id", aad: whatsappTokenAad },

@@ -370,7 +370,8 @@ export async function createMeetingForBooking(
   let groupCommit: { moved: StrandedBooking[] } | null = null;
   let notInvited = new Set<string>();
   try {
-    const accessToken = await deps.google.refreshAccessToken(token.refreshToken);
+    // Refreshed with the client the grant was issued with (the influencer's own, or the platform's), never another.
+    const accessToken = await deps.google.refreshAccessToken(token.refreshToken, { influencerId: influencer.id, clientKind: token.clientKind });
     const start = session.startTime;
     const end = session.endTime;
     const attendee = { email: booking.customerEmail, displayName: booking.customerName };

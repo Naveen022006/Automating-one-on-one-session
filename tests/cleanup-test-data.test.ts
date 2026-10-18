@@ -240,6 +240,7 @@ before(async () => {
   await prisma.availabilityRule.create({ data: { influencerId: inf.id, weekday: 1, startTime: "10:00", endTime: "12:00", timezone: "UTC" } });
   await prisma.blockedDate.create({ data: { influencerId: inf.id, date: new Date("2031-01-01T00:00:00Z") } });
   await prisma.googleToken.create({ data: { influencerId: inf.id, refreshTokenEnc: "x", scope: "s" } });
+  await prisma.influencerGoogleClient.create({ data: { influencerId: inf.id, clientId: "1-cleanup.apps.googleusercontent.com", clientSecretEnc: "x", checkedAt: new Date() } });
   await prisma.payoutAccount.create({ data: { influencerId: inf.id, accountHolderName: "Cleanup" } });
   await prisma.whatsAppConnection.create({ data: { influencerId: inf.id, wabaId: `cleanup-waba-${run}`, phoneNumberId: phoneId, tokenEnc: "x" } });
   await prisma.whatsAppRegistrationPin.create({ data: { phoneNumberId: phoneId, pinEnc: "x" } });
@@ -355,7 +356,7 @@ test("db: the dry run counts this run's rows, lists the controls as kept, and de
     plan.counts,
     {
       influencers: 1, users: 1, auth_sessions: 1, password_reset_tokens: 1, email_verification_tokens: 1, services: 1,
-      availability_rules: 1, blocked_dates: 1, google_tokens: 1, payout_accounts: 1, whatsapp_connections: 1,
+      availability_rules: 1, blocked_dates: 1, google_tokens: 1, influencer_google_clients: 1, payout_accounts: 1, whatsapp_connections: 1,
       whatsapp_registration_pins: 1, payouts: 1,
       sessions: 2, // the test influencer's session + the protected influencer's session that would be left empty
       bookings: 3, // the test influencer's booking + two test-made bookings on the protected influencer

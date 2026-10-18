@@ -62,6 +62,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "admin-money", pattern: /^\/api\/admin\/(payouts\/|influencers\/[^/]+\/(payouts|fee)$|payments\/[^/]+\/(unreconcile|refund)$|bookings\/[^/]+\/cancel$)/, methods: ["POST", "PATCH"], limit: 60, windowMs: HOUR, by: "ip" },
   // Suspending, reinstating and approving an influencer (the status endpoint also answers GET, which stays under `admin`).
   { name: "admin-moderation", pattern: /^\/api\/admin\/influencers\/[^/]+\/status$/, methods: ["POST"], limit: 60, windowMs: HOUR, by: "ip" },
+  // Account help by hand while the platform sends no e-mail (doc/15): verifying an address and handing over a password-reset link.
+  { name: "admin-account-help", pattern: /^\/api\/admin\/influencers\/[^/]+\/(verify-email|reset-link)$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   // CSV exports carry personal data and run wide queries; the finance report aggregates the whole database. HEAD is answered by
   // the GET handler (it would run the same query), so it shares the rule, like the other view endpoints below.
   { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
@@ -103,6 +105,8 @@ export const ROUTE_RULES: RouteRule[] = [
   // --- Influencer dashboard. Refunds move money, so they get their own tight limit.
   { name: "dashboard-refund", pattern: /^\/api\/dashboard\/bookings\/[^/]+\/refund$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-payout-account", pattern: /^\/api\/dashboard\/payout-account$/, methods: ["PUT"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
+  // Saving a Google client calls Google's token endpoint to check the pasted pair (doc/15), and removing one revokes tokens: keep both low.
+  { name: "dashboard-google-client", pattern: /^\/api\/dashboard\/google-client$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-whatsapp", pattern: /^\/api\/dashboard\/whatsapp$/, methods: ["POST", "DELETE"], limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-export", pattern: /^\/api\/dashboard\/earnings\/export$/, limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard", pattern: /^\/api\/dashboard\//, limit: 120, windowMs: MIN, by: "session-or-ip" },
@@ -128,6 +132,8 @@ export const IDENTITY_RULES = {
   adminMfaManage: { name: "admin-mfa-manage-admin-ip", limit: 10, windowMs: 15 * MIN, failClosed: true },
   /** Everything on the Security page per admin from ANY IP (password and code guesses spread over addresses). Fails closed. */
   adminMfaManageAdmin: { name: "admin-mfa-manage-admin", limit: 30, windowMs: HOUR, failClosed: true },
+  /** "Save and check" of a Google client calls Google: per influencer from ANY address or device, on top of the per-session route rule. */
+  googleClientCheck: { name: "google-client-check", limit: 12, windowMs: HOUR },
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },

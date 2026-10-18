@@ -31,6 +31,8 @@ export const ACTIVITY_ACTIONS = {
   "payout_account.updated": "Payout details changed",
   "google.connected": "Google connected",
   "google.disconnected": "Google disconnected",
+  "google.client_saved": "Google client saved",
+  "google.client_removed": "Google client removed",
   "whatsapp.connected": "WhatsApp connected",
   "whatsapp.disconnected": "WhatsApp disconnected",
   "onboarding.completed": "Onboarding completed",
@@ -65,6 +67,9 @@ export const ACTIVITY_DETAIL_KEYS: Record<ActivityAction, readonly string[]> = {
   "payout_account.updated": ["method", "destination"],
   "google.connected": ["account"],
   "google.disconnected": ["account"],
+  // `client` is a masked tail of the client ID ("…wxyz"), never the whole ID and never the secret; `replaced` says an earlier client was swapped.
+  "google.client_saved": ["client", "replaced"],
+  "google.client_removed": ["client"],
   "whatsapp.connected": ["phone"],
   "whatsapp.disconnected": ["phone"],
   "onboarding.completed": [],
@@ -233,6 +238,12 @@ function summariseBase(action: ActivityAction, detail: unknown): string {
     case "whatsapp.disconnected": {
       const who = str(detail, action.startsWith("google") ? "account" : "phone");
       return who ? `${label} (${who})` : label;
+    }
+    case "google.client_saved":
+    case "google.client_removed": {
+      const client = str(detail, "client");
+      const replaced = action === "google.client_saved" && detail !== null && typeof detail === "object" && (detail as Record<string, unknown>).replaced === true;
+      return `${label}${client ? ` (${client})` : ""}${replaced ? ", replacing the earlier one" : ""}`;
     }
     case "earnings.exported": {
       const rows = num(detail, "rows");

@@ -198,7 +198,7 @@ export type Db = PrismaClient | Prisma.TransactionClient;
 
 export const TABLES = [
   "influencers", "users", "auth_sessions", "password_reset_tokens", "email_verification_tokens", "services",
-  "availability_rules", "blocked_dates", "google_tokens", "payout_accounts", "whatsapp_connections",
+  "availability_rules", "blocked_dates", "google_tokens", "influencer_google_clients", "payout_accounts", "whatsapp_connections",
   "whatsapp_registration_pins", "payouts", "sessions", "bookings", "payments", "refunds", "messages",
   "admin_users", "admin_sessions", "admin_recovery_codes", "webhook_events",
 ] as const;
@@ -331,6 +331,7 @@ export async function planCleanup(db: Db, options: CleanupOptions = {}): Promise
   counts.availability_rules = await sumOver(infIds, (p) => db.availabilityRule.count({ where: { influencerId: { in: p } } }));
   counts.blocked_dates = await sumOver(infIds, (p) => db.blockedDate.count({ where: { influencerId: { in: p } } }));
   counts.google_tokens = await sumOver(infIds, (p) => db.googleToken.count({ where: { influencerId: { in: p } } }));
+  counts.influencer_google_clients = await sumOver(infIds, (p) => db.influencerGoogleClient.count({ where: { influencerId: { in: p } } }));
   counts.payout_accounts = await sumOver(infIds, (p) => db.payoutAccount.count({ where: { influencerId: { in: p } } }));
   const connections = await collectOver(infIds, (p) => db.whatsAppConnection.findMany({ where: { influencerId: { in: p } }, select: { phoneNumberId: true } }));
   const phoneNumberIds = connections.map((c) => c.phoneNumberId);
@@ -491,6 +492,7 @@ export async function applyCleanup(prisma: PrismaClient, options: ApplyOptions):
       d.availability_rules = await deleteOver(ids.influencers, (p) => tx.availabilityRule.deleteMany({ where: { influencerId: { in: p } } }));
       d.blocked_dates = await deleteOver(ids.influencers, (p) => tx.blockedDate.deleteMany({ where: { influencerId: { in: p } } }));
       d.google_tokens = await deleteOver(ids.influencers, (p) => tx.googleToken.deleteMany({ where: { influencerId: { in: p } } }));
+      d.influencer_google_clients = await deleteOver(ids.influencers, (p) => tx.influencerGoogleClient.deleteMany({ where: { influencerId: { in: p } } }));
       d.payout_accounts = await deleteOver(ids.influencers, (p) => tx.payoutAccount.deleteMany({ where: { influencerId: { in: p } } }));
       d.whatsapp_registration_pins = await deleteOver(ids.phoneNumberIds, (p) => tx.whatsAppRegistrationPin.deleteMany({ where: { phoneNumberId: { in: p } } }));
       d.whatsapp_connections = await deleteOver(ids.influencers, (p) => tx.whatsAppConnection.deleteMany({ where: { influencerId: { in: p } } }));

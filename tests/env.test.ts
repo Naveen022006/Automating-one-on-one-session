@@ -258,10 +258,12 @@ test("local production run: the escape hatch relaxes only dev-only settings, onl
   assert.ok(noRazorpay.errors.some((e) => e.startsWith("RAZORPAY_KEY_ID:")));
 });
 
+// Changed with doc/15: the platform-wide Google pair is only advised in GOOGLE_CLIENT_MODE=platform now (the default mode "own" has each
+// influencer bring their own Google client), so the pair's warning is checked in that mode and the default mode is checked to be quiet.
 test("advisory warnings in production", () => {
-  const r = validateEnv({ ...without("CLIENT_IP_HEADER"), RAZORPAY_KEY_ID: "rzp_test_abc", TOKEN_ENCRYPTION_KEY_PREVIOUS: randomBytes(32).toString("base64") });
+  const r = validateEnv({ ...without("CLIENT_IP_HEADER"), RAZORPAY_KEY_ID: "rzp_test_abc", TOKEN_ENCRYPTION_KEY_PREVIOUS: randomBytes(32).toString("base64"), GOOGLE_CLIENT_MODE: "platform" });
   assert.deepEqual(r.errors, []);
-  for (const v of ["CLIENT_IP_HEADER", "ERROR_WEBHOOK_URL", "RAZORPAY_KEY_ID", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REDIRECT_URI"]) {
+  for (const v of ["CLIENT_IP_HEADER", "ERROR_WEBHOOK_URL", "RAZORPAY_KEY_ID", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET"]) {
     assert.ok(r.warnings.some((w) => w.startsWith(`${v}:`)), `${v} should warn`);
   }
 });

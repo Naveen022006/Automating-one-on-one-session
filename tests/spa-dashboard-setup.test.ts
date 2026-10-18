@@ -37,6 +37,19 @@ const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 const render = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el);
 const keys = (o: unknown) => Object.keys(o as object).sort();
+/** The Google client card's data (doc/15) for an influencer with a saved, checked client, as the views send it. */
+const ownClientView = {
+  mode: "own" as const,
+  hasOwnClient: true,
+  clientId: "1234567890-abcdefg.apps.googleusercontent.com",
+  clientSecretSaved: true,
+  checkedAt: "2030-01-01T10:00:00.000Z",
+  redirectUri: "https://example.com/api/google/callback",
+  origin: "https://example.com",
+  requiredScopes: ["https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/gmail.send", "openid", "email"],
+  canConnect: true,
+  grantClient: "own" as const,
+};
 
 const jar = new Map<string, string>();
 type Handler = () => Promise<Response>;
@@ -110,7 +123,8 @@ function assertOnlyOwn(body: unknown, mine: Owner, ...others: Owner[]) {
   }
   for (const enc of pinsEnc) assert.ok(!text.includes(enc), "an encrypted registration PIN is in the body");
   for (const n of Object.values(secrets.account)) assert.ok(!text.includes(n), "a full account number is in the body");
-  assertNoSecretKeys(body);
+  // `clientSecretSaved` (doc/15) is a boolean: whether a Google client secret is saved. The secret itself is never selected by the view.
+  assertNoSecretKeys(body, ["clientSecretSaved"]);
 }
 
 async function seed(o: Owner, extra: { hidden: boolean; fee: number | null }) {
@@ -412,6 +426,8 @@ test("SettingsView renders every panel from JSON: anchors for #google and #whats
   const data: DashboardSettingsView = {
     profile: { name: "Pat Doe", bio: "Hello", photoUrl: null, timezone: "Asia/Kolkata", slug: "pat", notifyByEmail: true },
     google: { state: "connected", email: "pat@gmail.com", connectedAt: when, gmailSend: true, liveEvents: 0, gmailFailing: false },
+    googleClient: ownClientView,
+    emailEnabled: true,
     whatsapp: { displayPhone: "+91 98765 43210", verifiedName: "Pat Studio", source: "manual", status: "ACTIVE", lastError: null, templates: [{ name: "reschedule", status: "APPROVED", reason: null }], ready: false },
     embedded: null,
     whatsappRequired: false,
@@ -439,6 +455,8 @@ test("OnboardingView renders the step from the URL with Google's outcome, and ev
     rules: [],
     blocked: [],
     google: { state: "not-connected", requestsGmail: true, liveEvents: 0, previousEmail: null },
+    googleClient: { ...ownClientView, hasOwnClient: false, clientId: null, clientSecretSaved: false, checkedAt: null, canConnect: false, grantClient: null },
+    emailEnabled: true,
     whatsapp: null,
     embedded: null,
     payout: null,
@@ -612,7 +630,8 @@ test("D9 GET /api/dashboard/settings: profile, the three Google states, WhatsApp
     assert.equal(out.status, 200);
     assert.equal(out.headers.get("cache-control"), "private, no-store");
     assert.equal(out.headers.get("access-control-allow-origin"), null);
-    assert.deepEqual(keys(out.body), ["email", "emailVerified", "embedded", "google", "origin", "profile", "whatsapp", "whatsappRequired"]);
+    // Changed with doc/15: `googleClient` (the influencer's own Google client, never its secret) and `emailEnabled` (whether the site sends e-mail).
+    assert.deepEqual(keys(out.body), ["email", "emailEnabled", "emailVerified", "embedded", "google", "googleClient", "origin", "profile", "whatsapp", "whatsappRequired"]);
     assert.deepEqual(out.body.profile, {
       name: A.name,
       bio: `Alpha bio ${run}`,
@@ -710,7 +729,7 @@ test("D10 GET /api/dashboard/onboarding: any signed-in influencer, finished or n
   const out = await ask(routes.onboarding, C.cookie);
   assert.equal(out.status, 200, "an account that has NOT finished onboarding is exactly who needs this");
   assert.equal(out.headers.get("cache-control"), "private, no-store");
-  assert.deepEqual(keys(out.body), ["blocked", "checklist", "email", "emailVerified", "embedded", "google", "payout", "profile", "publicUrl", "rules", "services", "whatsapp"]);
+  assert.deepEqual(keys(out.body), ["blocked", "checklist", "email", "emailEnabled", "emailVerified", "embedded", "google", "googleClient", "payout", "profile", "publicUrl", "rules", "services", "whatsapp"]);
   assert.equal(out.body.email, C.email);
   assert.match(out.body.publicUrl as string, new RegExp(`/${C.slug}$`));
   assert.deepEqual(out.body.services, []);
@@ -735,6 +754,7 @@ test("D10 GET /api/dashboard/onboarding: any signed-in influencer, finished or n
   const settings = (await ask(routes.settings, A.cookie)).body;
   assert.deepEqual(alpha.body.profile, settings.profile);
   assert.deepEqual(alpha.body.google, settings.google);
+  assert.deepEqual(alpha.body.googleClient, settings.googleClient);
   assert.deepEqual(alpha.body.whatsapp, settings.whatsapp);
   assert.deepEqual(alpha.body.embedded, settings.embedded);
   assertOnlyOwn(alpha.body, A, B, C);

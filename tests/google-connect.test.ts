@@ -16,6 +16,10 @@ import { signToken, verifyToken } from "../lib/signing";
 process.env.APP_SECRET = "test-app-secret-0123456789abcdef";
 process.env.GOOGLE_CLIENT_ID = "client-id";
 process.env.GOOGLE_CLIENT_SECRET = "client-secret";
+// These tests drive the routes with the shared env pair and a database-free fake token store. Since doc/15 a new connection resolves its
+// client by GOOGLE_CLIENT_MODE (default: the influencer's own, read from the database), so the file asks for mode "platform"; the own-client
+// paths are tested in tests/google-credentials.test.ts and tests/google-client-routes.test.ts.
+process.env.GOOGLE_CLIENT_MODE = "platform";
 process.env.GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/callback";
 
 const CALENDAR = "https://www.googleapis.com/auth/calendar.events";

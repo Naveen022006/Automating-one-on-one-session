@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { requestGmailByDefault } from "@/lib/google";
+import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
+import { toClientKind, type GoogleClientKind } from "@/lib/google-credentials";
 
 export const OAUTH_STATE_PURPOSE = "google-oauth-state";
 /** Cookie that binds an OAuth round trip to the browser that started it. */
@@ -16,11 +18,12 @@ export async function saveGoogleToken(
   scope: string,
   googleEmail: string | null = null,
   googleSub: string | null = null,
+  clientKind: GoogleClientKind = "platform",
 ): Promise<void> {
   const refreshTokenEnc = encryptSecret(refreshToken, googleTokenAad(influencerId));
   await prisma.googleToken.upsert({
     where: { influencerId },
-    create: { influencerId, refreshTokenEnc, scope, googleEmail, googleSub },
+    create: { influencerId, refreshTokenEnc, scope, googleEmail, googleSub, clientKind },
     update: {
       refreshTokenEnc,
       scope,
@@ -28,6 +31,8 @@ export async function saveGoogleToken(
       // Written with every connect, so a row that had none gets one at its next reconnect. A connect whose ID token carried
       // none clears it: the account is then only known by address, which never leads to a revoke.
       googleSub,
+      // The client this grant was issued with: every later refresh and health check must use that one.
+      clientKind,
       status: "ACTIVE",
       reconnectReason: null,
       reconnectNeededAt: null,
@@ -43,7 +48,7 @@ export async function saveGoogleToken(
  * markReconnectNeeded, so an error from a slow call made with the OLD grant cannot flag one that was renewed meanwhile.
  */
 export type TokenLookup =
-  | { state: "ok"; refreshToken: string; connectedAt: Date }
+  | { state: "ok"; refreshToken: string; connectedAt: Date; clientKind: GoogleClientKind }
   | { state: "not-connected" }
   | { state: "reconnect-needed"; reason: string | null };
 
@@ -51,7 +56,12 @@ export async function getRefreshToken(influencerId: string): Promise<TokenLookup
   const row = await prisma.googleToken.findUnique({ where: { influencerId } });
   if (!row) return { state: "not-connected" };
   if (row.status === "RECONNECT_NEEDED") return { state: "reconnect-needed", reason: row.reconnectReason };
-  return { state: "ok", refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)), connectedAt: row.connectedAt };
+  return {
+    state: "ok",
+    refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)),
+    connectedAt: row.connectedAt,
+    clientKind: toClientKind(row.clientKind),
+  };
 }
 
 /**
@@ -59,10 +69,14 @@ export async function getRefreshToken(influencerId: string): Promise<TokenLookup
  * may then flag it dead: passing that value to markReconnectNeeded makes sure it is the SAME grant that gets flagged.
  * Null when there is no grant or it is already flagged.
  */
-export async function getActiveGrant(influencerId: string): Promise<{ refreshToken: string; connectedAt: Date } | null> {
+export async function getActiveGrant(influencerId: string): Promise<{ refreshToken: string; connectedAt: Date; clientKind: GoogleClientKind } | null> {
   const row = await prisma.googleToken.findUnique({ where: { influencerId } });
   if (!row || row.status !== "ACTIVE") return null;
-  return { refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)), connectedAt: row.connectedAt };
+  return {
+    refreshToken: decryptSecret(row.refreshTokenEnc, googleTokenAad(influencerId)),
+    connectedAt: row.connectedAt,
+    clientKind: toClientKind(row.clientKind),
+  };
 }
 
 /**
@@ -177,16 +191,24 @@ export function gmailSendingFailing(lastSent: { providerMessageId: string | null
 }
 
 async function lastCustomerEmailSince(influencerId: string, connectedAt: Date, now = new Date()) {
-  return prisma.message.findFirst({
-    where: {
-      channel: "EMAIL",
-      status: { in: ["SENT", "DELIVERED", "READ"] },
-      sentAt: { gte: new Date(Math.max(connectedAt.getTime(), now.getTime() - GMAIL_FAILURE_WINDOW_MS)) },
-      booking: { session: { service: { influencerId } } },
-    },
-    orderBy: { sentAt: "desc" },
-    select: { providerMessageId: true },
-  });
+  const since = new Date(Math.max(connectedAt.getTime(), now.getTime() - GMAIL_FAILURE_WINDOW_MS));
+  const booking = { session: { service: { influencerId } } };
+  // The latest e-mail that went out, and the latest one Gmail failed to send when no platform provider could take over (EMAIL_PROVIDER=none
+  // leaves no sent row for a failed Gmail send). Whichever is newer decides.
+  const [sent, failed] = await Promise.all([
+    prisma.message.findFirst({
+      where: { channel: "EMAIL", status: { in: ["SENT", "DELIVERED", "READ"] }, sentAt: { gte: since }, booking },
+      orderBy: { sentAt: "desc" },
+      select: { providerMessageId: true, sentAt: true },
+    }),
+    prisma.message.findFirst({
+      where: { channel: "EMAIL", status: "FAILED", error: { startsWith: GMAIL_FAILED_PREFIX }, updatedAt: { gte: since }, booking },
+      orderBy: { updatedAt: "desc" },
+      select: { updatedAt: true },
+    }),
+  ]);
+  if (failed && (!sent || !sent.sentAt || failed.updatedAt > sent.sentAt)) return { providerMessageId: null };
+  return sent ? { providerMessageId: sent.providerMessageId } : null;
 }
 
 export type GoogleConnectionStatus =

@@ -46,6 +46,9 @@ export function mockEnvOverlay(mockUrl: string, appUrl: string): Record<string, 
   return {
     MOCK_PROVIDERS_URL: mockUrl,
     APP_URL: appUrl,
+    // Influencers bring their own Google client (doc/15): the mock accepts any pair they paste, so the whole flow can be walked through.
+    // The shared pair below is only for code that names no influencer (and for mode "platform" or "either" if you set it by hand).
+    GOOGLE_CLIENT_MODE: "own",
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI: `${appUrl}/api/google/callback`,

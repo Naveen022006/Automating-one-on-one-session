@@ -1,9 +1,12 @@
 import type { AuthContext } from "@/lib/auth/session";
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
+import { platformEmailEnabled } from "@/lib/email/providers";
+import { CALENDAR_SCOPE, GMAIL_SEND_SCOPE, IDENTITY_SCOPES } from "@/lib/google";
+import { getSavedGoogleClient, googleClientMode, googleRedirectUri, platformGoogleCredentials, toClientKind } from "@/lib/google-credentials";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
 import { requiredConnections } from "@/lib/readiness";
-import type { GoogleStatusView, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
+import type { GoogleClientView, GoogleStatusView, ProfileData, WhatsAppView } from "@/lib/views/dashboard-types";
 import { getConnectionView, type WhatsAppConnectionView } from "@/lib/whatsapp-connection";
 import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 
@@ -19,6 +22,8 @@ import { embeddedSignupConfig } from "@/lib/whatsapp-connect";
 export interface DashboardSettingsView {
   profile: ProfileData;
   google: GoogleStatusView;
+  /** The influencer's own Google client (step 1 and 2 of the Google card). Never the secret. */
+  googleClient: GoogleClientView;
   whatsapp: WhatsAppView | null;
   /** The Meta app and Embedded Signup configuration ids the Facebook SDK needs in the browser (public by design), or null when not configured. */
   embedded: EmbeddedSignupView | null;
@@ -28,6 +33,8 @@ export interface DashboardSettingsView {
   origin: string;
   email: string;
   emailVerified: boolean;
+  /** Whether the platform sends e-mail at all (false with EMAIL_PROVIDER=none): decides whether the page may say "we e-mailed you". */
+  emailEnabled: boolean;
 }
 
 export interface EmbeddedSignupView {
@@ -70,6 +77,41 @@ export async function loadGoogleStatusView(influencerId: string): Promise<Google
   return toGoogleStatusView(await getGoogleStatus(influencerId, { details: true }));
 }
 
+/** The OAuth scopes the influencer's consent screen must list, in the order the guide shows them. */
+export const GOOGLE_REQUIRED_SCOPES = [CALENDAR_SCOPE, GMAIL_SEND_SCOPE, ...IDENTITY_SCOPES];
+
+/** What the three-step Google card needs to know about the influencer's own Google client. Never the secret (only "saved"). */
+export function toGoogleClientView(input: {
+  saved: { clientId: string; checkedAt: Date } | null;
+  grantKind: string | null;
+  env?: Record<string, string | undefined>;
+}): GoogleClientView {
+  const env = input.env ?? process.env;
+  const mode = googleClientMode(env);
+  const hasOwnClient = input.saved !== null;
+  const platformAvailable = platformGoogleCredentials(env) !== null;
+  return {
+    mode,
+    hasOwnClient,
+    clientId: input.saved?.clientId ?? null,
+    clientSecretSaved: hasOwnClient,
+    checkedAt: input.saved ? input.saved.checkedAt.toISOString() : null,
+    redirectUri: googleRedirectUri(env),
+    origin: (env.APP_URL || "http://localhost:3000").replace(/\/$/, ""),
+    requiredScopes: [...GOOGLE_REQUIRED_SCOPES],
+    canConnect: mode === "platform" ? platformAvailable : mode === "either" ? hasOwnClient || platformAvailable : hasOwnClient,
+    grantClient: input.grantKind === null ? null : toClientKind(input.grantKind),
+  };
+}
+
+export async function loadGoogleClientView(influencerId: string): Promise<GoogleClientView> {
+  const [saved, token] = await Promise.all([
+    getSavedGoogleClient(influencerId),
+    prisma.googleToken.findUnique({ where: { influencerId }, select: { clientKind: true } }),
+  ]);
+  return toGoogleClientView({ saved, grantKind: token ? token.clientKind : null });
+}
+
 /** What the WhatsApp panel shows: the number and the template states. Never the ids or the access token behind them. */
 export function toWhatsAppView(connection: WhatsAppConnectionView | null): WhatsAppView | null {
   if (!connection) return null;
@@ -95,15 +137,22 @@ export function loadEmbeddedSignupView(): EmbeddedSignupView | null {
 }
 
 export async function loadSettingsView(auth: AuthContext): Promise<DashboardSettingsView> {
-  const [profile, google, whatsapp] = await Promise.all([loadProfileView(auth.influencerId), loadGoogleStatusView(auth.influencerId), loadWhatsAppView(auth.influencerId)]);
+  const [profile, google, googleClient, whatsapp] = await Promise.all([
+    loadProfileView(auth.influencerId),
+    loadGoogleStatusView(auth.influencerId),
+    loadGoogleClientView(auth.influencerId),
+    loadWhatsAppView(auth.influencerId),
+  ]);
   return {
     profile,
     google,
+    googleClient,
     whatsapp,
     embedded: loadEmbeddedSignupView(),
     whatsappRequired: requiredConnections().includes("whatsapp"),
     origin: appUrl().replace(/^https?:\/\//, ""),
     email: auth.email,
     emailVerified: auth.emailVerified,
+    emailEnabled: platformEmailEnabled(),
   };
 }

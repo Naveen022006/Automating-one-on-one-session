@@ -5,6 +5,12 @@ import { googleEndpoints } from "@/lib/provider-endpoints";
 export { GMAIL_SEND_SCOPE };
 
 /**
+ * Starts the `error` of an e-mail Message row that Gmail failed to send when the platform has no e-mail provider to fall back on
+ * (EMAIL_PROVIDER=none, doc/15). The Google panel reads it to say "Gmail not working" (lib/google-tokens.ts).
+ */
+export const GMAIL_FAILED_PREFIX = "Gmail could not send:";
+
+/**
  * Sends email as the influencer through the Gmail API (users.messages.send), so customers receive their
  * confirmations from the influencer's own address. Plain fetch, like lib/google.ts.
  *

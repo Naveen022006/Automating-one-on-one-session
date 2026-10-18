@@ -7,6 +7,7 @@
  *  - GoogleRequestError:   Google rejected this specific request. Retrying will not help.
  */
 
+import type { CredentialResult, GoogleClientKind, GoogleCredentials, GoogleGrantRef } from "@/lib/google-credentials";
 import { googleEndpoints } from "@/lib/provider-endpoints";
 
 /** Narrowest scope that allows creating/updating/deleting events (Phase 5 needs update + delete). */
@@ -51,7 +52,12 @@ export interface EventAttendee {
 }
 
 export interface GoogleClient {
-  refreshAccessToken(refreshToken: string): Promise<string>;
+  /**
+   * Exchanges a refresh token for an access token. `grant` names the influencer and the kind of OAuth client the token was issued
+   * with (google_tokens.client_kind): the refresh uses THAT client and no other. Every caller with a stored grant passes it;
+   * without it the platform pair from the environment is used (the legacy call shape).
+   */
+  refreshAccessToken(refreshToken: string, grant?: GoogleGrantRef): Promise<string>;
   /** Resolves "exists" when an event with this id is already on the calendar. */
   insertEvent(accessToken: string, event: NewEvent): Promise<CalendarEvent | "exists">;
   getEvent(accessToken: string, eventId: string): Promise<CalendarEvent | null>;
@@ -81,11 +87,25 @@ export interface GoogleClient {
   deleteEvent(accessToken: string, eventId: string): Promise<void>;
 }
 
-function env(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`${name} is not set`);
-  return v;
+/**
+ * The platform-wide pair from the environment, for a call that names no influencer (the legacy call shape). Throws like a missing
+ * setting always did. Calls made for an influencer resolve their own credentials (lib/google-credentials.ts) instead.
+ */
+function platformCredentialsOrThrow(opts: { needSecret?: boolean } = {}): GoogleCredentials {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId) throw new Error("GOOGLE_CLIENT_ID is not set");
+  // The consent URL carries no secret; the token calls do.
+  if (!clientSecret && opts.needSecret !== false) throw new Error("GOOGLE_CLIENT_SECRET is not set");
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${(process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "")}/api/google/callback`;
+  return { clientId, clientSecret: clientSecret ?? "", redirectUri };
 }
+
+/** Looks up the credentials of a grant. Loaded on first use so that importing this module never touches the database. */
+export type GrantCredentialResolver = (grant: GoogleGrantRef) => Promise<CredentialResult>;
+
+const resolveGrantCredentials: GrantCredentialResolver = async (grant) =>
+  (await import("@/lib/google-credentials")).getGoogleCredentials(grant.influencerId, grant.clientKind);
 
 /**
  * `openid email` are non-sensitive scopes added only so the dashboard can show which Google account the calendar
@@ -102,11 +122,13 @@ export function requestGmailByDefault(env = process.env): boolean {
   return (env.GOOGLE_REQUEST_GMAIL_SEND ?? "true").toLowerCase() !== "false";
 }
 
-export function buildAuthUrl(state: string, loginHint?: string, opts: { gmail?: boolean } = {}): string {
+/** `opts.credentials`: the signed-in influencer's client (lib/google-credentials.ts). Omitted, the platform pair is used. */
+export function buildAuthUrl(state: string, loginHint?: string, opts: { gmail?: boolean; credentials?: GoogleCredentials } = {}): string {
   const gmail = opts.gmail ?? requestGmailByDefault();
+  const credentials = opts.credentials ?? platformCredentialsOrThrow({ needSecret: false });
   const params = new URLSearchParams({
-    client_id: env("GOOGLE_CLIENT_ID"),
-    redirect_uri: env("GOOGLE_REDIRECT_URI"),
+    client_id: credentials.clientId,
+    redirect_uri: credentials.redirectUri,
     response_type: "code",
     scope: [CALENDAR_SCOPE, ...(gmail ? [GMAIL_SEND_SCOPE] : []), ...IDENTITY_SCOPES].join(" "),
     // Incremental consent: adding Gmail later keeps the Calendar permission already granted.
@@ -193,7 +215,7 @@ function toCalendarEvent(raw: RawEvent): CalendarEvent {
   };
 }
 
-export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClient {
+export function createGoogleClient(fetchImpl: typeof fetch = fetch, resolveCredentials: GrantCredentialResolver = resolveGrantCredentials): GoogleClient {
   // Resolved on every call, not once here: the module-level `google` below is created at import time.
   const cal = () => googleEndpoints().calendar;
   const call = async (url: string, init: RequestInit): Promise<Response> => {
@@ -205,13 +227,28 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
   };
 
   return {
-    async refreshAccessToken(refreshToken) {
+    async refreshAccessToken(refreshToken, grant) {
+      let credentials: GoogleCredentials;
+      let kind: GoogleClientKind = "platform";
+      if (grant) {
+        const resolved = await resolveCredentials(grant);
+        if (!resolved.ok) {
+          // An influencer's own client that was removed or cannot be read is theirs to fix: reconnect needed, with the plain reason.
+          // A missing platform pair is the operator's problem: transient, the connection is not held against the influencer.
+          if (grant.clientKind === "own") throw new GoogleReconnectError(resolved.message);
+          throw new GoogleTransientError(resolved.message);
+        }
+        credentials = resolved.credentials;
+        kind = resolved.kind;
+      } else {
+        credentials = platformCredentialsOrThrow();
+      }
       const res = await call(googleEndpoints().token, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-          client_id: env("GOOGLE_CLIENT_ID"),
-          client_secret: env("GOOGLE_CLIENT_SECRET"),
+          client_id: credentials.clientId,
+          client_secret: credentials.clientSecret,
           refresh_token: refreshToken,
           grant_type: "refresh_token",
         }),
@@ -220,7 +257,11 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
         const { reason, message } = await readError(res);
         // invalid_grant = revoked, expired (unused 6 months / testing-mode 7 days), or password changed.
         if (reason === "invalid_grant") throw new GoogleReconnectError(`Refresh token rejected: ${message}`);
-        // Anything else (invalid_client, 5xx...) is our configuration or Google being down, not the influencer.
+        // invalid_client on an influencer's OWN client: they deleted it in Google Cloud or regenerated its secret. That is theirs to fix.
+        if (reason === "invalid_client" && kind === "own") {
+          throw new GoogleReconnectError("Your Google client was removed or is no longer valid. Save your Google client again, then reconnect.");
+        }
+        // Anything else (invalid_client of the platform pair, 5xx...) is our configuration or Google being down, not the influencer.
         throw new GoogleTransientError(`Token refresh failed (${res.status} ${reason}): ${message}`);
       }
       const body = (await res.json()) as { access_token?: string };
@@ -399,10 +440,15 @@ export function createGoogleClient(fetchImpl: typeof fetch = fetch): GoogleClien
 
 export const google: GoogleClient = createGoogleClient();
 
-/** Exchanges the OAuth callback `code`. Needs a refresh token; without one the connection would die within the hour. */
+/**
+ * Exchanges the OAuth callback `code`. Needs a refresh token; without one the connection would die within the hour.
+ * `credentials`: the client the consent screen was shown for (the influencer's own, resolved from the signed state in the callback).
+ * Omitted, the platform pair is used.
+ */
 export async function exchangeCode(
   code: string,
   fetchImpl: typeof fetch = fetch,
+  credentials: GoogleCredentials = platformCredentialsOrThrow(),
 ): Promise<{ refreshToken: string; scope: string; email: string | null; sub: string | null }> {
   let res: Response;
   try {
@@ -411,9 +457,9 @@ export async function exchangeCode(
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         code,
-        client_id: env("GOOGLE_CLIENT_ID"),
-        client_secret: env("GOOGLE_CLIENT_SECRET"),
-        redirect_uri: env("GOOGLE_REDIRECT_URI"),
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
+        redirect_uri: credentials.redirectUri,
         grant_type: "authorization_code",
       }),
       signal: AbortSignal.timeout(15_000),
