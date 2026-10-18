@@ -40,6 +40,8 @@ export interface BookingFacts {
   requiresApproval: boolean;
   /** The booking has a payment row of any status. A declined or expired request never has one (nothing is payable before approval). */
   hasPayment: boolean;
+  /** The customer was really sent the "request received" message (a sent, delivered or read row on any customer channel). */
+  receivedDelivered: boolean;
 }
 
 /** `sender`: lib/messaging.ts. `queue`: the linked number's booking check, asked again right before each send. */
@@ -91,6 +93,9 @@ function holdAlive(f: BookingFacts, now: Date): boolean {
  *  - request-expired: EXPIRED, never decided, never paid, and the service needs approval: an ordinary hold that lapsed also has no
  *    decision, so the service's setting is what tells a request from it (the worker only queues this for a booking it expired from
  *    REQUESTED; the check guards against a stray job). An approved hold that lapsed unpaid is NOT this message: the host decided.
+ *    Only for a customer who was told about the request in the first place: "not confirmed in time" about something they never heard
+ *    of is a message to a stranger (a number typed into the booking form by someone else), so without a delivered "request received"
+ *    it is not sent.
  */
 export function messageMayBeSent(template: string, f: BookingFacts, now: Date, route: SendPath = "sender"): boolean {
   switch (template) {
@@ -101,7 +106,7 @@ export function messageMayBeSent(template: string, f: BookingFacts, now: Date, r
     case REQUEST_DECLINED_TEMPLATE:
       return f.status === "CANCELLED" && f.decidedAt !== null && !f.hasPayment;
     case REQUEST_EXPIRED_TEMPLATE:
-      return f.status === "EXPIRED" && f.decidedAt === null && f.requiresApproval && !f.hasPayment;
+      return f.status === "EXPIRED" && f.decidedAt === null && f.requiresApproval && !f.hasPayment && f.receivedDelivered;
     default:
       return (statusesFor(template, route) ?? []).includes(f.status);
   }

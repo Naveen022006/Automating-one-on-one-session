@@ -136,6 +136,15 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   (`MESSAGING_DRY_RUN`, the fake QR transport, `EMAIL_PROVIDER=log`) print message bodies by design; production refuses all of them.
 - Only the booking's own customer number is messaged; the per-number daily cap, the send gap, the booking guard and the circuit breaker of
   the linked number apply as to every other message. Customers who did not opt in, have no number, or were erased get nothing.
+- **A stranger's number cannot be messaged on demand.** An anonymous visitor could type any Indian mobile into the booking form and tick the
+  opt-in, and the host's linked number would message it at once and again 48 hours later; ten holds per IP per ten minutes would burn the
+  linked number's daily limit on strangers (and spam reports risk the number). So: (a) a request is counted per destination number
+  (`IDENTITY_RULES.holdPhone`, 3 requests per number per 24 hours, requests only; ordinary holds send nothing before payment), and
+  `createHold` refuses a request while another request from the same number is still waiting for the same host (`maxOpenRequestsPerNumber: 1`,
+  checked under the schedule lock, so two at once cannot both get in); (b) "request expired" is sent only when "request received" was really
+  delivered to that booking (a sent, delivered or read row on a customer channel), so a number that never heard of the request is not told
+  it lapsed. The cost: someone who knows a real customer's number can use up that customer's three requests for the day, the same trade
+  the e-mail limit makes.
 - Nothing weakened: no new route, no new environment value except the four MSG91 flow ids, no migration (the template column is text).
 
 ## 5. Decisions and deviations from the brief

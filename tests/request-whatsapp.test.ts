@@ -83,7 +83,7 @@ const nextSlot = () => slotAt(dayCounter++);
 
 async function postHold(start: Date, over: Record<string, unknown> = {}, serviceId = approvalServiceId): Promise<Answer> {
   jar.clear();
-  const body = { serviceId, startTime: start.toISOString(), name: "Req Customer", email: `rqw-${run}-${++emailCounter}@example.com`, whatsapp: PHONE, whatsappOptIn: true, ...over };
+  const body = { serviceId, startTime: start.toISOString(), name: "Req Customer", email: `rqw-${run}-${++emailCounter}@example.com`, whatsapp: freshPhone(), whatsappOptIn: true, ...over };
   return answer(await holdRoute.POST(new Request("http://localhost/api/bookings/hold", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })));
 }
 const decide = async (bookingId: string, body: unknown): Promise<Answer> => {
@@ -94,6 +94,11 @@ const decide = async (bookingId: string, body: unknown): Promise<Answer> => {
     }),
   );
 };
+
+/** The customer was sent "request received" (the rule for "request expired" needs that). */
+async function markReceivedDelivered(bookingId: string): Promise<void> {
+  await prisma.message.create({ data: { bookingId, channel: "WHATSAPP_WEB", template: "request-received", status: "SENT", providerMessageId: `QR-${bookingId}`, sentAt: new Date() } });
+}
 
 /** A REQUESTED booking made straight in the database (the hold route is exercised by its own test). */
 async function requestBooking(over: { optIn?: boolean; serviceId?: string; requestApproval?: boolean } = {}): Promise<string> {
@@ -287,7 +292,7 @@ after(async () => {
 
 test("hold of an approval service: one request-received job (booking id and template only), the text goes out once from the linked number, a retry sends nothing more", { skip }, async () => {
   const start = nextSlot();
-  const res = await postHold(start);
+  const res = await postHold(start, { whatsapp: PHONE }); // the number every other test uses for its direct bookings; its request stays open
   assert.equal(res.status, 201, JSON.stringify(res.body));
   assert.equal(res.body.requiresApproval, true);
   const bookingId = String(res.body.bookingId);
@@ -324,7 +329,10 @@ async function inStateFor(kind: string, over: { optIn?: boolean } = {}): Promise
   const noop = queuedNo;
   if (kind === "request-approved") await approvalLib.approveRequest(influencerId, id, new Date(), noop);
   if (kind === "request-declined") await approvalLib.declineRequest(influencerId, id, null, new Date(), noop);
-  if (kind === "request-expired") await prisma.booking.update({ where: { id }, data: { status: "EXPIRED" } });
+  if (kind === "request-expired") {
+    await markReceivedDelivered(id);
+    await prisma.booking.update({ where: { id }, data: { status: "EXPIRED" } });
+  }
   return id;
 }
 
@@ -785,6 +793,7 @@ test("expiry: each unanswered request is expired and queued once for request-exp
   await requestMessages.expireStaleHoldsAndNotify(new Date(), { enqueue: async () => {}, scope: mine });
 
   const lapsed = await requestBooking();
+  await markReceivedDelivered(lapsed);
   const lapsedNoOptIn = await requestBooking({ optIn: false });
   const approvedLapsed = await requestBooking();
   await approvalLib.approveRequest(influencerId, approvedLapsed, new Date(), queuedOk);
@@ -849,6 +858,103 @@ test("expiry: a queue that is down does not stop the sweep (the requests are exp
   assert.ok(logged.some((l) => l.includes('2 "request expired" message(s) could not be queued') || l.includes('1 "request expired" message(s) could not be queued')));
 });
 
+// ---- 5b. abuse: a stranger's number cannot be made to receive messages on demand ------------------------------------------------
+
+/** A phone number only this test uses (an Indian mobile: ten digits, the first 6-9). */
+let phoneCounter = 0;
+const freshPhone = () => `+919${String(100_000_000 + Number(String(run).slice(-6)) * 10 + ++phoneCounter).slice(-9)}`;
+
+test("one phone number: one request waiting per host, three requests a day; a flood of requests to one number stops, other numbers and ordinary bookings are not affected", { skip }, async () => {
+  const { IDENTITY_RULES } = await import("../lib/rate-limit/policies");
+  assert.deepEqual([IDENTITY_RULES.holdPhone.name, IDENTITY_RULES.holdPhone.limit, IDENTITY_RULES.holdPhone.windowMs], ["hold-phone", 3, 24 * 3_600_000]);
+
+  const victim = freshPhone();
+  const first = await postHold(nextSlot(), { whatsapp: victim });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const firstId = String(first.body.bookingId);
+  assert.equal(jobsFor(firstId, "request-received").length, 1, "the first request messages the number");
+
+  // A second request for the same number and host while the first waits: refused, nothing queued, nothing created.
+  const bookingsBefore = await prisma.booking.count({ where: { whatsappE164: victim } });
+  const second = await postHold(nextSlot(), { whatsapp: victim });
+  assert.equal(second.status, 409, JSON.stringify(second.body));
+  assert.match(String(second.body.error), /already have a request waiting for this host/);
+  assert.equal(await prisma.booking.count({ where: { whatsappE164: victim } }), bookingsBefore, "no booking was made");
+  assert.equal(jobsFor(firstId).length, 1, "and no second message was queued for it");
+
+  // Another number is not affected, and neither is an ordinary booking with the first number.
+  const other = await postHold(nextSlot(), { whatsapp: freshPhone() });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const plain = await postHold(nextSlot(), { whatsapp: victim }, plainServiceId);
+  assert.equal(plain.status, 201, "a service without approval sends nothing before payment: not limited by this rule");
+  assert.deepEqual(jobsFor(String(plain.body.bookingId)), []);
+
+  // Once the host has answered, the number may ask again (this was attempt 2 of 3 today)...
+  assert.equal((await decide(firstId, { action: "decline" })).status, 200);
+  const third = await postHold(nextSlot(), { whatsapp: victim });
+  assert.equal(third.status, 201, JSON.stringify(third.body));
+  // ...but not a fourth time within the day, whatever the host does.
+  assert.equal((await decide(String(third.body.bookingId), { action: "decline" })).status, 200);
+  const jobsBeforeFourth = jobs.length;
+  const fourth = await postHold(nextSlot(), { whatsapp: victim });
+  assert.equal(fourth.status, 429, JSON.stringify(fourth.body));
+  assert.match(String(fourth.body.error), /already been used for several booking requests today/);
+  assert.equal(await prisma.booking.count({ where: { whatsappE164: victim, status: "REQUESTED" } }), 0);
+  assert.equal(jobs.length, jobsBeforeFourth, "nothing was queued");
+});
+
+test("the open-request limit is race free: two requests at the same moment for one number make one booking", { skip }, async () => {
+  const phone = freshPhone();
+  const mk = (start: Date) =>
+    createHold({
+      serviceId: approvalServiceId,
+      startTime: start,
+      endTime: new Date(start.getTime() + 30 * 60_000),
+      capacity: 1,
+      customerName: "Racer",
+      customerEmail: `rqw-${run}-${++emailCounter}@example.com`,
+      whatsappE164: phone,
+      whatsappOptIn: true,
+      requestApproval: true,
+      maxOpenRequestsPerNumber: 1,
+    });
+  const results = await Promise.allSettled([mk(nextSlot()), mk(nextSlot()), mk(nextSlot())]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  for (const r of results) if (r.status === "rejected") assert.ok(r.reason instanceof Error && /already have a request waiting/.test(r.reason.message), String(r.reason));
+  // Callers that do not pass the limit (tests, tools) are not limited.
+  const start = nextSlot();
+  const free = await createHold({ serviceId: approvalServiceId, startTime: start, endTime: new Date(start.getTime() + 30 * 60_000), capacity: 1, customerName: "Free", customerEmail: `rqw-${run}-${++emailCounter}@example.com`, whatsappE164: phone, whatsappOptIn: true, requestApproval: true });
+  assert.equal(free.status, "REQUESTED");
+});
+
+test("'request expired' goes only to a customer who was really told about the request", { skip }, async () => {
+  const told = await requestBooking();
+  const strangerNumber = await requestBooking();
+  await markReceivedDelivered(told);
+  await prisma.booking.updateMany({ where: { id: { in: [told, strangerNumber] } }, data: { status: "EXPIRED" } });
+
+  const f = fakes();
+  assert.equal(await sendMessageForBooking(strangerNumber, "request-expired", f.deps), "skipped", "nothing was ever delivered to this number about the request");
+  assert.deepEqual(f.calls, []);
+  assert.equal(await guardLib.bookingAllowsMessage(influencerId, { bookingId: strangerNumber, toE164: PHONE, kind: "request-expired" }), "not-sendable");
+  assert.equal(await guardLib.bookingAllowsMessage(influencerId, { bookingId: told, toE164: PHONE, kind: "request-expired" }), true);
+  assert.equal(await sendMessageForBooking(told, "request-expired", f.deps), "sent");
+
+  // A "request received" that failed or is still pending does not count as delivered.
+  const failedFirst = await requestBooking();
+  await prisma.message.create({ data: { bookingId: failedFirst, channel: "SMS", template: "request-received", status: "FAILED", error: "No WhatsApp or SMS route for this message" } });
+  await prisma.message.create({ data: { bookingId: failedFirst, channel: "WHATSAPP_WEB", template: "request-received", status: "PENDING", error: "in-flight" } });
+  await prisma.booking.update({ where: { id: failedFirst }, data: { status: "EXPIRED" } });
+  assert.equal(await sendMessageForBooking(failedFirst, "request-expired", f.deps), "skipped");
+  // Delivered by any customer channel counts (official WhatsApp, SMS, the linked number; delivered and read too).
+  for (const [channel, status] of [["WHATSAPP", "SENT"], ["SMS", "DELIVERED"], ["WHATSAPP_WEB", "READ"]] as const) {
+    const id = await requestBooking();
+    await prisma.message.create({ data: { bookingId: id, channel, template: "request-received", status, sentAt: new Date() } });
+    await prisma.booking.update({ where: { id }, data: { status: "EXPIRED" } });
+    assert.equal(await sendMessageForBooking(id, "request-expired", fakes().deps), "sent", `${channel}/${status}`);
+  }
+});
+
 // ---- 6. the linked number's booking check --------------------------------------------------------------------------------------
 
 test("the linked number's queue asks the same question as the sender for the four request messages", { skip }, async () => {
@@ -858,6 +964,7 @@ test("the linked number's queue asks the same question as the sender for the fou
   const declined = await requestBooking();
   await approvalLib.declineRequest(influencerId, declined, "no", new Date(), queuedOk);
   const expired = await requestBooking();
+  await markReceivedDelivered(expired);
   await prisma.booking.update({ where: { id: expired }, data: { status: "EXPIRED" } });
   const paid = await requestBooking();
   await approvalLib.approveRequest(influencerId, paid, new Date(), queuedOk);
@@ -875,6 +982,7 @@ test("the linked number's queue asks the same question as the sender for the fou
       assert.equal(queue === true, kind === allowedKind, `queue: ${kind} for a booking that allows only "${allowedKind}"`);
       assert.equal(senderAllows, kind === allowedKind, `sender: ${kind} for a booking that allows only "${allowedKind}"`);
       await prisma.message.deleteMany({ where: { bookingId } });
+      if (bookingId === expired) await markReceivedDelivered(expired);
     }
   }
   // Someone else's number or influencer: false, as before.

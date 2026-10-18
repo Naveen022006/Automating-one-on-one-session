@@ -271,7 +271,12 @@ export async function sendMessageForBooking(
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: true } } } }, payments: { select: { id: true }, take: 1 } },
+    include: {
+      session: { include: { service: { include: { influencer: true } } } },
+      payments: { select: { id: true }, take: 1 },
+      // Whether the customer was really sent "request received" (read by the rule for "request expired").
+      messages: { where: { template: "request-received", channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS"] }, status: { in: ["SENT", "DELIVERED", "READ"] } }, select: { id: true }, take: 1 },
+    },
   });
   if (!booking) {
     console.warn(`[send-message] booking ${bookingId} not found, skipping`);
@@ -290,6 +295,7 @@ export async function sendMessageForBooking(
     decidedAt: booking.decidedAt,
     requiresApproval: booking.session.service.requiresApproval,
     hasPayment: booking.payments.length > 0,
+    receivedDelivered: booking.messages.length > 0,
   };
   if (!messageMayBeSent(template, facts, now, "sender")) {
     console.warn(`[send-message] booking ${bookingId} is ${booking.status}; "${template}" not sendable, skipping`);

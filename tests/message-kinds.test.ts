@@ -34,7 +34,7 @@ const ALL_STATUSES = ["REQUESTED", "HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED
 const NOW = new Date("2026-11-10T10:00:00Z");
 const LATER = new Date(NOW.getTime() + 3_600_000);
 const EARLIER = new Date(NOW.getTime() - 3_600_000);
-const facts = (over: Partial<BookingFacts>): BookingFacts => ({ status: "PAID", holdExpiresAt: null, decidedAt: null, requiresApproval: false, hasPayment: false, ...over });
+const facts = (over: Partial<BookingFacts>): BookingFacts => ({ status: "PAID", holdExpiresAt: null, decidedAt: null, requiresApproval: false, hasPayment: false, receivedDelivered: false, ...over });
 
 test("the five booking events keep exactly the states they always had, per route", () => {
   const paidOrAfter = ["PAID", "SCHEDULED", "COMPLETED"];
@@ -84,6 +84,7 @@ test("the queue can never allow what the sender refuses, for any message and any
     { holdExpiresAt: LATER },
     { holdExpiresAt: EARLIER },
     { holdExpiresAt: LATER, decidedAt: EARLIER, requiresApproval: true },
+    { requiresApproval: true, receivedDelivered: true },
   ];
   for (const t of templates) {
     for (const status of ALL_STATUSES) {
@@ -128,12 +129,14 @@ test("request-declined: CANCELLED, decided and never paid, whatever the service'
   assert.equal(messageMayBeSent("cancellation", facts({ status: "CANCELLED", decidedAt: EARLIER, requiresApproval: true, hasPayment: true }), NOW), true);
 });
 
-test("request-expired: EXPIRED, never decided, a service that needs approval, never paid (an approved hold that lapsed unpaid is not this message)", () => {
-  const ok = (over: Partial<BookingFacts>) => messageMayBeSent(REQUEST_EXPIRED_TEMPLATE, facts({ status: "EXPIRED", decidedAt: null, requiresApproval: true, ...over }), NOW);
+test("request-expired: EXPIRED, never decided, a service that needs approval, never paid, and the customer was told about the request (an approved hold that lapsed unpaid is not this message)", () => {
+  const ok = (over: Partial<BookingFacts>) => messageMayBeSent(REQUEST_EXPIRED_TEMPLATE, facts({ status: "EXPIRED", decidedAt: null, requiresApproval: true, receivedDelivered: true, ...over }), NOW);
   for (const status of ALL_STATUSES) assert.equal(ok({ status }), status === "EXPIRED", status);
   assert.equal(ok({ decidedAt: EARLIER }), false, "approved and then not paid: out of scope, recorded as a follow-up in doc/16");
   assert.equal(ok({ requiresApproval: false }), false, "an ordinary hold that expired never gets this");
   assert.equal(ok({ hasPayment: true }), false);
+  assert.equal(ok({ receivedDelivered: false }), false, "'not confirmed in time' about a request the customer never heard of goes to a stranger: not sent");
+  for (const route of ["sender", "queue"] as const) assert.equal(messageMayBeSent(REQUEST_EXPIRED_TEMPLATE, facts({ status: "EXPIRED", requiresApproval: true, receivedDelivered: false }), NOW, route), false, route);
 });
 
 test("a payment link in any piece of text is taken out, wherever a provider echoed it", () => {

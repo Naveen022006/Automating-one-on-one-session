@@ -71,6 +71,12 @@ export async function POST(req: Request) {
   });
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
+  // A request makes the influencer's number message this phone number at once. One number cannot be used to trigger that again and again.
+  if (service.requiresApproval) {
+    const tooMany = await enforce(IDENTITY_RULES.holdPhone, whatsappE164, "This phone number has already been used for several booking requests today. Please try again tomorrow, or contact the host.");
+    if (tooMany) return tooMany;
+  }
+
   const startTime = new Date(body.startTime);
 
   // The service's booking window (minimum notice, furthest ahead) and intake questions are enforced here, not just
@@ -118,6 +124,8 @@ export async function POST(req: Request) {
       refundPolicy: service.refundPolicy,
       intakeAnswers: answered.answers,
       requestApproval: service.requiresApproval,
+      // One request waiting per phone number and host: the next one has to wait for the host's answer.
+      maxOpenRequestsPerNumber: service.requiresApproval ? 1 : undefined,
     });
     if (service.requiresApproval) {
       // A request: nothing to pay yet. The customer gets a receipt by e-mail and, when a route to them exists, as a queued message (best

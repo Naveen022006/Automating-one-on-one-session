@@ -77,6 +77,12 @@ export interface HoldInput {
   intakeAnswers?: { id: string; label: string; answer: string }[];
   /** The service needs approval: create a REQUESTED booking (long hold, nothing to pay yet) instead of HELD. */
   requestApproval?: boolean;
+  /**
+   * With `requestApproval`: refuse (as a duplicate) when this many requests from the same phone number are already waiting for this
+   * influencer's answer. Checked under the schedule lock, so two at once cannot both get in. The public hold route passes 1; other
+   * callers (tests, tools) leave it out and are not limited.
+   */
+  maxOpenRequestsPerNumber?: number;
 }
 
 /**
@@ -122,6 +128,15 @@ export async function createHold(input: HoldInput) {
       where: { sessionId, customerEmail: input.customerEmail, ...activeSeatWhere(now) },
     });
     if (duplicate > 0) throw new DuplicateBookingError("You already have a booking for this slot");
+
+    if (input.requestApproval && input.maxOpenRequestsPerNumber !== undefined) {
+      const waiting = await tx.booking.count({
+        where: { status: "REQUESTED", holdExpiresAt: { gt: now }, whatsappE164: input.whatsappE164, session: { service: { influencerId: owner.influencerId } } },
+      });
+      if (waiting >= input.maxOpenRequestsPerNumber) {
+        throw new DuplicateBookingError("You already have a request waiting for this host. Please wait for their answer before sending another.");
+      }
+    }
 
     return tx.booking.create({
       data: {
