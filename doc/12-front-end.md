@@ -154,7 +154,8 @@ The row sits after `admin-payments` in `lib/spa/routes.ts` (admin title template
 - The content container is `aria-busy` while loading; the empty state is "No money moved"; an unknown influencer id shows a warning and an empty page.
 - `components/admin/ExportControls.tsx` now exports `ExportLink` (the download button with the fetch-and-save click handler and the message on a refusal) beside
   `ExportControls`, and `exportUrl()` takes optional extra query values (`type`, `influencerId`). `InfluencerDetailView` has an "All money movements" button in its
-  "Earnings and payouts" card; `PayoutsView` rows carry `id="payout-<id>"` so the ledger's "Open in Payouts" lands on the payout when it is on the first page.
+  "Earnings and payouts" card; `PayoutsView` answers `?id=` with that one payout (`single`: a notice with the way back, no tab marked current), which is where the ledger's
+  "Open in Payouts" lands.
 - Tests: `tests/admin-money-ledger-view.test.ts` (rendering, wiring), `tests/admin-money-ledger.test.ts` (endpoint, totals, CSV).
 
 ## WhatsApp by QR code screens (optional, unofficial)
