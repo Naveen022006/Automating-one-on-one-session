@@ -81,7 +81,7 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
 
 test("every action has a label, a detail allowlist and a sample, and the wording of every action contains no '@' except the influencer's own Google account", () => {
   const actions = Object.keys(ACTIVITY_ACTIONS) as ActivityAction[];
-  assert.ok(actions.length >= 20 && actions.length <= 30, `about 20 actions, got ${actions.length}`);
+  assert.ok(actions.length >= 20 && actions.length <= 40, `a few dozen actions, got ${actions.length}`); // upper bound raised 30 -> 40 with doc/15 (Google client, admin reset-link and WhatsApp QR entries)
   assert.deepEqual(Object.keys(ACTIVITY_DETAIL_KEYS).sort(), [...actions].sort());
   assert.deepEqual(Object.keys(SAMPLE_DETAIL).sort(), [...actions].sort());
   for (const action of actions) {
