@@ -140,10 +140,17 @@ export async function createHold(input: HoldInput) {
   });
 }
 
-/** Marks timed-out unpaid bookings (held or awaiting payment) EXPIRED. Availability never depends on this running (expired holds are ignored); it keeps data tidy. */
-export async function expireStaleHolds(now = new Date()): Promise<number> {
+/**
+ * Marks timed-out unpaid bookings (requested, held or awaiting payment) EXPIRED. Availability never depends on this running (expired
+ * holds are ignored); it keeps data tidy. This is the plain database step. The worker calls `expireStaleHoldsAndNotify`
+ * (lib/request-messages.ts), which expires the unanswered REQUESTED bookings first, in batches, so it can tell their customers, and then
+ * calls this with `includeRequests: false` for everything else. `scope` narrows the sweep to some bookings (a test uses it to leave
+ * every other booking in a shared database alone); the worker never passes it.
+ */
+export async function expireStaleHolds(now = new Date(), opts: { includeRequests?: boolean; scope?: Prisma.BookingWhereInput } = {}): Promise<number> {
+  const statuses = opts.includeRequests === false ? TIMED_SEAT_STATUSES.filter((s) => s !== "REQUESTED") : [...TIMED_SEAT_STATUSES];
   const { count } = await prisma.booking.updateMany({
-    where: { status: { in: [...TIMED_SEAT_STATUSES] }, holdExpiresAt: { lte: now } },
+    where: { status: { in: statuses }, holdExpiresAt: { lte: now }, ...(opts.scope ? { AND: [opts.scope] } : {}) },
     data: { status: "EXPIRED" },
   });
   return count;

@@ -119,7 +119,7 @@ distributed (for example to a customer who self-hosts), the GPL terms of that de
 
 **Message path (`lib/messaging.ts`).** For each customer message the order is: the influencer's linked number (when `WHATSAPP_QR_ENABLED`, the
 manager reports the socket open, the stored status is LINKED with `wantLinked`, the destination is E.164 and the template is one of the five
-booking events), then the official connection, then SMS. Any `{ ok: false }` (retryable or not) falls through to the next channel in the same
+booking events or, since `doc/16-request-whatsapp-flow.md`, one of the four booking-request messages), then the official connection, then SMS. Any `{ ok: false }` (retryable or not) falls through to the next channel in the same
 run; there is no second QR attempt in the same run. Texts are in `lib/whatsapp-web/messages.ts` (pure; the time string is the SMS context's own,
 so the IST change in `feat/india-only` flows in; no STOP promise, ends with the host's name; the manage link on confirmation, 24 h reminder and
 reschedule, like the e-mails). `MESSAGING_DRY_RUN=true` disables the default QR sender.

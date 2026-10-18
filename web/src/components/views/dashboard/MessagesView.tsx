@@ -7,6 +7,7 @@ import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardMessagesView, MessageStatusFilter } from "@/lib/views/dashboard-messages";
 import { formatDateTime } from "@/lib/india";
+import { TEMPLATE_LABELS } from "@/lib/message-templates";
 
 const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", WHATSAPP_WEB: QR_CHANNEL_LABEL, SMS: "SMS", EMAIL: "Email" };
 const TEMPLATE: Record<string, string> = {
@@ -18,6 +19,11 @@ const TEMPLATE: Record<string, string> = {
   cancellation: "Cancellation notice",
   "booking-cancelled": "Cancellation email",
   receipt: "Receipt",
+  // The booking-request flow: the same key labels the WhatsApp/SMS message and the e-mail (the channel column tells them apart).
+  "request-received": TEMPLATE_LABELS["request-received"],
+  "request-approved": TEMPLATE_LABELS["request-approved"],
+  "request-declined": TEMPLATE_LABELS["request-declined"],
+  "request-expired": TEMPLATE_LABELS["request-expired"],
 };
 const FILTERS: { value: MessageStatusFilter; label: string }[] = [
   { value: "", label: "All" },

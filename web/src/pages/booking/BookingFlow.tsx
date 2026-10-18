@@ -723,7 +723,7 @@ export function BookingFlow({
                       {host.name} reviews it
                       {requested.decideWithinHours >= 48 ? " (usually within a couple of days)" : ""}. Your time is held until they answer.
                     </li>
-                    <li>If they approve, you get a link to pay and confirm (by e-mail or from {host.name} directly). If not, you are not charged.</li>
+                    <li>If they approve, you get a link to pay and confirm, on WhatsApp and by e-mail when {host.name} has e-mail set up (or from {host.name} directly). If not, you are not charged.</li>
                   </ol>
                   {service.prepNotes && (
                     <Alert tone="info" title="Before your session">

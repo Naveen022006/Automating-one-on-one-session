@@ -219,7 +219,7 @@ the image is built, not at run time. Copy `.env.example` as the starting point.
 | `WHATSAPP_DISABLED` | no | `false` | **Dev**: force WhatsApp to fail so SMS fallback is exercised. Refused in production (it silently sends all WhatsApp traffic by SMS) |
 | `MESSAGING_DRY_RUN` | no | `false` | **Dev**: log instead of sending WhatsApp/SMS. Refused in production |
 | `SMS_PROVIDER` | no | `generic` | `msg91`, `twilio` or `generic`; missing credentials for the chosen one warn |
-| `SMS_API_KEY`, `MSG91_TEMPLATE_DEFAULT`, `MSG91_TEMPLATE_BOOKING_CONFIRMATION`, `_REMINDER_24H`, `_REMINDER_15M`, `_RESCHEDULE`, `_CANCELLATION` | for msg91 | none | DLT-approved flow ids |
+| `SMS_API_KEY`, `MSG91_TEMPLATE_DEFAULT`, `MSG91_TEMPLATE_BOOKING_CONFIRMATION`, `_REMINDER_24H`, `_REMINDER_15M`, `_RESCHEDULE`, `_CANCELLATION`, `_REQUEST_RECEIVED`, `_REQUEST_APPROVED`, `_REQUEST_DECLINED`, `_REQUEST_EXPIRED` | for msg91 | none | DLT-approved flow ids. The last four are the booking-request messages (doc/16-request-whatsapp-flow.md; the accepted one carries the payment link and the amount). A message type with no flow id uses `MSG91_TEMPLATE_DEFAULT`; with neither, that SMS fails and the message is not delivered by SMS (WhatsApp and e-mail are unaffected) |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM` | for twilio | none | |
 | `SMS_API_URL` | for generic | none | |
 

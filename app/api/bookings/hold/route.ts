@@ -12,7 +12,9 @@ import {
   REQUEST_TTL_HOURS,
   SlotUnavailableError,
 } from "@/lib/holds";
+import { REQUEST_RECEIVED_TEMPLATE } from "@/lib/message-kinds";
 import { toE164 } from "@/lib/phone";
+import { queueRequestMessage } from "@/lib/request-messages";
 import { signBookingPollToken } from "@/lib/self-service";
 import { publicInfluencerWhere } from "@/lib/public";
 import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
@@ -118,7 +120,9 @@ export async function POST(req: Request) {
       requestApproval: service.requiresApproval,
     });
     if (service.requiresApproval) {
-      // A request: nothing to pay yet. The customer gets a receipt email and the influencer an alert.
+      // A request: nothing to pay yet. The customer gets a receipt on WhatsApp (a queued message, best effort; the booking is committed
+      // by now) and by e-mail, and the influencer an alert.
+      await queueRequestMessage(booking, REQUEST_RECEIVED_TEMPLATE);
       await notifyRequestCreated(booking.id);
       return NextResponse.json(
         { bookingId: booking.id, requiresApproval: true, holdExpiresAt: booking.holdExpiresAt, decideWithinHours: REQUEST_TTL_HOURS },

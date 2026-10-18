@@ -71,8 +71,13 @@ async function request(startOffsetMs: number, email = `req${++n}-${run}@example.
   return { booking, start };
 }
 
+const savedRedisUrl = process.env.REDIS_URL;
+
 before(async () => {
   if (skip) return;
+  // Approving and declining queue a WhatsApp message (lib/request-messages.ts). No test here may reach a real queue: without a URL the
+  // queueing fails fast, is logged and changes nothing (its own tests are tests/request-whatsapp.test.ts).
+  delete process.env.REDIS_URL;
   owner = (await prisma.influencer.create({ data: { slug: `ap-${run}`, name: "Approver", email: `ap-${run}@example.com`, onboardedAt: new Date() } })).id;
   stranger = (await prisma.influencer.create({ data: { slug: `ap2-${run}`, name: "Other", email: `ap2-${run}@example.com`, onboardedAt: new Date() } })).id;
   serviceId = (await prisma.service.create({ data: { influencerId: owner, title: "Reviewed", durationMin: 30, priceMinor: 49900, requiresApproval: true } })).id;
@@ -80,6 +85,8 @@ before(async () => {
 
 after(async () => {
   if (!skip) await prisma.influencer.deleteMany({ where: { id: { in: [owner, stranger].filter(Boolean) } } });
+  if (savedRedisUrl === undefined) delete process.env.REDIS_URL;
+  else process.env.REDIS_URL = savedRedisUrl;
   await prisma.$disconnect();
 });
 
@@ -98,7 +105,8 @@ test("approving makes it payable with a deadline, once, and only for the owner",
   const { booking } = await request(6 * DAY);
   await assert.rejects(approveRequest(stranger, booking.id), (e: unknown) => e instanceof ApprovalError && e.status === 404, "another influencer cannot approve");
 
-  const { payBy } = await approveRequest(owner, booking.id);
+  const { payBy, whatsappQueued } = await approveRequest(owner, booking.id);
+  assert.equal(whatsappQueued, false, "no queue to put the WhatsApp message on here: said honestly, the approval itself stands");
   const row = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } });
   assert.equal(row.status, "HELD");
   assert.equal(row.holdExpiresAt!.getTime(), payBy.getTime());

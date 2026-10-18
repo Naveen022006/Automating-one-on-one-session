@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 import { sweepExpiredAuthRows } from "../lib/auth/sweep";
-import { expireStaleHolds } from "../lib/holds";
+import { isRequestMessageKind, redactPayLinks } from "../lib/message-kinds";
 import { reportError } from "../lib/observability";
+import { expireStaleHoldsAndNotify } from "../lib/request-messages";
 import { sweepExpiredBuckets } from "../lib/rate-limit/sweep";
 import { reportMeetingFailure, requeuePendingMeetings } from "../lib/meeting";
 import { reportMessageFailure } from "../lib/messaging";
@@ -41,8 +42,9 @@ async function sweep() {
 
 async function tick() {
   try {
-    const n = await expireStaleHolds();
-    if (n > 0) console.log(`[worker] expired ${n} stale hold(s)`);
+    // Expires timed-out holds, and tells the customer of each booking REQUEST that lapsed unanswered (lib/request-messages.ts).
+    const r = await expireStaleHoldsAndNotify();
+    if (r.expired > 0) console.log(`[worker] expired ${r.expired} stale hold(s)${r.requests > 0 ? `, ${r.requests} of them unanswered request(s) (${r.queued} customer message(s) queued)` : ""}`);
   } catch (e) {
     reportError(e, { where: "worker:expire-holds" });
   }
@@ -91,7 +93,8 @@ if (!process.env.REDIS_URL) {
     // Only act once the retries are exhausted and the error was transient (not wrapped UnrecoverableError).
     const exhausted = job.attemptsMade >= (job.opts.attempts ?? 1);
     if (!exhausted || err instanceof UnrecoverableError) return;
-    console.error(`[worker] send-message gave up on booking ${job.data.bookingId} (${job.data.template})`, err);
+    // A booking-request message may carry a payment link (a bearer link): log only its redacted reason, never the error object.
+    console.error(`[worker] send-message gave up on booking ${job.data.bookingId} (${job.data.template})`, isRequestMessageKind(job.data.template) ? redactPayLinks(err.message) : err);
     void reportMessageFailure(job.data.bookingId, job.data.template, err.message).catch((e) =>
       console.error("[worker] could not record message failure", e),
     );
