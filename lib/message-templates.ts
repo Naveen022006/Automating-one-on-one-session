@@ -21,7 +21,7 @@
  * The four booking-request messages (services that need the host's approval, doc/16-request-whatsapp-flow.md):
  *   request-received       sa_request_received      1 service, 2 host, 3 time, 4 wait, 5 booking link
  *   request-approved       sa_request_approved      1 service, 2 host, 3 time, 4 amount, 5 pay by, 6 payment link, 7 booking link
- *   request-declined       sa_request_declined      1 service, 2 host, 3 time, 4 note, 5 booking page
+ *   request-declined       sa_request_declined      1 service, 2 host, 3 time, 4 note sentence, 5 booking page
  *   request-expired        sa_request_expired       1 service, 2 host, 3 time, 4 booking page
  *   (bodies in BODIES below). Their extra values (payment link, pay-by time, amount, ...) are worked out when the message is SENT
  *   (lib/request-message-context.ts), never stored in a job.
@@ -59,7 +59,7 @@ export interface MessageContext {
 }
 
 /** The values a template can take, in the words the body uses. Each is a plain string by the time it reaches a body (see `values`). */
-type Field = "link" | "serviceTitle" | "influencerName" | "when" | "manageUrl" | "payUrl" | "payBy" | "amount" | "bookingPageUrl" | "decideWithin" | "reason";
+type Field = "link" | "serviceTitle" | "influencerName" | "when" | "manageUrl" | "payUrl" | "payBy" | "amount" | "bookingPageUrl" | "decideWithin" | "note";
 
 interface TemplateDef {
   /** The name submitted to and sent through Meta (see the header: lowercase letters, digits, underscores). */
@@ -70,7 +70,8 @@ interface TemplateDef {
 
 const LINK_PENDING = "(link coming soon)";
 const LINK_UNAVAILABLE = "(link unavailable)";
-const NO_NOTE = "(none)";
+/** The sentence a decline carries when the host left no note (a template parameter cannot be empty, so it is a sentence, not a blank). */
+const NO_NOTE = "No reason was given.";
 
 /**
  * How long the host has to answer a request, in words: "2 days" from 48 hours, "36 hours", "1 hour", and "a short time" under an hour.
@@ -124,9 +125,8 @@ const DEFS: Record<string, TemplateDef> = {
   },
   "request-declined": {
     meta: "sa_request_declined",
-    params: ["serviceTitle", "influencerName", "when", "reason", "bookingPageUrl"],
-    sms: (c) =>
-      `Request not accepted: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. Their note: "${c.reason}". You were not charged. Pick another time: ${c.bookingPageUrl}`,
+    params: ["serviceTitle", "influencerName", "when", "note", "bookingPageUrl"],
+    sms: (c) => `Request not accepted: ${c.serviceTitle} with ${c.influencerName}, ${c.when}. ${c.note} You were not charged. Pick another time: ${c.bookingPageUrl}`,
   },
   "request-expired": {
     meta: "sa_request_expired",
@@ -297,7 +297,8 @@ function values(c: MessageContext): Record<Field, string> {
     amount: c.amount ?? "",
     bookingPageUrl: c.bookingPageUrl || LINK_UNAVAILABLE,
     decideWithin: c.decideWithinHours !== undefined ? describeWait(c.decideWithinHours) : "a couple of days",
-    reason: c.reason?.trim() || NO_NOTE,
+    // The whole sentence is the parameter, so a decline with no note does not print an empty quote.
+    note: c.reason?.trim() ? `Their note: "${c.reason.trim()}".` : NO_NOTE,
   };
 }
 
@@ -343,7 +344,7 @@ const EXAMPLES = {
   amount: "₹499.00",
   bookingPageUrl: "https://example.com/sam-rao",
   decideWithin: "2 days",
-  reason: "I am away that week",
+  note: 'Their note: "I am away that week".',
 } satisfies Record<Field, string>;
 
 const BODIES: Record<string, string> = {
@@ -357,7 +358,7 @@ const BODIES: Record<string, string> = {
   "request-approved":
     "Your booking request was accepted. Session: {{1}} with {{2}} on {{3}}. Amount: {{4}}. Pay by {{5}} or the time is released. Payment link: {{6}} Your booking: {{7}} Thank you.",
   "request-declined":
-    'Your booking request was not accepted. Session: {{1}} with {{2}} on {{3}}. Their note: "{{4}}". You were not charged. Pick another time: {{5}} Thank you.',
+    "Your booking request was not accepted. Session: {{1}} with {{2}} on {{3}}. {{4}} You were not charged. Pick another time: {{5}} Thank you.",
   "request-expired":
     "Your booking request was not confirmed in time. Session: {{1}} with {{2}} on {{3}}. You were not charged. Request a time again: {{4}} Thank you.",
 };

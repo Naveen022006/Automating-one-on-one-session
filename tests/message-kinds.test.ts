@@ -246,12 +246,23 @@ test("the parameters of each request template are the right values in the right 
   };
   assert.deepEqual(templateParams("request-received", ctx), ["Career call", "Sam Rao", ctx.when, "2 days", "https://app.test/manage/m1"]);
   assert.deepEqual(templateParams("request-approved", ctx), ["Career call", "Sam Rao", ctx.when, "₹499.00", ctx.payBy, "https://app.test/pay/p1", "https://app.test/manage/m1"]);
-  assert.deepEqual(templateParams("request-declined", ctx), ["Career call", "Sam Rao", ctx.when, "Away that week", "https://app.test/sam"]);
+  assert.deepEqual(templateParams("request-declined", ctx), ["Career call", "Sam Rao", ctx.when, 'Their note: "Away that week".', "https://app.test/sam"]);
   assert.deepEqual(templateParams("request-expired", ctx), ["Career call", "Sam Rao", ctx.when, "https://app.test/sam"]);
   // WhatsApp refuses an empty parameter: a missing note and missing links become short stand-ins, never "".
   for (const k of REQUEST_MESSAGE_KINDS) assert.ok(templateParams(k, { link: null, serviceTitle: "S", influencerName: "H", when: "W" }).every((p) => p.length > 0), k);
-  assert.equal(templateParams("request-declined", { ...ctx, reason: null })[3], "(none)");
-  assert.equal(templateParams("request-declined", { ...ctx, reason: "   " })[3], "(none)");
+  // A decline with no note says so in a sentence: never an empty quote like Their note: "(none)".
+  for (const reason of [null, undefined, "", "   "]) {
+    const params = templateParams("request-declined", { ...ctx, reason });
+    assert.equal(params[3], "No reason was given.", String(reason));
+    assert.ok(!params.some((p) => /note|\(none\)|""/i.test(p)), "no stray quote or placeholder");
+    const sms = smsBody("request-declined", { ...ctx, reason });
+    assert.ok(sms.includes("No reason was given. You were not charged."), sms);
+    assert.ok(!/Their note|\(none\)/.test(sms), sms);
+  }
+  // The body puts the sentence where the note goes; with a note it reads as before.
+  assert.match(TEMPLATE_SPECS["request-declined"].body, /on \{\{3\}\}\. \{\{4\}\} You were not charged\./);
+  assert.equal(TEMPLATE_SPECS["request-declined"].examples[3], 'Their note: "I am away that week".');
+  assert.equal(templateParams("request-declined", { ...ctx, reason: "Line one\nline two" })[3], 'Their note: "Line one line two".');
   assert.equal(templateParams("request-received", { ...ctx, decideWithinHours: undefined })[3], "a couple of days");
 });
 

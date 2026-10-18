@@ -573,7 +573,7 @@ test("decline through the route: the route and the queued job, one request-decli
   await sendMessageForBooking(bookingId, "request-declined", g.deps);
   const params = (g.official[0].components?.[0] as { parameters: { text: string }[] }).parameters.map((p) => p.text);
   assert.equal(params.length, 5);
-  assert.equal(params[3], "I am away that week");
+  assert.equal(params[3], 'Their note: "I am away that week".');
   assert.equal(params[4], `http://localhost:3000/${slug}`);
 
   // A decline with no note says there was none; nothing is made up.
@@ -582,6 +582,14 @@ test("decline through the route: the route and the queued job, one request-decli
   const h = fakes();
   await sendMessageForBooking(plain, "request-declined", h.deps);
   assert.ok(!h.qrSends[0].text.includes("Note from"), h.qrSends[0].text);
+  // The official template and the SMS say so in a sentence, never an empty quote.
+  const noNote = fakes();
+  noNote.ctl.ready = false;
+  noNote.ctl.official = "fail";
+  await prisma.message.deleteMany({ where: { bookingId: plain } });
+  await sendMessageForBooking(plain, "request-declined", noNote.deps);
+  assert.equal(((noNote.official[0].components?.[0] as { parameters: { text: string }[] }).parameters[3] as { text: string }).text, "No reason was given.");
+  assert.ok(noNote.sms[0].body.includes("No reason was given. You were not charged.") && !/note|\(none\)/i.test(noNote.sms[0].body), noNote.sms[0].body);
 });
 
 test("declining or approving a customer who did not opt in queues nothing and says so (no route, nothing queued)", { skip }, async () => {

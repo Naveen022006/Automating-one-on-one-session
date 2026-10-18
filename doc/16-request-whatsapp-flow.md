@@ -126,7 +126,8 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   UTILITY, bodies in `lib/message-templates.ts`). The existing template sync submits them for approval for every connected influencer (the
   worker's periodic check does it for accounts that were connected before this change); until Meta approves one, the official route falls
   through to SMS for that message, as for the other templates. The settings card shows nine templates now; template trouble never blocks
-  going live.
+  going live. In `sa_request_declined` the fourth variable is the whole note SENTENCE (`Their note: "...".`, or `No reason was given.` when
+  the host left none), because a parameter cannot be empty and a placeholder like `"(none)"` inside quotes reads badly; the SMS uses the same sentence.
 - **SMS**: bodies in `lib/message-templates.ts`; MSG91 flow ids `MSG91_TEMPLATE_REQUEST_RECEIVED`, `_APPROVED`, `_DECLINED`, `_EXPIRED`
   (`.env.example`, `KNOWN_ENV_VARS`, doc/08). The variables are sent in the order of the Meta parameters. `smsConfigProblem` (lib/sms.ts) is
   the one check of "can this message go by SMS" (provider credentials, and for MSG91 a flow id of its own or `MSG91_TEMPLATE_DEFAULT`);
