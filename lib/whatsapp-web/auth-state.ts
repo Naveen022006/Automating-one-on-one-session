@@ -216,6 +216,19 @@ export class EncryptedAuthState implements WhatsAppAuthStore {
     await this.opts.storage.clear();
   }
 
+  /**
+   * Stops accepting changes and drops what is pending WITHOUT writing it, leaving the stored login as it is. For a worker that has
+   * lost its lease on the linked numbers: another worker owns the login now, and a late write from here would overwrite its newer state.
+   */
+  abandon(): void {
+    this.disposed = true;
+    this.dirty = false;
+    if (this.timer !== null) {
+      this.clearTimer(this.timer);
+      this.timer = null;
+    }
+  }
+
   /** Flushes what is pending, then stops accepting changes (the login stays stored). */
   async close(): Promise<void> {
     await this.flush();

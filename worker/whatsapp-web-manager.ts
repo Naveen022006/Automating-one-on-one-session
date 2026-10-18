@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { EncryptedAuthState } from "../lib/whatsapp-web/auth-state";
 import type { WhatsAppQrConfig } from "../lib/whatsapp-web/config";
 import { kvKeys, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
@@ -39,6 +40,13 @@ export const BACKOFF_CAP_MS = 5 * 60_000;
 /** After another session took over this login we wait at least this long before trying again, so two never fight. */
 export const REPLACED_MIN_BACKOFF_MS = 60_000;
 export const PAIRING_WINDOW_MS = 5 * 60_000;
+/**
+ * How long the lease that lets ONE worker hold the linked sockets lasts without being renewed. Two workers on the same login (a rolling
+ * deploy that starts the new one first, a second `npm run worker`) would overwrite each other's saved login and end in a logout, so
+ * before any socket is opened the manager takes this lease (SET NX PX in the shared store), renews it on every pass (2 s) and gives
+ * it back on shutdown. A worker that does not hold it stays idle and says so once. A crashed holder is replaced once the lease runs out.
+ */
+export const LEASE_TTL_MS = 20_000;
 export const HEARTBEAT_TTL_MS = 15_000;
 export const SHUTDOWN_BUDGET_MS = 8_000;
 /**
@@ -65,6 +73,8 @@ export interface ManagerDeps {
   onDelivery?: (influencerId: string, info: { providerMessageId: string; status: WhatsAppWebDeliveryStatus }) => void;
   /** One line per notable event; never a QR payload, a login, a message text or a customer number. */
   log?: (line: string) => void;
+  /** This worker's name in the lease. Default: a random one per manager. */
+  workerId?: string;
   /** Test hooks for the auth store's write coalescing. */
   authDelayMs?: number;
   authSetTimer?: (fn: () => void, ms: number) => unknown;
@@ -106,8 +116,13 @@ export class WhatsAppWebManager {
   private timer: ReturnType<typeof setInterval> | null = null;
   private reconciling: Promise<void> | null = null;
   private closed = false;
+  private readonly workerId: string;
+  private holdsLease = false;
+  private leaseRenewedAt = 0;
+  private idleLogged = false;
 
   constructor(private readonly d: ManagerDeps) {
+    this.workerId = d.workerId ?? `worker-${randomBytes(8).toString("hex")}`;
     this.clock = d.clock ?? realClock;
     this.log = d.log ?? ((line) => console.log(`[whatsapp-web] ${line}`));
   }
@@ -139,6 +154,16 @@ export class WhatsAppWebManager {
     );
     await Promise.race([work, this.clock.sleep(SHUTDOWN_BUDGET_MS)]);
     this.lives.clear();
+    // Last: another worker may take the numbers over from here.
+    if (this.holdsLease) {
+      this.holdsLease = false;
+      await this.d.kv.delIfEquals(kvKeys.lease, this.workerId).catch(ok);
+    }
+  }
+
+  /** True while this worker is the one that may hold the sockets. */
+  get leaseHeld(): boolean {
+    return this.holdsLease;
   }
 
   // ---- what the rest of the worker asks ------------------------------------------------------------------------------------
@@ -183,8 +208,74 @@ export class WhatsAppWebManager {
     return run;
   }
 
+  /**
+   * Takes or renews the lease. False means "stay idle this pass". A lease that cannot be renewed (another worker has it) closes every
+   * socket at once, WITHOUT writing the login: the new owner has the newer state. A store that does not answer keeps what is open
+   * until the lease would have run out, and never starts anything new.
+   */
+  private async holdLease(): Promise<boolean> {
+    const now = this.clock.now();
+    try {
+      if (this.holdsLease) {
+        if (await this.d.kv.renew(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
+          this.leaseRenewedAt = now;
+          return true;
+        }
+        // Not renewed: it ran out (this process was stalled for longer than the lease) or another worker took it. If nobody did, take
+        // it straight back and carry on; if somebody did, close every socket now.
+        if (await this.d.kv.setNx(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
+          this.leaseRenewedAt = now;
+          this.log("the lease on the linked numbers had run out; nobody else had taken it, holding it again");
+          return true;
+        }
+        this.holdsLease = false;
+        this.log("the lease on the linked numbers was lost to another worker; closing every socket");
+        await this.abandonAll();
+      }
+      if (await this.d.kv.setNx(kvKeys.lease, this.workerId, LEASE_TTL_MS)) {
+        this.holdsLease = true;
+        this.leaseRenewedAt = now;
+        this.idleLogged = false;
+        this.log("holding the lease on the linked numbers");
+        return true;
+      }
+      if (!this.idleLogged) {
+        this.idleLogged = true;
+        this.log("another worker holds the lease on the linked numbers; staying idle");
+      }
+      return false;
+    } catch {
+      if (this.holdsLease && now - this.leaseRenewedAt < LEASE_TTL_MS) return this.lives.size > 0; // keep what is open, start nothing new
+      if (this.holdsLease) {
+        this.holdsLease = false;
+        this.log("the lease could not be renewed in time; closing every socket");
+        await this.abandonAll();
+      }
+      return false;
+    }
+  }
+
+  /** Closes every socket without touching the stored logins or the sessions' status (another worker takes them over). */
+  private async abandonAll(): Promise<void> {
+    for (const live of [...this.lives.values()]) {
+      live.phase = "stopping";
+      live.generation++;
+      live.queue.stop();
+      live.auth.abandon();
+      await live.transport?.end().catch(ok);
+      live.transport = null;
+      this.lives.delete(live.influencerId);
+    }
+  }
+
   private async pass(): Promise<void> {
     const cfg = this.d.config();
+    if (cfg.enabled) {
+      if (!(await this.holdLease())) return;
+    } else if (this.holdsLease) {
+      this.holdsLease = false;
+      await this.d.kv.delIfEquals(kvKeys.lease, this.workerId).catch(ok);
+    }
     const rows = await this.d.repo.listManageable();
     const byId = new Map(rows.map((r) => [r.influencerId, r]));
     // The heartbeat tells the web app that a manager is looking after the sessions (otherwise it says the worker is not running).
