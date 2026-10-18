@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { EncryptedAuthState, type AuthBlobStorage } from "../lib/whatsapp-web/auth-state";
 import type { WhatsAppQrConfig } from "../lib/whatsapp-web/config";
-import { kvKeys, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
+import { kvKeys, QR_FIRST_LIFE_MS, QR_ROTATE_MS, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
 import { jidUser, pruneAllExcept, pruneContacts } from "../lib/whatsapp-web/prune";
 import { parsePruneRequests } from "../lib/whatsapp-web/prune-requests";
 import { realClock, SendQueue, type Clock, type GuardAnswer, type QueuedSend } from "../lib/whatsapp-web/send-queue";
@@ -117,6 +117,8 @@ interface Live {
   statusKnown: SessionRow["status"];
   /** Jobs inside `send()` right now (see MAX_JOBS_PER_SESSION). */
   activeSends: number;
+  /** QR codes this connection has produced so far (the first lives 60 s, the next ones about 20 s). */
+  qrCount: number;
   nextPruneRequestsAt: number;
   nextPruneAllAt: number;
   /** Database writes and event handlers of one session run one after the other. */
@@ -499,6 +501,7 @@ export class WhatsAppWebManager {
       phoneE164: row.phoneE164,
       statusKnown: row.status,
       activeSends: 0,
+      qrCount: 0,
       nextPruneRequestsAt: 0,
       nextPruneAllAt: 0,
       chain: Promise.resolve(),
@@ -544,6 +547,7 @@ export class WhatsAppWebManager {
     if (old) await old.end().catch(ok);
     const gen = ++live.generation;
     live.phase = "connecting";
+    live.qrCount = 0;
     live.reconnectAt = null;
     const current = () => gen === live.generation && live.phase !== "stopping";
     const transport = this.d.transportFactory({ influencerId: live.influencerId });
@@ -577,7 +581,8 @@ export class WhatsAppWebManager {
 
   private async handleQr(live: Live, qr: string): Promise<void> {
     if (live.phase === "stopping") return;
-    await this.d.kv.set(kvKeys.qr(live.influencerId), JSON.stringify({ qr, issuedAt: this.clock.now() }), QR_TTL_MS).catch((e) => this.log(`session ${live.influencerId}: could not publish the code (${errorName(e)})`));
+    const lifeMs = live.qrCount++ === 0 ? QR_FIRST_LIFE_MS : QR_ROTATE_MS;
+    await this.d.kv.set(kvKeys.qr(live.influencerId), JSON.stringify({ qr, issuedAt: this.clock.now(), lifeMs }), QR_TTL_MS).catch((e) => this.log(`session ${live.influencerId}: could not publish the code (${errorName(e)})`));
     if (live.statusKnown !== "PENDING_QR") {
       live.statusKnown = "PENDING_QR";
       await this.d.repo.update(live.influencerId, { status: "PENDING_QR", lastErrorCode: null, lastErrorText: null });

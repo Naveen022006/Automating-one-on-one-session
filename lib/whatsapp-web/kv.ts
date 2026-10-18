@@ -45,10 +45,12 @@ export const kvKeys = {
 /** How long a QR payload stays readable in the store. */
 export const QR_TTL_MS = 60_000;
 /**
- * How long one QR code is worth showing: WhatsApp replaces the code about every 20 s once linking has started (the first one may last
- * longer). The view's `qrExpiresAt` is the time the CURRENT code was received plus this, so the countdown on the screen restarts with
- * every new code and never promises the 60 s the store keeps it for.
+ * How long a QR code is worth showing. Baileys (Socket/socket.js, the QR timers of a connection) keeps the FIRST code of a connection
+ * for 60 s and every later one for about 20 s. The manager publishes the actual lifetime of each code with it (`lifeMs`); the view's
+ * `qrExpiresAt` is the time the code was received plus that, so the countdown restarts with every new code and is right for the first
+ * one too. A code published without a lifetime (an older worker) is taken to last QR_ROTATE_MS.
  */
+export const QR_FIRST_LIFE_MS = 60_000;
 export const QR_ROTATE_MS = 20_000;
 /** Counters live two days, so a day's count is still there when the next one starts. */
 export const SENT_COUNTER_TTL_MS = 2 * 24 * 60 * 60 * 1000;

@@ -271,6 +271,10 @@ test("waiting for a scan: the code, the countdown, the numbered steps, the 5-min
   assert.match(html, /class="qr-frame"/);
   assert.match(t, /Waiting for scan/);
   // After the expiry the page says it is getting a new one (the poll replaces the code).
+  // The first code of a connection lives a minute: the countdown shows it, and it is not faded.
+  const first = panel(view({ status: "waiting-for-scan", qrSvg: QR, qrExpiresAt: new Date(NOW + 60_000).toISOString() }));
+  assert.match(text(first), /This code refreshes in 1:00/);
+  assert.doesNotMatch(first, /qr-frame--stale/);
   const expired = panel(view({ status: "waiting-for-scan", qrSvg: QR, qrExpiresAt: new Date(NOW - 1000).toISOString() }));
   assert.match(text(expired), /Getting a new code/);
   assert.match(expired, /class="qr-frame qr-frame--stale"/, "the expired picture is faded so nobody scans it");

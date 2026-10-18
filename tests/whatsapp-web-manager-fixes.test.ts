@@ -379,3 +379,30 @@ test("a store that does not answer: the open socket works until the lease would 
   assert.equal(h.manager.openCount, 0);
   await h.manager.shutdown();
 });
+
+// ---- D6: each QR code is published with its own lifetime ----
+
+test("the first code of a connection lives 60 s, the next ones about 20 s, and a reconnect starts over", async () => {
+  const { QR_FIRST_LIFE_MS, QR_ROTATE_MS } = await import("../lib/whatsapp-web/kv");
+  const h = harness();
+  want(h, INF);
+  await h.tick();
+  const t = h.last(INF);
+  const life = async () => (JSON.parse((await h.kv.get(kvKeys.qr(INF)))!) as { lifeMs: number; issuedAt: number }).lifeMs;
+  t.emitQr("SECRET-1");
+  await settle();
+  assert.equal(await life(), QR_FIRST_LIFE_MS);
+  t.emitQr("SECRET-2");
+  await settle();
+  assert.equal(await life(), QR_ROTATE_MS);
+  t.emitQr("SECRET-3");
+  await settle();
+  assert.equal(await life(), QR_ROTATE_MS);
+  // WhatsApp asks for a restart after a scan: the next connection gets a first code again.
+  t.emitClose({ reason: "transient", code: "restart-required" });
+  await settle();
+  h.last(INF).emitQr("SECRET-4");
+  await settle();
+  assert.equal(await life(), QR_FIRST_LIFE_MS);
+  await h.manager.shutdown();
+});

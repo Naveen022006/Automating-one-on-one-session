@@ -117,6 +117,16 @@ test("while waiting for the scan the view carries the current code as an SVG tha
   await prisma.whatsAppWebSession.update({ where: { influencerId: id }, data: { status: "PENDING_QR" } });
   const kv = new MemoryKv(() => now);
   assert.equal((await view(kv)).qrSvg, null, "no code published yet");
+  // The manager publishes each code's own lifetime: the first code of a connection lives 60 s, the next ones about 20 s.
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@FIRST", issuedAt: now - 10_000, lifeMs: 60_000 }), QR_TTL_MS);
+  assert.equal((await view(kv)).qrExpiresAt, new Date(now + 50_000).toISOString(), "a first code is not faded after 20 s");
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@NEXT", issuedAt: now - 10_000, lifeMs: 20_000 }), QR_TTL_MS);
+  assert.equal((await view(kv)).qrExpiresAt, new Date(now + 10_000).toISOString());
+  // A life that makes no sense is clamped (never longer than the store keeps the code, never shorter than 5 s).
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@WILD", issuedAt: now, lifeMs: 3_600_000 }), QR_TTL_MS);
+  assert.equal((await view(kv)).qrExpiresAt, new Date(now + QR_TTL_MS).toISOString());
+  await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@TINY", issuedAt: now, lifeMs: 1 }), QR_TTL_MS);
+  assert.equal((await view(kv)).qrExpiresAt, new Date(now + 5_000).toISOString());
   await kv.set(kvKeys.qr(id), JSON.stringify({ qr: "2@SECRET-PAYLOAD", issuedAt: now - 10_000 }), QR_TTL_MS);
   const v = await view(kv);
   assert.equal(v.status, "waiting-for-scan");
