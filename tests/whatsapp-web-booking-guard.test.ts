@@ -73,13 +73,16 @@ test("a booking of this influencer, with exactly this number, in a state a messa
 
 test("a booking that is held, expired, failed or unpaid never gets a message", { skip }, async () => {
   for (const name of ["held", "expired", "failed", "pending"]) {
-    assert.equal(await guard(infA, { bookingId: booking[name], toE164: PHONE }), false, name);
+    assert.equal(await guard(infA, { bookingId: booking[name], toE164: PHONE }), "not-sendable", name);
+    for (const kind of ["booking-confirmation", "reminder-24h", "reminder-15m", "reschedule", "cancellation"]) {
+      assert.equal(await guard(infA, { bookingId: booking[name], toE164: PHONE, kind }), "not-sendable", `${name}/${kind}`);
+    }
   }
 });
 
 test("no WhatsApp opt-in, or erased customer data: no message", { skip }, async () => {
   assert.equal(await guard(infA, { bookingId: booking["no-optin"], toE164: PHONE }), false);
-  assert.equal(await guard(infA, { bookingId: booking["erased"], toE164: PHONE }), false);
+  assert.equal(await guard(infA, { bookingId: booking["erased"], toE164: PHONE }), "not-sendable", "erased while the message waited: dropped, not sent another way");
 });
 
 test("another influencer's booking, another number, or an invented id: no message", { skip }, async () => {
@@ -88,4 +91,13 @@ test("another influencer's booking, another number, or an invented id: no messag
   assert.equal(await guard(infA, { bookingId: "no-such-booking", toE164: PHONE }), false);
   assert.equal(await guard(infA, { bookingId: "", toE164: PHONE }), false);
   assert.equal(await guard("no-such-influencer", { bookingId: booking["scheduled"], toE164: PHONE }), false);
+});
+
+test("the booking state a message needs depends on the message: a cancellation notice goes for a cancelled booking, nothing else does" , { skip }, async () => {
+  const kinds = ["booking-confirmation", "reminder-24h", "reminder-15m", "reschedule", "cancellation"];
+  const answers = async (name: string) => Object.fromEntries(await Promise.all(kinds.map(async (kind) => [kind, await guard(infA, { bookingId: booking[name], toE164: PHONE, kind })])));
+  assert.deepEqual(await answers("cancelled"), { "booking-confirmation": "not-sendable", "reminder-24h": "not-sendable", "reminder-15m": "not-sendable", reschedule: "not-sendable", cancellation: true });
+  assert.ok(Object.values(await answers("scheduled")).every((v) => v === true));
+  assert.deepEqual(await answers("paid"), { "booking-confirmation": true, "reminder-24h": "not-sendable", "reminder-15m": "not-sendable", reschedule: true, cancellation: true });
+  assert.deepEqual(await answers("completed"), { "booking-confirmation": true, "reminder-24h": "not-sendable", "reminder-15m": "not-sendable", reschedule: "not-sendable", cancellation: true });
 });

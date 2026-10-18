@@ -220,7 +220,7 @@ test("while the number is not connected nothing waits: the answer is immediate a
 });
 
 test("stop() answers everything still waiting with a retryable refusal", async () => {
-  const s = setup({ minGapMs: 60_000 });
+  const s = setup({ minGapMs: 60_000, maxExpectedWaitMs: Infinity }); // the long gap is the point; "busy" has its own tests
   await open(s.transport);
   const first = s.queue.enqueue(req(1));
   await settle();
@@ -255,11 +255,14 @@ test("a booking check that cannot be made refuses with retry advice (the message
   assert.equal(s.transport.sent.length, 0);
 });
 
-test("a send that never answers is given up after the call timeout", async () => {
+test("a send that never answers is given up after the call timeout, as UNKNOWN: not a failure, not retryable, still counted for the day", async () => {
   const s = setup({ callTimeoutMs: 50, minGapMs: 1_000 });
   await open(s.transport);
   s.transport.sendText = () => new Promise(() => {});
   const r = await s.queue.enqueue(req(1));
-  assert.ok(!r.ok && r.reason === "send-failed" && r.retryable);
-  assert.equal(s.queue.consecutiveFailures, 1);
+  assert.deepEqual(r, { ok: false, reason: "unknown-delivery", retryable: false });
+  assert.equal(s.queue.consecutiveFailures, 0, "no answer is not a failed send");
+  assert.deepEqual(s.failureCounts, []);
+  assert.equal(await s.kv.getInt(kvKeys.sent(INF, istDate(s.clock.now()))), 1, "it may have gone out, so its place in the day stays taken");
+  assert.deepEqual(s.errors, ["send-timeout"]);
 });

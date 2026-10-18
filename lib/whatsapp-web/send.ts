@@ -23,6 +23,16 @@ export interface WhatsAppWebSendRequest {
   bookingId: string;
   /** Idempotency key, for example `${bookingId}:${template}`: a repeat while the first is queued or just done returns the same result. */
   key: string;
+  /**
+   * Which booking message this is (the template key: "booking-confirmation", "reminder-24h", ...). The booking check uses it: a
+   * reminder or a confirmation is not sent for a booking that was cancelled meanwhile, a cancellation notice is.
+   */
+  kind?: string;
+  /**
+   * Epoch milliseconds after which the message is no longer worth sending (a 15-minute reminder after the session started). Checked
+   * again immediately before the actual send; a message past it is dropped with reason "expired" and never sent.
+   */
+  deadlineAtMs?: number;
 }
 
 /**

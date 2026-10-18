@@ -1,7 +1,7 @@
 import { EncryptedAuthState } from "../lib/whatsapp-web/auth-state";
 import type { WhatsAppQrConfig } from "../lib/whatsapp-web/config";
 import { kvKeys, QR_TTL_MS, type EphemeralKv } from "../lib/whatsapp-web/kv";
-import { realClock, SendQueue, type Clock, type QueuedSend } from "../lib/whatsapp-web/send-queue";
+import { realClock, SendQueue, type Clock, type GuardAnswer, type QueuedSend } from "../lib/whatsapp-web/send-queue";
 import { SELF_TEST_BOOKING_ID, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "../lib/whatsapp-web/send";
 import type { SessionRepo, SessionRow } from "../lib/whatsapp-web/session-repo";
 import type {
@@ -41,6 +41,12 @@ export const REPLACED_MIN_BACKOFF_MS = 60_000;
 export const PAIRING_WINDOW_MS = 5 * 60_000;
 export const HEARTBEAT_TTL_MS = 15_000;
 export const SHUTDOWN_BUDGET_MS = 8_000;
+/**
+ * How many worker jobs one linked number may hold at the same time. The message and reminder workers run a few jobs at once and each
+ * send waits in the number's queue at a fixed gap; without a cap a group session's reminders would occupy every slot (other
+ * influencers' messages included). A job beyond the cap is refused at once ("busy", retryable) and the message goes the next way.
+ */
+export const MAX_JOBS_PER_SESSION = 2;
 
 export type ManagerAlertKind = "logged-out" | "suspended";
 
@@ -52,7 +58,7 @@ export interface ManagerDeps {
   clock?: Clock;
   transportFactory: WhatsAppWebTransportFactory;
   /** A real booking of this influencer with this number? (lib/whatsapp-web/booking-guard.ts) */
-  guard: (influencerId: string, req: QueuedSend) => Promise<boolean>;
+  guard: (influencerId: string, req: QueuedSend) => Promise<GuardAnswer>;
   /** Tell the influencer something happened (an e-mail through the account-email path). Failures are logged, never thrown. */
   notify: (influencerId: string, kind: ManagerAlertKind, detail: string) => Promise<void>;
   /** The delivery state of a message this number sent. */
@@ -85,6 +91,8 @@ interface Live {
   /** The number linked on this device (from the database, then from the open socket). */
   phoneE164: string | null;
   statusKnown: SessionRow["status"];
+  /** Jobs inside `send()` right now (see MAX_JOBS_PER_SESSION). */
+  activeSends: number;
   /** Database writes and event handlers of one session run one after the other. */
   chain: Promise<void>;
 }
@@ -153,7 +161,13 @@ export class WhatsAppWebManager {
     if (!live || live.phase === "stopping") return { ok: false, reason: "not-linked", retryable: false };
     if (live.queue.tripped) return { ok: false, reason: "circuit-open", retryable: false };
     if (live.phase !== "open") return { ok: false, reason: "not-connected", retryable: true };
-    return live.queue.enqueue({ toE164: req.toE164, text: req.text, bookingId: req.bookingId, key: req.key });
+    if (live.activeSends >= MAX_JOBS_PER_SESSION) return { ok: false, reason: "busy", retryable: true };
+    live.activeSends += 1;
+    try {
+      return await live.queue.enqueue({ toE164: req.toE164, text: req.text, bookingId: req.bookingId, key: req.key, kind: req.kind, deadlineAtMs: req.deadlineAtMs });
+    } finally {
+      live.activeSends -= 1;
+    }
   }
 
   // ---- the reconcile loop --------------------------------------------------------------------------------------------------
@@ -287,6 +301,7 @@ export class WhatsAppWebManager {
       linkedAt: row.linkedAt,
       phoneE164: row.phoneE164,
       statusKnown: row.status,
+      activeSends: 0,
       chain: Promise.resolve(),
       queue: new SendQueue({
         influencerId: id,

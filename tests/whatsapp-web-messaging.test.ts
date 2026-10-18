@@ -7,7 +7,7 @@ import { rearmMessage, sendMessageForBooking, type MessagingDeps } from "../lib/
 import type { SendResult } from "../lib/sms";
 import { createDeliveryHandler } from "../lib/whatsapp-web/delivery";
 import { setActiveSender, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "../lib/whatsapp-web/send";
-import { harness, settle, want, type Harness } from "./helpers/whatsapp-web";
+import { harness, ManualClock, settle, want, type Harness } from "./helpers/whatsapp-web";
 
 // The message path with the optional QR-linked WhatsApp as the first channel: which channel carries each message, that a retry never
 // sends twice, what is recorded, and one end-to-end pass through the real manager with the scriptable fake transport. The official
@@ -249,8 +249,9 @@ test("every refusal of the linked number, retryable or not, falls straight throu
     assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent", reason);
     assert.deepEqual(f.calls, ["qr", "whatsapp"], `${reason}: one try, then the next channel at once`);
     const web = await row(id, "WHATSAPP_WEB");
-    assert.equal(web?.status, "PENDING");
-    assert.equal(web?.error, `whatsapp-web: ${reason}`);
+    assert.equal(web?.status, "FAILED", "not a false 'pending' in the Messages view");
+    assert.match(web?.error ?? "", /; sent another way\.$/);
+    assert.ok(!/in-flight/.test(web?.error ?? ""));
     assert.equal((await row(id, "WHATSAPP"))?.status, "SENT", "the channel that delivered is the one recorded as SENT");
   }
 });
@@ -265,7 +266,8 @@ test("a sender that throws is a refusal; with the official connection down too, 
   assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
   assert.deepEqual(f.calls, ["qr", "whatsapp", "sms"]);
   assert.equal((await row(id, "SMS"))?.status, "SENT");
-  assert.equal((await row(id, "WHATSAPP_WEB"))?.error, "whatsapp-web: send-error");
+  assert.equal((await row(id, "WHATSAPP_WEB"))?.status, "FAILED");
+  assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /could not send it; sent another way/);
 });
 
 test("every channel failing is a retryable failure; the retry tries the linked number again and, when it works this time, sends once", { skip }, async () => {
@@ -282,6 +284,71 @@ test("every channel failing is a retryable failure; the retry tries the linked n
   assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
   assert.deepEqual(f.calls, ["qr"], "the second attempt went through the linked number and stopped there");
   assert.equal((await row(id, "WHATSAPP_WEB"))?.status, "SENT");
+});
+
+// ---- waiting, deadlines and unknown outcomes ----------------------------------------------------------------------------------
+
+test("each message goes to the queue with its kind and its deadline: a 15-minute reminder until the session starts, a 24-hour one until 12 h before, the rest 30 minutes", { skip }, async () => {
+  const id = await booking();
+  const startOf = (await prisma.booking.findUniqueOrThrow({ where: { id }, select: { session: { select: { startTime: true } } } })).session.startTime.getTime();
+  for (const template of ["reminder-15m", "reminder-24h", "booking-confirmation"]) {
+    const f = fakes();
+    const before = Date.now();
+    await sendMessageForBooking(id, template, f.deps);
+    const sent = f.qrSends[0];
+    assert.equal(sent.kind, template);
+    if (template === "reminder-15m") assert.equal(sent.deadlineAtMs, startOf);
+    else if (template === "reminder-24h") assert.equal(sent.deadlineAtMs, startOf - 12 * 3_600_000);
+    else assert.ok(sent.deadlineAtMs! >= before + 30 * 60_000 && sent.deadlineAtMs! <= Date.now() + 30 * 60_000);
+    await prisma.message.deleteMany({ where: { bookingId: id } });
+  }
+});
+
+test("a reminder that waited past its time is dropped: nothing is sent anywhere, no row is left", { skip }, async () => {
+  for (const template of ["reminder-15m", "reminder-24h"]) {
+    const id = await booking();
+    const f = fakes();
+    f.ctl.qr = () => ({ ok: false, reason: "expired", retryable: false });
+    assert.equal(await sendMessageForBooking(id, template, f.deps), "skipped", template);
+    assert.deepEqual(f.calls, ["qr"], "no official WhatsApp, no SMS");
+    assert.equal(await row(id, "WHATSAPP_WEB", template), null);
+  }
+});
+
+test("a booking cancelled, failed or erased while its message waited gets nothing, on any channel", { skip }, async () => {
+  const id = await booking();
+  const f = fakes();
+  f.ctl.qr = () => ({ ok: false, reason: "not-sendable", retryable: false });
+  assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "skipped");
+  assert.deepEqual(f.calls, ["qr"]);
+  assert.equal(await row(id, "WHATSAPP_WEB"), null);
+  assert.equal(await row(id, "WHATSAPP"), null);
+});
+
+test("a confirmation that waited too long still goes out, by the next channel", { skip }, async () => {
+  const id = await booking();
+  const f = fakes();
+  f.ctl.qr = () => ({ ok: false, reason: "expired", retryable: false });
+  assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
+  assert.deepEqual(f.calls, ["qr", "whatsapp"]);
+  assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /^Too late to send from the linked number; sent another way\.$/);
+});
+
+test("a send that gets no answer in time is UNKNOWN: recorded as sent but not confirmed, never repeated, never sent another way", { skip }, async () => {
+  const id = await booking();
+  const f = fakes();
+  f.ctl.qr = () => ({ ok: false, reason: "unknown-delivery", retryable: false });
+  assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "sent");
+  assert.deepEqual(f.calls, ["qr"], "no official WhatsApp, no SMS");
+  const r = await row(id, "WHATSAPP_WEB");
+  assert.equal(r?.status, "SENT");
+  assert.equal(r?.error, "unknown-delivery");
+  assert.equal(r?.providerMessageId, null);
+  assert.equal(await row(id, "WHATSAPP"), null);
+  assert.equal(await row(id, "SMS"), null);
+  // A retry, or the repair job coming round again, finds it delivered-or-unknown and stops.
+  assert.equal(await sendMessageForBooking(id, "booking-confirmation", f.deps), "already-sent");
+  assert.deepEqual(f.calls, ["qr"]);
 });
 
 // ---- idempotency ---------------------------------------------------------------------------------------------------------------
@@ -351,7 +418,7 @@ async function openNumber(h: Harness) {
 }
 
 test("end to end: the real manager with the fake transport carries a booking message, and its delivery receipts update the row", { skip, timeout: 120_000 }, async () => {
-  const h = harness({ config: { minGapMs: 0 } }); // the spacing needs the hand-moved clock; it is tested in whatsapp-web-send-queue.test.ts
+  const h = harness({ config: { minGapMs: 0 }, clock: new ManualClock(Date.now()) }); // the deadlines are real-time, so the hand-moved clock starts now; // the spacing needs the hand-moved clock; it is tested in whatsapp-web-send-queue.test.ts
   const t = await openNumber(h);
   setActiveSender({ isReady: (id) => h.manager.isReady(id), send: (req) => h.manager.send(req) });
   try {
@@ -394,7 +461,7 @@ test("end to end: the real manager with the fake transport carries a booking mes
 });
 
 test("end to end: the number is refused by the queue (no real booking for it), so the official connection carries the message", { skip, timeout: 120_000 }, async () => {
-  const h = harness();
+  const h = harness({ clock: new ManualClock(Date.now()) });
   const t = await openNumber(h);
   setActiveSender({ isReady: (id) => h.manager.isReady(id), send: (req) => h.manager.send(req) });
   try {
@@ -406,7 +473,7 @@ test("end to end: the number is refused by the queue (no real booking for it), s
     assert.equal(await sendMessageForBooking(id, "booking-confirmation", rest), "sent");
     assert.equal(t.sent.length, 0);
     assert.deepEqual(f.calls, ["whatsapp"]);
-    assert.equal((await row(id, "WHATSAPP_WEB"))?.error, "whatsapp-web: no-booking");
+    assert.match((await row(id, "WHATSAPP_WEB"))?.error ?? "", /No matching booking for the linked number; sent another way/);
   } finally {
     setActiveSender(null);
     await h.manager.shutdown();

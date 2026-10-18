@@ -551,7 +551,8 @@ test("send: the daily cap and the spacing configured for the platform are applie
   const times: number[] = [];
   const real = t.sendText.bind(t);
   t.sendText = async (to, text) => (times.push(h.clock.now()), real(to, text));
-  const out = await h.clock.run(Promise.all([1, 2, 3].map((n) => h.manager.send(msg(n)))));
+  const first = await h.clock.run(Promise.all([1, 2].map((n) => h.manager.send(msg(n)))));
+  const out = [...first, await h.clock.run(h.manager.send(msg(3)))];
   assert.deepEqual(out.map((r) => (r.ok ? "ok" : r.reason)), ["ok", "ok", "daily-cap"]);
   assert.equal(times[1] - times[0], 7_000);
   await h.manager.shutdown();

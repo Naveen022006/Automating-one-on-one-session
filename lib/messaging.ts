@@ -15,6 +15,7 @@ import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 import { WhatsAppNotConnectedError, markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
 import { readQrConfig } from "@/lib/whatsapp-web/config";
+import { isReminderTemplate, webSendDeadline } from "@/lib/whatsapp-web/deadline";
 import { whatsAppWebText } from "@/lib/whatsapp-web/messages";
 import { isWhatsAppWebReady, sendWhatsAppWebText, type WhatsAppWebSendRequest, type WhatsAppWebSendResult } from "@/lib/whatsapp-web/send";
 import { statusesThatMayAdvanceTo, type WhatsAppStatusUpdate } from "@/lib/whatsapp-webhook";
@@ -96,6 +97,43 @@ const defaultDeps: MessagingDeps = {
 
 /** The marker a QR send leaves on its row between "handed to the queue" and "outcome recorded". A retry that finds it must not send again. */
 const QR_IN_FLIGHT = "in-flight";
+/**
+ * The error text of a linked-number row whose send got no answer in time (the message may still arrive). The row is SENT with this
+ * text and no provider id: nothing sends it another way (it could arrive twice), and the Messages view says "not confirmed".
+ */
+export const QR_UNKNOWN_DELIVERY = "unknown-delivery";
+
+/** What the influencer reads on a linked-number row that was not sent from that number (the message went the next way). */
+function describeWebRefusal(reason: string): string {
+  switch (reason) {
+    case "busy":
+    case "queue-full":
+      return "The linked number had too many messages waiting";
+    case "expired":
+      return "Too late to send from the linked number";
+    case "daily-cap":
+      return "The linked number reached its daily limit";
+    case "circuit-open":
+      return "Sending from the linked number is paused";
+    case "not-on-whatsapp":
+      return "This customer's number is not on WhatsApp";
+    case "no-booking":
+      return "No matching booking for the linked number";
+    case "not-connected":
+    case "not-linked":
+    case "manager-not-running":
+      return "The linked number was not connected";
+    default:
+      return "The linked number could not send it";
+  }
+}
+
+type WebOutcome =
+  | { kind: "sent"; providerMessageId: string }
+  /** Handed over, but no answer in time: it may still arrive. Nothing else may send it. */
+  | { kind: "unknown" }
+  /** Not wanted any more (a reminder past its time, a booking cancelled while waiting): send nothing, anywhere. */
+  | { kind: "skip" };
 
 /** E.164 as WhatsApp numbers are written: a plus sign, a country code that does not start with 0, up to 15 digits in all. */
 const E164 = /^\+[1-9]\d{7,14}$/;
@@ -103,7 +141,9 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 /**
  * The first route for a customer message: the influencer's own QR-linked WhatsApp, when it is switched on, linked and connected right
  * now. Returns the provider message id when the text was handed to WhatsApp, or null to carry on with the official connection, SMS
- * and e-mail (every refusal, retryable or not, ends the same way: the next channel, immediately).
+ * and e-mail (a refusal, retryable or not, ends that way: the next channel, immediately). Three answers are not "carry on":
+ * `unknown` (the send got no answer in time and may still arrive), and `skip` (a reminder that waited past its time, or a booking
+ * that was cancelled, failed or erased while the message waited): nothing is sent another way.
  *
  * Never sends twice: the row for (booking, WHATSAPP_WEB, template) is marked in flight BEFORE the send and holds the outcome after, and
  * a retry that finds the in-flight mark (the process died between the two, so nobody knows whether it went out) skips this route.
@@ -112,8 +152,8 @@ const E164 = /^\+[1-9]\d{7,14}$/;
  */
 async function tryWhatsAppWeb(
   deps: MessagingDeps,
-  b: { bookingId: string; influencerId: string; to: string; template: string; context: MessageContext },
-): Promise<{ providerMessageId: string } | null> {
+  b: { bookingId: string; influencerId: string; to: string; template: string; context: MessageContext; sessionStart: Date },
+): Promise<WebOutcome | null> {
   const { bookingId, influencerId, to, template } = b;
   if (!readQrConfig().enabled || !deps.qr.isReady(influencerId)) return null;
   if (!E164.test(to)) return null;
@@ -146,16 +186,27 @@ async function tryWhatsAppWeb(
   const key = `${bookingId}:${template}:${earlier ? earlier.updatedAt.getTime() : 0}`;
   let result: WhatsAppWebSendResult;
   try {
-    result = await deps.qr.send({ influencerId, toE164: to, text, bookingId, key });
+    result = await deps.qr.send({ influencerId, toE164: to, text, bookingId, key, kind: template, deadlineAtMs: webSendDeadline(template, b.sessionStart.getTime(), Date.now()) });
   } catch {
     result = { ok: false, reason: "send-error", retryable: true };
   }
-  if (!result.ok) {
-    await prisma.message.update({ where, data: { error: `whatsapp-web: ${result.reason}`.slice(0, 500) } });
-    console.info(`[send-message] booking ${bookingId}: not sent from the linked WhatsApp (${result.reason}); trying the next channel`);
-    return null;
+  if (result.ok) return { kind: "sent", providerMessageId: result.providerMessageId };
+
+  if (result.reason === "unknown-delivery") {
+    // SENT without a provider id: the dedupe stops every other channel, the Messages view shows it as "not confirmed".
+    await prisma.message.update({ where, data: { status: "SENT", error: QR_UNKNOWN_DELIVERY, sentAt: new Date() } });
+    console.warn(`[send-message] booking ${bookingId}: the linked WhatsApp gave no answer in time for "${template}"; it may still arrive, so it is not sent another way`);
+    return { kind: "unknown" };
   }
-  return { providerMessageId: result.providerMessageId };
+  const lateReminder = result.reason === "expired" && isReminderTemplate(template);
+  if (lateReminder || result.reason === "not-sendable") {
+    await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template } }); // nothing was sent: leave no row, like any skipped message
+    console.info(`[send-message] booking ${bookingId}: "${template}" dropped (${result.reason}); not sent anywhere`);
+    return { kind: "skip" };
+  }
+  await prisma.message.update({ where, data: { status: "FAILED", error: `${describeWebRefusal(result.reason)}; sent another way.`.slice(0, 500) } });
+  console.info(`[send-message] booking ${bookingId}: not sent from the linked WhatsApp (${result.reason}); trying the next channel`);
+  return null;
 }
 
 function errText(e: unknown): string {
@@ -233,11 +284,13 @@ export async function sendMessageForBooking(
 
   // First choice, only when the influencer linked their own number by QR code and it is connected right now. Any refusal falls
   // through to the official connection below as if this route did not exist.
-  const viaLinkedNumber = await tryWhatsAppWeb(deps, { bookingId, influencerId: influencer.id, to, template, context });
-  if (viaLinkedNumber) {
+  const viaLinkedNumber = await tryWhatsAppWeb(deps, { bookingId, influencerId: influencer.id, to, template, context, sessionStart: session.startTime });
+  if (viaLinkedNumber?.kind === "sent") {
     await recordSent(bookingId, "WHATSAPP_WEB", template, viaLinkedNumber.providerMessageId);
     return "sent";
   }
+  if (viaLinkedNumber?.kind === "unknown") return "sent";
+  if (viaLinkedNumber?.kind === "skip") return "skipped";
 
   // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
   let channel: "WHATSAPP" | "SMS" = "WHATSAPP";
