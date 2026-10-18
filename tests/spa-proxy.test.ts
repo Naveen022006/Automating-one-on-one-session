@@ -50,7 +50,7 @@ test("every page path is rewritten to the internal shell route, with the request
     ["/dashboard/sessions", "/spa-shell/dashboard/sessions"], ["/onboarding", "/spa-shell/onboarding"], ["/dashboard/nope", "/spa-shell/dashboard/nope"],
     ["/admin/login", "/spa-shell/admin/login"], ["/admin/payments", "/spa-shell/admin/payments"], ["/admin/nope", "/spa-shell/admin/nope"],
     // Customer portal and finance report (doc/13): pages like any other.
-    ["/bookings", "/spa-shell/bookings"], ["/bookings/tok", "/spa-shell/bookings/tok"], ["/admin/reports", "/spa-shell/admin/reports"],
+    ["/bookings", "/spa-shell/bookings"], ["/bookings/tok", "/spa-shell/bookings/tok"], ["/admin/reports", "/spa-shell/admin/reports"], ["/admin/money", "/spa-shell/admin/money"],
   ]) {
     const res = await proxy(req(path, cookies));
     assert.ok(isRewriteTo(res, target), `${path} -> ${res.headers.get("x-middleware-rewrite")}`);
@@ -118,6 +118,9 @@ test("the redirects that stay on the server still run first", async () => {
   const reports = await proxy(req("/admin/reports"));
   assert.equal(reports.status, 307);
   assert.equal(new URL(reports.headers.get("location")!).pathname + new URL(reports.headers.get("location")!).search, "/admin/login?next=%2Fadmin%2Freports");
+  const money = await proxy(req("/admin/money?type=out&influencerId=abc"));
+  assert.equal(money.status, 307);
+  assert.equal(new URL(money.headers.get("location")!).pathname + new URL(money.headers.get("location")!).search, "/admin/login?next=%2Fadmin%2Fmoney%3Ftype%3Dout%26influencerId%3Dabc");
   assert.ok(isRewriteTo(await proxy(req("/bookings")), "/spa-shell/bookings"), "the customer pages need no cookie");
   assert.equal(new URL(admin.headers.get("location")!).search, "?next=%2Fadmin%2Fpayments%3Fview%3Dmismatch");
   assert.ok(isRewriteTo(await proxy(req("/admin/login")), "/spa-shell/admin/login"), "the admin login page itself is not redirected");

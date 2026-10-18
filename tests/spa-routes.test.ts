@@ -28,7 +28,7 @@ test("every route in the table matches its own path, with the right id and statu
     assert.equal(m?.status, 200);
     if (route.head === "static") assert.ok(route.title, `${route.id}: a static head needs a title`);
   }
-  assert.equal(SPA_ROUTES.length, 39, "36 screens of the migration plan + customer-bookings, customer-portal and admin-reports (doc/13); update this number deliberately");
+  assert.equal(SPA_ROUTES.length, 40, "36 screens of the migration plan + customer-bookings, customer-portal and admin-reports (doc/13) + admin-money (the Money ledger, doc/12); update this number deliberately");
 });
 
 test("path parameters are returned raw", () => {
@@ -69,6 +69,9 @@ test("a static first segment beats the /:slug catch-all, as in Next's own routin
   assert.equal(idOf("/bookings/a/b"), "not-found");
   assert.equal(idOf("/admin/reports"), "admin-reports");
   assert.equal(idOf("/admin/reports/x"), "admin-not-found");
+  assert.equal(idOf("/admin/money"), "admin-money");
+  assert.equal(idOf("/admin/money/"), "admin-money", "a trailing slash is ignored");
+  assert.equal(idOf("/admin/money/x"), "admin-not-found");
   assert.equal(idOf("/demo/book"), "book");
   assert.equal(idOf("/demo"), "profile");
   assert.equal(idOf("/terms/"), "terms", "a trailing slash is ignored");

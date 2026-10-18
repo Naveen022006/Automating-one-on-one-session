@@ -63,7 +63,7 @@ export function PayoutsView({ data, busy }: { data: Jsonify<AdminPayoutsView>; b
               </thead>
               <tbody>
                 {rows.map((p) => (
-                  <tr key={p.id}>
+                  <tr key={p.id} id={`payout-${p.id}`}>
                     <td data-label="Created">{formatDate(new Date(p.createdAt), { weekday: false })}</td>
                     <td data-label="Influencer">
                       <AppLink href={`/admin/influencers/${p.influencer.id}`}>{p.influencer.name}</AppLink>

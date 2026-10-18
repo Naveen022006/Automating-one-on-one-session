@@ -88,6 +88,7 @@ export const SPA_ROUTES = [
   { id: "admin-influencers", path: "/admin/influencers", robots: "noindex,nofollow", template: "admin", title: "Influencers", head: "static" },
   { id: "admin-influencer", path: "/admin/influencers/:id", robots: "noindex,nofollow", template: "admin", title: "Influencer", head: "static" },
   { id: "admin-payments", path: "/admin/payments", robots: "noindex,nofollow", template: "admin", title: "Payments", head: "static" },
+  { id: "admin-money", path: "/admin/money", robots: "noindex,nofollow", template: "admin", title: "Money", head: "static" },
   { id: "admin-payouts", path: "/admin/payouts", robots: "noindex,nofollow", template: "admin", title: "Payouts", head: "static" },
   { id: "admin-reports", path: "/admin/reports", robots: "noindex,nofollow", template: "admin", title: "Reports", head: "static" },
   { id: "admin-bookings", path: "/admin/bookings", robots: "noindex,nofollow", template: "admin", title: "Bookings", head: "static" },
