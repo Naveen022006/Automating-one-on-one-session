@@ -1,9 +1,10 @@
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { sendCustomerEmail } from "@/lib/customer-email";
+import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
 import { createMessage, markMessageFailed } from "@/lib/messages";
 import { buildSelfServiceUrl, signBookingCalendarToken } from "@/lib/self-service";
-import { transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
+import { EmailDisabledError, transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
 import { bookingEmail, type BookingEmailKind } from "@/lib/email/templates";
 import type { RenderedEmail } from "@/lib/email/layout";
 
@@ -40,7 +41,11 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailSendResult> 
   return currentSender()(email);
 }
 
-/** Account emails (verify, reset, alerts). Best-effort: returns false instead of throwing. */
+/**
+ * Account emails (verify, reset, alerts). Best-effort: returns false instead of throwing.
+ * With EMAIL_PROVIDER=none the platform sends no e-mail: this is a logged no-op (one line with the tag, never the address or the
+ * content) that returns false, "not sent". Every caller must treat false as "the person was not told by e-mail".
+ */
 export async function sendAccountEmail(
   to: { email: string; name?: string },
   rendered: RenderedEmail,
@@ -50,8 +55,36 @@ export async function sendAccountEmail(
     await sendEmail({ to, subject: rendered.subject, html: rendered.html, text: rendered.text, tag });
     return true;
   } catch (e) {
+    if (e instanceof EmailDisabledError) {
+      console.log(`[email:${tag}] not sent: the platform sends no e-mail (EMAIL_PROVIDER=none)`);
+      return false;
+    }
     console.error(`[email:${tag}] failed`, e instanceof Error ? e.message : e);
     return false;
+  }
+}
+
+/** What the Message row of this booking and template said before an attempt, when it recorded a sent e-mail. */
+interface PriorSent {
+  id: string;
+  status: "SENT" | "DELIVERED" | "READ" | string;
+  sentAt: Date | null;
+  providerMessageId: string | null;
+}
+
+/** The reason on the row of an e-mail that had no way to go out at all (no Gmail, and EMAIL_PROVIDER=none). */
+export const NO_EMAIL_ROUTE_REASON = "Not sent: no Gmail connection and this site sends no e-mail. The customer is reached by WhatsApp or SMS where they allowed it.";
+
+/** Puts a row that recorded a sent e-mail back as it was after an attempt that did not send (best effort, never throws). */
+async function restoreSentRow(messageId: string | null, prior: PriorSent): Promise<void> {
+  if (!messageId) return;
+  try {
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { status: prior.status as "SENT" | "DELIVERED" | "READ", error: null, sentAt: prior.sentAt, providerMessageId: prior.providerMessageId },
+    });
+  } catch (e) {
+    console.error("[email:customer] could not restore the record of an earlier sent e-mail", e instanceof Error ? e.message : e);
   }
 }
 
@@ -72,6 +105,7 @@ export async function sendBookingEmail(
   opts: { force?: boolean; refundNote?: string | null } = {},
 ): Promise<void> {
   let messageId: string | null = null;
+  let prior: PriorSent | null = null;
   try {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
@@ -126,6 +160,12 @@ export async function sendBookingEmail(
 
     // Record 'queued' first, then flip to 'sent' once the provider accepts, so a provider error leaves a
     // 'failed' row (recording that we tried) rather than no trace at all.
+    // A row that already records a SENT e-mail (a forced resend, a second reschedule) is the record of something that happened: whatever this
+    // attempt does, it is put back as it was and never downgraded (createMessage below flips it to "queued" for the time of the attempt).
+    prior = await prisma.message.findFirst({
+      where: { bookingId, channel: "EMAIL", template: kind, status: { in: ["SENT", "DELIVERED", "READ"] } },
+      select: { id: true, status: true, sentAt: true, providerMessageId: true },
+    });
     messageId = await createMessage({ bookingId, channel: "email", template: kind, status: "queued" });
     const result = await sendCustomerEmail(influencer.id, {
       to: { email: booking.customerEmail, name: booking.customerName },
@@ -134,6 +174,16 @@ export async function sendBookingEmail(
       text: rendered.text,
       tag: kind,
     });
+    if (result.via === "none") {
+      // No e-mail route: the platform sends none, and the influencer's Gmail is not connected or just failed. Nothing was sent.
+      // Gmail tried and failed: say so on the row (the Google panel reads it to show "Gmail not working", see lib/google-tokens.ts).
+      // Gmail not in use at all: the row says so too (FAILED with the reason; the enum has no "skipped"), never left as "queued" and never
+      // deleted. An e-mail that WAS sent earlier keeps its SENT row. Either way the customer is still reached by WhatsApp or SMS.
+      if (prior) await restoreSentRow(messageId, prior);
+      else await markMessageFailed(messageId, result.fallbackReason ? `${GMAIL_FAILED_PREFIX} ${result.fallbackReason}` : NO_EMAIL_ROUTE_REASON);
+      console.log(`[email:customer] ${kind} not sent for booking ${bookingId}: ${result.fallbackReason ? "Gmail failed" : "no Gmail connection"} and the platform sends no e-mail`);
+      return;
+    }
     if (messageId) {
       await prisma.message
         .update({
@@ -144,7 +194,8 @@ export async function sendBookingEmail(
     }
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
-    await markMessageFailed(messageId, detail);
+    if (prior) await restoreSentRow(messageId, prior);
+    else await markMessageFailed(messageId, detail);
     console.error("[email:customer] failed to send booking email", detail);
   }
 }

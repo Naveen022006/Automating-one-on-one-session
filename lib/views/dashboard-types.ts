@@ -28,6 +28,31 @@ export type GoogleStatusView =
   | { state: "connected"; email: string | null; connectedAt: string; gmailSend: boolean; liveEvents?: number; gmailFailing?: boolean }
   | { state: "reconnect-needed"; email: string | null; reason: string | null; liveEvents?: number };
 
+/**
+ * The influencer's Google OAuth client as the three-step Google card shows it (doc/15). Hand-picked: the client ID is not a secret,
+ * the secret is only ever reported as "saved" and never leaves the server.
+ */
+export interface GoogleClientView {
+  /** GOOGLE_CLIENT_MODE: "own" (bring your own client), "platform" (the site's shared one) or "either". */
+  mode: "own" | "platform" | "either";
+  hasOwnClient: boolean;
+  /** The full client ID (it is not secret), or null when none is saved. */
+  clientId: string | null;
+  clientSecretSaved: boolean;
+  /** When Google last accepted the saved pair (ISO), or null. */
+  checkedAt: string | null;
+  /** The exact redirect URI the influencer adds to their client, computed on the server. */
+  redirectUri: string;
+  /** The site origin ("Authorized JavaScript origins"), with its scheme. */
+  origin: string;
+  /** The OAuth scopes to put on the consent screen: Calendar, Gmail (optional), then the two identity scopes. */
+  requiredScopes: string[];
+  /** Whether "Connect" can start: an own client is saved, or the mode lets the shared client be used. */
+  canConnect: boolean;
+  /** Which client the CURRENT connection was made with, or null when not connected. */
+  grantClient: "own" | "platform" | null;
+}
+
 /** The WhatsApp connection as the Settings card and the onboarding step show it (no ids, no tokens). */
 export interface WhatsAppView {
   displayPhone: string | null;
@@ -87,6 +112,7 @@ export interface OnboardingData {
   rules: RuleRow[];
   blocked: BlockedRow[];
   google: GoogleStatusView;
+  googleClient: GoogleClientView;
   googleOutcome: string | null;
   whatsapp: WhatsAppView | null;
   embedded: { appId: string; configId: string; graphVersion?: string; sdkUrl?: string } | null;
@@ -96,4 +122,6 @@ export interface OnboardingData {
   publicUrl: string;
   email: string;
   emailVerified: boolean;
+  /** False when the platform sends no e-mail (EMAIL_PROVIDER=none): the verify banner then says an administrator verifies accounts. */
+  emailEnabled: boolean;
 }

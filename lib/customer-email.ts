@@ -1,8 +1,9 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import type { RenderedEmail } from "@/lib/email/layout";
-import type { EmailSendResult, OutgoingEmail } from "@/lib/email/providers";
+import { EmailDisabledError, type EmailSendResult, type OutgoingEmail } from "@/lib/email/providers";
 import { GoogleReconnectError, google } from "@/lib/google";
+import type { GoogleClientKind, GoogleGrantRef } from "@/lib/google-credentials";
 import { getRefreshToken, markReconnectNeeded } from "@/lib/google-tokens";
 import { hasGmailSendScope, sendGmail, type GmailMessage } from "@/lib/gmail";
 
@@ -12,6 +13,10 @@ import { hasGmailSendScope, sendGmail, type GmailMessage } from "@/lib/gmail";
  * their address; otherwise, or if Gmail fails for any reason, it goes through the platform's email provider with the
  * influencer's address as Reply-To. A customer email is never lost because Gmail was unavailable.
  *
+ * With EMAIL_PROVIDER=none (doc/15) the platform has no provider to fall back on: the email goes out through the influencer's Gmail
+ * or not at all, and the result says `via: "none"` so the caller records that nothing was sent. Gmail uses the OAuth client the
+ * influencer's grant was issued with (their own Google client), see lib/google-credentials.ts.
+ *
  * Account emails (verify, password reset, payout notices, alerts) are the platform's own and never use this.
  */
 
@@ -20,18 +25,19 @@ export interface InfluencerMailContext {
   /** Where customer replies should go when the platform sends. */
   replyTo: string;
   /** `connectedAt`: the version of the grant read, so a dead-grant verdict cannot flag one that was renewed meanwhile. */
-  gmail: { refreshToken: string; fromEmail: string; connectedAt?: Date } | null;
+  gmail: { refreshToken: string; fromEmail: string; connectedAt?: Date; clientKind?: GoogleClientKind } | null;
 }
 
 export interface CustomerEmailDeps {
   loadContext(influencerId: string): Promise<InfluencerMailContext | null>;
-  refreshAccessToken(refreshToken: string): Promise<string>;
+  refreshAccessToken(refreshToken: string, grant: GoogleGrantRef): Promise<string>;
   sendGmail(accessToken: string, msg: GmailMessage): Promise<{ id: string }>;
   platformSend(email: OutgoingEmail): Promise<EmailSendResult>;
   onReconnectNeeded(influencerId: string, reason: string, connectedAt?: Date): Promise<void>;
 }
 
-export type CustomerEmailResult = EmailSendResult & { via: "gmail" | "platform"; fallbackReason?: string };
+/** `via: "none"`: nothing was sent (no Gmail route and no platform provider). `fallbackReason` then says why Gmail failed, when it was tried. */
+export type CustomerEmailResult = EmailSendResult & { via: "gmail" | "platform" | "none"; fallbackReason?: string };
 
 const FALLBACK_LOG_EVERY_MS = 60 * 60_000;
 const lastFallbackLog = new Map<string, number>();
@@ -58,14 +64,16 @@ async function loadContext(influencerId: string): Promise<InfluencerMailContext 
   let gmail: InfluencerMailContext["gmail"] = null;
   if (token && token.status === "ACTIVE" && hasGmailSendScope(token.scope) && token.googleEmail) {
     const lookup = await getRefreshToken(influencerId);
-    if (lookup.state === "ok") gmail = { refreshToken: lookup.refreshToken, fromEmail: token.googleEmail, connectedAt: lookup.connectedAt };
+    if (lookup.state === "ok") {
+      gmail = { refreshToken: lookup.refreshToken, fromEmail: token.googleEmail, connectedAt: lookup.connectedAt, clientKind: lookup.clientKind };
+    }
   }
   return { name: row.name, replyTo: token?.googleEmail ?? row.email, gmail };
 }
 
 const defaultDeps: CustomerEmailDeps = {
   loadContext,
-  refreshAccessToken: (t) => google.refreshAccessToken(t),
+  refreshAccessToken: (t, grant) => google.refreshAccessToken(t, grant),
   sendGmail: (token, msg) => sendGmail(token, msg),
   // Imported lazily: lib/email.ts itself sends booking emails through this module.
   platformSend: async (email) => (await import("@/lib/email")).sendEmail(email),
@@ -87,7 +95,7 @@ export async function sendCustomerEmail(
   let fallbackReason: string | undefined;
   if (ctx?.gmail) {
     try {
-      const accessToken = await deps.refreshAccessToken(ctx.gmail.refreshToken);
+      const accessToken = await deps.refreshAccessToken(ctx.gmail.refreshToken, { influencerId, clientKind: ctx.gmail.clientKind ?? "platform" });
       const { id } = await deps.sendGmail(accessToken, {
         fromName: ctx.name,
         fromEmail: ctx.gmail.fromEmail,
@@ -108,8 +116,14 @@ export async function sendCustomerEmail(
       }
     }
   }
-  const result = await deps.platformSend({ ...email, ...(replyTo ? { replyTo } : {}) });
-  return { ...result, via: "platform", ...(fallbackReason ? { fallbackReason } : {}) };
+  try {
+    const result = await deps.platformSend({ ...email, ...(replyTo ? { replyTo } : {}) });
+    return { ...result, via: "platform", ...(fallbackReason ? { fallbackReason } : {}) };
+  } catch (e) {
+    // The platform sends no e-mail (EMAIL_PROVIDER=none): not an error, just no route. Any other failure still reaches the caller.
+    if (e instanceof EmailDisabledError) return { providerMessageId: null, via: "none", ...(fallbackReason ? { fallbackReason } : {}) };
+    throw e;
+  }
 }
 
 /** Renders-and-sends helper for emails built by lib/email/templates.ts. Best effort: returns false instead of throwing. */
@@ -120,8 +134,8 @@ export async function sendCustomerRendered(
   tag: string,
 ): Promise<boolean> {
   try {
-    await sendCustomerEmail(influencerId, { to, subject: rendered.subject, html: rendered.html, text: rendered.text, tag });
-    return true;
+    const result = await sendCustomerEmail(influencerId, { to, subject: rendered.subject, html: rendered.html, text: rendered.text, tag });
+    return result.via !== "none";
   } catch (e) {
     console.error(`[email:${tag}] failed`, e instanceof Error ? e.message : e);
     return false;

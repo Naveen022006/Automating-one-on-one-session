@@ -88,14 +88,18 @@ add per-email/per-booking limits. All limits live in `lib/rate-limit/policies.ts
 
 ### Google Meet setup
 Meet links are created on the **influencer's own** Google Calendar (a service account cannot create Meet links for
-personal Gmail).
-1. In Google Cloud Console: create a project, enable the **Google Calendar API** and (unless you set
-   `GOOGLE_REQUEST_GMAIL_SEND=false`) the **Gmail API** (APIs & Services > Library; they are two separate switches),
-   configure the OAuth consent screen, and create an **OAuth client ID** (type *Web application*). Add
-   `GOOGLE_REDIRECT_URI` (e.g. `http://localhost:3000/api/google/callback`) as an authorised redirect URI. While the
-   consent screen is in *Testing*, add the influencer's Gmail as a test user; refresh tokens of Testing apps expire after
-   7 days, so publish the app (and complete verification for `calendar.events`) before going live.
-2. Fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`.
+personal Gmail). By default (`GOOGLE_CLIENT_MODE=own`) **there is no platform-wide Google app: every influencer creates
+their own Google Cloud OAuth client** and pastes its Client ID and Client Secret on their Settings page (a numbered
+guide with the exact values is in the app; the details are in `doc/15-influencer-google-credentials.md`):
+1. The influencer creates a Cloud project, enables the **Google Calendar API** (and the **Gmail API** if customer
+   e-mail should come from their Gmail), configures the OAuth consent screen (External, scopes `calendar.events`,
+   `gmail.send` (optional), `openid`, `email`), **publishes** it ("In production": no Google verification is needed for
+   their own use, and the weekly expiry of Testing mode goes away) and creates an **OAuth client ID** of type *Web
+   application* with this site's origin and the redirect URI shown on their Settings page
+   (`<APP_URL>/api/google/callback`).
+2. They paste the Client ID and Client Secret into the Settings card (**Save and check** asks Google whether the pair
+   belongs together; only an accepted pair is saved, the secret encrypted). You set nothing for this. (A shared client
+   in `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` is only used with `GOOGLE_CLIENT_MODE=platform` or `either`.)
 3. The influencer clicks **Connect Google Calendar** in onboarding or Settings. The dashboard then shows
    "Connected as <email>", or "Reconnect needed" with Google's reason if the grant is revoked; paid bookings wait as
    `PAID` and are re-queued automatically after reconnecting. By default the booking page is offline while Google is not

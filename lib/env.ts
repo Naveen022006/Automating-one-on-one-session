@@ -22,6 +22,9 @@ import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell"
  *     process carries on. Production-only strictness (https, real email provider, Razorpay keys, ...) is not
  *     enforced in development, where `.env.example` deliberately uses dev-only settings.
  *
+ * EMAIL_PROVIDER=none is NOT one of them: it is allowed in production (the platform deliberately sends no e-mail, doc/15) and
+ * produces one start-up warning saying so.
+ *
  * Settings that exist only for development (EMAIL_PROVIDER=log, MESSAGING_DRY_RUN=true, WHATSAPP_DISABLED=true,
  * READINESS_BYPASS=true, RATE_LIMIT_ENABLED=false) are refused in production, because each one silently disables
  * something that real customers depend on (emails, messages, go-live checks, abuse protection).
@@ -59,7 +62,8 @@ export interface AppConfig {
   /** Fingerprints (8 hex characters of a hash, safe to log) of the encryption keys; see keyFingerprint in lib/crypto.ts. */
   encryption: { fingerprint: string | undefined; previousFingerprint: string | undefined };
   rateLimit: { enabled: boolean; store: "auto" | "redis" | "postgres" | "memory"; multiplier: number };
-  email: { provider: "log" | "resend" | "postmark" };
+  email: { provider: "log" | "resend" | "postmark" | "none" };
+  google: { clientMode: "own" | "platform" | "either" };
   sms: { provider: "msg91" | "twilio" | "generic" };
   messagingDryRun: boolean;
   readinessBypass: boolean;
@@ -132,7 +136,8 @@ const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY: keyString.optional(),
   TOKEN_ENCRYPTION_KEY_PREVIOUS: keyString.optional(),
 
-  EMAIL_PROVIDER: lowerEnum(["log", "resend", "postmark"], "resend, postmark, log").optional(),
+  EMAIL_PROVIDER: lowerEnum(["log", "resend", "postmark", "none"], "resend, postmark, none, log").optional(),
+  GOOGLE_CLIENT_MODE: lowerEnum(["own", "platform", "either"], "own, platform, either").optional(),
   SMS_PROVIDER: lowerEnum(["msg91", "twilio", "generic"], "msg91, twilio, generic").optional(),
   RATE_LIMIT_STORE: lowerEnum(["auto", "redis", "postgres", "memory"], "auto, redis, postgres, memory").optional(),
   RATE_LIMIT_MULTIPLIER: positiveNumber.optional(),
@@ -187,7 +192,7 @@ export const KNOWN_ENV_VARS = [
   "RATE_LIMIT_STORE", "RATE_LIMIT_ENABLED", "RATE_LIMIT_MULTIPLIER", "CLIENT_IP_HEADER",
   "NEXT_PUBLIC_BRAND_NAME", "NEXT_PUBLIC_SUPPORT_EMAIL", "SPA_API_TARGET",
   "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "AUTO_REFUND_ON_CANCEL",
-  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_REQUEST_GMAIL_SEND",
+  "GOOGLE_CLIENT_MODE", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_REQUEST_GMAIL_SEND",
   "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_WEBHOOK_VERIFY_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_TEMPLATE_LANGUAGE",
   "WHATSAPP_DISABLED", "WHATSAPP_PLATFORM_FALLBACK", "WHATSAPP_REGISTRATION_PIN", "WHATSAPP_GRAPH_VERSION", "META_APP_ID", "META_APP_SECRET", "META_ES_CONFIG_ID",
   "MESSAGING_DRY_RUN", "SMS_PROVIDER", "SMS_API_KEY", "SMS_API_URL",
@@ -358,7 +363,11 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
 
     const emailProvider = parsed.EMAIL_PROVIDER ?? "log";
     if (emailProvider === "log") {
-      devOnly("EMAIL_PROVIDER", 'must be "resend" or "postmark" in production ("log" only prints emails, customers receive nothing)');
+      devOnly("EMAIL_PROVIDER", 'must be "resend", "postmark" or "none" in production ("log" only prints emails, customers receive nothing)');
+    } else if (emailProvider === "none") {
+      // Accepted on purpose (doc/15): the platform sends no e-mail of its own. Said once at start-up, because it changes what the
+      // pages may promise and who can reach whom.
+      warn("EMAIL_PROVIDER", "is none: the platform sends no e-mail. Account e-mails (verification, password reset, notices) are not delivered, so an administrator verifies accounts and creates password-reset links by hand; customer e-mail is sent only through an influencer's connected Gmail");
     } else {
       const need = emailProvider === "resend" ? "RESEND_API_KEY" : "POSTMARK_SERVER_TOKEN";
       if (!env[need]) errors.push(`${need}: is not set (EMAIL_PROVIDER=${emailProvider})`);
@@ -378,9 +387,18 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
     if (parsed.WHATSAPP_PLATFORM_FALLBACK === true) warn("WHATSAPP_PLATFORM_FALLBACK", "is true: meant for testing with the platform's own number");
     if (parsed.ENABLE_DESIGN_PAGE === true) warn("ENABLE_DESIGN_PAGE", "is true: the /design catalogue is publicly reachable");
     if (parsed.TOKEN_ENCRYPTION_KEY_PREVIOUS) warn("TOKEN_ENCRYPTION_KEY_PREVIOUS", "is set: a key rotation is in progress. Run keys:rotate and keys:verify, then remove it (doc/08-deployment.md)");
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REDIRECT_URI) {
-      warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REDIRECT_URI", "are not all set: influencers cannot connect Google Calendar, so no Meet links");
-    } else if (parsed.APP_URL && hostOf(env.GOOGLE_REDIRECT_URI) !== hostOf(parsed.APP_URL)) {
+    // Google credentials (doc/15). Mode "own" (the default): every influencer brings their own Google client, so there is nothing to
+    // configure here. The shared pair is only needed in modes "platform" and "either".
+    const googleMode = parsed.GOOGLE_CLIENT_MODE ?? "own";
+    const pairSet = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+    if (googleMode === "platform" && !pairSet) {
+      warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are not both set while GOOGLE_CLIENT_MODE=platform: influencers cannot connect Google Calendar, so no Meet links");
+    } else if (googleMode === "either" && !pairSet) {
+      warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are not both set while GOOGLE_CLIENT_MODE=either: only influencers with their own Google client can connect, and connections made earlier with the shared client are flagged \"reconnect needed\" (the admin Health page counts them)");
+    } else if (googleMode === "own" && (env.GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_SECRET)) {
+      warn("GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET", "are set but GOOGLE_CLIENT_MODE=own: new connections use each influencer's own Google client and ignore them (only grants made earlier with the shared client keep using it)");
+    }
+    if (env.GOOGLE_REDIRECT_URI && parsed.APP_URL && hostOf(env.GOOGLE_REDIRECT_URI) !== hostOf(parsed.APP_URL)) {
       warn("GOOGLE_REDIRECT_URI", "is on a different host than APP_URL");
     }
     const sms = parsed.SMS_PROVIDER ?? "generic";
@@ -422,6 +440,7 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
         multiplier: parsed.RATE_LIMIT_MULTIPLIER ?? 1,
       },
       email: { provider: parsed.EMAIL_PROVIDER ?? "log" },
+      google: { clientMode: parsed.GOOGLE_CLIENT_MODE ?? "own" },
       sms: { provider: parsed.SMS_PROVIDER ?? "generic" },
       messagingDryRun: parsed.MESSAGING_DRY_RUN === true,
       readinessBypass: parsed.READINESS_BYPASS === true && !production,

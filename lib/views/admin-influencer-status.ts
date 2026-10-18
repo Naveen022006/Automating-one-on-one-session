@@ -1,5 +1,6 @@
 import { accountStatusOf, type AccountStatus } from "@/lib/admin/data";
 import { prisma } from "@/lib/db";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { approvalRequired } from "@/lib/readiness";
 
 /**
@@ -15,6 +16,8 @@ export interface AdminInfluencerStatusView {
   approval: { required: boolean; at: Date | null; byEmail: string | null };
   /** Shown in the confirm dialog: what a suspension does NOT touch. */
   impact: { upcomingPaidBookings: number; pendingPayouts: number };
+  /** False when the platform sends no e-mail (EMAIL_PROVIDER=none): the panel must not say the influencer "is emailed". */
+  emailEnabled: boolean;
 }
 
 /** Null when there is no such influencer (the caller answers 404). */
@@ -36,5 +39,6 @@ export async function loadInfluencerStatusView(id: string, now = new Date()): Pr
     suspension: row.suspendedAt ? { at: row.suspendedAt, reason: row.suspendedReason ?? "", byEmail: row.suspendedByEmail ?? "" } : null,
     approval: { required, at: row.approvedAt, byEmail: row.approvedByEmail },
     impact: { upcomingPaidBookings, pendingPayouts },
+    emailEnabled: platformEmailEnabled(),
   };
 }

@@ -44,6 +44,18 @@ test("required connections: defaults, configuration and the local bypass", () =>
   assert.deepEqual(requiredConnections(env({ READINESS_BYPASS: "true", NODE_ENV: "production" })), ["google", "payout"], "bypass is ignored in production");
 });
 
+test("the Gmail item's advice depends on whether the site sends e-mail and on whether Google is connected without the Gmail permission", () => {
+  const detail = (patch: Partial<ReadinessInput>, emailEnabled: boolean) =>
+    evaluateReadiness({ ...none, ...patch }, ["google"], { approvalRequired: false, emailEnabled }).items.find((i) => i.key === "gmail")!.detail;
+  assert.equal(detail({ google: "none" }, true), "Allow it when you connect Google. Without it customer e-mails come from our address with your e-mail as Reply-To.");
+  assert.equal(detail({ google: "none" }, false), "Allow it when you connect Google. Without it customers are messaged by WhatsApp or SMS only and get no e-mail.");
+  assert.equal(detail({ google: "active", gmailSend: false }, false), "The Gmail permission was not allowed: connect Google again and leave it ticked. Without it customers are messaged by WhatsApp or SMS only and get no e-mail.");
+  assert.match(detail({ google: "active", gmailSend: false }, true), /^The Gmail permission was not allowed.*from our address/);
+  assert.match(detail({ google: "reconnect", gmailSend: true }, true), /^Reconnect Google first/);
+  assert.equal(detail({ google: "active", gmailSend: true }, false), "Confirmations come from your own address.");
+  assert.ok(!detail({ google: "none" }, false).includes("may get no e-mail at all"));
+});
+
 test("by default Google and payout details block going live; WhatsApp and Gmail only recommend", () => {
   const r = evaluateReadiness(none, ["google", "payout"]);
   assert.equal(r.ready, false);

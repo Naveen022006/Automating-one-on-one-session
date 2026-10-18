@@ -152,7 +152,8 @@ const detail = (over: Partial<Jsonify<AdminInfluencerView>> = {}): Jsonify<Admin
     { key: "google", label: "Connect Google Calendar", state: "attention", required: true },
     { key: "whatsapp", label: "Connect your WhatsApp number", state: "todo", required: false },
   ],
-  connections: { google: { state: "active", email: "asha@gmail.example" }, whatsapp: { text: "Not connected" }, gmailSend: false },
+  connections: { google: { state: "active", email: "asha@gmail.example" }, whatsapp: { text: "Not connected" }, gmailSend: false, googleClientSaved: true },
+  emailEnabled: true,
   payoutAccount: { method: "BANK", accountHolderName: "Asha Rao", bankName: "HDFC Bank", ifsc: "HDFC0001234", accountNumber: "XXXXXXXX9012", upiId: null, status: "VERIFIED", rejectionReason: null },
   fee: { overrideBps: 1000, defaultBps: 0, feeBps: 1000, feePercentText: "10%" },
   verified: true,
@@ -170,6 +171,7 @@ const security = (over: Partial<Jsonify<AdminSecurityView>> = {}): Jsonify<Admin
   required: true,
   fourEyes: true,
   fourEyesMinMinor: 0,
+  emailEnabled: true,
   admins: [
     { email: "boss@example.com", name: "Boss", totpEnabled: true, lastLoginAt: "2026-10-10T08:00:00.000Z", disabled: false, isSelf: true },
     { email: "deputy@example.com", name: "Deputy", totpEnabled: false, lastLoginAt: null, disabled: false, isSelf: false },

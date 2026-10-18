@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { buildAuthUrl, requestGmailByDefault } from "@/lib/google";
 import { outcomeTarget, switchNeedsConfirmation, type GoogleOutcome } from "@/lib/google-connect";
+import { getGoogleCredentials, googleClientMode } from "@/lib/google-credentials";
 import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, countLiveCalendarEvents, getGoogleAccountOfRecord } from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
 import { randomNonce, signToken } from "@/lib/signing";
@@ -42,18 +43,28 @@ export async function GET(req: NextRequest) {
   // `state` is signed (so it cannot be forged) and carries a nonce that must match this browser's cookie on the
   // way back, so a callback URL cannot be replayed into a different person's session. `c` records that a switch was
   // chosen on purpose, so the callback lets a different Google account through only then.
+  // Which Google OAuth client to send the influencer to: their own (saved on the Settings card), or the platform pair when
+  // GOOGLE_CLIENT_MODE allows it (doc/15). Never another influencer's, and no silent substitution: with no usable client the
+  // connection is not started.
+  const creds = await getGoogleCredentials(auth.influencerId).catch(() => null);
+  if (!creds || !creds.ok) {
+    console.error("[google:connect] no usable Google client", creds ? creds.reason : "lookup failed");
+    return backTo(req, returnTo, googleClientMode() === "platform" ? "not-configured" : "no-client");
+  }
+
   const nonce = randomNonce();
   // ?gmail=1 asks for send-email permission too (the "Send from my Gmail" button); ?gmail=0 asks for Calendar only.
   const flag = req.nextUrl.searchParams.get("gmail");
   const gmail = flag === "1" ? true : flag === "0" ? false : requestGmailByDefault();
-  const state = signToken(OAUTH_STATE_PURPOSE, { i: auth.influencerId, n: nonce, r: returnTo, g: gmail ? 1 : 0, c: switching ? 1 : 0 }, STATE_TTL_SEC);
+  // `k` is the kind of client the consent screen is for, so the callback exchanges the code with the same one.
+  const state = signToken(OAUTH_STATE_PURPOSE, { i: auth.influencerId, n: nonce, r: returnTo, g: gmail ? 1 : 0, c: switching ? 1 : 0, k: creds.kind }, STATE_TTL_SEC);
 
   // Reconnecting or adding the Gmail permission should stay on the account the calendar events are on, so hint that
   // one (the login email is only a guess); a deliberate switch gets Google's account chooser.
   const hint = switching ? undefined : ((await getGoogleAccountOfRecord(auth.influencerId)).email ?? auth.email);
   let authUrl: string;
   try {
-    authUrl = buildAuthUrl(state, hint, { gmail });
+    authUrl = buildAuthUrl(state, hint, { gmail, credentials: creds.credentials });
   } catch (e) {
     console.error("[google:connect] not configured", e instanceof Error ? e.message : e);
     return backTo(req, returnTo, "not-configured");

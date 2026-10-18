@@ -1,5 +1,6 @@
 import { PageHead } from "@web/components/app/AppShell";
 import { Alert, Badge, Breadcrumb, Card, StatusPill } from "@web/components/ui/primitives";
+import { AccountHelpActions } from "@web/components/admin/AccountHelpActions";
 import { InfluencerActivityPanel } from "@web/components/admin/InfluencerActivityPanel";
 import { InfluencerStatusPanel } from "@web/components/admin/InfluencerStatusPanel";
 import { InfluencerWhatsAppWebPanel } from "@web/components/admin/InfluencerWhatsAppWebPanel";
@@ -34,6 +35,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
             <dt>Joined</dt>
             <dd>{formatDate(new Date(i.createdAt), { weekday: false })}</dd>
           </dl>
+          <AccountHelpActions influencerId={i.id} emailVerified={i.emailVerified} emailEnabled={data.emailEnabled} />
         </Card>
         <Card title="Go-live checklist">
           <ul className="stack stack--sm" style={{ listStyle: "none", padding: 0, margin: 0 }}>
@@ -62,8 +64,10 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
               {/* The same state as the influencer's own checklist (lib/readiness.ts), with the number when there is one. */}
               <Badge tone={connections.whatsapp.tone}>{connections.whatsapp.text}</Badge>
             </dd>
+            <dt>Google client</dt>
+            <dd>{connections.googleClientSaved ? <Badge tone="success">Own client saved</Badge> : <Badge>None saved</Badge>}</dd>
             <dt>Email from Gmail</dt>
-            <dd>{connections.gmailSend ? <Badge tone="success">On</Badge> : <Badge>Off (platform sender)</Badge>}</dd>
+            <dd>{connections.gmailSend ? <Badge tone="success">On</Badge> : <Badge>{data.emailEnabled ? "Off (platform sender)" : "Off (no customer e-mail)"}</Badge>}</dd>
           </dl>
         </Card>
       </div>

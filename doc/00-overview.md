@@ -46,6 +46,7 @@ Side exits: `expired` (hold timed out), `cancelled`, `failed` (needs manual atte
 ```
 DATABASE_URL=
 REDIS_URL=
+# GOOGLE_CLIENT_MODE=own (default): influencers bring their own Google client (doc/15); the next three are only for platform / either
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=

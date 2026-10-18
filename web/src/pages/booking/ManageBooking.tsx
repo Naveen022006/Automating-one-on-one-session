@@ -12,6 +12,70 @@ function when(iso: string) {
   return formatDateTime(new Date(iso));
 }
 
+/**
+ * "Download my data" and "Erase my data" (doc/15, 4.12), only on a site that sends no e-mail. Both work for the address of this booking
+ * through the signed link in the page address: the export is the customer portal's, the erasure keeps upcoming sessions until they are
+ * cancelled and keeps payment records for accounting, and the answer says how many of each.
+ */
+function MyData({ token }: { token: string }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+
+  async function erase() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/manage/${encodeURIComponent(token)}/erase`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) });
+      const body = (await res.json().catch(() => ({}))) as { erased?: number; blocked?: number };
+      if (res.status === 404) setResult({ tone: "success", text: "Your details were already erased." });
+      else if (!res.ok) setResult({ tone: "danger", text: res.status === 429 ? "Too many requests. Please wait a while and try again." : "We could not erase your data right now. Please try again." });
+      else {
+        const erased = body.erased ?? 0;
+        const kept = body.blocked ?? 0;
+        setResult({
+          tone: "success",
+          text: `${erased} ${erased === 1 ? "booking was" : "bookings were"} erased.${kept > 0 ? ` ${kept} upcoming ${kept === 1 ? "session is" : "sessions are"} kept until ${kept === 1 ? "it is" : "they are"} cancelled or over.` : ""} Payment records stay without your personal details, as the law requires for accounting.`,
+        });
+      }
+    } catch {
+      setResult({ tone: "danger", text: "We could not reach the server. Check your connection and try again." });
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  }
+
+  return (
+    <Card title={<h2 className="card__title">Your data</h2>}>
+      <div className="stack">
+        <p className="subtle">
+          This site does not send e-mail, so there is no &ldquo;find your bookings&rdquo; link to e-mail you. You can use this page instead: download everything stored about your bookings, or ask for it to be erased.
+        </p>
+        {result && <Alert tone={result.tone}>{result.text}</Alert>}
+        <div className="row">
+          <a className="btn" href={`/api/manage/${encodeURIComponent(token)}/data`} download>
+            <IconDownload size={16} /> Download my data
+          </a>
+          <Button variant="danger" onClick={() => setConfirm(true)} disabled={busy}>
+            Erase my data
+          </Button>
+        </div>
+      </div>
+      <ConfirmDialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        onConfirm={erase}
+        busy={busy}
+        danger
+        title="Erase my data?"
+        description="Your name, e-mail address and phone number are removed from your bookings with every host. Sessions that have not happened yet are kept until they are cancelled or over. This cannot be undone."
+        confirmLabel="Erase my data"
+        cancelLabel="Keep my data"
+      />
+    </Card>
+  );
+}
+
 export function ManageBooking({ data }: { data: ManageBookingData }) {
   const today = useMemo(() => todayIst(), []);
   const [status, setStatus] = useState(data.status);
@@ -213,6 +277,9 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
         )}
 
         {receipt && <ReceiptCard receipt={receipt} />}
+
+        {/* The "find your bookings" page needs e-mail to prove who is asking; without it, this link is the customer's way to their data. */}
+        {data.emailEnabled === false && <MyData token={data.token} />}
       </div>
 
       <ConfirmDialog

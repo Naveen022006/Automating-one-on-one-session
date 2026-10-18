@@ -194,6 +194,11 @@ export interface MockState {
   createdAt: string;
   google: {
     accounts: Record<string, MockAccount>;
+    /**
+     * Every OAuth client ID an app has used here (doc/15: each influencer brings their own Google client, and the mock accepts any pair).
+     * Only the ID and counters are kept, never the secret. Absent in a state file written before this existed.
+     */
+    clients?: Record<string, { firstSeenAt: string; lastSeenAt: string; calls: number }>;
     pendingDecisions: Record<string, PendingDecision>;
     codes: Record<string, AuthCode>;
     grants: Record<string, Grant>;

@@ -3,6 +3,8 @@
  *   - "resend"   RESEND_API_KEY            https://resend.com/docs/api-reference/emails/send-email
  *   - "postmark" POSTMARK_SERVER_TOKEN     https://postmarkapp.com/developer/api/email-api
  *   - "log"      (default) writes a structured log line; use for local development only.
+ *   - "none"     the platform sends no e-mail (doc/15): account e-mails are not delivered, customer e-mail goes only
+ *                through the influencer's own connected Gmail. Allowed in production.
  * EMAIL_FROM is the sender, e.g. "Bookings <bookings@yourdomain.com>". Configure SPF and DKIM for that domain
  * with the provider before going live, or messages will land in spam.
  */
@@ -103,8 +105,38 @@ export const logTransport: EmailTransport = async (email) => {
   return { providerMessageId: null };
 };
 
+/** Thrown by the "none" transport: the platform has no e-mail provider on purpose (EMAIL_PROVIDER=none). Callers treat it as "not sent". */
+export class EmailDisabledError extends Error {
+  constructor() {
+    super("The platform sends no e-mail (EMAIL_PROVIDER=none)");
+    this.name = "EmailDisabledError";
+  }
+}
+
+/** EMAIL_PROVIDER=none: the platform sends no e-mail of its own. Never touches the network and never sees a message body. */
+export const noneTransport: EmailTransport = async () => {
+  throw new EmailDisabledError();
+};
+
+export type EmailProviderName = "resend" | "postmark" | "log" | "none";
+
+/** The configured provider ("log" when unset, as before). An unknown name reads as "log" because the transport falls back to it. */
+export function emailProviderName(env: Record<string, string | undefined> = process.env): EmailProviderName {
+  const provider = (env.EMAIL_PROVIDER || "log").toLowerCase();
+  return provider === "resend" || provider === "postmark" || provider === "none" ? provider : "log";
+}
+
+/**
+ * Whether the platform sends e-mail at all (false only for EMAIL_PROVIDER=none). This boolean is what pages are allowed to know:
+ * it decides whether they may say "we e-mailed you". The provider's name never leaves the server.
+ */
+export function platformEmailEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return emailProviderName(env) !== "none";
+}
+
 export function transportFromEnv(): EmailTransport {
   const provider = (process.env.EMAIL_PROVIDER || "log").toLowerCase();
+  if (provider === "none") return noneTransport;
   if (provider === "resend") return resendTransport();
   if (provider === "postmark") return postmarkTransport();
   if (provider !== "log") console.warn(`[email] unknown EMAIL_PROVIDER "${provider}", falling back to log`);

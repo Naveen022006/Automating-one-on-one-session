@@ -55,6 +55,12 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
         </Alert>
       )}
 
+      {data.sharedGoogle?.warning && (
+        <Alert tone="warning" title="Connections made with the shared Google client">
+          {data.sharedGoogle.warning}
+        </Alert>
+      )}
+
       <Card title="Background worker">
         {worker.status === "critical" && (
           <Alert tone="danger" title="Worker is not running">
@@ -130,7 +136,7 @@ export function HealthView({ data, busy }: { data: Jsonify<AdminHealthView>; bus
           </table>
         </div>
         <p className="subtle" style={{ marginTop: 12 }}>
-          Alerts go to the error webhook and to ADMIN_ALERT_EMAILS, at most once an hour per condition, with a note when it clears.
+          Alerts go to the error webhook and, when this site sends e-mail, to ADMIN_ALERT_EMAILS, at most once an hour per condition, with a note when it clears.
           Thresholds: worker stale after {thresholds.workerStaleSeconds} s, paid booking without a link after {thresholds.meetingStuckMinutes} min,
           more than {thresholds.queueFailedMax} failed or {thresholds.queueWaitingMax} waiting jobs per queue.
         </p>

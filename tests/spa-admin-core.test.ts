@@ -32,7 +32,7 @@ const slug = `core-${run}`;
 // Settings the developer's .env may carry that change what these endpoints answer (the two-factor requirement, four-eyes
 // approval, the hold period that decides what is payable, the default fee). They are removed for the run, so a test passes
 // alone (--test-name-pattern) and with any .env, and put back afterwards.
-const ENV_KEYS = ["ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "PAYOUT_HOLD_DAYS", "PLATFORM_FEE_BPS"] as const;
+const ENV_KEYS = ["ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR", "PAYOUT_HOLD_DAYS", "PLATFORM_FEE_BPS", "EMAIL_PROVIDER", "GOOGLE_CLIENT_MODE"] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 let envSaved = false;
 
@@ -86,6 +86,7 @@ before(async () => {
   }
   envSaved = true;
   process.env.RATE_LIMIT_STORE = "memory";
+  process.env.EMAIL_PROVIDER = "log"; // the admin views say whether the site sends e-mail: pinned (ENV_KEYS above are restored in `after`)
   // GET /api/admin/overview builds the health report, which would open BullMQ/Redis connections that keep the test process
   // alive (and touch the shared Redis). Without REDIS_URL the report degrades exactly as it does when Redis is down.
   delete process.env.REDIS_URL;
@@ -322,7 +323,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "private, no-store");
   assert.equal(res.headers.get("access-control-allow-origin"), null);
-  assert.deepEqual(keys(res.body), ["bookings", "connections", "currencies", "fee", "influencer", "onlyOneAdmin", "payoutAccount", "payouts", "readinessItems", "services", "verified"]);
+  assert.deepEqual(keys(res.body), ["bookings", "connections", "currencies", "emailEnabled", "fee", "influencer", "onlyOneAdmin", "payoutAccount", "payouts", "readinessItems", "services", "verified"]);
   assertNoSecretKeys(res.body);
 
   // The money-handling secrets: no ciphertext, no full number, anywhere in the body.
@@ -349,7 +350,7 @@ test("M3 GET /api/admin/influencers/:id: the page's data, masked payout details 
   const items = res.body.readinessItems as Record<string, unknown>[];
   assert.equal(items.length, 7);
   for (const item of items) assert.deepEqual(keys(item), ["key", "label", "required", "state"], "no detail text, no href");
-  assert.deepEqual(keys(res.body.connections), ["gmailSend", "google", "whatsapp"]);
+  assert.deepEqual(keys(res.body.connections), ["gmailSend", "google", "googleClientSaved", "whatsapp"]);
   assert.deepEqual((res.body.connections as { google: unknown }).google, { state: "reconnect", email: null });
   const whatsapp = (res.body.connections as { whatsapp: { text: string; tone?: string } }).whatsapp;
   assert.ok(whatsapp.text.startsWith("+91 98765 43210, "), `the number and the state, as on the old page: ${whatsapp.text}`);

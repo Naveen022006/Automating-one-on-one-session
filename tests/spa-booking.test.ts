@@ -23,7 +23,7 @@ const DAY = 24 * HOUR;
 
 // The variables `before` sets, with the values they had when this file started: `after` puts those back (a developer's own
 // RATE_LIMIT_STORE, APP_URL or READINESS_REQUIRED must not be deleted by a test run).
-const ENV_KEYS = ["RATE_LIMIT_STORE", "APP_URL", "READINESS_REQUIRED"] as const;
+const ENV_KEYS = ["RATE_LIMIT_STORE", "APP_URL", "READINESS_REQUIRED", "EMAIL_PROVIDER"] as const;
 const originalEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]])) as Record<(typeof ENV_KEYS)[number], string | undefined>;
 
 const jar = new Map<string, string>();
@@ -135,6 +135,7 @@ const selfServiceToken = (bookingId: string, ttlSec = 3600) => signToken(SELF_SE
 before(async () => {
   if (skip) return;
   process.env.RATE_LIMIT_STORE = "memory";
+  process.env.EMAIL_PROVIDER = "log"; // the manage view says whether the site sends e-mail: pinned, not read from the developer's .env
   process.env.APP_URL ||= "http://localhost:3000";
   // No connection is required for a page to be live in this file: it only needs onboarding and a verified email.
   process.env.READINESS_REQUIRED = "";
@@ -493,7 +494,7 @@ test("P2: an erased booking is `not-found` in every state, and no manage link is
 // ---- P3: GET /api/manage/:token ----
 
 const MANAGE_KEYS = [
-  "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "hostSuspended", "influencerName", "meetLink",
+  "bookingId", "canManage", "canReschedule", "cancelRefundText", "customerName", "durationMin", "emailEnabled", "hostSuspended", "influencerName", "meetLink",
   "receipt", "refundPolicyText", "serviceId", "serviceTitle", "serviceType", "startTime", "status", "token",
 ];
 
@@ -575,6 +576,7 @@ test("P3: a paid booking is `ok` with exactly the fields the manage page needs",
     canManage: true,
     canReschedule: true,
     hostSuspended: false,
+    emailEnabled: true,
     refundPolicyText: describeRefundPolicy("FULL"),
     cancelRefundText: "If you cancel now, you will be refunded in full to your original payment method.",
   });

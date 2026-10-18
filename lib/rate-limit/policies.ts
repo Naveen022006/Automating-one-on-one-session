@@ -62,6 +62,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "admin-money", pattern: /^\/api\/admin\/(payouts\/|influencers\/[^/]+\/(payouts|fee)$|payments\/[^/]+\/(unreconcile|refund)$|bookings\/[^/]+\/cancel$)/, methods: ["POST", "PATCH"], limit: 60, windowMs: HOUR, by: "ip" },
   // Suspending, reinstating and approving an influencer (the status endpoint also answers GET, which stays under `admin`).
   { name: "admin-moderation", pattern: /^\/api\/admin\/influencers\/[^/]+\/status$/, methods: ["POST"], limit: 60, windowMs: HOUR, by: "ip" },
+  // Account help by hand while the platform sends no e-mail (doc/15): verifying an address and handing over a password-reset link.
+  { name: "admin-account-help", pattern: /^\/api\/admin\/influencers\/[^/]+\/(verify-email|reset-link)$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   // CSV exports carry personal data and run wide queries; the finance report aggregates the whole database. HEAD is answered by
   // the GET handler (it would run the same query), so it shares the rule, like the other view endpoints below.
   { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
@@ -90,6 +92,10 @@ export const ROUTE_RULES: RouteRule[] = [
   // Same budget as the booking status poll: tokens are signed (not guessable), and a customer behind a shared NAT must not be
   // locked out of paying while their hold runs down.
   { name: "pay-view", pattern: /^\/api\/pay\/[^/]+$/, methods: ["GET", "HEAD"], limit: 120, windowMs: 5 * MIN, by: "ip" },
+  // Data export and erasure through the manage link (doc/15, 4.12): they read or erase everything stored about an address, so they get the
+  // portal's tight budgets. Listed before the general self-service rules.
+  { name: "manage-data", pattern: /^\/api\/manage\/[^/]+\/data$/, methods: ["GET", "HEAD"], limit: 10, windowMs: HOUR, by: "ip" },
+  { name: "manage-erase", pattern: /^\/api\/manage\/[^/]+\/erase$/, methods: ["POST"], limit: 5, windowMs: HOUR, by: "ip" },
   // Listed before self-service so that opening the manage page does not use up the 20 per 10 minutes meant for actions.
   { name: "self-service-view", pattern: /^\/api\/manage\/[^/]+$/, methods: ["GET", "HEAD"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   { name: "self-service", pattern: /^\/api\/manage\//, limit: 20, windowMs: 10 * MIN, by: "ip" },
@@ -106,6 +112,8 @@ export const ROUTE_RULES: RouteRule[] = [
   // --- Influencer dashboard. Refunds move money, so they get their own tight limit.
   { name: "dashboard-refund", pattern: /^\/api\/dashboard\/bookings\/[^/]+\/refund$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-payout-account", pattern: /^\/api\/dashboard\/payout-account$/, methods: ["PUT"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
+  // Saving a Google client calls Google's token endpoint to check the pasted pair (doc/15), and removing one revokes tokens: keep both low.
+  { name: "dashboard-google-client", pattern: /^\/api\/dashboard\/google-client$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-whatsapp", pattern: /^\/api\/dashboard\/whatsapp$/, methods: ["POST", "DELETE"], limit: 20, windowMs: HOUR, by: "session-or-ip" },
   // The optional QR-code WhatsApp mode. The linking screen polls the status every 2 s while it waits for the scan (30 a minute), so
   // reads get twice that; starting, cancelling, disconnecting and the test message are rare (and a test message is a real send).
@@ -135,6 +143,8 @@ export const IDENTITY_RULES = {
   adminMfaManage: { name: "admin-mfa-manage-admin-ip", limit: 10, windowMs: 15 * MIN, failClosed: true },
   /** Everything on the Security page per admin from ANY IP (password and code guesses spread over addresses). Fails closed. */
   adminMfaManageAdmin: { name: "admin-mfa-manage-admin", limit: 30, windowMs: HOUR, failClosed: true },
+  /** "Save and check" of a Google client calls Google: per influencer from ANY address or device, on top of the per-session route rule. */
+  googleClientCheck: { name: "google-client-check", limit: 12, windowMs: HOUR },
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },

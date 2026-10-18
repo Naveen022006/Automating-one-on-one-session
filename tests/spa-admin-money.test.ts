@@ -672,7 +672,7 @@ test("M8 GET /api/admin/health: the worker, the conditions, the queues and the l
     await prisma.adminAuditLog.delete({ where: { id: recovered.id } });
   }
   assert.equal(out.status, 200);
-  assert.deepEqual(keys(out.body), ["at", "failed", "queueNames", "queues", "recovered", "recovery", "report", "thresholds", "worker"]);
+  assert.deepEqual(keys(out.body), ["at", "failed", "queueNames", "queues", "recovered", "recovery", "report", "sharedGoogle", "thresholds", "worker"]);
   assert.equal(typeof out.body.at, "number");
   assert.deepEqual(keys(out.body.thresholds), ["meetingStuckMinutes", "queueFailedMax", "queueWaitingMax", "workerStaleSeconds"], "only the four limits the page prints");
   assert.deepEqual(keys(out.body.report), ["conditions", "unhealthy", "unknownCount"]);

@@ -4,6 +4,15 @@ import { getFailedJobs, QUEUE_NAMES, type FailedJobInfo } from "@/lib/queue";
 
 /** Data for the admin "System health" page that is not part of the pure health report. */
 
+/**
+ * Connections made with the SHARED Google client that are still ACTIVE (google_tokens.client_kind = 'platform'). When the shared pair is
+ * gone from the environment they can no longer refresh: the Health page counts them (doc/15, 4.10) so the owner sees it before the
+ * daily check flags each one "reconnect needed".
+ */
+export async function countActiveSharedGoogleGrants(): Promise<number> {
+  return prisma.googleToken.count({ where: { clientKind: "platform", status: "ACTIVE" } });
+}
+
 export interface RecoveredPaymentRow {
   id: string;
   at: Date;

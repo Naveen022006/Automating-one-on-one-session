@@ -135,7 +135,7 @@ async function accessTokenFor(deps: ManageDeps, booking: BookingWithContext, gra
     throw new ManageBlockedError("The influencer's Google Calendar is not connected; the change was saved but the calendar was not updated");
   }
   grant.connectedAt = token.connectedAt;
-  return deps.google.refreshAccessToken(token.refreshToken);
+  return deps.google.refreshAccessToken(token.refreshToken, { influencerId, clientKind: token.clientKind });
 }
 
 export interface CancelOptions {

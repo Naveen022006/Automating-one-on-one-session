@@ -8,6 +8,7 @@ import {
   type InfluencerStatusFilter,
 } from "@/lib/admin/data";
 import { prisma } from "@/lib/db";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { getPayoutAccountView, type PayoutAccountView } from "@/lib/payout-account";
 import {
   BLOCKER_LABEL,
@@ -138,7 +139,11 @@ export interface AdminInfluencerView {
     google: { state: "none" | "active" | "reconnect"; email: string | null };
     whatsapp: WhatsAppBadgeView;
     gmailSend: boolean;
+    /** Whether the influencer has saved a Google client of their own (the secret never leaves the server). */
+    googleClientSaved: boolean;
   };
+  /** False when the platform sends no e-mail (EMAIL_PROVIDER=none): the page then offers the by-hand account help buttons prominently. */
+  emailEnabled: boolean;
   /** MASKED details (last four digits, partly hidden UPI handle). Null when the influencer has not added any. */
   payoutAccount: Omit<PayoutAccountView, "updatedAt"> | null;
   fee: { overrideBps: number | null; defaultBps: number; feeBps: number; feePercentText: string };
@@ -159,9 +164,10 @@ export async function loadAdminInfluencerView(id: string, adminEmail: string): P
   const { influencer: i, bookings } = detail;
   const payout = await getPayoutAccountView(id);
   const feeBps = effectiveFeeBps(i.platformFeeBps);
-  const [payable, payouts] = await Promise.all([
+  const [payable, payouts, googleClientSaved] = await Promise.all([
     loadPayable(id),
     prisma.payout.findMany({ where: { influencerId: id }, orderBy: { createdAt: "desc" }, take: 20 }),
+    prisma.influencerGoogleClient.count({ where: { influencerId: id } }),
   ]);
   const currencies = summariseCurrencies(payable, feeBps);
   const owed = new Map(await Promise.all(payouts.filter((p) => p.status === "PAID").map(async (p) => [p.id, await postPayoutRefunds(p.id)] as const)));
@@ -198,7 +204,9 @@ export async function loadAdminInfluencerView(id: string, adminEmail: string): P
         tone: badge.tone,
       },
       gmailSend: input.gmailSend,
+      googleClientSaved: googleClientSaved > 0,
     },
+    emailEnabled: platformEmailEnabled(),
     payoutAccount: payout
       ? {
           method: payout.method,

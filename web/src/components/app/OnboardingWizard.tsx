@@ -63,7 +63,7 @@ function Wizard(d: OnboardingData) {
       <main id="main" className="container container--narrow" style={{ paddingBottom: 64 }}>
         <div className="stack stack--lg">
           <Stepper steps={STEPS} current={step} />
-          {!d.emailVerified && <VerifyBanner email={d.email} />}
+          {!d.emailVerified && <VerifyBanner email={d.email} emailEnabled={d.emailEnabled} />}
 
           {step === 0 && (
             <Section title="Tell customers who you are" lede="This appears at the top of your booking page.">
@@ -87,9 +87,9 @@ function Wizard(d: OnboardingData) {
           )}
 
           {step === 3 && (
-            <Section title="Connect Google" lede="Meet links are created on your own calendar, and customers get Google's invite. You can also let us send customer emails from your Gmail.">
+            <Section title="Connect Google" lede="Meet links are created on your own calendar, and customers get Google's invite. You create your own Google client once, then connect it. You can also let customer e-mails be sent from your Gmail.">
               <Card>
-                <GoogleConnect status={d.google} returnTo="/onboarding?step=3" outcome={d.googleOutcome} />
+                <GoogleConnect status={d.google} client={d.googleClient} returnTo="/onboarding?step=3" outcome={d.googleOutcome} emailEnabled={d.emailEnabled} />
               </Card>
               {d.google.state !== "connected" && (
                 <p className="subtle">Your booking page cannot go live until Google Calendar is connected: paid bookings would have no Meet link.</p>
@@ -144,7 +144,11 @@ function Wizard(d: OnboardingData) {
                   <a className="btn" href={d.publicUrl} target="_blank" rel="noopener noreferrer">
                     <IconExternal size={16} /> Preview booking page
                   </a>
-                  {!d.emailVerified && <Alert tone="info">Customers cannot see your page until you confirm your email.</Alert>}
+                  {!d.emailVerified && (
+                    <Alert tone="info">
+                      {d.emailEnabled ? "Customers cannot see your page until you confirm your email." : "Customers cannot see your page until an administrator confirms your account."}
+                    </Alert>
+                  )}
                 </div>
               </Card>
             </Section>

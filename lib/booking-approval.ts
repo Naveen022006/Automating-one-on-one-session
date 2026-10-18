@@ -117,9 +117,15 @@ export async function approveRequest(influencerId: string, bookingId: string, no
   });
   if (count === 0) throw new ApprovalError("This request changed while you were approving it. Refresh and try again.");
 
+  // The payment link goes out by e-mail only: through the influencer's Gmail, or the platform's provider when it has one (doc/15: with
+  // EMAIL_PROVIDER=none and no Gmail nothing is sent). `emailed` says whether it went out; when it did not, the link is handed back to the
+  // influencer (who is allowed to see it: it is their customer's payment) so they can send it themselves, instead of the customer waiting
+  // for a message that will never come.
+  let emailed = false;
+  let payUrl: string | null = null;
   try {
-    const payUrl = buildPayUrl(b.id, (payBy.getTime() - now.getTime()) / 1000);
-    await sendCustomerRendered(
+    payUrl = buildPayUrl(b.id, (payBy.getTime() - now.getTime()) / 1000);
+    emailed = await sendCustomerRendered(
       b.session.service.influencer.id,
       { email: b.customerEmail, name: b.customerName },
       requestEmail("request-approved", { ...emailData(b), payUrl, payBy, amount: { amountMinor: b.session.service.priceMinor, currency: b.session.service.currency } }),
@@ -128,7 +134,7 @@ export async function approveRequest(influencerId: string, bookingId: string, no
   } catch (e) {
     console.error("[approval] approved but could not email the payment link", e instanceof Error ? e.message : e);
   }
-  return { payBy };
+  return { payBy, emailed, payUrl: emailed ? null : payUrl };
 }
 
 /** REQUESTED -> CANCELLED with an optional reason shown to the customer. Nothing was charged, so nothing to refund. */

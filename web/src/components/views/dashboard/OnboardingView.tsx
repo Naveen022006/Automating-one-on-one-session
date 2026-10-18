@@ -16,6 +16,7 @@ export function OnboardingView({ data, step, outcome }: { data: Jsonify<Dashboar
       rules={data.rules}
       blocked={data.blocked}
       google={data.google}
+      googleClient={data.googleClient}
       googleOutcome={outcome}
       whatsapp={data.whatsapp}
       embedded={data.embedded}
@@ -24,6 +25,7 @@ export function OnboardingView({ data, step, outcome }: { data: Jsonify<Dashboar
       publicUrl={data.publicUrl}
       email={data.email}
       emailVerified={data.emailVerified}
+      emailEnabled={data.emailEnabled}
     />
   );
 }

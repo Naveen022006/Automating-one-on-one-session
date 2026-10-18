@@ -1,6 +1,7 @@
 import { alertInfluencer } from "../lib/alerts";
 import { prisma } from "../lib/db";
 import { GoogleReconnectError, google } from "../lib/google";
+import type { GoogleClientKind, GoogleGrantRef } from "../lib/google-credentials";
 import { getActiveGrant, markReconnectNeeded } from "../lib/google-tokens";
 import { reportError, reportNotice } from "../lib/observability";
 
@@ -33,6 +34,8 @@ export function verdictForRefreshError(e: unknown): RefreshVerdict {
 export interface Grant {
   refreshToken: string;
   connectedAt: Date;
+  /** Which OAuth client issued the grant: the refresh must use that one (doc/15). */
+  clientKind: GoogleClientKind;
 }
 
 export interface GoogleHealthDeps {
@@ -41,7 +44,7 @@ export interface GoogleHealthDeps {
   /** The grant to check, or null when it is gone or already flagged since the list was read. */
   load(influencerId: string): Promise<Grant | null>;
   /** Resolves when Google accepts the refresh token, throws what the Google client throws otherwise. */
-  refresh(refreshToken: string): Promise<void>;
+  refresh(refreshToken: string, grant: GoogleGrantRef): Promise<void>;
   /**
    * Flags the connection for reconnect, but only if it is still the grant that was checked (`connectedAt` unchanged): an
    * influencer who reconnected while Google was being asked keeps their new connection. True only for the call that
@@ -89,7 +92,7 @@ export async function checkGoogleConnections(deps: GoogleHealthDeps): Promise<Go
         continue;
       }
       try {
-        await deps.refresh(grant.refreshToken);
+        await deps.refresh(grant.refreshToken, { influencerId: id, clientKind: grant.clientKind });
         summary.ok++;
       } catch (e) {
         if (verdictForRefreshError(e) === "unknown") {
@@ -121,8 +124,8 @@ const defaultDeps: GoogleHealthDeps = {
     return rows.map((r) => r.influencerId);
   },
   load: getActiveGrant,
-  refresh: async (refreshToken) => {
-    await google.refreshAccessToken(refreshToken);
+  refresh: async (refreshToken, grant) => {
+    await google.refreshAccessToken(refreshToken, grant);
   },
   markDead: markReconnectNeeded,
   alert: (influencerId, reason) =>
@@ -148,10 +151,9 @@ export async function googleHealthTick(deps: GoogleHealthDeps = defaultDeps): Pr
 
 /** Starts the daily check (and one shortly after start-up). Returns a function that stops it. */
 export function startGoogleHealth(check: () => Promise<unknown> = googleHealthTick): () => void {
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    console.warn("[worker] Google connection check is off: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set");
-    return () => {};
-  }
+  // Runs whatever the environment says: each grant is checked with the client that issued it (an influencer's own client lives in the
+  // database, doc/15), so there is no platform pair to wait for. A grant whose client cannot be found is a "dead" verdict for an own
+  // client and an "unknown" one for the platform pair, which is how the pair being unset still shows up in the log below.
   let running = false;
   const run = async () => {
     if (running) return; // the previous pass is still going; never overlap

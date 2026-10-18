@@ -12,7 +12,7 @@ async function post(url: string, body: unknown) {
   return { ok: res.ok, status: res.status, data } as {
     ok: boolean;
     status: number;
-    data: { error?: string; field?: string; redirect?: string; message?: string; details?: { fieldErrors?: Record<string, string[]> } };
+    data: { error?: string; field?: string; redirect?: string; message?: string; emailEnabled?: boolean; details?: { fieldErrors?: Record<string, string[]> } };
   };
 }
 
@@ -216,6 +216,7 @@ export function RegisterForm() {
 export function ForgotForm() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState<string | null>(null);
+  const [noEmail, setNoEmail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) {
@@ -226,6 +227,15 @@ export function ForgotForm() {
     setBusy(false);
     if (!r.ok) return setError(r.data.error ?? "Something went wrong. Please try again.");
     setSent(r.data.message ?? "If an account exists for that email, a reset link is on its way.");
+    setNoEmail(r.data.emailEnabled === false);
+  }
+  if (sent && noEmail) {
+    // The server says the platform sends no e-mail (doc/15): never "check your email".
+    return (
+      <Alert tone="info" title="Ask your administrator for a reset link">
+        {sent}
+      </Alert>
+    );
   }
   if (sent) {
     return (

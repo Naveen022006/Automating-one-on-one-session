@@ -53,6 +53,7 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "auth.logout_all": { sessions: 3 },
   "auth.session_revoked": {},
   "auth.reauthenticated": {},
+  "auth.admin_reset_link": {},
   "profile.updated": { fields: "name,slug", slugFrom: "old-page", slugTo: "new-page" },
   "service.created": { serviceId: "svc1", title: "Career call", priceTo: 150000, currency: "INR", activeTo: true },
   "service.updated": { serviceId: "svc1", title: "Career call", priceFrom: 100000, priceTo: 120000, currency: "INR", activeFrom: true, activeTo: false },
@@ -66,6 +67,8 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "payout_account.updated": { method: "BANK", destination: "XXXXXXXX9012" },
   "google.connected": { account: "pat@gmail.example" },
   "google.disconnected": { account: "pat@gmail.example" },
+  "google.client_saved": { client: "…wxyz", replaced: true },
+  "google.client_removed": { client: "…wxyz" },
   "whatsapp.connected": { phone: "+91 98765 43210" },
   "whatsapp.disconnected": { phone: "+91 98765 43210" },
   "whatsapp_web.consent": { version: "wa-web-2026-11-2" },
@@ -78,7 +81,7 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
 
 test("every action has a label, a detail allowlist and a sample, and the wording of every action contains no '@' except the influencer's own Google account", () => {
   const actions = Object.keys(ACTIVITY_ACTIONS) as ActivityAction[];
-  assert.ok(actions.length >= 20 && actions.length <= 30, `about 20 actions, got ${actions.length}`);
+  assert.ok(actions.length >= 20 && actions.length <= 40, `a few dozen actions, got ${actions.length}`); // upper bound raised 30 -> 40 with doc/15 (Google client, admin reset-link and WhatsApp QR entries)
   assert.deepEqual(Object.keys(ACTIVITY_DETAIL_KEYS).sort(), [...actions].sort());
   assert.deepEqual(Object.keys(SAMPLE_DETAIL).sort(), [...actions].sort());
   for (const action of actions) {

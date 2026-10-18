@@ -140,6 +140,18 @@ export function passwordChangedMessage(name: string): RenderedEmail {
   });
 }
 
+/** Sent to the influencer when an administrator creates a password reset link for them (the link itself is never in the e-mail). */
+export function adminResetLinkNoticeMessage(name: string): RenderedEmail {
+  return renderEmail(`An administrator created a password reset link for your ${BRAND_NAME} account`, {
+    preheader: "An administrator created a one-time password reset link for your account.",
+    heading: "A password reset link was created",
+    paragraphs: [
+      `Hi ${name.split(" ")[0] || name}, an administrator just created a one-time password reset link for your account. It works for one hour and they will pass it to you themselves.`,
+      "If you did not ask for help with your password, do not use any link you did not request, and contact support.",
+    ],
+  });
+}
+
 export function influencerAlertMessage(
   name: string,
   alert: { title: string; detail: string; actionLabel?: string; actionUrl?: string },

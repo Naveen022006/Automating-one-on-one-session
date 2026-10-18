@@ -43,7 +43,7 @@ function fakeDeps(outcomes: Record<string, Outcome>, over: Partial<GoogleHealthD
       const o = outcomes[id];
       if (o === "gone") return null;
       if (typeof o === "object" && "unreadable" in o) throw o.unreadable;
-      return { refreshToken: `token-${id}`, connectedAt: connectedAt(id) };
+      return { refreshToken: `token-${id}`, connectedAt: connectedAt(id), clientKind: "own" as const };
     },
     refresh: async (token) => {
       const id = byToken.get(token)!;
@@ -185,7 +185,9 @@ test("the check runs shortly after start-up, then daily, and never overlaps itse
   }
 });
 
-test("without Google credentials the check does not schedule anything", () => {
+// Changed with doc/15: it used to assert that the check does not schedule anything without the platform pair. Influencers now bring
+// their own Google client (kept in the database), so the check runs even when GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are unset.
+test("without the platform Google pair the check still runs (influencers have their own clients)", () => {
   const saved = { id: process.env.GOOGLE_CLIENT_ID, secret: process.env.GOOGLE_CLIENT_SECRET };
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -193,8 +195,8 @@ test("without Google credentials the check does not schedule anything", () => {
   try {
     let runs = 0;
     const stop = startGoogleHealth(async () => void runs++);
-    mock.timers.tick(GOOGLE_HEALTH_EVERY_MS * 2);
-    assert.equal(runs, 0);
+    mock.timers.tick(GOOGLE_HEALTH_FIRST_RUN_MS);
+    assert.equal(runs, 1);
     stop();
   } finally {
     mock.timers.reset();

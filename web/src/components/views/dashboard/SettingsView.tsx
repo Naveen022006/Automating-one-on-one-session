@@ -15,7 +15,7 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
   return (
     <div className="stack stack--lg">
       <PageHead title="Settings" description="Your profile, booking page, Google Calendar connection and account security." />
-      {!data.emailVerified && <VerifyBanner email={data.email} />}
+      {!data.emailVerified && <VerifyBanner email={data.email} emailEnabled={data.emailEnabled} />}
       <Card title="Profile">
         <ProfileForm profile={data.profile} />
       </Card>
@@ -23,13 +23,13 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
         <SlugForm slug={data.profile.slug} origin={data.origin} />
       </Card>
       <Card title={<h2 className="card__title" id="google">Google Calendar</h2>}>
-        <GoogleConnect status={data.google} returnTo="/dashboard/settings#google" outcome={outcome} />
+        <GoogleConnect status={data.google} client={data.googleClient} returnTo="/dashboard/settings#google" outcome={outcome} emailEnabled={data.emailEnabled} />
       </Card>
       <Card title={<h2 className="card__title" id="whatsapp">WhatsApp</h2>}>
         <WhatsAppModePicker connection={data.whatsapp} embedded={data.embedded} required={data.whatsappRequired} />
       </Card>
       <Card title="Notifications">
-        <NotificationPrefs notifyByEmail={data.profile.notifyByEmail} />
+        <NotificationPrefs notifyByEmail={data.profile.notifyByEmail} emailEnabled={data.emailEnabled} />
       </Card>
       <Card title="Password">
         <PasswordForm />

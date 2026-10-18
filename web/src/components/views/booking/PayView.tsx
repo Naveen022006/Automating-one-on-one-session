@@ -43,7 +43,7 @@ export function PayView({ data }: { data: Jsonify<PayViewData> }) {
     case "requested":
       return (
         <Notice title="Still waiting for approval" tone="warning">
-          {data.hostName} has not answered your request for {data.serviceTitle} yet. We will email you a link to pay as soon as they do.
+          {data.hostName} has not answered your request for {data.serviceTitle} yet. You get a link to pay as soon as they do.
         </Notice>
       );
     case "declined":

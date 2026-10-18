@@ -192,6 +192,19 @@ test("cancel with a grant Google rejects now carries on, flags the connection an
   mock.reset();
 });
 
+test("doc/15: a cancel refreshes the calendar token with the client the grant was issued with", async () => {
+  for (const clientKind of ["own", "platform"] as const) {
+    const f = fixture();
+    const tokens = tokenState({ state: "ok", refreshToken: "refresh", connectedAt: GRANT_VERSION, clientKind } as never);
+    const mod = await load(f, tokens);
+    const seen: unknown[] = [];
+    const { deps } = effects({ ...happyGoogle, refreshAccessToken: async (_t: string, grant?: unknown) => (seen.push(grant), "access") });
+    await mod.cancelBooking("b1", { actor: "influencer" }, deps);
+    assert.deepEqual(seen, [{ influencerId: "inf1", clientKind }]);
+    mock.reset();
+  }
+});
+
 test("a 401 from Calendar itself (not the token refresh) flags the connection too", async () => {
   const f = fixture();
   const tokens = tokenState();

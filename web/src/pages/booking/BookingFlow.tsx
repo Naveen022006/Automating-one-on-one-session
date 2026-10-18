@@ -718,12 +718,12 @@ export function BookingFlow({
                     What happens next
                   </h2>
                   <ol className="stack stack--sm text-sm" style={{ paddingLeft: 20, margin: 0 }}>
-                    <li>We emailed a copy of your request to {email}.</li>
+                    <li>Your request has been sent to {host.name}. A copy goes to {email} when {host.name} has e-mail set up.</li>
                     <li>
                       {host.name} reviews it
                       {requested.decideWithinHours >= 48 ? " (usually within a couple of days)" : ""}. Your time is held until they answer.
                     </li>
-                    <li>If they approve, we email you a link to pay and confirm. If not, you are not charged.</li>
+                    <li>If they approve, you get a link to pay and confirm (by e-mail or from {host.name} directly). If not, you are not charged.</li>
                   </ol>
                   {service.prepNotes && (
                     <Alert tone="info" title="Before your session">

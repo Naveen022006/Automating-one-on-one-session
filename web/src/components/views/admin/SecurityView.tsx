@@ -20,6 +20,11 @@ export function SecurityView({ data }: { data: Jsonify<AdminSecurityView> }) {
       />
       <Card title="Two-factor authentication">
         <TwoFactorPanel enabled={data.mfa.enabled} recoveryCodesLeft={data.mfa.recoveryCodesLeft} required={required} />
+        <p className="subtle" style={{ marginTop: 12 }}>
+          {data.emailEnabled
+            ? "You are e-mailed when two-factor is turned on or off, recovery codes are regenerated, or codes are locked after failed attempts."
+            : "This site sends no e-mail, so you are not e-mailed when two-factor is turned on or off or codes are locked. Check the audit log for those changes."}
+        </p>
       </Card>
 
       <Card title="Payout approval">

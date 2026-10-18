@@ -87,6 +87,14 @@ in ONE transaction; any failure rolls back and returns 500 so Razorpay retries. 
 mismatched payments become `Payment.needsRefund`. The worker's payment recovery re-checks old orders (`lib/payment-recovery.ts`).
 Refunds `lib/refunds.ts`; influencer payouts and reconciliation `lib/payouts.ts` (admin-approved, four-eyes, see below).
 
+**Google credentials and platform e-mail (doc/15).** There is no platform-wide Google app by default: every influencer saves their OWN OAuth client
+(`influencer_google_clients`, secret encrypted with AAD `google-client:<id>`), and `lib/google-credentials.ts` (`getGoogleCredentials`, `GOOGLE_CLIENT_MODE`
+own | platform | either) is the one place that picks the client. A grant remembers its client (`google_tokens.client_kind`) and every refresh, health
+check and Gmail send passes `{ influencerId, clientKind }` to `GoogleClient.refreshAccessToken`; a missing own client is "reconnect needed", never a
+fallback. `EMAIL_PROVIDER=none` is allowed in production: `sendAccountEmail` is then a logged no-op returning `false`, customer e-mail goes only through
+the influencer's Gmail, and pages learn `emailEnabled` (a boolean, never the provider name) from the session and view DTOs. Administrators verify
+addresses and hand over one-time reset links by hand (`lib/admin/account-help.ts`).
+
 **Worker and queues.** `worker/index.ts` runs hold expiry every 30 s, housekeeping, Google token health, WhatsApp sync, monitoring and
 three BullMQ workers (`meetings`, `messages`, `reminders`; ids are deterministic, jobs idempotent and read current state, up to 5
 attempts with backoff). Do not start a second worker against a database and Redis that already have one: it takes the other worker's jobs, and a worker pointed at the mock sweeps every influencer's Google and WhatsApp connection and marks them broken.
