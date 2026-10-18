@@ -119,11 +119,11 @@ test("request-approved: approved and unpaid (HELD or PENDING_PAYMENT) with the t
   assert.equal(ok({ decidedAt: null }), false, "a plain hold of a service without approval is not an accepted request");
 });
 
-test("request-declined: CANCELLED, decided, a service that needs approval, and never paid", () => {
+test("request-declined: CANCELLED, decided and never paid, whatever the service's approval setting is now", () => {
   const ok = (over: Partial<BookingFacts>) => messageMayBeSent(REQUEST_DECLINED_TEMPLATE, facts({ status: "CANCELLED", decidedAt: EARLIER, requiresApproval: true, ...over }), NOW);
   for (const status of ALL_STATUSES) assert.equal(ok({ status }), status === "CANCELLED", status);
   assert.equal(ok({ decidedAt: null }), false, "cancelled without the host deciding is not a decline");
-  assert.equal(ok({ requiresApproval: false }), false);
+  assert.equal(ok({ requiresApproval: false }), true, "a host who turned approval off can still decline the backlog: only a decline gives an unpaid booking a decision AND CANCELLED");
   assert.equal(ok({ hasPayment: true }), false, "an approved request that was paid and cancelled later is a cancellation, which has its own notice");
   assert.equal(messageMayBeSent("cancellation", facts({ status: "CANCELLED", decidedAt: EARLIER, requiresApproval: true, hasPayment: true }), NOW), true);
 });

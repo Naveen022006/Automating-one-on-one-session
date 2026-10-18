@@ -77,10 +77,12 @@ function holdAlive(f: BookingFacts, now: Date): boolean {
  *  - request-received: still a REQUESTED booking whose hold is running;
  *  - request-approved: approved (decided) and not yet paid: HELD, or PENDING_PAYMENT when the customer already opened the payment;
  *    PAID and SCHEDULED are excluded because the confirmation follows. The pay-by time must be ahead;
- *  - request-declined: CANCELLED, decided, a service that needs approval and no payment ever (a paid booking that was cancelled later
- *    is a cancellation, which has its own notice);
- *  - request-expired: EXPIRED, never decided, a service that needs approval and no payment (an approved hold that lapsed unpaid is
- *    NOT this message: the host decided).
+ *  - request-declined: CANCELLED, decided and never paid. Declining is the only way a booking that was never paid gets CANCELLED (a
+ *    customer, host or administrator can cancel only a paid or scheduled booking, and that has a payment), so this is exactly a declined
+ *    request, whatever the service's approval setting is today (a host who turned approval off can still decline the backlog);
+ *  - request-expired: EXPIRED, never decided, never paid, and the service needs approval: an ordinary hold that lapsed also has no
+ *    decision, so the service's setting is what tells a request from it (the worker only queues this for a booking it expired from
+ *    REQUESTED; the check guards against a stray job). An approved hold that lapsed unpaid is NOT this message: the host decided.
  */
 export function messageMayBeSent(template: string, f: BookingFacts, now: Date, route: MessageRoute = "sender"): boolean {
   switch (template) {
@@ -89,7 +91,7 @@ export function messageMayBeSent(template: string, f: BookingFacts, now: Date, r
     case REQUEST_APPROVED_TEMPLATE:
       return (f.status === "HELD" || f.status === "PENDING_PAYMENT") && f.decidedAt !== null && holdAlive(f, now);
     case REQUEST_DECLINED_TEMPLATE:
-      return f.status === "CANCELLED" && f.decidedAt !== null && f.requiresApproval && !f.hasPayment;
+      return f.status === "CANCELLED" && f.decidedAt !== null && !f.hasPayment;
     case REQUEST_EXPIRED_TEMPLATE:
       return f.status === "EXPIRED" && f.decidedAt === null && f.requiresApproval && !f.hasPayment;
     default:

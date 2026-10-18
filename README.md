@@ -273,9 +273,13 @@ paying; the booking is `REQUESTED` and holds the seat for up to 48 hours. The in
 **Sessions > Requests** (and in the needs-attention list) and approves or declines:
 
 - **Approve** -> `HELD` with a payment deadline (24 hours, never later than 15 minutes before the session). The customer
-  is emailed a signed link to `/pay/<token>` where they pay through the normal Razorpay checkout.
-- **Decline** -> `CANCELLED`, the customer is emailed the reason. Nothing was ever charged, so there is nothing to refund.
-- An unanswered request expires with the normal expiry job and the seat is released.
+  is emailed a signed link to `/pay/<token>` where they pay through the normal Razorpay checkout, and sent the same link on WhatsApp
+  (with the amount and the pay-by time in IST).
+- **Decline** -> `CANCELLED`, the customer is told by e-mail and on WhatsApp, with the host's note if there is one. Nothing was ever charged, so there is nothing to refund.
+- An unanswered request expires with the normal expiry job and the seat is released; the customer is told on WhatsApp.
+- The customer also gets a WhatsApp message when the request is received, and after paying the usual confirmation with the Meet link.
+  The WhatsApp messages go out from the influencer's linked number first, then their official WhatsApp connection (four more templates,
+  `sa_request_received`, `sa_request_approved`, `sa_request_declined`, `sa_request_expired`), then SMS. Details: `doc/16-request-whatsapp-flow.md`.
 
 ## Sending customer email from the influencer's Gmail
 The Google connection asks for Calendar (Meet links) and, unless `GOOGLE_REQUEST_GMAIL_SEND=false`, permission to send
@@ -299,10 +303,12 @@ approved as a Tech Provider) or by entering their WhatsApp Business Account id, 
 token. Credentials are verified against Meta before saving (the number must belong to the account) and the token is stored
 AES-256-GCM encrypted and never shown again.
 
-On connect we submit our five message templates to the influencer's account for approval. Meta only accepts lowercase
+On connect we submit our nine message templates to the influencer's account for approval (the five booking events, and the four
+messages of the booking-request flow, `doc/16-request-whatsapp-flow.md`). Meta only accepts lowercase
 letters, digits and underscores in a template name, and a plain name could clash with a template the influencer already has,
-so they go out as `sa_booking_confirmation`, `sa_reminder_24h`, `sa_reminder_15m`, `sa_reschedule` and `sa_cancellation`;
-inside the app the keys stay `booking-confirmation`, `reminder-24h`, `reminder-15m`, `reschedule` and `cancellation`
+so they go out as `sa_booking_confirmation`, `sa_reminder_24h`, `sa_reminder_15m`, `sa_reschedule` and `sa_cancellation`
+(and `sa_request_received`, `sa_request_approved`, `sa_request_declined`, `sa_request_expired`);
+inside the app the keys stay `booking-confirmation`, `reminder-24h`, `reminder-15m`, `reschedule`, `cancellation` and the four `request-*` ones
 (`lib/message-templates.ts` translates at the Graph boundary). A template that already has one of those names is adopted only
 if it takes the same number of variables as ours (the wording is not compared, so rewording a message never disables approved
 templates); otherwise the card says so (status "Name already used") and it is not used. Statuses are kept current from Meta's template

@@ -85,7 +85,7 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
   send that waited. A test pins that the queue's states are always a subset of the sender's.
   - `request-received`: `REQUESTED` and the hold still running.
   - `request-approved`: `HELD` or `PENDING_PAYMENT`, decided (`decidedAt` set), pay-by time ahead. `PAID` and `SCHEDULED` are skipped: the confirmation follows.
-  - `request-declined`: `CANCELLED`, `decidedAt` set, the service needs approval, no payment row ever.
+  - `request-declined`: `CANCELLED`, `decidedAt` set, no payment row ever (declining is the only way an unpaid booking gets `CANCELLED`).
   - `request-expired`: `EXPIRED`, `decidedAt` null, the service needs approval, no payment row ever.
   - Always skipped: erased customer data (`redactedAt`), no WhatsApp opt-in, no number.
 - **Values worked out when the message is sent** (`lib/request-message-context.ts`), never stored in a job: the payment link
@@ -137,8 +137,10 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
    different rules in the two places (a reminder for a `PAID` booking was sent by the sender but refused by the queue). Unifying them would
    have changed today's behaviour, so the module has a sender view and a queue view for the five, and one rule for the four new messages.
 2. **`whatsappQueued` means "on the queue"**, not only "opted in with a number" (see above).
-3. **`request-declined` and `request-expired` also check `requiresApproval` and "no payment ever"**, because a cancelled booking with
-   `decidedAt` set can also be an approved, paid and later cancelled booking, and an expired one with `decidedAt` null can be a plain hold.
+3. **`request-declined` and `request-expired` also check "no payment ever"**, because a cancelled booking with `decidedAt` set can also
+   be an approved, paid and later cancelled booking. `request-expired` also checks that the service needs approval (an expired one with
+   `decidedAt` null can be a plain hold); `request-declined` does not, so a host who turned approval off can still decline the backlog.
+   The cost: a request that lapses after the host turned approval off gets no "expired" message.
 4. **`request-received` and `request-approved` check that the hold is still running**; a "we received your request" an hour after it lapsed
    would be wrong.
 5. **The expiry notification is a separate function** (`expireStaleHoldsAndNotify`), not a change to `expireStaleHolds`: the plain
