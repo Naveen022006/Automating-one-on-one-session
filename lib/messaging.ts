@@ -335,6 +335,7 @@ async function deliverMessage(bookingId: string, template: string, overrides: Pa
     requiresApproval: booking.session.service.requiresApproval,
     hasPayment: booking.payments.length > 0,
     receivedDelivered: booking.messages.length > 0,
+    hostSuspended: booking.session.service.influencer.suspendedAt !== null,
   };
   if (!messageMayBeSent(template, facts, now, "sender")) {
     console.warn(`[send-message] booking ${bookingId} is ${booking.status}; "${template}" not sendable, skipping`);

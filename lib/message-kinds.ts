@@ -42,6 +42,8 @@ export interface BookingFacts {
   hasPayment: boolean;
   /** The customer was really sent the "request received" message (a sent, delivered or read row on any customer channel). */
   receivedDelivered: boolean;
+  /** The platform suspended the influencer. A suspended account takes no payments, so its payment page refuses to take one. */
+  hostSuspended: boolean;
 }
 
 /** `sender`: lib/messaging.ts. `queue`: the linked number's booking check, asked again right before each send. */
@@ -86,7 +88,8 @@ function holdAlive(f: BookingFacts, now: Date): boolean {
  *
  *  - request-received: still a REQUESTED booking whose hold is running;
  *  - request-approved: approved (decided) and not yet paid: HELD, or PENDING_PAYMENT when the customer already opened the payment;
- *    PAID and SCHEDULED are excluded because the confirmation follows. The pay-by time must be ahead;
+ *    PAID and SCHEDULED are excluded because the confirmation follows. The pay-by time must be ahead, and the host must not have been
+ *    suspended since the approval (the payment page then shows "unavailable": a "Pay here" link to it is worse than no message);
  *  - request-declined: CANCELLED, decided and never paid. Declining is the only way a booking that was never paid gets CANCELLED (a
  *    customer, host or administrator can cancel only a paid or scheduled booking, and that has a payment), so this is exactly a declined
  *    request, whatever the service's approval setting is today (a host who turned approval off can still decline the backlog);
@@ -102,7 +105,7 @@ export function messageMayBeSent(template: string, f: BookingFacts, now: Date, r
     case REQUEST_RECEIVED_TEMPLATE:
       return f.status === "REQUESTED" && holdAlive(f, now);
     case REQUEST_APPROVED_TEMPLATE:
-      return (f.status === "HELD" || f.status === "PENDING_PAYMENT") && f.decidedAt !== null && holdAlive(f, now);
+      return (f.status === "HELD" || f.status === "PENDING_PAYMENT") && f.decidedAt !== null && holdAlive(f, now) && !f.hostSuspended;
     case REQUEST_DECLINED_TEMPLATE:
       return f.status === "CANCELLED" && f.decidedAt !== null && !f.hasPayment;
     case REQUEST_EXPIRED_TEMPLATE:

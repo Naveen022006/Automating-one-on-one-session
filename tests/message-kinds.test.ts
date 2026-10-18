@@ -36,7 +36,7 @@ const ALL_STATUSES = ["REQUESTED", "HELD", "PENDING_PAYMENT", "PAID", "SCHEDULED
 const NOW = new Date("2026-11-10T10:00:00Z");
 const LATER = new Date(NOW.getTime() + 3_600_000);
 const EARLIER = new Date(NOW.getTime() - 3_600_000);
-const facts = (over: Partial<BookingFacts>): BookingFacts => ({ status: "PAID", holdExpiresAt: null, decidedAt: null, requiresApproval: false, hasPayment: false, receivedDelivered: false, ...over });
+const facts = (over: Partial<BookingFacts>): BookingFacts => ({ status: "PAID", holdExpiresAt: null, decidedAt: null, requiresApproval: false, hasPayment: false, receivedDelivered: false, hostSuspended: false, ...over });
 
 test("the five booking events keep exactly the states they always had, per route", () => {
   const paidOrAfter = ["PAID", "SCHEDULED", "COMPLETED"];
@@ -87,6 +87,7 @@ test("the queue can never allow what the sender refuses, for any message and any
     { holdExpiresAt: EARLIER },
     { holdExpiresAt: LATER, decidedAt: EARLIER, requiresApproval: true },
     { requiresApproval: true, receivedDelivered: true },
+    { holdExpiresAt: LATER, decidedAt: EARLIER, hostSuspended: true },
   ];
   for (const t of templates) {
     for (const status of ALL_STATUSES) {
@@ -120,6 +121,14 @@ test("request-approved: approved and unpaid (HELD or PENDING_PAYMENT) with the t
   assert.equal(ok({ holdExpiresAt: EARLIER }), false, "the time to pay has gone: a link to a dead page is worse than nothing");
   assert.equal(ok({ holdExpiresAt: null }), false);
   assert.equal(ok({ decidedAt: null }), false, "a plain hold of a service without approval is not an accepted request");
+  assert.equal(ok({ hostSuspended: true }), false, "suspended since the approval: the payment page says 'unavailable', so no 'Pay here' link");
+  for (const route of ["sender", "queue"] as const) {
+    assert.equal(messageMayBeSent(REQUEST_APPROVED_TEMPLATE, facts({ status: "HELD", holdExpiresAt: LATER, decidedAt: EARLIER, hostSuspended: true }), NOW, route), false, route);
+  }
+  // The suspension changes only the payment link: a decline or an expiry is still told to the customer.
+  assert.equal(messageMayBeSent(REQUEST_DECLINED_TEMPLATE, facts({ status: "CANCELLED", decidedAt: EARLIER, hostSuspended: true }), NOW), true);
+  assert.equal(messageMayBeSent(REQUEST_EXPIRED_TEMPLATE, facts({ status: "EXPIRED", requiresApproval: true, receivedDelivered: true, hostSuspended: true }), NOW), true);
+  assert.equal(messageMayBeSent("booking-confirmation", facts({ status: "PAID", hostSuspended: true }), NOW), true, "a paid customer still gets the Meet link");
 });
 
 test("request-declined: CANCELLED, decided and never paid, whatever the service's approval setting is now", () => {

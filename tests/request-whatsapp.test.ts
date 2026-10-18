@@ -783,6 +783,25 @@ test("SMS is a route only when the provider is set up for that message", { skip 
   }
 });
 
+test("a host suspended between the approval and the send: the payment link is not sent (its page says 'unavailable'); a decline is still told", { skip }, async () => {
+  const approved = await requestBooking();
+  await approvalLib.approveRequest(influencerId, approved, new Date(), queuedOk);
+  const declined = await requestBooking();
+  await approvalLib.declineRequest(influencerId, declined, "no", new Date(), queuedOk);
+  await prisma.influencer.update({ where: { id: influencerId }, data: { suspendedAt: new Date(), suspendedReason: "test" } });
+  try {
+    const f = fakes();
+    assert.equal(await sendMessageForBooking(approved, "request-approved", f.deps), "skipped");
+    assert.deepEqual(f.calls, [], "no channel was tried");
+    assert.equal(await guardLib.bookingAllowsMessage(influencerId, { bookingId: approved, toE164: PHONE, kind: "request-approved" }), "not-sendable");
+    assert.equal(await sendMessageForBooking(declined, "request-declined", f.deps), "sent", "the customer is still told that the request was not accepted");
+  } finally {
+    await prisma.influencer.update({ where: { id: influencerId }, data: { suspendedAt: null, suspendedReason: null } });
+  }
+  const g = fakes();
+  assert.equal(await sendMessageForBooking(approved, "request-approved", g.deps), "sent", "reinstated: the same message goes out");
+});
+
 // ---- 5a. no route at all: no retries, no alerts for the request messages ------------------------------------------------------------
 
 /** The world with no way to reach the customer: the number is not linked, no official connection, and SMS says it is not set up. */

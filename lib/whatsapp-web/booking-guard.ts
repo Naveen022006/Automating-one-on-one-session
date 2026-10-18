@@ -33,7 +33,7 @@ export async function bookingAllowsMessage(influencerId: string, req: Pick<Queue
       redactedAt: true,
       holdExpiresAt: true,
       decidedAt: true,
-      session: { select: { service: { select: { requiresApproval: true } } } },
+      session: { select: { service: { select: { requiresApproval: true, influencer: { select: { suspendedAt: true } } } } } },
       payments: { select: { id: true }, take: 1 },
       messages: { where: { template: "request-received", channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS"] }, status: { in: ["SENT", "DELIVERED", "READ"] } }, select: { id: true }, take: 1 },
     },
@@ -47,6 +47,7 @@ export async function bookingAllowsMessage(influencerId: string, req: Pick<Queue
     requiresApproval: found.session.service.requiresApproval,
     hasPayment: found.payments.length > 0,
     receivedDelivered: found.messages.length > 0,
+    hostSuspended: found.session.service.influencer.suspendedAt !== null,
   };
   // No `kind`: the widest rule (an unlisted template name). The queue only ever sends texts that exist, and every one of them says its kind.
   return messageMayBeSent(req.kind ?? "", facts, new Date(), "queue") ? true : "not-sendable";
