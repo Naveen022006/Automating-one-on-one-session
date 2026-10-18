@@ -165,7 +165,7 @@ export function PayoutRowActions({
           open === "approve"
             ? "You are confirming that the amount and the destination are right. You cannot approve a payout you created."
             : open === "paid"
-              ? "Only do this after you have sent the money. The influencer is emailed the amount and reference."
+              ? "Only do this after you have sent the money. The influencer is emailed the amount and reference when this site sends e-mail; otherwise tell them yourself."
               : "The payments in it go back to being payable. Nothing was sent."
         }
       >

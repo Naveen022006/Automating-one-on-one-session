@@ -37,11 +37,11 @@ const FAQ = [
   },
   {
     q: "Do I need a Google account?",
-    a: "Yes. Meet links are created on your own Google Calendar, so you connect a Google account once from the dashboard. Free Gmail accounts end group calls after 60 minutes; Google Workspace does not.",
+    a: "Yes. Meet links are created on your own Google Calendar, so you connect a Google account once from the dashboard, using a Google client that you create yourself (a short guide is there). Free Gmail accounts end group calls after 60 minutes; Google Workspace does not.",
   },
   {
     q: "Do customers need to opt in to WhatsApp?",
-    a: "Yes. Customers tick a box to receive their link and reminders on WhatsApp. They always get the link by email and on the confirmation page too, so nobody depends on WhatsApp alone.",
+    a: "Yes. Customers tick a box to receive their link and reminders on WhatsApp. They also get the link on the confirmation page, and by email when you have connected your Gmail, so nobody depends on WhatsApp alone.",
   },
   {
     q: "How do refunds work?",

@@ -127,10 +127,15 @@ export function SlugForm({ slug, origin }: { slug: string; origin: string }) {
   );
 }
 
-export function NotificationPrefs({ notifyByEmail }: { notifyByEmail: boolean }) {
+export function NotificationPrefs({ notifyByEmail, emailEnabled = true }: { notifyByEmail: boolean; emailEnabled?: boolean }) {
   const api = useApi();
   const toast = useToast();
   const [on, setOn] = useState(notifyByEmail);
+  if (!emailEnabled) {
+    return (
+      <p className="subtle">This site does not send e-mail, so alerts (Google reconnect, failed messages, refunds due) only show in your dashboard. Check the Overview page for anything that needs attention.</p>
+    );
+  }
   return (
     <Switch
       checked={on}
@@ -296,9 +301,17 @@ export function DeviceSessions() {
   );
 }
 
-export function VerifyBanner({ email }: { email: string }) {
+export function VerifyBanner({ email, emailEnabled = true }: { email: string; emailEnabled?: boolean }) {
   const [state, setState] = useState<"idle" | "sent" | "error">("idle");
   const [msg, setMsg] = useState<string | null>(null);
+  // The platform sends no e-mail (doc/15): no link was sent and none can be. Say what really happens.
+  if (!emailEnabled) {
+    return (
+      <Alert tone="warning" title="Your administrator verifies new accounts">
+        This site does not send e-mail, so there is no link to open. Your account ({email}) is confirmed by an administrator. You can keep setting up in the meantime; your booking page goes live once it is confirmed.
+      </Alert>
+    );
+  }
   return (
     <Alert
       tone="warning"

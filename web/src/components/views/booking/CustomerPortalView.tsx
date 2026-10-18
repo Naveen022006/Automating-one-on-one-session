@@ -97,7 +97,7 @@ export function CustomerPortalView({ data, token, onChanged }: { data: Jsonify<C
           <h1 className="focused__title">Your data was erased</h1>
           <Alert tone="success" title="Done">
             We erased your name, e-mail address, phone number, time zone and booking answers from {result.erased} {result.erased === 1 ? "booking" : "bookings"}.
-            Payment records are kept without your personal details, as the law requires for accounting. We sent a confirmation to your e-mail.
+            Payment records are kept without your personal details, as the law requires for accounting. We send a confirmation to your e-mail when this site can send e-mail.
           </Alert>
           <p className="muted text-sm">
             This link no longer shows anything. <AppLink href="/">Back to the home page</AppLink>

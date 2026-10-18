@@ -14,7 +14,7 @@ const BAD_EMAIL = "Please enter a valid e-mail address.";
  * A refused address is an error on the field (linked to the input, which gets the focus); the confirmation takes the focus.
  * `initial` is for tests of the two end states, which a static render cannot reach.
  */
-export function FindBookingsView({ initial }: { initial?: { sent?: boolean; fieldError?: string } } = {}) {
+export function FindBookingsView({ initial, emailEnabled = true }: { initial?: { sent?: boolean; fieldError?: string }; emailEnabled?: boolean } = {}) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(initial?.sent ?? false);
   const [fieldError, setFieldError] = useState<string | null>(initial?.fieldError ?? null);
@@ -53,6 +53,22 @@ export function FindBookingsView({ initial }: { initial?: { sent?: boolean; fiel
     }
   }
 
+  // The platform sends no e-mail (doc/15): do not offer a link that cannot arrive.
+  if (!emailEnabled) {
+    return (
+      <FocusedLayout>
+        <div className="stack stack--lg">
+          <h1 className="focused__title">Find your bookings</h1>
+          <Alert tone="info" title="We cannot e-mail you a link">
+            This site does not send e-mail, so there is no link to send. Your booking link is in the WhatsApp or text message you got when you booked, and on the page you saw after paying. If you cannot find it, ask the person you booked with.
+          </Alert>
+          <p className="muted text-sm">
+            See our <AppLink href="/privacy">privacy policy</AppLink> for what we keep and how to ask for it to be erased.
+          </p>
+        </div>
+      </FocusedLayout>
+    );
+  }
   return (
     <FocusedLayout>
       <div className="stack stack--lg">

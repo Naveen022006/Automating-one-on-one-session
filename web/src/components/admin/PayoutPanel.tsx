@@ -104,7 +104,7 @@ export function PayoutPanel({ influencerId, account }: { influencerId: string; a
       </dl>
       {revealed && <p className="subtle">Revealing details is recorded in the audit log. Hide them again by reloading the page.</p>}
 
-      <Dialog open={rejecting} onClose={() => setRejecting(false)} title="Ask the influencer to fix their details" description="This message is emailed to them.">
+      <Dialog open={rejecting} onClose={() => setRejecting(false)} title="Ask the influencer to fix their details" description="This message is shown on their Payouts page, and e-mailed to them when this site sends e-mail.">
         <form className="stack" onSubmit={reject}>
           <Field id="reject-reason" label="What needs fixing?">
             <Textarea id="reject-reason" value={reason} maxLength={300} required onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReason(e.target.value)} />

@@ -18,13 +18,21 @@ export function PrivacyView() {
       <h3>Hosts (creators with an account)</h3>
       <ul>
         <li>Name, email, profile details and a hashed password (we cannot read your password).</li>
-        <li>An encrypted Google refresh token and the Google account email, to create calendar events with Meet links.</li>
+        <li>
+          Your Google client ID and, encrypted, its client secret: you create your own Google client and give them to us, so that your Google
+          connection belongs to you and not to us.
+        </li>
+        <li>
+          An encrypted Google refresh token and the Google account email, to create calendar events with Meet links and, if you allow it, to send
+          your customers&rsquo; e-mails from your Gmail. Disconnecting Google deletes the token; removing your Google client deletes the client ID and
+          the encrypted secret.
+        </li>
         <li>Sign-in records (time, browser, IP address) to secure your account.</li>
       </ul>
       <h2>Who we share it with</h2>
       <p>
         Only the providers needed to deliver the service: Razorpay (payments), Google (calendar and Meet), Meta (WhatsApp),
-        our SMS provider, our email provider, and our hosting and database providers. The host you book with can see your
+        our SMS provider, our email provider (if we use one), the host&rsquo;s own Gmail when they allow it, and our hosting and database providers. The host you book with can see your
         booking details.
       </p>
       <h2>Retention</h2>

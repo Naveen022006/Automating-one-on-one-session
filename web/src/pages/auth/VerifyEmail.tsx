@@ -21,7 +21,7 @@ export function Component() {
     <>
       <PageTitle title="Confirm your email" />
       {token || session.data !== undefined ? (
-        <VerifyEmailView token={token} user={user} />
+        <VerifyEmailView token={token} user={user} emailEnabled={session.data?.emailEnabled !== false} />
       ) : (
         <VerifyEmailFrame>
           {session.isPending ? <PageLoading /> : <PageError error={session.error ?? new Error("Unknown error")} onRetry={() => void session.refetch()} />}

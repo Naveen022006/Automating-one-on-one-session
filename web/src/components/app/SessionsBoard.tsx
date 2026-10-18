@@ -1,7 +1,7 @@
 import { useRouter } from "@web/lib/navigate";
 import { useEffect, useMemo, useState } from "react";
 import { IconCalendarClock, IconCalendarX, IconCopy, IconSend, IconUndo, IconUsers, IconVideo } from "@web/components/icons";
-import { ConfirmDialog, Dialog, Drawer, useToast } from "@web/components/ui/overlays";
+import { ConfirmDialog, CopyField, Dialog, Drawer, useToast } from "@web/components/ui/overlays";
 import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, Textarea } from "@web/components/ui/primitives";
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIn, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
@@ -131,6 +131,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
   const [dialog, setDialog] = useState<"cancel" | "refund" | "reschedule" | "decline" | null>(null);
   const [reason, setReason] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
+  const [payLink, setPayLink] = useState<string | null>(null);
 
   useEffect(() => {
     if (!bookingId) return;
@@ -150,7 +151,12 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
       toast(r.data.error ?? "That did not work. Please try again.", "error");
       return false;
     }
-    toast(r.data.warning ? `${done} ${r.data.warning}` : done);
+    // An approval says whether the customer was e-mailed the payment link. With no Gmail connection and no platform e-mail (doc/15) nothing
+    // went out, so the link is shown to the host to send themselves: never "was emailed" for a message that was not sent.
+    if (label === "approve" && r.data.emailed === false) {
+      toast("Approved, but the customer could not be e-mailed. Send them the payment link yourself.", "error");
+      if (typeof r.data.payLink === "string") setPayLink(r.data.payLink);
+    } else toast(r.data.warning ? `${done} ${r.data.warning}` : done);
     setDialog(null);
     router.refresh();
     if (bookingId) {
@@ -376,6 +382,16 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
           </section>
         </div>
       )}
+
+      <Dialog
+        open={payLink !== null}
+        onClose={() => setPayLink(null)}
+        title="Send the payment link yourself"
+        description="The customer was not e-mailed: this site sends no e-mail, and Gmail is not connected. Send them this link, for example on WhatsApp. It is the only copy shown."
+        footer={<Button variant="primary" onClick={() => setPayLink(null)}>Done</Button>}
+      >
+        {payLink && <CopyField value={payLink} label="Copy link" />}
+      </Dialog>
 
       {detail && (
         <>

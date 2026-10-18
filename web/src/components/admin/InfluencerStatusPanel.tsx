@@ -123,7 +123,7 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
         onClose={close}
         onConfirm={() => void submit()}
         title="Suspend this influencer"
-        description="Their booking page goes offline, and new holds, payments, request approvals and payouts are refused. They are emailed the reason."
+        description={`Their booking page goes offline, and new holds, payments, request approvals and payouts are refused. ${v.emailEnabled ? "They are emailed the reason." : "This site sends no e-mail, so tell them the reason yourself."}`}
         confirmLabel="Suspend"
         cancelLabel="Back"
         danger
@@ -146,7 +146,7 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
         onClose={close}
         onConfirm={() => void submit()}
         title="Reinstate this influencer"
-        description="Their booking page goes live again if everything else on the go-live checklist is in place. They are emailed."
+        description={`Their booking page goes live again if everything else on the go-live checklist is in place. ${v.emailEnabled ? "They are emailed." : "This site sends no e-mail, so let them know yourself."}`}
         confirmLabel="Reinstate"
         cancelLabel="Back"
         busy={busy}
@@ -158,7 +158,7 @@ export function InfluencerStatusPanel({ influencerId }: { influencerId: string }
         title="Approve this page"
         description={
           v.approval.required
-            ? "The page can go live once the rest of the go-live checklist is done. The influencer is emailed (not while the account is suspended)."
+            ? `The page can go live once the rest of the go-live checklist is done. ${v.emailEnabled ? "The influencer is emailed (not while the account is suspended)." : "This site sends no e-mail, so let the influencer know yourself."}`
             : "Approval is not required right now. Approving in advance keeps this page live if you turn the approval gate on later. No email is sent."
         }
         confirmLabel="Approve"
