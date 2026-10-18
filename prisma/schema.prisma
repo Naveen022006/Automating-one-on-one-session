@@ -53,6 +53,7 @@ model Influencer {
   user               User?
   payoutAccount      PayoutAccount?
   whatsappConnection WhatsAppConnection?
+  whatsappWebSession WhatsAppWebSession?
   // Platform fee in basis points (1000 = 10%) taken from this influencer's payouts. Null = use the platform default
   // (PLATFORM_FEE_BPS). Decided by the administrator.
   platformFeeBps     Int?                @map("platform_fee_bps")
@@ -722,4 +723,48 @@ model CustomerAccessToken {
   @@index([email])
   @@index([expiresAt])
   @@map("customer_access_tokens")
+}
+
+// OPTIONAL "link WhatsApp by QR code" sending mode (doc/14-whatsapp-qr-*.md): the influencer links their OWN WhatsApp as a linked
+// device and the worker sends their booking messages from it. An unofficial method that WhatsApp's terms do not allow, so it is off
+// unless WHATSAPP_QR_ENABLED=true and the influencer asks for it with an explicit consent. One row per influencer. The login of the
+// linked device (credentials + Signal keys) is ONE AES-256-GCM blob in authStateEnc (aad "wa-web:<influencerId>", see
+// lib/whatsapp-web/auth-state.ts), never returned by any API and never logged; it is wiped on disconnect, on logout and when the
+// influencer is deleted. The QR code itself is never stored here (Redis, 60 s). Web instances only write wantLinked (and the
+// consent) and read the status; the worker holds the sockets and writes everything else.
+enum WhatsAppWebStatus {
+  NOT_LINKED
+  PENDING_QR
+  LINKED
+  RECONNECTING
+  SUSPENDED
+  LOGGED_OUT
+}
+
+model WhatsAppWebSession {
+  id                  String            @id @default(cuid())
+  influencerId        String            @unique @map("influencer_id")
+  status              WhatsAppWebStatus @default(NOT_LINKED)
+  // What the influencer asked for (set by the web app). The worker makes the world match it.
+  wantLinked          Boolean           @default(false) @map("want_linked")
+  phoneE164           String?           @map("phone_e164")
+  deviceLabel         String?           @map("device_label")
+  consentAt           DateTime?         @map("consent_at")
+  consentVersion      String?           @map("consent_version")
+  authStateEnc        String?           @map("auth_state_enc")
+  linkedAt            DateTime?         @map("linked_at")
+  lastConnectedAt     DateTime?         @map("last_connected_at")
+  // Short machine code (for example "max-sessions", "logged-out") and a short human text. No secrets.
+  lastErrorCode       String?           @map("last_error_code")
+  lastErrorText       String?           @map("last_error_text")
+  suspendedReason     String?           @map("suspended_reason")
+  consecutiveFailures Int               @default(0) @map("consecutive_failures")
+  sentTotal           Int               @default(0) @map("sent_total")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  influencer Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([wantLinked, status])
+  @@map("whatsapp_web_sessions")
 }
