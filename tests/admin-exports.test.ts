@@ -112,10 +112,10 @@ const range = (from = FROM, to = FROM) => `?from=${from}&to=${to}`;
 
 /* ---------- pure rules ---------- */
 
-test("the cap and the longest range are what the plan says; the kinds are the four exports", () => {
+test("the cap and the longest range are what the plan says; the kinds are the four exports and the money ledger", () => {
   assert.equal(ADMIN_EXPORT_ROW_CAP, 20_000);
   assert.equal(ADMIN_EXPORT_MAX_DAYS, 366);
-  assert.deepEqual([...EXPORT_KINDS], ["payments", "bookings", "payouts", "audit"]);
+  assert.deepEqual([...EXPORT_KINDS], ["payments", "bookings", "payouts", "audit", "money"]);
   for (const k of EXPORT_KINDS) assert.ok(isExportKind(k));
   for (const odd of ["", "payment", "PAYMENTS", "../audit", "__proto__", "audit.csv", "constructor", "toString"]) assert.equal(isExportKind(odd), false, odd);
   assert.equal(new ExportTooLargeError(ADMIN_EXPORT_ROW_CAP).message, "More than 20,000 rows. Choose a shorter range.");
@@ -263,9 +263,10 @@ before(async () => {
   });
   sessionLib = await import("../lib/admin/session");
   exportsLib = await import("../lib/admin/exports");
-  // The route gets the real exports module, except that the row cap can be lowered from the test.
+  // The route gets the real exports module, except that the row cap can be lowered from the test (the options the route passes, the money
+  // export's type and influencer, are kept).
   mock.module("@/lib/admin/exports", {
-    namedExports: { ...exportsLib, buildExport: (kind: never, r: never) => exportsLib.buildExport(kind, r, capOverride === undefined ? {} : { rowCap: capOverride }) },
+    namedExports: { ...exportsLib, buildExport: (kind: never, r: never, o: object = {}) => exportsLib.buildExport(kind, r, capOverride === undefined ? o : { ...o, rowCap: capOverride }) },
   });
   GET = (await import("../app/api/admin/exports/[kind]/route")).GET as Handler;
 
@@ -379,6 +380,7 @@ const HEADERS = {
   bookings: ["created_at", "booking_id", "status", "influencer_slug", "service_title", "service_type", "session_start", "customer_name", "customer_email", "paid", "refunded", "currency", "meet_link_created"],
   payouts: ["created_at", "payout_id", "influencer_slug", "status", "currency", "gross", "refunds", "fee_bps", "fee", "net", "payment_count", "destination", "reference", "created_by", "approved_by", "approved_at", "paid_by", "paid_at"],
   audit: ["created_at", "admin_email", "action", "target_type", "target_id", "ip"],
+  money: ["date", "type", "direction", "amount", "fee", "currency", "status", "influencer_slug", "influencer_name", "service_title", "customer_name", "booking_id", "payment_id", "payout_id", "razorpay_payment_id", "razorpay_refund_id", "utr", "destination", "approved_by", "paid_by"],
 };
 
 async function csvOf(kind: string, query = range()) {
@@ -404,6 +406,7 @@ test("each export: the headers of the download, the header row exactly, and only
   assert.equal((await csvOf("bookings")).rows.length - 1, 4);
   assert.equal((await csvOf("payouts")).rows.length - 1, 1);
   assert.equal((await csvOf("audit")).rows.length - 1, 3);
+  assert.equal((await csvOf("money")).rows.length - 1, 5, "the money ledger: the four payments of the day and the one payout marked as sent in it");
   // A longer range takes in the neighbours; `to` is inclusive of its whole day.
   const next = dayOf(at(DAY));
   const prev = dayOf(at(-DAY));
@@ -520,7 +523,7 @@ test("nothing secret leaves in any export: no phone, Meet link, event id, intake
 });
 
 test("every export is audited before the file is returned: `admin.export` with the kind, the range and the row count", { skip }, async () => {
-  const expectedRows: Record<string, number> = { payments: 4, bookings: 4, payouts: 1, audit: 3 };
+  const expectedRows: Record<string, number> = { payments: 4, bookings: 4, payouts: 1, audit: 3, money: 5 };
   for (const kind of EXPORT_KINDS) {
     const startedAt = new Date();
     const { rows } = await csvOf(kind);
@@ -530,7 +533,8 @@ test("every export is audited before the file is returned: `admin.export` with t
     });
     assert.ok(entry, `${kind}: an audit entry`);
     assert.equal(entry.targetType, "export");
-    assert.deepEqual(entry.detail, { kind, from: FROM, to: FROM, rows: expectedRows[kind] });
+    // The money export also records what narrowed it (here: nothing).
+    assert.deepEqual(entry.detail, { kind, from: FROM, to: FROM, rows: expectedRows[kind], ...(kind === "money" ? { type: "all", influencerId: null } : {}) });
     assert.equal(rows.length - 1, expectedRows[kind]);
   }
 });
@@ -540,7 +544,7 @@ test("a range with more rows than the cap is refused with 400 and the honest mes
   capOverride = 2;
   try {
     const startedAt = new Date();
-    for (const kind of ["payments", "bookings", "audit"]) {
+    for (const kind of ["payments", "bookings", "audit", "money"]) {
       const res = await ask(kind, range(), token);
       assert.equal(res.status, 400, kind);
       assert.deepEqual(await res.json(), { error: "More than 2 rows. Choose a shorter range." });

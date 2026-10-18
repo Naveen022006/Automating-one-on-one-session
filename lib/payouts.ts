@@ -675,9 +675,12 @@ export async function influencerPayoutSummary(influencerId: string): Promise<Inf
     get(o.currency).readyMinor = o.readyMinor;
     get(o.currency).waitingMinor = o.waitingMinor;
   }
-  for (const p of payouts) {
-    if (p.status === "PAID") get(p.currency).paidOutMinor += p.netMinor;
-    if (p.status === "PENDING") get(p.currency).pendingMinor += p.netMinor;
+  // Paid out to date and pending are summed in the database over ALL the payouts, not over the 50 of `history`: an influencer with more
+  // payouts than that would otherwise be shown less than they were sent (the admin Money page reads this figure).
+  const sums = await prisma.payout.groupBy({ by: ["currency", "status"], where: { influencerId, status: { in: ["PAID", "PENDING"] } }, _sum: { netMinor: true } });
+  for (const s of sums) {
+    if (s.status === "PAID") get(s.currency).paidOutMinor += s._sum.netMinor ?? 0;
+    if (s.status === "PENDING") get(s.currency).pendingMinor += s._sum.netMinor ?? 0;
   }
   return {
     feeBps,

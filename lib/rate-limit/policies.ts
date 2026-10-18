@@ -66,8 +66,10 @@ export const ROUTE_RULES: RouteRule[] = [
   { name: "admin-account-help", pattern: /^\/api\/admin\/influencers\/[^/]+\/(verify-email|reset-link)$/, methods: ["POST"], limit: 30, windowMs: HOUR, by: "ip" },
   // CSV exports carry personal data and run wide queries; the finance report aggregates the whole database. HEAD is answered by
   // the GET handler (it would run the same query), so it shares the rule, like the other view endpoints below.
-  { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
+  { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit|money)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
   { name: "admin-reports", pattern: /^\/api\/admin\/reports$/, methods: ["GET", "HEAD"], limit: 30, windowMs: 10 * MIN, by: "ip" },
+  // The Money ledger runs about twenty small queries a page and is paged by hand, so it allows twice the reports' rate.
+  { name: "admin-money-ledger", pattern: /^\/api\/admin\/money$/, methods: ["GET", "HEAD"], limit: 60, windowMs: 10 * MIN, by: "ip" },
   // The optional QR-code WhatsApp mode, platform side (status of every linked number, and the actions that disconnect one). Changes are
   // low volume; reads stay under `admin`.
   { name: "admin-whatsapp-web", pattern: /^\/api\/admin\/whatsapp-web(\/|$)/, methods: ["POST", "PATCH", "PUT", "DELETE"], limit: 30, windowMs: HOUR, by: "ip" },

@@ -1,9 +1,11 @@
+import { countMovements, movementDirection, movementStatus, parseMoneyType, readMovements, type MoneyFilter, type MoneyType } from "@/lib/admin/money";
 import { prisma } from "@/lib/db";
+import { isEntityId } from "@/lib/http";
 import { addDays, formatCount, istDayStart, istIso, istToday } from "@/lib/india";
 import { parseReportDay } from "@/lib/views/dashboard-params";
 
 /**
- * Administrator CSV exports (payments, bookings, payouts, audit). One function per kind returns the whole file as rows (a header row
+ * Administrator CSV exports (payments, bookings, payouts, audit, money). One function per kind returns the whole file as rows (a header row
  * first); the route turns them into CSV with `toCsv`, which neutralises spreadsheet formulas (a cell starting with = + - @ tab or CR).
  *
  * What goes in a file is decided here, column by column, from a `select` of exactly those columns: never a spread row, so a column that
@@ -17,7 +19,7 @@ export const ADMIN_EXPORT_ROW_CAP = 20_000;
 /** The longest date range one export may cover, in days (both ends included). */
 export const ADMIN_EXPORT_MAX_DAYS = 366;
 
-export const EXPORT_KINDS = ["payments", "bookings", "payouts", "audit"] as const;
+export const EXPORT_KINDS = ["payments", "bookings", "payouts", "audit", "money"] as const;
 export type ExportKind = (typeof EXPORT_KINDS)[number];
 
 export function isExportKind(value: string): value is ExportKind {
@@ -296,8 +298,71 @@ export async function exportAudit(range: ExportRange, cap = ADMIN_EXPORT_ROW_CAP
   return [AUDIT_HEADER, ...entries.map((a) => [iso(a.createdAt), a.adminEmail, a.action, a.targetType, a.targetId, a.ip])];
 }
 
+/** What the `money` export is narrowed by: the type of movement and one influencer (`?type=` and `?influencerId=`, as on the Money page). */
+export interface MoneyExportOptions {
+  type: MoneyType;
+  influencerId: string | null;
+}
+
+/**
+ * `?type=` (anything unknown is "all") and `?influencerId=` of the money export. An influencer id that is not shaped like an id is refused,
+ * like on the Money page: ignoring it would export everybody's money from a screen that looked filtered.
+ */
+export function parseMoneyExportOptions(params: URLSearchParams): { ok: true; options: MoneyExportOptions } | { ok: false; error: string } {
+  const raw = (params.get("influencerId") ?? "").trim();
+  if (raw !== "" && !isEntityId(raw)) return { ok: false, error: "That influencer is not valid." };
+  return { ok: true, options: { type: parseMoneyType(params.get("type")), influencerId: raw === "" ? null : raw } };
+}
+
+const MONEY_HEADER = [
+  "date", "type", "direction", "amount", "fee", "currency", "status", "influencer_slug", "influencer_name", "service_title", "customer_name",
+  "booking_id", "payment_id", "payout_id", "razorpay_payment_id", "razorpay_refund_id", "utr", "destination", "approved_by", "paid_by",
+];
+
+/**
+ * The ledger of the Money page as a file: one row per movement of the range (customer payments in; refunds and payouts out), OLDEST first,
+ * by the same dates and the same rows as the page (lib/admin/money.ts). `amount` is always positive, `direction` says in or out; a failed
+ * refund is listed with the status `failed` and is not money out. `fee` is the platform fee kept on a payout. Payouts that are created and
+ * not yet sent are not movements and are not in the file. The Razorpay payment id and the bank reference (UTR) are written in full, like the
+ * payments and payouts exports (this file is administrator-only and audited); a customer is "(erased)" when their data was erased; no phone,
+ * e-mail, Meet link, intake answer or token.
+ */
+export async function exportMoney(range: ExportRange, options: MoneyExportOptions = { type: "all", influencerId: null }, cap = ADMIN_EXPORT_ROW_CAP): Promise<ExportRow[]> {
+  const filter: MoneyFilter = { from: range.from, to: range.to, type: options.type, influencerId: options.influencerId };
+  const records = await capped(
+    async () => (await countMovements(filter)).total,
+    (take) => readMovements(filter, { limit: take, offset: 0, order: "asc" }),
+    cap,
+  );
+  return [
+    MONEY_HEADER,
+    ...records.map((r) => [
+      iso(r.at),
+      r.kind,
+      movementDirection(r.kind),
+      money(r.amountMinor),
+      r.feeMinor === null ? "" : money(r.feeMinor),
+      r.currency,
+      movementStatus(r),
+      r.influencerSlug,
+      r.influencerName,
+      r.serviceTitle,
+      r.customerName,
+      r.bookingId,
+      r.paymentId,
+      r.payoutId,
+      r.providerPaymentId,
+      r.providerRefundId,
+      r.utr,
+      r.destination,
+      r.approvedBy,
+      r.paidBy,
+    ]),
+  ];
+}
+
 /** The whole file for one kind: a header row, then the data rows. Sequential queries only (the database has a small connection cap). */
-export async function buildExport(kind: ExportKind, range: ExportRange, opts: { rowCap?: number } = {}): Promise<ExportRow[]> {
+export async function buildExport(kind: ExportKind, range: ExportRange, opts: { rowCap?: number; money?: MoneyExportOptions } = {}): Promise<ExportRow[]> {
   const cap = opts.rowCap ?? ADMIN_EXPORT_ROW_CAP;
   switch (kind) {
     case "payments":
@@ -308,5 +373,7 @@ export async function buildExport(kind: ExportKind, range: ExportRange, opts: { 
       return exportPayouts(range, cap);
     case "audit":
       return exportAudit(range, cap);
+    case "money":
+      return exportMoney(range, opts.money, cap);
   }
 }
