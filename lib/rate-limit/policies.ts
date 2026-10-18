@@ -68,6 +68,9 @@ export const ROUTE_RULES: RouteRule[] = [
   // the GET handler (it would run the same query), so it shares the rule, like the other view endpoints below.
   { name: "admin-export", pattern: /^\/api\/admin\/exports\/(payments|bookings|payouts|audit)$/, methods: ["GET", "HEAD"], limit: 30, windowMs: HOUR, by: "ip" },
   { name: "admin-reports", pattern: /^\/api\/admin\/reports$/, methods: ["GET", "HEAD"], limit: 30, windowMs: 10 * MIN, by: "ip" },
+  // The optional QR-code WhatsApp mode, platform side (status of every linked number, and the actions that disconnect one). Changes are
+  // low volume; reads stay under `admin`.
+  { name: "admin-whatsapp-web", pattern: /^\/api\/admin\/whatsapp-web(\/|$)/, methods: ["POST", "PATCH", "PUT", "DELETE"], limit: 30, windowMs: HOUR, by: "ip" },
   { name: "admin", pattern: /^\/api\/admin\//, limit: 120, windowMs: MIN, by: "ip" },
 
   // --- Public booking flow. Holds reserve a seat, so they are tightly limited to stop seat squatting.
@@ -112,6 +115,10 @@ export const ROUTE_RULES: RouteRule[] = [
   // Saving a Google client calls Google's token endpoint to check the pasted pair (doc/15), and removing one revokes tokens: keep both low.
   { name: "dashboard-google-client", pattern: /^\/api\/dashboard\/google-client$/, methods: ["POST"], limit: 10, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard-whatsapp", pattern: /^\/api\/dashboard\/whatsapp$/, methods: ["POST", "DELETE"], limit: 20, windowMs: HOUR, by: "session-or-ip" },
+  // The optional QR-code WhatsApp mode. The linking screen polls the status every 2 s while it waits for the scan (30 a minute), so
+  // reads get twice that; starting, cancelling, disconnecting and the test message are rare (and a test message is a real send).
+  { name: "dashboard-whatsapp-web-read", pattern: /^\/api\/dashboard\/whatsapp-web$/, methods: ["GET", "HEAD"], limit: 60, windowMs: MIN, by: "session-or-ip" },
+  { name: "dashboard-whatsapp-web", pattern: /^\/api\/dashboard\/whatsapp-web(\/|$)/, methods: ["POST", "PUT", "PATCH", "DELETE"], limit: 10, windowMs: MIN, by: "session-or-ip" },
   { name: "dashboard-export", pattern: /^\/api\/dashboard\/earnings\/export$/, limit: 20, windowMs: HOUR, by: "session-or-ip" },
   { name: "dashboard", pattern: /^\/api\/dashboard\//, limit: 120, windowMs: MIN, by: "session-or-ip" },
 ];

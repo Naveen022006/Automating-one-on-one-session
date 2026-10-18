@@ -36,6 +36,10 @@ export const ACTIVITY_ACTIONS = {
   "google.client_removed": "Google client removed",
   "whatsapp.connected": "WhatsApp connected",
   "whatsapp.disconnected": "WhatsApp disconnected",
+  "whatsapp_web.consent": "WhatsApp QR-code risk statement accepted",
+  "whatsapp_web.linked": "WhatsApp number linked by QR code",
+  "whatsapp_web.disconnected": "WhatsApp QR-code link removed",
+  "whatsapp_web.suspended": "WhatsApp QR-code sending paused",
   "onboarding.completed": "Onboarding completed",
   "earnings.exported": "Earnings exported",
 } as const;
@@ -74,6 +78,10 @@ export const ACTIVITY_DETAIL_KEYS: Record<ActivityAction, readonly string[]> = {
   "google.client_removed": ["client"],
   "whatsapp.connected": ["phone"],
   "whatsapp.disconnected": ["phone"],
+  "whatsapp_web.consent": ["version"],
+  "whatsapp_web.linked": ["phone"],
+  "whatsapp_web.disconnected": ["phone", "reason"],
+  "whatsapp_web.suspended": ["code"],
   "onboarding.completed": [],
   "earnings.exported": ["from", "to", "rows", "count"],
 };
@@ -246,6 +254,16 @@ function summariseBase(action: ActivityAction, detail: unknown): string {
       const client = str(detail, "client");
       const replaced = action === "google.client_saved" && detail !== null && typeof detail === "object" && (detail as Record<string, unknown>).replaced === true;
       return `${label}${client ? ` (${client})` : ""}${replaced ? ", replacing the earlier one" : ""}`;
+    }
+    case "whatsapp_web.linked": {
+      // Only the masked tail of the influencer's own number (lib/whatsapp-web/commands.ts maskPhone), never a customer's.
+      const who = str(detail, "phone");
+      return who ? `${label} (${who})` : label;
+    }
+    case "whatsapp_web.disconnected": {
+      const why = str(detail, "reason");
+      const reason = why === "logged-out" ? "WhatsApp logged the device out" : why === "admin" ? "removed by the platform" : why === "influencer" ? "removed by you" : null;
+      return reason ? `${label} (${reason})` : label;
     }
     case "earnings.exported": {
       const rows = num(detail, "rows");

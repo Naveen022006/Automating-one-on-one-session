@@ -1,7 +1,7 @@
 import { PageHead } from "@web/components/app/AppShell";
 import { AccountActivityPanel } from "@web/components/app/AccountActivityPanel";
 import { GoogleConnect } from "@web/components/app/GoogleConnect";
-import { WhatsAppConnect } from "@web/components/app/WhatsAppConnect";
+import { WhatsAppModePicker } from "@web/components/app/WhatsAppModePicker";
 import { DeviceSessions, NotificationPrefs, PasswordForm, ProfileForm, SlugForm, VerifyBanner } from "@web/components/app/SettingsForms";
 import { Card } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
@@ -26,7 +26,7 @@ export function SettingsView({ data, outcome }: { data: Jsonify<DashboardSetting
         <GoogleConnect status={data.google} client={data.googleClient} returnTo="/dashboard/settings#google" outcome={outcome} emailEnabled={data.emailEnabled} />
       </Card>
       <Card title={<h2 className="card__title" id="whatsapp">WhatsApp</h2>}>
-        <WhatsAppConnect connection={data.whatsapp} embedded={data.embedded} required={data.whatsappRequired} />
+        <WhatsAppModePicker connection={data.whatsapp} embedded={data.embedded} required={data.whatsappRequired} />
       </Card>
       <Card title="Notifications">
         <NotificationPrefs notifyByEmail={data.profile.notifyByEmail} emailEnabled={data.emailEnabled} />

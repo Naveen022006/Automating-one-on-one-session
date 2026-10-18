@@ -1141,3 +1141,46 @@
 .kv { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: var(--space-2, 8px) var(--space-4, 16px); margin: 0; }
 .kv dt { color: var(--muted, #666); font-size: 0.875rem; }
 .kv dd { margin: 0; }
+
+/* ---------- WhatsApp by QR code (components/app/WhatsAppQrLink.tsx) ---------- */
+/* The code is always dark on white, whatever the theme: phones scan dark-on-light. */
+.qr-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 1;
+  padding: var(--space-3);
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+.qr-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* The code's ~20 s are over and the next one has not arrived yet: it is shown faded so nobody scans an expired picture. */
+.qr-frame--stale img {
+  opacity: 0.25;
+}
+.qr-frame__empty {
+  margin: 0;
+  text-align: center;
+  color: #3f3d38;
+  font-size: var(--text-sm);
+}
+.qr-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .qr-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.qr-steps { margin: 0; padding-left: 1.25rem; display: grid; gap: var(--space-2); }
+.qr-modes { border: 0; margin: 0 0 var(--space-5); padding: 0; min-width: 0; display: grid; gap: var(--space-1); }
+.qr-modes legend { padding: 0; margin-bottom: var(--space-2); font-weight: 600; }
+.qr-mode-help { margin: 0 0 var(--space-3) 28px; }

@@ -36,6 +36,11 @@ RUN for entry in worker/index.ts scripts/worker-healthcheck.ts; do \
       || exit 1; \
     done \
  && rm -rf node_modules/next node_modules/@next node_modules/@img node_modules/sharp node_modules/react node_modules/react-dom node_modules/typescript
+# The optional QR-code WhatsApp mode (worker/whatsapp-web.ts) loads @whiskeysockets/baileys with a dynamic import at run time. The
+# library lists sharp (image thumbnails) as a peer dependency, but reaches it only for media, through a guarded import(), and the
+# worker sends text only: QR login, connecting and text messages work without it. This step fails the build if the library ever
+# stops loading in this slimmed layout (no sharp, no web framework), instead of failing at 3 a.m. when someone links a number.
+RUN node --input-type=module -e "const m = await import('@whiskeysockets/baileys'); if (typeof m.makeWASocket !== 'function' || typeof m.initAuthCreds !== 'function') process.exit(1)"
 
 # ---- runner ------------------------------------------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-bookworm-slim AS runner

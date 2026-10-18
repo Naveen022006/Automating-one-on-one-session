@@ -71,6 +71,10 @@ const SAMPLE_DETAIL: Record<ActivityAction, Record<string, string | number | boo
   "google.client_removed": { client: "…wxyz" },
   "whatsapp.connected": { phone: "+91 98765 43210" },
   "whatsapp.disconnected": { phone: "+91 98765 43210" },
+  "whatsapp_web.consent": { version: "wa-web-2026-11-2" },
+  "whatsapp_web.linked": { phone: "+91 ••••••• 210" },
+  "whatsapp_web.disconnected": { phone: "+91 ••••••• 210", reason: "influencer" },
+  "whatsapp_web.suspended": { code: "send-failures" },
   "onboarding.completed": {},
   "earnings.exported": { from: "2026-01-01", to: "2026-01-31", rows: 12 },
 };

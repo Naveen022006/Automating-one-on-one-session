@@ -44,7 +44,12 @@ export const LIB_ALLOWLIST: readonly string[] = [
 // Bare built-in names ("fs", "path/posix", ...). Prefix-only ones ("node:test", "node:sqlite") are caught by the `node:` check.
 const NODE_BUILTINS = new Set(builtinModules.filter((m) => !m.startsWith("node:")));
 /** Packages that are server-only by nature. */
-const FORBIDDEN_PACKAGES = [/^@prisma\//, /^prisma$/, /^pg($|\/)/, /^ioredis($|\/)/, /^bullmq($|\/)/, /^dotenv($|\/)/];
+const FORBIDDEN_PACKAGES = [
+  /^@prisma\//, /^prisma$/, /^pg($|\/)/, /^ioredis($|\/)/, /^bullmq($|\/)/, /^dotenv($|\/)/,
+  // The optional QR-code WhatsApp mode: the WhatsApp client library and the QR renderer run on the server only (lib/whatsapp-web/);
+  // the browser gets a ready SVG string. Nothing under lib/whatsapp-web/ is on the allowlist either.
+  /^@whiskeysockets\//, /^libsignal($|\/)/, /^uqr($|\/)/,
+];
 /** A problem with an import specifier as written, or null. */
 export function specifierProblem(specifier: string): string | null {
   if (specifier.startsWith("node:") || NODE_BUILTINS.has(specifier)) return "a Node.js built-in module (browser code cannot use Node APIs)";

@@ -54,6 +54,7 @@ before(async () => {
   mock.module("@web/components/admin/TwoFactorPanel", { namedExports: { TwoFactorPanel: fake("TwoFactorPanel") } });
   mock.module("@web/components/admin/PayoutPanel", { namedExports: { PayoutPanel: fake("PayoutPanel") } });
   mock.module("@web/components/admin/InfluencerStatusPanel", { namedExports: { InfluencerStatusPanel: fake("InfluencerStatusPanel") } });
+  mock.module("@web/components/admin/InfluencerWhatsAppWebPanel", { namedExports: { InfluencerWhatsAppWebPanel: fake("InfluencerWhatsAppWebPanel") } });
   mock.module("@web/components/admin/PayoutActions", {
     namedExports: {
       CreatePayoutButton: fake("CreatePayoutButton"),
@@ -257,6 +258,7 @@ test("influencer page: the id is the route parameter, the payout panel gets the 
     account: { method: "BANK", accountHolderName: "Asha Rao", bankName: "HDFC Bank", ifsc: "HDFC0001234", accountNumber: "XXXXXXXX9012", upiId: null, status: "VERIFIED", rejectionReason: null },
   });
   assert.deepEqual(propsOf(html, "InfluencerStatusPanel"), { influencerId: "inf_1" }, "the moderation panel loads its own data");
+  assert.deepEqual(propsOf(html, "InfluencerWhatsAppWebPanel"), { influencerId: "inf_1" }, "the QR-code WhatsApp card loads its own data (and draws nothing when the platform flag is off)");
   assert.deepEqual(propsOf(html, "FeeForm"), { influencerId: "inf_1", feeBps: 1000, defaultBps: 0 });
   assert.deepEqual(propsOf(html, "CreatePayoutButton"), { influencerId: "inf_1", currency: "INR", label: "Create INR payout" });
   assert.deepEqual(propsOf(html, "PayoutRowActions"), { payoutId: "po_1", status: "PENDING", approval });

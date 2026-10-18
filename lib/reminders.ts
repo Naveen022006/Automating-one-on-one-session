@@ -3,11 +3,12 @@ import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import { sendMessageForBooking } from "@/lib/messaging";
 import { REMINDER_OFFSETS_MS, ensureReminder, type EnsureReminderOutcome, type ReminderKind } from "@/lib/queue";
+import { REMINDER_24H_MIN_LEAD_MS } from "@/lib/whatsapp-web/deadline";
 
 export type ReminderOutcome = "sent" | "already-sent" | "skipped";
 
-/** The 24-hour template says "tomorrow", so it is not sent once less than this is left (a late job after an outage). */
-export const REMINDER_24H_MIN_LEAD_MS = 12 * 60 * 60 * 1_000;
+/** The 24-hour template says "tomorrow", so it is not sent once less than this is left (a late job after an outage). Defined in lib/whatsapp-web/deadline.ts too, which the linked number's queue uses as the reminder's deadline. */
+export { REMINDER_24H_MIN_LEAD_MS };
 /** The repair job only looks at sessions starting within this window (the 24-hour reminder's fire time plus an hour of slack). */
 export const REPAIR_WINDOW_MS = 25 * 60 * 60 * 1_000;
 /** Bookings read per query (keyset pages), so no single query is large however many seats a group session holds. */

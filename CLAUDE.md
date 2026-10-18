@@ -148,6 +148,23 @@ skipped by `staleReminderReason` and writes no `Message` row, which the repair r
 Embedded Signup). `MOCK_PROVIDERS_URL` is honoured only in development with a local `APP_URL` (`lib/provider-endpoints.ts` decides
 every host); production refuses to start with it. It proves the app's side only.
 
+**Optional QR-code WhatsApp (`lib/whatsapp-web/*`, `worker/whatsapp-web*.ts`, `doc/14-whatsapp-qr-deviations.md`).** UNOFFICIAL and off
+unless `WHATSAPP_QR_ENABLED=true` on the web app AND the worker (the official Cloud API stays the default and the fallback; SMS and e-mail
+are never reduced). An influencer links their own number as a linked device by scanning a QR code. `WhatsAppWebTransport`
+(`transport.ts`) is the one interface; `baileys-transport.ts` is the only file that knows the library (reached by a dynamic `import()` from
+`worker/whatsapp-web.ts` and nowhere else) and `fake-transport.ts` is the `WHATSAPP_QR_FAKE` simulator (development only, refused in
+production). ONLY the single worker opens sockets (`worker/whatsapp-web-manager.ts`; a second worker would log the first out); the web
+side writes the intent through `lib/whatsapp-web/commands.ts` and reads the status (Postgres) and the QR payload (Redis, about a minute,
+never logged or stored in Postgres). The login of a device is one AES-256-GCM blob per influencer (`auth-state.ts`, AAD
+`wa-web:<influencerId>`, in the key-rotation list); it never reaches a log, a DTO or the browser. `lib/messaging.ts` tries the linked number
+FIRST (`tryWhatsAppWeb`, one send at a time per number through `send-queue.ts`: gap, daily cap, booking guard, breaker), and any refusal
+falls through to the official connection, then SMS, then e-mail; a send is never repeated (the `in-flight` marker on its `Message` row).
+Browser rules: only `import type` from `lib/whatsapp-web/types.ts` and `api-types.ts`; the Vite guard forbids the WhatsApp library, `uqr`
+and `libsignal`. The QR arrives as a server-rendered SVG string and is shown ONLY through `<img src="data:...">` after `safeQrImageSrc`
+(`web/src/lib/whatsapp-web-ui.ts`), never as markup. Screens: `WhatsAppModePicker` and `WhatsAppQrLink` in Settings, and
+`InfluencerWhatsAppWebPanel` on the admin Influencer page (`doc/12-front-end.md`). Keep the copy honest: no sentence may promise the
+number cannot be banned or hint at avoiding detection (a test reads the sources for that).
+
 **Key rotation.** Secrets at rest (Google refresh tokens, payout account numbers, WhatsApp tokens, TOTP secrets) are encrypted with
 `TOKEN_ENCRYPTION_KEY` (`lib/crypto.ts`). Rotation uses `TOKEN_ENCRYPTION_KEY_PREVIOUS` plus `keys:verify` / `keys:rotate`
 (`lib/key-rotation*.ts`, dry run by default, `--apply` needs the new key's fingerprint). `APP_SECRET` (signed links only) rotates with

@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { keyFingerprint, parseKeyBytes } from "./crypto";
 import { mockProvidersOverride } from "./provider-endpoints";
+import { QR_MIN_GAP_FLOOR_MS, qrFakeRefusal } from "./whatsapp-web/config";
 import { SHELL_TEMPLATE_RELATIVE_PATH, shellTemplateProblem } from "./spa/shell";
 
 /**
@@ -113,6 +114,12 @@ const positiveNumber = z
   .string()
   .refine((v) => Number.isFinite(Number(v)) && Number(v) > 0, "must be a number greater than 0")
   .transform(Number);
+const boundedInt = (label: string, min: number, max: number) =>
+  z
+    .string()
+    .regex(/^\d+$/, `must be ${label}`)
+    .transform(Number)
+    .refine((n) => n >= min && n <= max, `must be ${label}`);
 const keyString = z.string().refine((v) => parseKeyBytes(v) !== null, "must be 32 bytes, base64 encoded (generate: openssl rand -base64 32)");
 
 const envSchema = z.object({
@@ -146,6 +153,14 @@ const envSchema = z.object({
   ALLOW_INSECURE_LOCAL_RUN: bool("ALLOW_INSECURE_LOCAL_RUN").optional(),
 
   WHATSAPP_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/, "must look like v26.0").optional(),
+
+  // Optional "link WhatsApp by QR code" mode (doc/14-whatsapp-qr-*.md). Empty means the default, never 0.
+  WHATSAPP_QR_ENABLED: bool("WHATSAPP_QR_ENABLED").optional(),
+  WHATSAPP_QR_FAKE: bool("WHATSAPP_QR_FAKE").optional(),
+  WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED: bool("WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED").optional(),
+  WHATSAPP_QR_MAX_SESSIONS: boundedInt("a whole number from 1 to 1000", 1, 1_000).optional(),
+  WHATSAPP_QR_DAILY_CAP: boundedInt("a whole number from 1 to 10000", 1, 10_000).optional(),
+  WHATSAPP_QR_MIN_GAP_MS: boundedInt(`a whole number of milliseconds, at least ${QR_MIN_GAP_FLOOR_MS}`, QR_MIN_GAP_FLOOR_MS, 3_600_000).optional(),
 
   DATABASE_POOL_MAX: nonNegInt.optional(),
   DATABASE_STATEMENT_TIMEOUT_MS: nonNegInt.optional(),
@@ -192,6 +207,8 @@ export const KNOWN_ENV_VARS = [
   "HEALTH_RECOVERY_FAILING_RUNS", "HEALTH_RECOVERY_STALE_MINUTES", "HEALTH_ALERT_DEDUPE_MINUTES",
   "ADMIN_REQUIRE_2FA", "PAYOUT_FOUR_EYES", "PAYOUT_FOUR_EYES_MIN_MINOR",
   "CUSTOMER_PORTAL_MAIL_CAP_PER_HOUR",
+  "WHATSAPP_QR_ENABLED", "WHATSAPP_QR_FAKE", "WHATSAPP_QR_MAX_SESSIONS", "WHATSAPP_QR_DAILY_CAP", "WHATSAPP_QR_MIN_GAP_MS",
+  "WHATSAPP_QR_KEEP_AUTH_WHEN_DISABLED",
 ] as const;
 
 /* ---------- helpers ---------- */
@@ -318,6 +335,19 @@ export function validateEnv(input: EnvRecord = process.env): EnvReport {
       const v = input[name];
       if (v && (v.includes("MOCK-NOT-REAL") || v.includes("mock-google.invalid"))) errors.push(`${name}: holds a mock-providers placeholder value; set the real value`);
     }
+  }
+
+  // 2d. The optional QR-code WhatsApp mode (lib/whatsapp-web/config.ts reads the same variables). The simulator never runs in
+  // production, not even under ALLOW_INSECURE_LOCAL_RUN. Turning the mode on is allowed, but said out loud: it is unofficial.
+  if (parsed.WHATSAPP_QR_FAKE === true) {
+    const refusal = qrFakeRefusal(input);
+    if (production) errors.push("WHATSAPP_QR_FAKE: must not be true in production (it replaces WhatsApp with a local simulator); remove it");
+    else if (refusal) warnings.push(`WHATSAPP_QR_FAKE: ignored. ${refusal}`);
+    else if (parsed.WHATSAPP_QR_ENABLED !== true) warnings.push("WHATSAPP_QR_FAKE: has no effect without WHATSAPP_QR_ENABLED=true");
+    else warnings.push("WHATSAPP_QR_FAKE: ACTIVE. The QR-code WhatsApp mode uses a local simulator; nothing reaches WhatsApp (development only)");
+  }
+  if (parsed.WHATSAPP_QR_ENABLED === true && production) {
+    warn("WHATSAPP_QR_ENABLED", "is true: influencers may link their own WhatsApp by QR code. This is an unofficial method that WhatsApp's terms do not allow; linked numbers can be restricted or banned (doc/14-whatsapp-qr-deviations.md, doc/08-deployment.md)");
   }
 
   // 3. Production-only requirements.
