@@ -4,7 +4,7 @@ import { FocusedLayout } from "@web/components/site/SiteChrome";
 import { Alert } from "@web/components/ui/primitives";
 
 /** `emailEnabled` false (doc/15): the platform sends no e-mail, so there is no form that could deliver a link. */
-export function ForgotPasswordView({ emailEnabled = true }: { emailEnabled?: boolean } = {}) {
+export function ForgotPasswordView({ emailEnabled = true }: { emailEnabled?: boolean }) {
   return (
     <FocusedLayout>
       <div className="stack stack--lg">

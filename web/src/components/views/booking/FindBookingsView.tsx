@@ -14,7 +14,7 @@ const BAD_EMAIL = "Please enter a valid e-mail address.";
  * A refused address is an error on the field (linked to the input, which gets the focus); the confirmation takes the focus.
  * `initial` is for tests of the two end states, which a static render cannot reach.
  */
-export function FindBookingsView({ initial, emailEnabled = true }: { initial?: { sent?: boolean; fieldError?: string }; emailEnabled?: boolean } = {}) {
+export function FindBookingsView({ initial, emailEnabled = true }: { initial?: { sent?: boolean; fieldError?: string }; emailEnabled?: boolean }) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(initial?.sent ?? false);
   const [fieldError, setFieldError] = useState<string | null>(initial?.fieldError ?? null);
