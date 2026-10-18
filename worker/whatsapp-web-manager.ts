@@ -78,6 +78,8 @@ export interface ManagerDeps {
   onDelivery?: (influencerId: string, info: { providerMessageId: string; status: WhatsAppWebDeliveryStatus }) => void;
   /** One line per notable event; never a QR payload, a login, a message text or a customer number. */
   log?: (line: string) => void;
+  /** Longest wait for one call to the transport (default SEND_CALL_TIMEOUT_MS). Tests shorten it. */
+  callTimeoutMs?: number;
   /** This worker's name in the lease. Default: a random one per manager. */
   workerId?: string;
   /**
@@ -454,6 +456,12 @@ export class WhatsAppWebManager {
         // linked number (SELF_TEST_BOOKING_ID).
         guard: async (req) => (req.bookingId === SELF_TEST_BOOKING_ID ? live.phoneE164 !== null && req.toE164 === live.phoneE164 : this.d.guard(id, req)),
         onSent: () => this.d.repo.incrementSent(id),
+        callTimeoutMs: this.d.callTimeoutMs,
+        // Two sends in a row got no answer: reconnect, as if the connection had dropped.
+        onStall: () => {
+          this.log(`session ${id}: two sends in a row got no answer; reconnecting`);
+          this.enqueueWork(live, () => this.handleClose(live, { reason: "transient", code: "send-stalled" }));
+        },
         onFailureCount: (n) => this.enqueueWork(live, () => this.d.repo.update(id, { consecutiveFailures: n })),
         onTrip: (reason) =>
           this.enqueueWork(live, () =>

@@ -50,6 +50,15 @@ function raceSend<T>(work: Promise<T>, ms: number): Promise<T> {
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * How long one call to the transport may take. It is longer than every step that happens BEFORE a message is written (the Baileys
+ * adapter allows 10 s per query and a send makes at most three), so a send still unanswered after this has been written: see
+ * QUERY_TIMEOUT_MS in baileys-transport.ts.
+ */
+export const SEND_CALL_TIMEOUT_MS = 40_000;
+/** Sends in a row without an answer after which the connection is treated as stalled. */
+export const STALL_AFTER_UNKNOWNS = 2;
+
 /** A request that would wait longer than this is refused at once, so it never holds a worker slot. */
 export const MAX_EXPECTED_WAIT_MS = 20_000;
 
@@ -71,10 +80,12 @@ export interface SendQueueDeps {
   onFailureCount?: (count: number) => void;
   /** The breaker opened. `reason` is a short machine code. */
   onTrip?: (reason: string) => void;
+  /** Two sends in a row got no answer: the connection looks half-open. The manager reconnects; meanwhile messages go the next way. */
+  onStall?: () => void;
   /** Failed sends, for logs. Never receives a message text. */
   onError?: (info: { code: string; retryable: boolean }) => void;
   initialFailures?: number;
-  /** Longest wait for the transport, per call. Default 30 s. */
+  /** Longest wait for the transport, per call. Default SEND_CALL_TIMEOUT_MS. */
   callTimeoutMs?: number;
   maxPending?: number;
   /** Longest wait a new request may expect (the queue ahead of it, at the fixed gap). Default MAX_EXPECTED_WAIT_MS. */
@@ -102,6 +113,7 @@ export class SendQueue {
   private stopped = false;
   private nextAllowedAt = 0;
   private failures: number;
+  private unknownStreak = 0;
   private open = false;
   private readonly threshold: number;
   private readonly callTimeoutMs: number;
@@ -110,7 +122,7 @@ export class SendQueue {
 
   constructor(private readonly d: SendQueueDeps) {
     this.threshold = d.breakerThreshold ?? 3;
-    this.callTimeoutMs = d.callTimeoutMs ?? 30_000;
+    this.callTimeoutMs = d.callTimeoutMs ?? SEND_CALL_TIMEOUT_MS;
     this.maxPending = d.maxPending ?? 500;
     this.maxExpectedWait = d.maxExpectedWaitMs ?? MAX_EXPECTED_WAIT_MS;
     this.failures = d.initialFailures ?? 0;
@@ -271,6 +283,7 @@ export class SendQueue {
       }
       const sent = await raceSend(transport.sendText(req.toE164, req.text), this.callTimeoutMs);
       this.setFailures(0);
+      this.unknownStreak = 0;
       result = { ok: true, providerMessageId: sent.providerMessageId };
       try {
         await this.d.onSent?.({ providerMessageId: sent.providerMessageId });
@@ -282,8 +295,16 @@ export class SendQueue {
         // No answer is not a failure: the message may still be delivered. Its place in today's count stays taken, the breaker is left
         // alone, and the caller must not send it another way (it could arrive twice).
         this.d.onError?.({ code: "send-timeout", retryable: false });
+        // One unanswered send can be a slow phone. Two in a row mean the socket is probably half-open: it is reconnected, and the messages
+        // that arrive meanwhile are refused as not connected and go the next way (they are not marked unknown).
+        this.unknownStreak += 1;
+        if (this.unknownStreak >= STALL_AFTER_UNKNOWNS) {
+          this.unknownStreak = 0;
+          this.d.onStall?.();
+        }
         return fail("unknown-delivery", false);
       }
+      this.unknownStreak = 0; // a definite answer, even a refusal, shows the connection is alive
       await this.refund(today.key);
       const code = e instanceof WhatsAppWebTransportError ? e.code : "send-failed";
       const retryable = e instanceof WhatsAppWebTransportError ? e.retryable : true;
