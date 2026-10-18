@@ -10,9 +10,9 @@ import {
   OAUTH_STATE_PURPOSE,
   countLiveCalendarEvents,
   getGoogleAccountRecord,
-  revokeGrantUnlessShared,
   saveGoogleToken,
 } from "@/lib/google-tokens";
+import { revokeGrantUnlessShared } from "@/lib/google-revoke";
 import { safeNextPath } from "@/lib/http";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";

@@ -5,6 +5,7 @@ import { requireApiAuth, requireRecentAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
 import { revokeToken } from "@/lib/google";
+import { revokeGrantUnlessShared } from "@/lib/google-revoke";
 import { verifyGoogleClient } from "@/lib/google-client-check";
 import { switchNeedsConfirmation } from "@/lib/google-connect";
 import { deleteGoogleClient, getSavedGoogleClient, googleClientMode, maskClientId, saveGoogleClient } from "@/lib/google-credentials";
@@ -13,7 +14,6 @@ import {
   deleteGoogleToken,
   getGoogleAccountRecord,
   getGoogleStatus,
-  revokeGrantUnlessShared,
 } from "@/lib/google-tokens";
 import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
 import { loadGoogleClientView, toGoogleStatusView } from "@/lib/views/dashboard-settings";

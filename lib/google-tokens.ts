@@ -1,8 +1,7 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { requestGmailByDefault, revokeToken } from "@/lib/google";
+import { requestGmailByDefault } from "@/lib/google";
 import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
-import type { GoogleAccountRef } from "@/lib/google-connect";
 import { toClientKind, type GoogleClientKind } from "@/lib/google-credentials";
 
 export const OAUTH_STATE_PURPOSE = "google-oauth-state";
@@ -177,15 +176,6 @@ export async function googleAccountSharedWithOthers(
   if (same.length === 0) return false;
   const others = await prisma.googleToken.count({ where: { influencerId: { not: influencerId }, OR: same } });
   return others > 0;
-}
-
-/**
- * Revokes a grant we are not keeping, unless another influencer profile is connected with the same Google account (Google's revoke ends the
- * app's access for the whole account, so it would disconnect that profile too). Throws when Google cannot be reached: callers that must not
- * fail because of it catch.
- */
-export async function revokeGrantUnlessShared(influencerId: string, refreshToken: string, account: GoogleAccountRef): Promise<void> {
-  if (!(await googleAccountSharedWithOthers(influencerId, account.email, account.sub))) await revokeToken(refreshToken);
 }
 
 /** Only customer emails sent in this long window say anything about whether Gmail sending works right now. */
