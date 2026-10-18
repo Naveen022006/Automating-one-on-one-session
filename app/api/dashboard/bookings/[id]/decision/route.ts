@@ -21,9 +21,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   try {
     if (parsed.data.action === "approve") {
-      const { payBy } = await approveRequest(auth.influencerId, id);
+      const { payBy, emailed, payUrl } = await approveRequest(auth.influencerId, id);
       await recordActivity({ influencerId: auth.influencerId, action: "booking.request_approved", targetType: "booking", targetId: id, detail: { bookingId: id }, req });
-      return NextResponse.json({ ok: true, payBy: payBy.toISOString() });
+      // `payLink` only when the customer could not be e-mailed (no Gmail connection and no platform e-mail): send it to them yourself.
+      return NextResponse.json({ ok: true, payBy: payBy.toISOString(), emailed, ...(payUrl ? { payLink: payUrl } : {}) });
     }
     await declineRequest(auth.influencerId, id, parsed.data.reason ?? null);
     await recordActivity({ influencerId: auth.influencerId, action: "booking.request_declined", targetType: "booking", targetId: id, detail: { bookingId: id }, req });

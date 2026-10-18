@@ -1,6 +1,7 @@
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { sendAccountEmail } from "@/lib/email";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { passwordChangedMessage, passwordResetMessage, verifyEmailMessage } from "@/lib/email/templates";
 import { dummyPasswordHash, hashPassword, needsRehash, passwordProblem, verifyPassword } from "./password";
 import { revokeAllSessions } from "./session";
@@ -46,12 +47,17 @@ export async function isSlugAvailable(slug: string, exceptInfluencerId?: string)
   return !row || row.id === exceptInfluencerId;
 }
 
-async function issueVerification(userId: string, email: string, name: string): Promise<void> {
+/**
+ * Creates a verification link and e-mails it. Returns whether an e-mail went out. With EMAIL_PROVIDER=none (doc/15) there is no one to
+ * send it to: nothing is created (an administrator verifies the account by hand, POST /api/admin/influencers/:id/verify-email).
+ */
+async function issueVerification(userId: string, email: string, name: string): Promise<boolean> {
+  if (!platformEmailEnabled()) return false;
   const token = randomToken();
   await prisma.emailVerificationToken.create({
     data: { userId, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + VERIFY_TTL_MS) },
   });
-  await sendAccountEmail(
+  return sendAccountEmail(
     { email, name },
     verifyEmailMessage(name, `${appUrl()}/verify-email?token=${encodeURIComponent(token)}`),
     "verify-email",
@@ -139,13 +145,14 @@ export async function authenticate(emailInput: string, password: string): Promis
   return { userId: user.id };
 }
 
-export async function resendVerification(userId: string): Promise<void> {
+/** Sends a new verification link. Returns whether an e-mail went out (false: already verified, or the platform sends no e-mail). */
+export async function resendVerification(userId: string): Promise<boolean> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, emailVerifiedAt: true, influencer: { select: { name: true } } },
   });
-  if (!user || user.emailVerifiedAt) return;
-  await issueVerification(user.id, user.email, user.influencer.name);
+  if (!user || user.emailVerifiedAt) return false;
+  return issueVerification(user.id, user.email, user.influencer.name);
 }
 
 /** Consumes a verification token. Returns the user id, or null when the token is invalid, used or expired. */
@@ -166,23 +173,34 @@ export async function verifyEmailToken(token: string): Promise<string | null> {
  * used to discover which emails have accounts.
  */
 export async function requestPasswordReset(emailInput: string): Promise<void> {
+  // With EMAIL_PROVIDER=none (doc/15) nobody can receive the link, and creating one would only cancel the link an administrator may
+  // have handed over (only the newest link is valid). So it does nothing; the page tells the person to ask their administrator.
+  if (!platformEmailEnabled()) return;
   const email = normaliseEmail(emailInput);
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true, influencer: { select: { name: true } } },
   });
   if (!user) return;
+  const { url } = await createPasswordResetLink(user.id);
+  await sendAccountEmail({ email, name: user.influencer.name }, passwordResetMessage(user.influencer.name, url), "password-reset");
+}
+
+/**
+ * Creates a one-time password-reset link (valid RESET_TTL_MS, only the newest link stays valid) and returns its full URL. The token is
+ * stored only as its SHA-256. The URL is the caller's to deliver: the reset e-mail, or an administrator handing it over by hand
+ * (POST /api/admin/influencers/:id/reset-link). Never log it. `db` lets the caller create it inside its own transaction.
+ */
+export async function createPasswordResetLink(
+  userId: string,
+  db: Pick<typeof prisma, "passwordResetToken"> = prisma,
+): Promise<{ url: string; expiresAt: Date }> {
   // Only the newest link is valid.
-  await prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
+  await db.passwordResetToken.updateMany({ where: { userId, usedAt: null }, data: { usedAt: new Date() } });
   const token = randomToken();
-  await prisma.passwordResetToken.create({
-    data: { userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + RESET_TTL_MS) },
-  });
-  await sendAccountEmail(
-    { email, name: user.influencer.name },
-    passwordResetMessage(user.influencer.name, `${appUrl()}/reset-password?token=${encodeURIComponent(token)}`),
-    "password-reset",
-  );
+  const expiresAt = new Date(Date.now() + RESET_TTL_MS);
+  await db.passwordResetToken.create({ data: { userId, tokenHash: hashToken(token), expiresAt } });
+  return { url: `${appUrl()}/reset-password?token=${encodeURIComponent(token)}`, expiresAt };
 }
 
 /** Completes a reset: sets the new password, marks the email verified (they proved access), logs out everywhere. */

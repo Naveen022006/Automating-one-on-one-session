@@ -89,6 +89,16 @@ export async function markMessageSent(messageId: string | null): Promise<void> {
   }
 }
 
+/** Deletes a row recorded as queued for a message that turned out to have no channel to go out on. Best-effort; no-op for null. */
+export async function discardMessage(messageId: string | null): Promise<void> {
+  if (!messageId) return;
+  try {
+    await prisma.message.delete({ where: { id: messageId } });
+  } catch (e) {
+    console.error("[messages] failed to discard message", e);
+  }
+}
+
 /** Marks a previously-recorded message failed with a (truncated) reason. No-op if the id is null. */
 export async function markMessageFailed(messageId: string | null, error: string): Promise<void> {
   if (!messageId) return;

@@ -2,9 +2,10 @@ import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { customerZone } from "@/lib/format";
 import { sendCustomerEmail } from "@/lib/customer-email";
-import { createMessage, markMessageFailed } from "@/lib/messages";
+import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
+import { createMessage, discardMessage, markMessageFailed } from "@/lib/messages";
 import { buildSelfServiceUrl, signBookingCalendarToken } from "@/lib/self-service";
-import { transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
+import { EmailDisabledError, transportFromEnv, type EmailSendResult, type EmailTransport, type OutgoingEmail } from "@/lib/email/providers";
 import { bookingEmail, type BookingEmailKind } from "@/lib/email/templates";
 import type { RenderedEmail } from "@/lib/email/layout";
 
@@ -41,7 +42,11 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailSendResult> 
   return currentSender()(email);
 }
 
-/** Account emails (verify, reset, alerts). Best-effort: returns false instead of throwing. */
+/**
+ * Account emails (verify, reset, alerts). Best-effort: returns false instead of throwing.
+ * With EMAIL_PROVIDER=none the platform sends no e-mail: this is a logged no-op (one line with the tag, never the address or the
+ * content) that returns false, "not sent". Every caller must treat false as "the person was not told by e-mail".
+ */
 export async function sendAccountEmail(
   to: { email: string; name?: string },
   rendered: RenderedEmail,
@@ -51,6 +56,10 @@ export async function sendAccountEmail(
     await sendEmail({ to, subject: rendered.subject, html: rendered.html, text: rendered.text, tag });
     return true;
   } catch (e) {
+    if (e instanceof EmailDisabledError) {
+      console.log(`[email:${tag}] not sent: the platform sends no e-mail (EMAIL_PROVIDER=none)`);
+      return false;
+    }
     console.error(`[email:${tag}] failed`, e instanceof Error ? e.message : e);
     return false;
   }
@@ -136,6 +145,16 @@ export async function sendBookingEmail(
       text: rendered.text,
       tag: kind,
     });
+    if (result.via === "none") {
+      // No e-mail route: the platform sends none, and the influencer's Gmail is not connected or just failed. Nothing was sent.
+      // Gmail tried and failed: say so on the row (the Google panel reads it to show "Gmail not working", see lib/google-tokens.ts).
+      // Gmail not in use at all: the queued row is removed instead of being left looking like a pending or failed delivery. Either
+      // way the customer is still reached by WhatsApp or SMS and on their booking page.
+      if (result.fallbackReason) await markMessageFailed(messageId, `${GMAIL_FAILED_PREFIX} ${result.fallbackReason}`);
+      else await discardMessage(messageId);
+      console.log(`[email:customer] ${kind} not sent for booking ${bookingId}: ${result.fallbackReason ? "Gmail failed" : "no Gmail connection"} and the platform sends no e-mail`);
+      return;
+    }
     if (messageId) {
       await prisma.message
         .update({

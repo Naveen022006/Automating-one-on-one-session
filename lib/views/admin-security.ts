@@ -2,6 +2,7 @@ import { listAdministrators } from "@/lib/admin/data";
 import { getMfaStatus } from "@/lib/admin/mfa";
 import { admin2faRequired } from "@/lib/admin/policy";
 import { canViewAdminList, type AdminContext } from "@/lib/admin/session";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { fourEyesEnabled, fourEyesMinMinor } from "@/lib/payouts";
 
 /**
@@ -22,6 +23,8 @@ export interface AdminSecurityView {
   /** PAYOUT_FOUR_EYES: a second administrator approves each payout. */
   fourEyes: boolean;
   fourEyesMinMinor: number;
+  /** False when the platform sends no e-mail (EMAIL_PROVIDER=none): administrators are then not told by e-mail when their 2FA changes. */
+  emailEnabled: boolean;
   /**
    * Who the administrators are, who has two-factor and who signed in when. NULL (not an empty list) for a session that has
    * not passed what it must (a stolen cookie of an administrator who has not enrolled yet could otherwise be used to pick
@@ -39,6 +42,7 @@ export async function loadAdminSecurityView(admin: AdminContext): Promise<AdminS
     required: admin2faRequired(),
     fourEyes: fourEyesEnabled(),
     fourEyesMinMinor: fourEyesMinMinor(),
+    emailEnabled: platformEmailEnabled(),
     admins: admins
       ? admins.map((a) => ({ email: a.email, name: a.name, totpEnabled: a.totpEnabled, lastLoginAt: a.lastLoginAt, disabled: a.disabled, isSelf: a.id === admin.adminId }))
       : null,

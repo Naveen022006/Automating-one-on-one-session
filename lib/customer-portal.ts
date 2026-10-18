@@ -4,6 +4,7 @@ import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
 import { sendAccountEmail } from "@/lib/email";
 import { portalErasedMessage, portalLinkMessage } from "@/lib/email/customer-portal";
+import { platformEmailEnabled } from "@/lib/email/providers";
 import { reportError } from "@/lib/observability";
 import { eraseCustomerData, isKeptBooking } from "@/lib/privacy";
 import { hit, IDENTITY_RULES } from "@/lib/rate-limit";
@@ -65,6 +66,9 @@ export function requestPortalLink(emailInput: string, overrides: Partial<PortalL
   const deps = { ...defaultLinkDeps, ...overrides };
   const done = (async () => {
     try {
+      // The platform sends no e-mail (EMAIL_PROVIDER=none, doc/15): there is no way to deliver the link, so nothing is created. The page
+      // says so up front; the endpoint still answers the same 202 so it reveals nothing about any address.
+      if (!platformEmailEnabled()) return;
       const email = normalisePortalEmail(emailInput);
       // Existence first: an address with no bookings uses up nothing (so asking about addresses cannot fill anyone's allowance).
       const known = await prisma.booking.findFirst({ where: { customerEmail: email, redactedAt: null }, select: { id: true } });

@@ -1,5 +1,6 @@
 import type { AdminContext, MfaGate } from "@/lib/admin/session";
 import type { AuthContext } from "@/lib/auth/session";
+import { platformEmailEnabled } from "@/lib/email/providers";
 
 /**
  * The two session-check payloads (GET /api/auth/session and GET /api/admin/session). Shared with the SPA through
@@ -7,16 +8,23 @@ import type { AuthContext } from "@/lib/auth/session";
  */
 
 export type SessionView =
-  | { authenticated: false }
+  | { authenticated: false; emailEnabled?: boolean }
   | {
       authenticated: true;
       user: { email: string; emailVerified: boolean; name: string; slug: string; onboarded: boolean };
+      emailEnabled?: boolean;
     };
 
-export function toSessionView(auth: AuthContext | null): SessionView {
-  if (!auth) return { authenticated: false };
+/**
+ * `emailEnabled`: whether the platform sends e-mail at all (false with EMAIL_PROVIDER=none, doc/15). It decides whether a page may say
+ * "we e-mailed you" (verification, password reset). The server always sets it; a client that does not find it assumes true. Only the
+ * boolean is exposed, never the provider's name.
+ */
+export function toSessionView(auth: AuthContext | null, emailEnabled: boolean = platformEmailEnabled()): SessionView {
+  if (!auth) return { authenticated: false, emailEnabled };
   return {
     authenticated: true,
+    emailEnabled,
     user: {
       email: auth.email,
       emailVerified: auth.emailVerified,
@@ -29,10 +37,11 @@ export function toSessionView(auth: AuthContext | null): SessionView {
 
 /** `gate` is the two-factor state: "ok", "enroll" (2FA is required but not set up), or "verify" (password-only session). */
 export type AdminSessionView =
-  | { authenticated: false }
-  | { authenticated: true; admin: { name: string; email: string }; gate: MfaGate };
+  | { authenticated: false; emailEnabled?: boolean }
+  | { authenticated: true; admin: { name: string; email: string }; gate: MfaGate; emailEnabled?: boolean };
 
-export function toAdminSessionView(admin: AdminContext | null, gate: MfaGate): AdminSessionView {
-  if (!admin) return { authenticated: false };
-  return { authenticated: true, admin: { name: admin.name, email: admin.email }, gate };
+/** `emailEnabled` as for SessionView: the admin pages say "is e-mailed" (payouts, suspensions, security notices) only when it is true. */
+export function toAdminSessionView(admin: AdminContext | null, gate: MfaGate, emailEnabled: boolean = platformEmailEnabled()): AdminSessionView {
+  if (!admin) return { authenticated: false, emailEnabled };
+  return { authenticated: true, admin: { name: admin.name, email: admin.email }, gate, emailEnabled };
 }
