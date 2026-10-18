@@ -5,18 +5,15 @@ import { outcomeTarget, switchNeedsConfirmation, type GoogleOutcome } from "@/li
 import { getGoogleCredentials, googleClientMode } from "@/lib/google-credentials";
 import { NONCE_COOKIE, OAUTH_STATE_PURPOSE, countLiveCalendarEvents, getGoogleAccountOfRecord } from "@/lib/google-tokens";
 import { safeNextPath } from "@/lib/http";
+import { publicUrl } from "@/lib/public-url";
 import { randomNonce, signToken } from "@/lib/signing";
 
 const STATE_TTL_SEC = 600;
 
 /** Back to the page the influencer started from (keeping its query, e.g. onboarding's ?step=3) with ?google=<outcome>. */
 function backTo(req: NextRequest, returnTo: string, outcome: GoogleOutcome): NextResponse {
-  const url = req.nextUrl.clone();
   const { pathname, search, hash } = outcomeTarget(returnTo, outcome);
-  url.pathname = pathname;
-  url.search = search;
-  url.hash = hash ?? "";
-  return NextResponse.redirect(url);
+  return NextResponse.redirect(publicUrl(pathname, search, hash ?? ""));
 }
 
 // Step 1 of the connect flow, started by the "Connect Google Calendar" button. Requires the influencer's login
@@ -26,10 +23,7 @@ export async function GET(req: NextRequest) {
   const auth = await getAuth();
   const returnTo = safeNextPath(req.nextUrl.searchParams.get("returnTo"), "/dashboard/settings");
   if (!auth) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.search = `?next=${encodeURIComponent(returnTo)}`;
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(publicUrl("/login", `?next=${encodeURIComponent(returnTo)}`));
   }
 
   // ?switch=1 is the "Switch account" button: it replaces the connection, but Calendar events that already exist stay on

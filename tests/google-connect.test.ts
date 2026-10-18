@@ -271,6 +271,43 @@ async function runCallback(google: GoogleGrant, opts: { c?: number; r?: string }
   }
 }
 
+test("redirects go to the public APP_URL, never to the address the server is bound to (0.0.0.0:3000 in a container)", async () => {
+  reset({ connected: false, connectedEmail: null });
+  const saved = process.env.APP_URL;
+  process.env.APP_URL = "https://auto.example.test";
+  try {
+    // connect, signed out: the login redirect
+    auth = null;
+    const connect = await loadRoute("connect");
+    const out = await connect.GET(new NextRequest("http://0.0.0.0:3000/api/google/connect?returnTo=%2Fdashboard%2Fsettings"));
+    assert.equal(locationOf(out).origin, "https://auto.example.test");
+    assert.equal(locationOf(out).pathname, "/login");
+    assert.equal(locationOf(out).searchParams.get("next"), "/dashboard/settings");
+    mock.reset();
+
+    // callback: the page the influencer started from, with the outcome
+    reset({ connected: false, connectedEmail: null });
+    const fake = fakeGoogle({ email: "new@gmail.com", scope: `openid email ${CALENDAR}` });
+    try {
+      const callback = await loadRoute("callback");
+      const state = signToken("google-oauth-state", { i: "inf1", n: NONCE, r: "/dashboard/settings", g: 1, c: 0 }, 600);
+      const res = await callback.GET(new NextRequest(`http://0.0.0.0:3000/api/google/callback?code=abc&state=${encodeURIComponent(state)}`, {
+        headers: { cookie: `g_oauth_nonce=${NONCE}` },
+      }));
+      const to = locationOf(res);
+      assert.equal(to.origin, "https://auto.example.test");
+      assert.equal(to.pathname, "/dashboard/settings");
+      assert.ok(String(to.searchParams.get("google")).startsWith("connected"), "the outcome of a successful connect");
+    } finally {
+      fake.restore();
+      mock.reset();
+    }
+  } finally {
+    if (saved === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = saved;
+  }
+});
+
 test("callback: Calendar unticked on a first connection or another account -> the token Google issued is revoked, nothing saved", async () => {
   reset({ connected: false, connectedEmail: null });
   const first = await runCallback({ email: "new@gmail.com", scope: `openid email ${GMAIL}` });

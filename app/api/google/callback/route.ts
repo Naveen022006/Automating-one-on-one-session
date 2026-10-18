@@ -14,16 +14,13 @@ import {
 } from "@/lib/google-tokens";
 import { revokeGrantUnlessShared } from "@/lib/google-revoke";
 import { safeNextPath } from "@/lib/http";
+import { publicUrl } from "@/lib/public-url";
 import { requeuePendingMeetings } from "@/lib/meeting";
 import { safeEqual, verifyToken } from "@/lib/signing";
 
 function back(req: NextRequest, returnTo: string, outcome: GoogleOutcome): NextResponse {
-  const url = req.nextUrl.clone();
   const { pathname, search, hash } = outcomeTarget(returnTo, outcome);
-  url.pathname = pathname;
-  url.search = search;
-  url.hash = hash ?? "";
-  const res = NextResponse.redirect(url);
+  const res = NextResponse.redirect(publicUrl(pathname, search, hash ?? ""));
   res.cookies.delete({ name: NONCE_COOKIE, path: "/api/google" });
   return res;
 }
