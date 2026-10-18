@@ -16,8 +16,9 @@ import { buildPayUrl } from "@/lib/self-service";
  * told the same two ways). Nothing is ever charged before approval, so a decline needs no refund.
  *
  * The WhatsApp messages (lib/request-messages.ts) are queued after the database change has committed, as a job that holds only the
- * booking id and the template: the worker builds the text, and the payment link, when it sends. Queueing is best effort and never
- * changes the answer, except that `whatsappQueued` tells the dashboard whether the customer's WhatsApp is on its way.
+ * booking id and the template: the worker builds the text, and the payment link, when it sends. Nothing is queued unless a route to the
+ * customer exists (lib/message-route.ts). Queueing is best effort and never changes the answer, except that `messageRoute` and
+ * `messageQueued` tell the dashboard whether a message is on its way and how.
  */
 
 /** The seam a test replaces so no job reaches a real queue. */

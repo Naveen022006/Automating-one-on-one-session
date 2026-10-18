@@ -191,6 +191,22 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 7. **The linked-number texts are nine now**: `WHATSAPP_WEB_TEMPLATES` and its pinned tests were updated on purpose. The tests that counted five
    Meta templates (`mock-providers-meta`, `mock-providers-whatsapp-db`, `spa-dashboard-setup`, `whatsapp-connect`) count `KNOWN_TEMPLATES` now.
 
+## 5b. Fixes after the review
+
+The first version was reviewed (no critical defect); these were then changed, each with tests in the files named in section 7.
+
+| # | Finding | Change |
+|---|---------|--------|
+| R1 | "On its way to WhatsApp" was said whenever the customer opted in and the job was queued, with no check that any route exists. | `customerMessageRoute`: nothing is queued without a route; the answer carries `messageRoute` and `messageQueued`; the host gets the link when the customer was not e-mailed and nothing is on its way. |
+| R2 | An anonymous hold with a typed number made the host's linked number message a stranger, twice. | 3 requests per number per day, one open request per number and host (under the schedule lock), and "expired" only after a delivered "received". |
+| R3 | A site without SMS got five retries, a booking error and a host alert for every request message. | `NoMessageRouteError`: one plain FAILED row, no retry, no alert, no booking error for the four request messages; the five booking events unchanged. |
+| R4 | The link pattern missed JSON-escaped and percent-encoded spellings, and the manage link. | `redactBearerLinks` (pay AND manage, all spellings) plus the exact links and tokens of each send, applied to everything that leaves `sendMessageForBooking`. |
+| R5 | A host suspended after the approval still sent "Pay here" to a page that says "unavailable". | The host's suspension is a rule input; `request-approved` is skipped. |
+| R6 | The linked number's "expired" for a payment link fell through to the official route and SMS with a stale text. | Final on every channel for `request-approved`, and the rule is asked again with the current clock before the official route. |
+| R7 | "has 2 days to answer" ignored the session start. | `lib/approval-window.ts`: the earlier of the hold and the last moment an approval leaves time to pay; hours or days rounded down, "a short time" under an hour. |
+| R8 | A decline without a note printed `Their note: "(none)"`. | The variable is the whole sentence: `Their note: "..."` or `No reason was given.` |
+| R9 | One failed enqueue stopped the whole expiry sweep. | Each enqueue has its own timeout; only 5 failures in a row stop it; counts are logged; job ids keep it idempotent. |
+
 ## 6. Follow-ups, not done
 
 - **An approved request that nobody pays.** Its hold lapses, the worker marks it `EXPIRED` and the customer hears nothing on WhatsApp (the
@@ -203,6 +219,7 @@ cannot keep ("has 2 days to answer" is the hold; "lapses" is what the hold does)
 
 `tests/message-kinds.test.ts` (the state table, per route, per status; Meta templates, SMS bodies, labels), `tests/request-messages.test.ts`
 (queueing, the worker wrapper, wiring), `tests/request-flow-ui.test.ts` (the dashboard and manage-page words), `tests/request-whatsapp.test.ts`
-(the whole flow against the database with every provider faked: hold route, decision route, linked number, official and SMS fallbacks,
-payment, meeting, decline, expiry, the booking guard, the real manager with the fake transport, no payment link in any log or stored
-error), plus the updated `whatsapp-web-messages`, `whatsapp-web-deadlines` and the template-count tests.
+(the whole flow against the database with every provider faked: hold route, decision route, each delivery route, linked number, official
+and SMS fallbacks, payment, meeting, decline, expiry, the abuse limits, no route at all, a late payment link, a suspended host, the booking
+guard, the real manager with the fake transport, no bearer link in any log, stored error, alert or thrown error), plus the updated
+`whatsapp-web-messages`, `whatsapp-web-deadlines` and the template-count tests.

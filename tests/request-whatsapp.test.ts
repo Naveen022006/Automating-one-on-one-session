@@ -53,7 +53,7 @@ let ownerCookie = "";
 let approvalServiceId = "";
 let plainServiceId = "";
 let userEmail = "";
-let dayCounter = 3;
+let slotCounter = 0;
 let emailCounter = 0;
 let orderCounter = 0;
 
@@ -75,11 +75,15 @@ const asOwner = () => {
   jar.set(authLib.sessionCookieName(), ownerCookie);
 };
 
-/** A slot of the approval service at 11:00 IST, `day` days from today (every weekday has rules from 10:00 to 13:00). */
+/** A slot of the approval service, `day` days from today at 10:00 IST plus `minutes` (every weekday has rules from 10:00 to 13:00, 30-minute sessions). */
 function slotAt(day: number, minutes = 0): Date {
-  return new Date(istDayStart(addDays(istToday(), day)).getTime() + (11 * 60 + minutes) * 60_000);
+  return new Date(istDayStart(addDays(istToday(), day)).getTime() + (10 * 60 + minutes) * 60_000);
 }
-const nextSlot = () => slotAt(dayCounter++);
+/** A slot nobody has used yet: six per day (10:00, 10:30, ... 12:30 IST), so the whole file stays well inside the 60 days the booking page allows. */
+const nextSlot = () => {
+  const n = slotCounter++;
+  return slotAt(3 + Math.floor(n / 6), (n % 6) * 30);
+};
 
 async function postHold(start: Date, over: Record<string, unknown> = {}, serviceId = approvalServiceId): Promise<Answer> {
   jar.clear();
