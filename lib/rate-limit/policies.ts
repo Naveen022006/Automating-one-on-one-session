@@ -148,6 +148,12 @@ export const IDENTITY_RULES = {
   forgotEmail: { name: "auth-forgot-email", limit: 3, windowMs: HOUR },
   resendVerificationEmail: { name: "auth-verify-email", limit: 3, windowMs: HOUR },
   holdEmail: { name: "hold-email", limit: 5, windowMs: 10 * MIN },
+  /**
+   * Booking REQUESTS per destination phone number (E.164), whoever sends them: a request makes the host's linked WhatsApp message that
+   * number straight away ("request received"), so a stranger's number must not be messaged on demand over and over (a flood would
+   * also burn the linked number's daily limit). Counted for services that need approval only; ordinary holds send nothing before payment.
+   */
+  holdPhone: { name: "hold-phone", limit: 3, windowMs: 24 * HOUR },
   bookingResend: { name: "booking-resend-id", limit: 3, windowMs: HOUR },
   /** "Find your bookings": per e-mail address, so one inbox cannot be mail-bombed from many addresses. */
   customerAccessEmail: { name: "customer-access-email", limit: 3, windowMs: HOUR },

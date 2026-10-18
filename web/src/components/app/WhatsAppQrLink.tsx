@@ -216,7 +216,7 @@ export function WhatsAppQrPanel(p: WhatsAppQrPanelProps) {
         <>
           <LinkedFacts view={view} />
           <p className="subtle">
-            Booking messages (confirmation, reminders, changes) go out from this number first, a few at a time and up to the daily limit. This is still
+            Booking messages (booking requests and their answers, confirmation, reminders, changes) go out from this number first, a few at a time and up to the daily limit. This is still
             an unofficial link: WhatsApp can restrict the number without notice.
           </p>
           <div className="row">

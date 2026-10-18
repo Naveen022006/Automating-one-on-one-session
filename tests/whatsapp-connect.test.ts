@@ -6,6 +6,7 @@ import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { getOverview } from "../lib/dashboard-data";
 import { prisma } from "../lib/db";
 import { ENCRYPTED_COLUMNS } from "../lib/key-rotation-db";
+import { REQUEST_MESSAGE_KINDS } from "../lib/message-kinds";
 import { KNOWN_TEMPLATES, TEMPLATE_SPECS, isMetaTemplateName, isSendableStatus, metaTemplateName, normalizeTemplateStatus, templateConflict, templateKeyFromMetaName, templateParams, templateState } from "../lib/message-templates";
 import { sendMessageForBooking } from "../lib/messaging";
 import { sendWhatsApp } from "../lib/whatsapp";
@@ -200,7 +201,8 @@ test("ensureTemplates submits only what is missing and survives per-template fai
   const r = await ensureTemplates("waba1", "tok", "en", waba.fetchImpl);
   assert.ok(waba.posted.every(isMetaTemplateName), `every submitted name is one Meta accepts: ${waba.posted.join(", ")}`);
   assert.ok(!waba.posted.includes(spec("booking-confirmation").name), "an existing template is not submitted again");
-  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-24h", "reschedule"]);
+  // The four booking-request templates (doc/16-request-whatsapp-flow.md) are submitted with the rest, so they are in this list too.
+  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-24h", ...REQUEST_MESSAGE_KINDS, "reschedule"].sort());
   assert.deepEqual(r.failed.map((f) => f.name), ["reminder-15m"]);
   assert.equal(r.templates["booking-confirmation"].status, "APPROVED");
   assert.equal(r.templates["reminder-24h"].status, "PENDING");
@@ -274,7 +276,7 @@ test("ensureTemplates does not use a same-named template with another number of 
   assert.match(r.templates.reschedule.reason ?? "", /WhatsApp Manager/);
   assert.equal(r.templates["booking-confirmation"].status, "PAUSED", "a template that is ours is used with its real status");
   assert.ok(!waba.posted.includes(spec("reschedule").name), "we do not try to create over it");
-  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-15m", "reminder-24h"]);
+  assert.deepEqual(r.submitted.sort(), ["cancellation", "reminder-15m", "reminder-24h", ...REQUEST_MESSAGE_KINDS].sort());
   assert.equal(templateState(Object.values(r.templates).map((t) => t.status)), "rejected", "so the card and checklist ask for attention");
 
   // The same check applies to one found by name after 'already exists'.

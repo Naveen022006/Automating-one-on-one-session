@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { NOTICE_MAX_QUEUE_MS, REMINDER_24H_MIN_LEAD_MS, isReminderTemplate, webSendDeadline } from "../lib/whatsapp-web/deadline";
+import { NOTICE_MAX_QUEUE_MS, REMINDER_24H_MIN_LEAD_MS, REQUEST_NOTICE_MAX_QUEUE_MS, isReminderTemplate, webSendDeadline } from "../lib/whatsapp-web/deadline";
 import { FakeTransport } from "../lib/whatsapp-web/fake-transport";
 import { istDate, kvKeys, MemoryKv } from "../lib/whatsapp-web/kv";
 import { MAX_EXPECTED_WAIT_MS, SendQueue, type GuardAnswer, type QueuedSend } from "../lib/whatsapp-web/send-queue";
@@ -47,8 +47,15 @@ test("deadlines: a 15-minute reminder until the session starts, a 24-hour remind
   const now = Date.UTC(2026, 10, 11, 9, 0, 0);
   assert.equal(webSendDeadline("reminder-15m", start, now), start);
   assert.equal(webSendDeadline("reminder-24h", start, now), start - REMINDER_24H_MIN_LEAD_MS);
-  for (const t of ["booking-confirmation", "reschedule", "cancellation"]) assert.equal(webSendDeadline(t, start, now), now + NOTICE_MAX_QUEUE_MS, t);
+  for (const t of ["booking-confirmation", "reschedule", "cancellation", "request-received"]) assert.equal(webSendDeadline(t, start, now), now + NOTICE_MAX_QUEUE_MS, t);
   assert.equal(NOTICE_MAX_QUEUE_MS, 30 * 60_000);
+  // The booking-request messages: the accepted one (it carries the payment link) lives until the time to pay ends; declined and expired for 6 hours.
+  const payBy = now + 20 * 3_600_000;
+  assert.equal(webSendDeadline("request-approved", start, now, payBy), payBy);
+  assert.equal(webSendDeadline("request-approved", start, now), now + NOTICE_MAX_QUEUE_MS, "without a pay-by time it gets the ordinary 30 minutes");
+  assert.equal(webSendDeadline("booking-confirmation", start, now, payBy), now + NOTICE_MAX_QUEUE_MS, "only the accepted notice reads the pay-by time");
+  for (const t of ["request-declined", "request-expired"]) assert.equal(webSendDeadline(t, start, now), now + REQUEST_NOTICE_MAX_QUEUE_MS, t);
+  assert.equal(REQUEST_NOTICE_MAX_QUEUE_MS, 6 * 3_600_000);
   assert.ok(isReminderTemplate("reminder-15m") && isReminderTemplate("reminder-24h") && !isReminderTemplate("reschedule"));
 });
 

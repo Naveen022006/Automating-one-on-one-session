@@ -6,8 +6,10 @@ import { Alert, Badge, Button, EmptyState, Field, Input, Skeleton, StatusPill, T
 import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIst, ymd, type SlotOption } from "@web/components/ui/scheduling";
 import { formatMoney } from "@/lib/format";
 import { APP_TIME_ZONE_NOTE, formatDateTime, formatIndianMobile } from "@/lib/india";
+import { TEMPLATE_LABELS } from "@/lib/message-templates";
 import type { BookingDetail, BookingRow, SessionRow } from "@/lib/dashboard-data";
 import { isNoEmailRouteMessage } from "@web/lib/email-route-ui";
+import { approveNotice, declineDialogText, declineNotice } from "@web/lib/request-flow-ui";
 import { isUnconfirmedMessage, QR_CHANNEL_LABEL, UNCONFIRMED_MESSAGE_TEXT } from "@web/lib/whatsapp-web-ui";
 import { useApi } from "./ApiProvider";
 
@@ -21,6 +23,11 @@ const TEMPLATE: Record<string, string> = {
   cancellation: "Cancellation notice",
   "booking-cancelled": "Cancellation email",
   receipt: "Receipt",
+  // The booking-request flow: the same key labels the WhatsApp/SMS message and the e-mail (the channel column tells them apart).
+  "request-received": TEMPLATE_LABELS["request-received"],
+  "request-approved": TEMPLATE_LABELS["request-approved"],
+  "request-declined": TEMPLATE_LABELS["request-declined"],
+  "request-expired": TEMPLATE_LABELS["request-expired"],
 };
 const POLICY: Record<string, string> = { FULL: "Full refund", NOTICE_24H: "Refund with 24 h notice", NONE: "No refund" };
 
@@ -134,7 +141,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
   const [dialog, setDialog] = useState<"cancel" | "refund" | "reschedule" | "decline" | null>(null);
   const [reason, setReason] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
-  const [payLink, setPayLink] = useState<string | null>(null);
+  const [payLink, setPayLink] = useState<{ url: string; text: string } | null>(null);
 
   useEffect(() => {
     if (!bookingId) return;
@@ -154,12 +161,15 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
       toast(r.data.error ?? "That did not work. Please try again.", "error");
       return false;
     }
-    // An approval says whether the customer was e-mailed the payment link. With no Gmail connection and no platform e-mail (doc/15) nothing
-    // went out, so the link is shown to the host to send themselves: never "was emailed" for a message that was not sent.
-    if (label === "approve" && r.data.emailed === false) {
-      toast("Approved, but the customer could not be e-mailed. Send them the payment link yourself.", "error");
-      if (typeof r.data.payLink === "string") setPayLink(r.data.payLink);
-    } else toast(r.data.warning ? `${done} ${r.data.warning}` : done);
+    // An approval says whether the customer was e-mailed the payment link and whether it is on its way to their WhatsApp. With no Gmail
+    // connection and no platform e-mail (doc/15) nothing went out by e-mail, so the link is shown to the host (to send themselves, or as a
+    // backup when WhatsApp is on its way): never "was emailed" for a message that was not sent. The wording is web/src/lib/request-flow-ui.ts.
+    if (label === "approve") {
+      const notice = approveNotice(r.data);
+      toast(notice.text, notice.tone);
+      if (notice.payLink) setPayLink({ url: notice.payLink, text: notice.payLinkDialog });
+    } else if (label === "decline") toast(declineNotice(r.data).text);
+    else toast(r.data.warning ? `${done} ${r.data.warning}` : done);
     setDialog(null);
     router.refresh();
     if (bookingId) {
@@ -187,7 +197,7 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
               <>
                 <Button
                   variant="primary"
-                  onClick={() => run("approve", `/api/dashboard/bookings/${detail.id}/decision`, { action: "approve" }, "Approved. The customer was emailed a link to pay.")}
+                  onClick={() => run("approve", `/api/dashboard/bookings/${detail.id}/decision`, { action: "approve" }, "Approved.")}
                   loading={busy === "approve"}
                 >
                   Approve request
@@ -388,10 +398,10 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
         open={payLink !== null}
         onClose={() => setPayLink(null)}
         title="Send the payment link yourself"
-        description="The customer was not e-mailed: this site sends no e-mail, and Gmail is not connected. Send them this link, for example on WhatsApp. It is the only copy shown."
+        description={payLink?.text}
         footer={<Button variant="primary" onClick={() => setPayLink(null)}>Done</Button>}
       >
-        {payLink && <CopyField value={payLink} label="Copy link" />}
+        {payLink && <CopyField value={payLink.url} label="Copy link" />}
       </Dialog>
 
       {detail && (
@@ -402,11 +412,11 @@ function BookingDrawer({ bookingId, onClose }: { bookingId: string | null; onClo
             danger
             busy={busy === "decline"}
             title="Decline this request?"
-            description={`${detail.customerName} is emailed that the request was not accepted. They have not been charged.`}
+            description={declineDialogText(detail.customerName)}
             confirmLabel="Decline request"
             onConfirm={() => run("decline", `/api/dashboard/bookings/${detail.id}/decision`, { action: "decline", reason: reason || undefined }, "Request declined.")}
           >
-            <Field id="decline-reason" label="Note to the customer" optional help="Shown in the email, for example another time that suits you.">
+            <Field id="decline-reason" label="Note to the customer" optional help="Shown in the e-mail and the WhatsApp message, for example another time that suits you.">
               <Textarea id="decline-reason" value={reason} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReason(e.target.value)} maxLength={300} />
             </Field>
           </ConfirmDialog>

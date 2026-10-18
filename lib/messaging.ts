@@ -1,16 +1,17 @@
 import { alertInfluencer } from "@/lib/alerts";
 import { prisma } from "@/lib/db";
 import { formatSessionTime } from "@/lib/format";
+import { REQUEST_APPROVED_TEMPLATE, bearerLinkSecrets, isRequestMessageKind, messageMayBeSent, redactBearerLinks } from "@/lib/message-kinds";
 import {
-  CANCELLATION_TEMPLATE,
   CONFIRMATION_TEMPLATE,
   smsBody,
   templateParams,
   whatsappComponents,
   type MessageContext,
 } from "@/lib/message-templates";
+import { requestMessageContext } from "@/lib/request-message-context";
 import { buildSelfServiceUrl } from "@/lib/self-service";
-import { sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
+import { NoMessageRouteError, sendSMS as realSendSMS, type SendResult } from "@/lib/sms";
 import { sendWhatsApp as realSendWhatsApp } from "@/lib/whatsapp";
 import { WhatsAppNotConnectedError, markTokenInvalid, resolveSendCredentials } from "@/lib/whatsapp-connection";
 import { WhatsAppGraphError } from "@/lib/whatsapp-connect";
@@ -40,12 +41,17 @@ export class RetryableMessageError extends Error {
 export type MessageOutcome = "sent" | "already-sent" | "skipped";
 
 /**
- * Statuses from which a customer message still makes sense. A booking that has been cancelled, expired or
- * failed should not receive a confirmation/reminder, so those are skipped (read at run time, never trusted
- * from enqueue time: the booking may have changed since the job was queued). A cancellation message is a
- * deliberate exception: it is also sendable for a CANCELLED booking (see the template check in the sender).
+ * The plain reason on the one FAILED row of a booking-request message that had no way to reach the customer at all (no linked number, no
+ * official template Meta has approved, SMS not set up). Shown in the host's Messages view; nothing else is recorded or alerted for it.
  */
-const SENDABLE_STATUSES = new Set(["PAID", "SCHEDULED", "COMPLETED"]);
+export const NO_MESSAGE_ROUTE_REASON = "No WhatsApp or SMS route for this message";
+
+/*
+ * Which booking states each message may be sent in lives in lib/message-kinds.ts (messageMayBeSent), shared with the linked-number
+ * queue's booking check so the two cannot disagree. A booking that has been cancelled, expired or failed gets no confirmation or
+ * reminder; a cancellation notice is meant for a CANCELLED booking; the four booking-request messages read the request's own facts.
+ * Always read at run time, never trusted from enqueue time: the booking may have changed since the job was queued.
+ */
 
 export interface SendBookingMessageResult {
   /** The channel that ultimately succeeded, or null if nothing was sent. WHATSAPP_WEB is the influencer's QR-linked number. */
@@ -161,7 +167,12 @@ type WebOutcome =
   /** Handed over, but no answer in time: it may still arrive. Nothing else may send it. */
   | { kind: "unknown" }
   /** Not wanted any more (a reminder past its time, a booking cancelled while waiting): send nothing, anywhere. */
-  | { kind: "skip" };
+  | { kind: "skip" }
+  /**
+   * The linked number is the influencer's route and is expected back (it was busy, reconnecting or refused for now): carry on with the
+   * next channels as always, but if none of them takes the message it is worth trying again later instead of giving up for good.
+   */
+  | { kind: "later" };
 
 /** E.164 as WhatsApp numbers are written: a plus sign, a country code that does not start with 0, up to 15 digits in all. */
 const E164 = /^\+[1-9]\d{7,14}$/;
@@ -175,26 +186,24 @@ const E164 = /^\+[1-9]\d{7,14}$/;
  *
  * Never sends twice: the row for (booking, WHATSAPP_WEB, template) is marked in flight BEFORE the send and holds the outcome after, and
  * a retry that finds the in-flight mark (the process died between the two, so nobody knows whether it went out) skips this route.
- * Only the five booking events have a text (lib/whatsapp-web/messages.ts), and the destination must be the valid number on this
- * influencer's own booking; the queue checks the booking again before every send.
+ * Only the nine messages in lib/whatsapp-web/messages.ts (the five booking events and the four booking-request messages) have a text,
+ * and the destination must be the valid number on this influencer's own booking; the queue checks the booking again before every send.
+ * The text may hold a payment link: it is handed to the queue and the transport and never logged here.
  */
 async function tryWhatsAppWeb(
   deps: MessagingDeps,
-  b: { bookingId: string; influencerId: string; to: string; template: string; context: MessageContext; sessionStart: Date },
+  b: { bookingId: string; influencerId: string; to: string; template: string; context: MessageContext; sessionStart: Date; holdExpiresAt: Date | null },
 ): Promise<WebOutcome | null> {
   const { bookingId, influencerId, to, template } = b;
-  if (!readQrConfig().enabled || !deps.qr.isReady(influencerId)) return null;
-  if (!E164.test(to)) return null;
+  if (!readQrConfig().enabled) return null;
   const linked = await prisma.whatsAppWebSession.findUnique({ where: { influencerId }, select: { status: true, wantLinked: true } });
-  if (!linked || linked.status !== "LINKED" || !linked.wantLinked) return null;
+  const expected = !!linked && linked.status === "LINKED" && linked.wantLinked;
+  // Linked and wanted but the worker's socket is not open right now (reconnecting): not this time, but it is expected back.
+  if (!deps.qr.isReady(influencerId)) return expected ? { kind: "later" } : null;
+  if (!E164.test(to)) return null;
+  if (!expected) return null;
 
-  let manageUrl: string | null = null;
-  try {
-    manageUrl = buildSelfServiceUrl(bookingId);
-  } catch {
-    manageUrl = null; // APP_URL / APP_SECRET missing: no link rather than no message
-  }
-  const text = whatsAppWebText(template, { ...b.context, manageUrl });
+  const text = whatsAppWebText(template, b.context);
   if (text === null) return null;
 
   const where = { bookingId_channel_template: { bookingId, channel: "WHATSAPP_WEB" as const, template } };
@@ -214,7 +223,7 @@ async function tryWhatsAppWeb(
   const key = `${bookingId}:${template}:${earlier ? earlier.updatedAt.getTime() : 0}`;
   let result: WhatsAppWebSendResult;
   try {
-    result = await deps.qr.send({ influencerId, toE164: to, text, bookingId, key, kind: template, deadlineAtMs: webSendDeadline(template, b.sessionStart.getTime(), Date.now()) });
+    result = await deps.qr.send({ influencerId, toE164: to, text, bookingId, key, kind: template, deadlineAtMs: webSendDeadline(template, b.sessionStart.getTime(), Date.now(), b.holdExpiresAt?.getTime()) });
   } catch {
     result = { ok: false, reason: "send-error", retryable: true };
   }
@@ -226,8 +235,11 @@ async function tryWhatsAppWeb(
     console.warn(`[send-message] booking ${bookingId}: the linked WhatsApp gave no answer in time for "${template}"; it may still arrive, so it is not sent another way`);
     return { kind: "unknown" };
   }
-  const lateReminder = result.reason === "expired" && isReminderTemplate(template);
-  if (lateReminder || result.reason === "not-sendable") {
+  // "Too late" means nothing for a confirmation (it still goes out another way), but a reminder that waited past its time and the payment
+  // link whose time to pay ran out while it waited are worthless on every channel: the text built at the start of this run (its pay-by
+  // time, its link) would only mislead the customer on the official route or by SMS.
+  const tooLate = result.reason === "expired" && (isReminderTemplate(template) || template === REQUEST_APPROVED_TEMPLATE);
+  if (tooLate || result.reason === "not-sendable") {
     await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template } }); // nothing was sent: leave no row, like any skipped message
     console.info(`[send-message] booking ${bookingId}: "${template}" dropped (${result.reason}); not sent anywhere`);
     return { kind: "skip" };
@@ -235,15 +247,39 @@ async function tryWhatsAppWeb(
   if (NOT_ATTEMPTED.has(result.reason)) {
     await prisma.message.deleteMany({ where: { bookingId, channel: "WHATSAPP_WEB", template, status: "PENDING", error: QR_IN_FLIGHT } });
     console.info(`[send-message] booking ${bookingId}: the linked WhatsApp did not try (${result.reason}); trying the next channel`);
-    return null;
+    return result.retryable ? { kind: "later" } : null;
   }
   await prisma.message.update({ where, data: { status: "FAILED", error: `${describeWebRefusal(result.reason)}; sent another way.`.slice(0, 500) } });
   console.info(`[send-message] booking ${bookingId}: not sent from the linked WhatsApp (${result.reason}); trying the next channel`);
-  return null;
+  return result.retryable ? { kind: "later" } : null;
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+/**
+ * An error as text for a log line or a stored row. Never carries a payment or manage link, even if a provider echoed the message back
+ * (`secrets`: the exact links of this send, see bearerLinkSecrets).
+ */
+function errText(e: unknown, secrets: readonly string[] = []): string {
+  return redactBearerLinks(e instanceof Error ? e.message : String(e), secrets);
+}
+
+/** The same error with the links of this send taken out of its message and stack, so whatever catches it (a log, BullMQ's failed reason) never sees them. */
+function withoutLinks(e: unknown, secrets: readonly string[]): unknown {
+  if (!(e instanceof Error)) return e;
+  const message = redactBearerLinks(e.message, secrets);
+  if (message === e.message) return e;
+  const clean = new Error(message);
+  clean.name = e.name;
+  clean.stack = e.stack ? redactBearerLinks(e.stack, secrets) : undefined;
+  return clean;
+}
+
+/** The customer's manage/status link, or null when APP_URL / APP_SECRET are missing: no link rather than no message. */
+function manageLink(bookingId: string): string | null {
+  try {
+    return buildSelfServiceUrl(bookingId);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -262,24 +298,50 @@ export async function sendMessageForBooking(
   template: string,
   overrides: Partial<MessagingDeps> = {},
 ): Promise<MessageOutcome> {
+  // The exact payment and manage links of this send, filled in once the message is built. Whatever fails after that is thrown with
+  // them taken out, so no log, stored error, alert or failed job's reason carries one, however a provider spelled it back.
+  const secrets: string[] = [];
+  try {
+    return await deliverMessage(bookingId, template, overrides, secrets);
+  } catch (e) {
+    throw withoutLinks(e, secrets);
+  }
+}
+
+async function deliverMessage(bookingId: string, template: string, overrides: Partial<MessagingDeps>, secrets: string[]): Promise<MessageOutcome> {
   const deps = { ...defaultDeps, ...overrides };
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { session: { include: { service: { include: { influencer: true } } } } },
+    include: {
+      session: { include: { service: { include: { influencer: true } } } },
+      payments: { select: { id: true }, take: 1 },
+      // Whether the customer was really sent "request received" (read by the rule for "request expired").
+      messages: { where: { template: "request-received", channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS"] }, status: { in: ["SENT", "DELIVERED", "READ"] } }, select: { id: true }, take: 1 },
+    },
   });
   if (!booking) {
     console.warn(`[send-message] booking ${bookingId} not found, skipping`);
     return "skipped";
   }
-  // A cancellation notice is the one message that is meant for a CANCELLED booking.
-  const sendable = SENDABLE_STATUSES.has(booking.status) || (template === CANCELLATION_TEMPLATE && booking.status === "CANCELLED");
+  const now = new Date();
   if (booking.redactedAt) {
     console.warn(`[send-message] booking ${bookingId} was redacted on request, skipping`);
     return "skipped";
   }
-  if (!sendable) {
-    console.warn(`[send-message] booking ${bookingId} is ${booking.status}; not sendable, skipping`);
+  // Which states a message is for depends on the message (lib/message-kinds.ts): a cancellation notice is meant for a CANCELLED booking,
+  // a "request declined" notice for a declined request, and so on.
+  const facts = {
+    status: booking.status,
+    holdExpiresAt: booking.holdExpiresAt,
+    decidedAt: booking.decidedAt,
+    requiresApproval: booking.session.service.requiresApproval,
+    hasPayment: booking.payments.length > 0,
+    receivedDelivered: booking.messages.length > 0,
+    hostSuspended: booking.session.service.influencer.suspendedAt !== null,
+  };
+  if (!messageMayBeSent(template, facts, now, "sender")) {
+    console.warn(`[send-message] booking ${bookingId} is ${booking.status}; "${template}" not sendable, skipping`);
     return "skipped";
   }
   if (!booking.whatsappOptIn || !booking.whatsappE164) {
@@ -312,22 +374,47 @@ export async function sendMessageForBooking(
     serviceTitle: service.title,
     influencerName: influencer.name,
     when: formatSessionTime(session.startTime),
+    manageUrl: manageLink(bookingId),
   };
+  // The booking-request messages carry values worked out now (the payment link, the pay-by time, the amount...). They are never read
+  // from the job and never stored, and a message that cannot have its link (the time to pay has passed) is not sent at all.
+  if (isRequestMessageKind(template)) {
+    const extra = requestMessageContext(
+      template,
+      { bookingId, holdExpiresAt: booking.holdExpiresAt, sessionStart: session.startTime, declineReason: booking.declineReason, priceMinor: service.priceMinor, currency: service.currency, slug: influencer.slug },
+      now,
+    );
+    if (extra === null) {
+      console.warn(`[send-message] booking ${bookingId}: "${template}" cannot be built now (the time to pay has passed, or no link can be signed); skipping`);
+      return "skipped";
+    }
+    Object.assign(context, extra);
+  }
+  secrets.push(...bearerLinkSecrets([context.payUrl, context.manageUrl]));
   const body = smsBody(template, context);
 
   // First choice, only when the influencer linked their own number by QR code and it is connected right now. Any refusal falls
   // through to the official connection below as if this route did not exist.
-  const viaLinkedNumber = await tryWhatsAppWeb(deps, { bookingId, influencerId: influencer.id, to, template, context, sessionStart: session.startTime });
+  const viaLinkedNumber = await tryWhatsAppWeb(deps, { bookingId, influencerId: influencer.id, to, template, context, sessionStart: session.startTime, holdExpiresAt: booking.holdExpiresAt });
   if (viaLinkedNumber?.kind === "sent") {
     await recordSent(bookingId, "WHATSAPP_WEB", template, viaLinkedNumber.providerMessageId);
     return "sent";
   }
   if (viaLinkedNumber?.kind === "unknown") return "sent";
   if (viaLinkedNumber?.kind === "skip") return "skipped";
+  const linkedMayRecover = viaLinkedNumber?.kind === "later";
+
+  // The linked number's queue may have held the message for a while. The text for the other channels was built when this run started,
+  // so ask the rule again with the clock as it is now (a payment link whose pay-by time has gone by must not go out another way).
+  if (isRequestMessageKind(template) && !messageMayBeSent(template, facts, new Date(), "sender")) {
+    console.info(`[send-message] booking ${bookingId}: "${template}" is no longer sendable (its time has passed while it waited); not sent anywhere`);
+    return "skipped";
+  }
 
   // Try WhatsApp, fall back to SMS. Only if BOTH channels fail do we treat the send as a (transient) failure.
   let channel: "WHATSAPP" | "SMS" = "WHATSAPP";
   let result: SendResult;
+  let officialTried = true;
   try {
     result = await deps.sendWhatsApp({
       influencerId: influencer.id,
@@ -340,19 +427,29 @@ export async function sendMessageForBooking(
     if (whatsappError instanceof WhatsAppNotConnectedError) {
       // WhatsApp was not even tried (no healthy connection, or this template is not approved yet), so there is no
       // failed attempt to record: go straight to SMS and say why in the log.
-      console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError)}); sending by SMS`);
+      console.info(`[send-message] booking ${bookingId}: not sending by WhatsApp (${errText(whatsappError, secrets)}); sending by SMS`);
+      officialTried = false;
     } else {
       console.warn(
-        `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError)}`,
+        `[send-message] WhatsApp failed for booking ${bookingId}, falling back to SMS: ${errText(whatsappError, secrets)}`,
       );
       // Record the WhatsApp failure on its own row so the dashboard shows the attempt, then try SMS.
-      await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError));
+      await recordFailure(bookingId, "WHATSAPP", template, errText(whatsappError, secrets));
     }
     channel = "SMS";
     try {
       result = await deps.sendSMS({ to, body, template, variables: templateParams(template, context) });
     } catch (smsError) {
-      await recordFailure(bookingId, "SMS", template, errText(smsError)); // transient: worker alerts after final attempt
+      // Nothing could even be tried: no linked number to wait for, no approved official template, and SMS is not set up for this message.
+      // For the booking-request messages that is not a delivery failure worth five retries, a booking error and an alert on every request:
+      // one plain FAILED row says why, and the job is done. (The five booking events keep today's behaviour: a paid customer who is missing
+      // the Meet link must still alert the host. An official send that really failed, or a linked number that is expected back, is retried.)
+      if (smsError instanceof NoMessageRouteError && isRequestMessageKind(template) && !officialTried && !linkedMayRecover) {
+        await recordNoRoute(bookingId, template);
+        console.info(`[send-message] booking ${bookingId}: no route for "${template}" (${errText(smsError, secrets)}); recorded, not retried`);
+        return "skipped";
+      }
+      await recordFailure(bookingId, "SMS", template, errText(smsError, secrets)); // transient: worker alerts after final attempt
       throw smsError;
     }
   }
@@ -377,6 +474,15 @@ async function recordSent(bookingId: string, channel: "WHATSAPP" | "WHATSAPP_WEB
     if (channel !== "WHATSAPP_WEB") throw e;
     await write();
   }
+}
+
+/** The one FAILED row of a request message that had no route at all. No retry, no alert and no booking error follow from it. */
+async function recordNoRoute(bookingId: string, template: string): Promise<void> {
+  await prisma.message.upsert({
+    where: { bookingId_channel_template: { bookingId, channel: "SMS", template } },
+    create: { bookingId, template, channel: "SMS", status: "FAILED", error: NO_MESSAGE_ROUTE_REASON },
+    update: { status: "FAILED", error: NO_MESSAGE_ROUTE_REASON },
+  });
 }
 
 /** Records (or creates) the Message row for a channel with the latest failure, without flipping it to FAILED. */
@@ -411,7 +517,7 @@ export async function reportMessageFailure(
   });
   if (!booking) return;
 
-  const detail = `Could not deliver "${template}" message after repeated failures: ${message}`.slice(0, 500);
+  const detail = redactBearerLinks(`Could not deliver "${template}" message after repeated failures: ${message}`).slice(0, 500);
   // Reaching the final failure means both channels failed; the SMS fallback is the last resort, so its row
   // carries the terminal FAILED state for the dashboard. (The WhatsApp attempt already left its own row.)
   await prisma.message.upsert({

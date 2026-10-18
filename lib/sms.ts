@@ -30,6 +30,18 @@ export interface SendResult {
   providerMessageId: string;
 }
 
+/**
+ * There is no way to send this message by SMS: the provider is not set up, or (MSG91) has no flow for this message. Not a failure of an
+ * attempt, so it is never worth retrying; lib/messaging.ts reads it as "no route" for the booking-request messages.
+ */
+export class NoMessageRouteError extends Error {
+  readonly retryable = false;
+  constructor(message: string) {
+    super(message);
+    this.name = "NoMessageRouteError";
+  }
+}
+
 type FetchFn = typeof fetch;
 
 function env(name: string): string {
@@ -40,6 +52,30 @@ function env(name: string): string {
 
 function templateEnvName(template: string): string {
   return `MSG91_TEMPLATE_${template.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+}
+
+/**
+ * Why this message cannot be sent by SMS with the settings in `env`, or null when it can: the provider's credentials, and for MSG91 a
+ * flow id for this message type (its own `MSG91_TEMPLATE_<NAME>` or the default). `MESSAGING_DRY_RUN` logs instead of sending, so it is
+ * always possible. The one answer is read by `sendSMS` (which refuses to send) and by lib/message-route.ts (which decides whether to
+ * queue a message at all), so the two can never disagree.
+ */
+export function smsConfigProblem(template: string | undefined, env: Record<string, string | undefined> = process.env): string | null {
+  if (env.MESSAGING_DRY_RUN === "true") return null;
+  const missing = (...names: string[]) => names.filter((n) => !env[n]);
+  const provider = (env.SMS_PROVIDER || "generic").toLowerCase();
+  if (provider === "msg91") {
+    if (missing("SMS_API_KEY").length) return "SMS is not set up (SMS_API_KEY is missing)";
+    const own = template ? env[templateEnvName(template)] : undefined;
+    if (!own && !env.MSG91_TEMPLATE_DEFAULT) return "SMS has no flow for this message (its MSG91_TEMPLATE_* and MSG91_TEMPLATE_DEFAULT are both unset)";
+    return null;
+  }
+  if (provider === "twilio") {
+    if (missing("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN").length) return "SMS is not set up (Twilio credentials are missing)";
+    if (!env.TWILIO_MESSAGING_SERVICE_SID && !env.TWILIO_FROM) return "SMS is not set up (Twilio has no sender)";
+    return null;
+  }
+  return missing("SMS_API_URL", "SMS_API_KEY").length ? "SMS is not set up (SMS_API_URL / SMS_API_KEY are missing)" : null;
 }
 
 async function failOnError(res: Response, provider: string): Promise<void> {
@@ -108,6 +144,8 @@ export async function sendSMS(input: SendSMSInput, fetchFn: FetchFn = fetch): Pr
     console.log("[sms:dry-run]", JSON.stringify({ to, template: input.template, body: input.body }));
     return { providerMessageId: `dry-run-sms-${Date.now()}` };
   }
+  const problem = smsConfigProblem(input.template);
+  if (problem) throw new NoMessageRouteError(problem);
   const provider = (process.env.SMS_PROVIDER || "generic").toLowerCase();
   if (provider === "msg91") return sendViaMsg91(input, to, fetchFn);
   if (provider === "twilio") return sendViaTwilio(input, to, fetchFn);

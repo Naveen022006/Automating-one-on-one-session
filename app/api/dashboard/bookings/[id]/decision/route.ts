@@ -21,14 +21,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   try {
     if (parsed.data.action === "approve") {
-      const { payBy, emailed, payUrl } = await approveRequest(auth.influencerId, id);
+      const { payBy, emailed, payUrl, messageRoute, messageQueued } = await approveRequest(auth.influencerId, id);
       await recordActivity({ influencerId: auth.influencerId, action: "booking.request_approved", targetType: "booking", targetId: id, detail: { bookingId: id }, req });
-      // `payLink` only when the customer could not be e-mailed (no Gmail connection and no platform e-mail): send it to them yourself.
-      return NextResponse.json({ ok: true, payBy: payBy.toISOString(), emailed, ...(payUrl ? { payLink: payUrl } : {}) });
+      // `payLink` only when nobody else will deliver it: the customer could not be e-mailed (no Gmail connection and no platform e-mail) AND
+      // no message is on its way. `messageRoute` is how a message can reach the customer (whatsapp-linked, whatsapp-official, sms or none) and
+      // `messageQueued` whether the payment link message is really on the queue (the worker builds and sends it).
+      return NextResponse.json({ ok: true, payBy: payBy.toISOString(), emailed, messageRoute, messageQueued, ...(payUrl ? { payLink: payUrl } : {}) });
     }
-    await declineRequest(auth.influencerId, id, parsed.data.reason ?? null);
+    const { messageRoute, messageQueued } = await declineRequest(auth.influencerId, id, parsed.data.reason ?? null);
     await recordActivity({ influencerId: auth.influencerId, action: "booking.request_declined", targetType: "booking", targetId: id, detail: { bookingId: id }, req });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, messageRoute, messageQueued });
   } catch (e) {
     if (e instanceof ApprovalError) return jsonError(e.message, e.status);
     throw e;

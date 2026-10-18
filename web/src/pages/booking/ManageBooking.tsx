@@ -7,6 +7,7 @@ import { Calendar, TimeSlotPicker, addMonths, daysInMonth, monthOf, todayIst, ym
 import { ReceiptCard } from "@web/components/views/booking/ReceiptCard";
 import { APP_TIME_ZONE_NOTE, formatDateTime, formatTime } from "@/lib/india";
 import type { ManageBookingData } from "@/lib/views/booking-manage";
+import { manageStatusNotice } from "@web/lib/request-flow-ui";
 
 function when(iso: string) {
   return formatDateTime(new Date(iso));
@@ -170,6 +171,8 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
   }
 
   const cancelled = status === "CANCELLED";
+  // A request that waits for the host, an accepted one that waits for payment, or one that ran out: say which, instead of "cannot be changed".
+  const waiting = manageStatusNotice(status, data.influencerName);
   // A paid booking shows its printable receipt; printing the page then prints only the receipt (styles/print.css).
   const receipt = !cancelled ? data.receipt : null;
 
@@ -214,7 +217,7 @@ export function ManageBooking({ data }: { data: ManageBookingData }) {
         {cancelled ? (
           <p className="muted">This booking is cancelled. To book again, visit {data.influencerName}&rsquo;s booking page.</p>
         ) : !data.canManage ? (
-          <Alert tone="info">This booking can no longer be changed online. Please contact {data.influencerName}.</Alert>
+          <Alert tone={waiting?.tone ?? "info"}>{waiting?.text ?? `This booking can no longer be changed online. Please contact ${data.influencerName}.`}</Alert>
         ) : mode === "view" ? (
           <div className="stack">
             <div className="grid grid--2">

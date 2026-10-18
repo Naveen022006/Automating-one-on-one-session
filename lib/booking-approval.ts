@@ -3,15 +3,29 @@ import { alertInfluencer } from "@/lib/alerts";
 import { sendCustomerRendered } from "@/lib/customer-email";
 import { requestEmail, type RequestEmailData } from "@/lib/email/templates";
 import { formatSessionTime } from "@/lib/format";
-import { APPROVED_PAY_HOURS, REQUEST_TTL_HOURS } from "@/lib/holds";
+import { MIN_LEAD_BEFORE_START_MS, paymentDeadline } from "@/lib/approval-window";
+import { REQUEST_TTL_HOURS } from "@/lib/holds";
+import { REQUEST_APPROVED_TEMPLATE, REQUEST_DECLINED_TEMPLATE, type RequestMessageKind } from "@/lib/message-kinds";
+import { queueRequestMessage, type QueueOutcome, type WhatsAppContact } from "@/lib/request-messages";
 import { buildPayUrl } from "@/lib/self-service";
 
 /**
  * Approval flow for services with `requiresApproval`. A customer's booking starts as REQUESTED (the seat is held
  * for up to REQUEST_TTL_HOURS, nothing is payable). The influencer then approves (-> HELD with a payment deadline,
- * and the customer is emailed a signed payment link) or declines (-> CANCELLED, the customer is told). Nothing is
- * ever charged before approval, so a decline needs no refund.
+ * and the customer is sent a signed payment link by e-mail and WhatsApp) or declines (-> CANCELLED, the customer is
+ * told the same two ways). Nothing is ever charged before approval, so a decline needs no refund.
+ *
+ * The WhatsApp messages (lib/request-messages.ts) are queued after the database change has committed, as a job that holds only the
+ * booking id and the template: the worker builds the text, and the payment link, when it sends. Nothing is queued unless a route to the
+ * customer exists (lib/message-route.ts). Queueing is best effort and never changes the answer, except that `messageRoute` and
+ * `messageQueued` tell the dashboard whether a message is on its way and how.
  */
+
+/** The seam a test replaces so no job reaches a real queue. */
+export interface ApprovalDeps {
+  queueMessage: (booking: { id: string; influencerId: string } & WhatsAppContact, template: RequestMessageKind) => Promise<QueueOutcome>;
+}
+const defaultDeps: ApprovalDeps = { queueMessage: (booking, template) => queueRequestMessage(booking, template) };
 
 export class ApprovalError extends Error {
   constructor(
@@ -22,15 +36,9 @@ export class ApprovalError extends Error {
   }
 }
 
-/** Never pay later than this long before the session starts, so there is time to create the Meet link. */
-export const MIN_LEAD_BEFORE_START_MS = 15 * 60_000;
-
-/** The payment deadline after an approval: 24 hours, but never later than 15 minutes before the session. */
-export function paymentDeadline(now: Date, sessionStart: Date): Date | null {
-  const deadline = new Date(Math.min(now.getTime() + APPROVED_PAY_HOURS * 3_600_000, sessionStart.getTime() - MIN_LEAD_BEFORE_START_MS));
-  // Less than five minutes to pay is not a real chance to pay.
-  return deadline.getTime() - now.getTime() >= 5 * 60_000 ? deadline : null;
-}
+// The payment deadline after an approval (24 hours, never later than 15 minutes before the session) lives in lib/approval-window.ts, shared
+// with the "request received" message; re-exported here because this is where callers have always found it.
+export { MIN_LEAD_BEFORE_START_MS, paymentDeadline };
 
 interface Loaded {
   id: string;
@@ -38,6 +46,8 @@ interface Loaded {
   holdExpiresAt: Date | null;
   customerName: string;
   customerEmail: string;
+  whatsappOptIn: boolean;
+  whatsappE164: string | null;
   redactedAt: Date | null;
   session: { startTime: Date; service: { id: string; title: string; priceMinor: number; currency: string; influencer: { id: string; name: string } } };
 }
@@ -60,6 +70,8 @@ async function loadOwned(db: Pick<typeof prisma, "booking">, influencerId: strin
       holdExpiresAt: true,
       customerName: true,
       customerEmail: true,
+      whatsappOptIn: true,
+      whatsappE164: true,
       redactedAt: true,
       session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true } } } } } },
     },
@@ -97,9 +109,11 @@ export async function notifyRequestCreated(bookingId: string): Promise<void> {
 
 /**
  * REQUESTED -> HELD. Conditional on the booking still being a live request, so two clicks (or an approve racing
- * the expiry job) cannot both win. The customer is emailed the payment link afterwards.
+ * the expiry job) cannot both win. The customer is sent the payment link afterwards: by e-mail and as a queued message (built when it is
+ * sent) over the best route that exists (lib/message-route.ts). `messageRoute` says which route that is, `messageQueued` whether the job is
+ * really on the queue. When the customer was not e-mailed and no message is on its way, the link is handed back to the host (`payUrl`).
  */
-export async function approveRequest(influencerId: string, bookingId: string, now = new Date()) {
+export async function approveRequest(influencerId: string, bookingId: string, now = new Date(), deps: ApprovalDeps = defaultDeps) {
   const b = await loadOwned(prisma, influencerId, bookingId);
   if (b.status !== "REQUESTED") throw new ApprovalError(b.status === "HELD" ? "This request is already approved." : "This booking is not a pending request.");
   // The customer's data was erased on request: there is no one to send a payment link to. Decline it instead.
@@ -117,7 +131,11 @@ export async function approveRequest(influencerId: string, bookingId: string, no
   });
   if (count === 0) throw new ApprovalError("This request changed while you were approving it. Refresh and try again.");
 
-  // The payment link goes out by e-mail only: through the influencer's Gmail, or the platform's provider when it has one (doc/15: with
+  // The WhatsApp message first: it is only a queued job, so it is quick, and it must not wait for a slow e-mail. The booking is HELD now,
+  // so the worker finds it payable whenever it runs, and builds the link then (the job carries no link).
+  const message = await deps.queueMessage({ ...b, influencerId }, REQUEST_APPROVED_TEMPLATE);
+
+  // The payment link also goes out by e-mail: through the influencer's Gmail, or the platform's provider when it has one (doc/15: with
   // EMAIL_PROVIDER=none and no Gmail nothing is sent). `emailed` says whether it went out; when it did not, the link is handed back to the
   // influencer (who is allowed to see it: it is their customer's payment) so they can send it themselves, instead of the customer waiting
   // for a message that will never come.
@@ -134,11 +152,15 @@ export async function approveRequest(influencerId: string, bookingId: string, no
   } catch (e) {
     console.error("[approval] approved but could not email the payment link", e instanceof Error ? e.message : e);
   }
-  return { payBy, emailed, payUrl: emailed ? null : payUrl };
+  // The link is the host's to hand over only when nothing else will: not e-mailed and no message on its way.
+  return { payBy, emailed, payUrl: emailed || message.queued ? null : payUrl, messageRoute: message.route, messageQueued: message.queued };
 }
 
-/** REQUESTED -> CANCELLED with an optional reason shown to the customer. Nothing was charged, so nothing to refund. */
-export async function declineRequest(influencerId: string, bookingId: string, reason: string | null, now = new Date()) {
+/**
+ * REQUESTED -> CANCELLED with an optional reason shown to the customer. Nothing was charged, so nothing to refund. The customer is told
+ * by e-mail and as a queued message over the best route that exists; `messageRoute` and `messageQueued` say which and whether it is on its way.
+ */
+export async function declineRequest(influencerId: string, bookingId: string, reason: string | null, now = new Date(), deps: ApprovalDeps = defaultDeps) {
   const b = await loadOwned(prisma, influencerId, bookingId);
   if (b.status !== "REQUESTED") throw new ApprovalError("This booking is not a pending request.");
   const note = reason?.trim().slice(0, 300) || null;
@@ -147,5 +169,7 @@ export async function declineRequest(influencerId: string, bookingId: string, re
     data: { status: "CANCELLED", decidedAt: now, declineReason: note },
   });
   if (count === 0) throw new ApprovalError("This request changed while you were declining it. Refresh and try again.");
+  const message = await deps.queueMessage({ ...b, influencerId }, REQUEST_DECLINED_TEMPLATE);
   await sendCustomerRendered(b.session.service.influencer.id, { email: b.customerEmail, name: b.customerName }, requestEmail("request-declined", { ...emailData(b), reason: note }), "request-declined");
+  return { messageRoute: message.route, messageQueued: message.queued };
 }

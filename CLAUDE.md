@@ -144,6 +144,16 @@ by `sweepExpiredCustomerAccess`.
 reminder jobs for `SCHEDULED` bookings in the next 25 h (`reconcileReminders`, `ensureReminder` in `lib/queue.ts`); a late reminder job is
 skipped by `staleReminderReason` and writes no `Message` row, which the repair relies on.
 
+**Booking-request messages (`lib/message-kinds.ts`, `lib/request-messages.ts`, `lib/request-message-context.ts`, `doc/16-request-whatsapp-flow.md`).**
+For services that need approval the customer also gets WhatsApp (linked number first, official template, SMS) at each step, besides the
+unchanged e-mails: `request-received` (hold route), `request-approved` with the payment link (`approveRequest`), `request-declined`
+(`declineRequest`), `request-expired` (the worker's `expireStaleHoldsAndNotify`), then the usual `booking-confirmation` after payment.
+`messageMayBeSent` in `lib/message-kinds.ts` is the ONE table of "which booking states may each message be sent in", read by
+`lib/messaging.ts` and by the linked number's `booking-guard.ts`. A job is `{ bookingId, template }` only: the payment link (a bearer link)
+is built when the message is sent, never stored or logged, and `redactBearerLinks` takes it (and the manage link) out of any stored, logged or thrown error, in its plain, JSON-escaped and percent-encoded spellings. Queueing is best
+effort and happens after the database change committed; tests must not reach a real queue (`delete process.env.REDIS_URL` or pass the
+`deps`/`enqueue` seam). Nothing is queued unless `customerMessageRoute` (`lib/message-route.ts`) finds a route to the customer (linked number, official connection with the template approved, SMS set up for it); the decision answer has `messageRoute` and `messageQueued`.
+
 **Provider simulator (doc/11).** `scripts/mock-providers` fakes Google (OAuth, Calendar/Meet, Gmail) and Meta (Graph, templates,
 Embedded Signup). `MOCK_PROVIDERS_URL` is honoured only in development with a local `APP_URL` (`lib/provider-endpoints.ts` decides
 every host); production refuses to start with it. It proves the app's side only.
@@ -223,3 +233,4 @@ router. Use `RATE_LIMIT_STORE=memory` when a test or server run should not touch
 rotation, backups), `doc/12-front-end.md` (the web app), `doc/07-...` (accounts, UI, integrations), `doc/11-provider-simulator.md`.
 The six marketplace features (moderation, admin money operations, activity log, customer portal, reminder repair, reports) are
 recorded, with their deviations, in `doc/13-product-build-plan.md`, `doc/13-marketplace-essentials.md` and `doc/13-deviations.md`.
+The request-flow WhatsApp messages are in `doc/16-request-whatsapp-flow.md`.

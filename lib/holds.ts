@@ -77,6 +77,12 @@ export interface HoldInput {
   intakeAnswers?: { id: string; label: string; answer: string }[];
   /** The service needs approval: create a REQUESTED booking (long hold, nothing to pay yet) instead of HELD. */
   requestApproval?: boolean;
+  /**
+   * With `requestApproval`: refuse (as a duplicate) when this many requests from the same phone number are already waiting for this
+   * influencer's answer. Checked under the schedule lock, so two at once cannot both get in. The public hold route passes 1; other
+   * callers (tests, tools) leave it out and are not limited.
+   */
+  maxOpenRequestsPerNumber?: number;
 }
 
 /**
@@ -123,6 +129,15 @@ export async function createHold(input: HoldInput) {
     });
     if (duplicate > 0) throw new DuplicateBookingError("You already have a booking for this slot");
 
+    if (input.requestApproval && input.maxOpenRequestsPerNumber !== undefined) {
+      const waiting = await tx.booking.count({
+        where: { status: "REQUESTED", holdExpiresAt: { gt: now }, whatsappE164: input.whatsappE164, session: { service: { influencerId: owner.influencerId } } },
+      });
+      if (waiting >= input.maxOpenRequestsPerNumber) {
+        throw new DuplicateBookingError("You already have a request waiting for this host. Please wait for their answer before sending another.");
+      }
+    }
+
     return tx.booking.create({
       data: {
         sessionId,
@@ -140,10 +155,17 @@ export async function createHold(input: HoldInput) {
   });
 }
 
-/** Marks timed-out unpaid bookings (held or awaiting payment) EXPIRED. Availability never depends on this running (expired holds are ignored); it keeps data tidy. */
-export async function expireStaleHolds(now = new Date()): Promise<number> {
+/**
+ * Marks timed-out unpaid bookings (requested, held or awaiting payment) EXPIRED. Availability never depends on this running (expired
+ * holds are ignored); it keeps data tidy. This is the plain database step. The worker calls `expireStaleHoldsAndNotify`
+ * (lib/request-messages.ts), which expires the unanswered REQUESTED bookings first, in batches, so it can tell their customers, and then
+ * calls this with `includeRequests: false` for everything else. `scope` narrows the sweep to some bookings (a test uses it to leave
+ * every other booking in a shared database alone); the worker never passes it.
+ */
+export async function expireStaleHolds(now = new Date(), opts: { includeRequests?: boolean; scope?: Prisma.BookingWhereInput } = {}): Promise<number> {
+  const statuses = opts.includeRequests === false ? TIMED_SEAT_STATUSES.filter((s) => s !== "REQUESTED") : [...TIMED_SEAT_STATUSES];
   const { count } = await prisma.booking.updateMany({
-    where: { status: { in: [...TIMED_SEAT_STATUSES] }, holdExpiresAt: { lte: now } },
+    where: { status: { in: statuses }, holdExpiresAt: { lte: now }, ...(opts.scope ? { AND: [opts.scope] } : {}) },
     data: { status: "EXPIRED" },
   });
   return count;

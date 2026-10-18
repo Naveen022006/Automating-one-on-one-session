@@ -12,7 +12,9 @@ import {
   REQUEST_TTL_HOURS,
   SlotUnavailableError,
 } from "@/lib/holds";
+import { REQUEST_RECEIVED_TEMPLATE } from "@/lib/message-kinds";
 import { toE164 } from "@/lib/phone";
+import { queueRequestMessage } from "@/lib/request-messages";
 import { signBookingPollToken } from "@/lib/self-service";
 import { publicInfluencerWhere } from "@/lib/public";
 import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
@@ -69,6 +71,12 @@ export async function POST(req: Request) {
   });
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
+  // A request makes the influencer's number message this phone number at once. One number cannot be used to trigger that again and again.
+  if (service.requiresApproval) {
+    const tooMany = await enforce(IDENTITY_RULES.holdPhone, whatsappE164, "This phone number has already been used for several booking requests today. Please try again tomorrow, or contact the host.");
+    if (tooMany) return tooMany;
+  }
+
   const startTime = new Date(body.startTime);
 
   // The service's booking window (minimum notice, furthest ahead) and intake questions are enforced here, not just
@@ -116,9 +124,13 @@ export async function POST(req: Request) {
       refundPolicy: service.refundPolicy,
       intakeAnswers: answered.answers,
       requestApproval: service.requiresApproval,
+      // One request waiting per phone number and host: the next one has to wait for the host's answer.
+      maxOpenRequestsPerNumber: service.requiresApproval ? 1 : undefined,
     });
     if (service.requiresApproval) {
-      // A request: nothing to pay yet. The customer gets a receipt email and the influencer an alert.
+      // A request: nothing to pay yet. The customer gets a receipt by e-mail and, when a route to them exists, as a queued message (best
+      // effort; the booking is committed by now), and the influencer an alert.
+      await queueRequestMessage({ ...booking, influencerId: service.influencerId }, REQUEST_RECEIVED_TEMPLATE);
       await notifyRequestCreated(booking.id);
       return NextResponse.json(
         { bookingId: booking.id, requiresApproval: true, holdExpiresAt: booking.holdExpiresAt, decideWithinHours: REQUEST_TTL_HOURS },

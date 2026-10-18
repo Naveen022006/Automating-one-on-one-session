@@ -17,10 +17,12 @@ const when = formatSessionTime(START);
 const ctx = { link: "https://meet.google.com/abc-defg-hij", serviceTitle: "Career call", influencerName: "Asha Rao", when };
 const MANAGE = "https://example.test/manage/abc123";
 
-test("there is a text for exactly the five booking events, and for nothing else", () => {
-  assert.deepEqual([...WHATSAPP_WEB_TEMPLATES], ["booking-confirmation", "reminder-24h", "reminder-15m", "reschedule", "cancellation"]);
+test("there is a text for exactly the five booking events and the four booking-request messages, and for nothing else", () => {
+  // Deliberately nine, no longer five: the booking-request flow (doc/16-request-whatsapp-flow.md) sends its four messages from a linked
+  // number too. The first five are unchanged; a template that is not listed here still has no text and is never sent this way.
+  assert.deepEqual([...WHATSAPP_WEB_TEMPLATES], ["booking-confirmation", "reminder-24h", "reminder-15m", "reschedule", "cancellation", "request-received", "request-approved", "request-declined", "request-expired"]);
   for (const t of WHATSAPP_WEB_TEMPLATES) assert.ok(isWhatsAppWebTemplate(t) && whatsAppWebText(t, ctx), t);
-  for (const t of ["receipt", "marketing", "booking-cancelled", "", "booking-confirmation "]) {
+  for (const t of ["receipt", "marketing", "booking-cancelled", "", "booking-confirmation ", "request-approved ", "request-cancelled"]) {
     assert.equal(isWhatsAppWebTemplate(t), false, t);
     assert.equal(whatsAppWebText(t, ctx), null, t);
   }
@@ -56,6 +58,98 @@ test("the wording of each event", () => {
   assert.match(whatsAppWebText("reminder-15m", ctx)!, /^Your session starts in 15 minutes\./);
   assert.match(whatsAppWebText("reschedule", ctx)!, /^Your session was rescheduled\.[\s\S]*New time: /);
   assert.match(whatsAppWebText("cancellation", ctx)!, /^Your session was cancelled\.[\s\S]*Any refund follows the cancellation policy\./);
+});
+
+// ---- the four booking-request messages ---------------------------------------------------------------------------------------
+const PAY = "https://example.test/pay/tok123";
+const PAGE = "https://example.test/asha";
+const requestCtx = { ...ctx, manageUrl: MANAGE, payUrl: PAY, payBy: "Fri, 13 Nov 2026, 6:00 PM IST", amount: "₹499.00", bookingPageUrl: PAGE, decideWithinHours: 48, reason: "I am away that week" };
+
+test("request received: says nothing was charged, how long the host has, that the payment link follows here, and carries the status link", () => {
+  assert.equal(
+    whatsAppWebText("request-received", requestCtx),
+    [
+      "Your booking request was received.",
+      "",
+      "Session: Career call with Asha Rao",
+      `Requested time: ${when}`,
+      "Asha Rao has 2 days to answer. Nothing has been charged and there is nothing to pay yet.",
+      "If the request is accepted, the payment link will be sent to you here. If it is not answered in time, it lapses and you pay nothing.",
+      `Your booking: ${MANAGE}`,
+      "",
+      "- Asha Rao",
+    ].join("\n"),
+  );
+  assert.ok(!whatsAppWebText("request-received", { ...requestCtx, manageUrl: null })!.includes("Your booking:"), "no status link built: the line is left out");
+  assert.match(whatsAppWebText("request-received", { ...requestCtx, decideWithinHours: 12 })!, /has 12 hours to answer/);
+});
+
+test("request accepted: the payment link, the amount in rupees, the pay-by time in IST, what happens when it is not paid, and the booking link", () => {
+  assert.equal(
+    whatsAppWebText("request-approved", requestCtx),
+    [
+      "Good news: your booking request was accepted.",
+      "",
+      "Session: Career call with Asha Rao",
+      `When: ${when}`,
+      "Amount to pay: ₹499.00",
+      "Pay by: Fri, 13 Nov 2026, 6:00 PM IST. If it is not paid by then, the time is released.",
+      `Pay here: ${PAY}`,
+      `Your booking: ${MANAGE}`,
+      "",
+      "- Asha Rao",
+    ].join("\n"),
+  );
+  // Without a payment link the text never pretends to have one.
+  const noLink = whatsAppWebText("request-approved", { ...requestCtx, payUrl: null })!;
+  assert.ok(!noLink.includes("Pay here:") && /payment link will be sent to you shortly/.test(noLink));
+});
+
+test("request declined: nothing was charged, the host's note when there is one, and a link to pick another time", () => {
+  assert.equal(
+    whatsAppWebText("request-declined", requestCtx),
+    [
+      "Your booking request was not accepted.",
+      "",
+      "Session: Career call with Asha Rao",
+      `Requested time: ${when}`,
+      "Note from Asha Rao: I am away that week",
+      "You were not charged anything.",
+      `To pick another time: ${PAGE}`,
+      "",
+      "- Asha Rao",
+    ].join("\n"),
+  );
+  assert.ok(!whatsAppWebText("request-declined", { ...requestCtx, reason: "  " })!.includes("Note from"), "no note: no empty line");
+  const long = whatsAppWebText("request-declined", { ...requestCtx, reason: `${"x".repeat(400)}\nnew line` })!;
+  assert.ok(long.length < 800 && !/\nnew line/.test(long), "a long, multi-line note is cut and kept on one line");
+});
+
+test("request expired: not confirmed in time, the time was released, nothing was charged, and a link to request again", () => {
+  assert.equal(
+    whatsAppWebText("request-expired", requestCtx),
+    [
+      "Your booking request was not confirmed in time.",
+      "",
+      "Session: Career call with Asha Rao",
+      `Requested time: ${when}`,
+      "The request lapsed before it was answered, so the time was released. You were not charged anything.",
+      `To request a time again: ${PAGE}`,
+      "",
+      "- Asha Rao",
+    ].join("\n"),
+  );
+});
+
+test("the request texts carry their links only where they belong, and no text shows another message's link", () => {
+  const text = (t: string) => whatsAppWebText(t, requestCtx)!;
+  assert.ok(text("request-approved").includes(PAY));
+  for (const t of ["request-received", "request-declined", "request-expired", "booking-confirmation"]) assert.ok(!text(t).includes(PAY), `${t} never shows the payment link`);
+  assert.ok(text("request-declined").includes(PAGE) && text("request-expired").includes(PAGE) && !text("request-received").includes(PAGE));
+  for (const t of ["request-received", "request-approved", "request-declined", "request-expired"]) {
+    assert.ok(!text(t).includes("meet.google"), `${t}: a request has no Meet link yet`);
+    assert.doesNotMatch(text(t), /\bSTOP\b|reply|unsubscribe|offer|discount|\bban(ned)?\b|detect/i, t);
+  }
 });
 
 test("no promise about replying or stopping (replies are never read), nothing promotional, and a hostile title cannot reshape the message", () => {
