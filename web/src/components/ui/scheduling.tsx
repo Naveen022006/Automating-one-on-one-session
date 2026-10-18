@@ -1,8 +1,9 @@
 /**
  * Calendar-style date picker and grouped time-slot picker for the booking and self-service flows. Dates are plain
- * "YYYY-MM-DD" strings in the customer's timezone; times are rendered with Intl in that timezone.
+ * "YYYY-MM-DD" strings (Indian Standard Time days); times are rendered in IST (lib/india.ts). There is no time zone to choose.
  */
 import { useMemo, useRef } from "react";
+import { formatDay, formatTime, istParts, istToday } from "@/lib/india";
 import { IconChevronLeft, IconChevronRight } from "@web/components/icons";
 import { Button, Skeleton } from "./primitives";
 
@@ -14,8 +15,9 @@ function pad(n: number) {
 export function ymd(y: number, m: number, d: number) {
   return `${y}-${pad(m)}-${pad(d)}`;
 }
-export function todayIn(tz: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+/** Today's date in India. */
+export function todayIst(): string {
+  return istToday();
 }
 export function monthOf(day: string): { y: number; m: number } {
   const [y, m] = day.split("-").map(Number);
@@ -51,7 +53,7 @@ export function Calendar({
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const { y, m } = month;
-  const label = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(
+  const label = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric", timeZone: "UTC" }).format(
     new Date(Date.UTC(y, m - 1, 1)),
   );
   const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7; // Monday = 0
@@ -117,7 +119,7 @@ export function Calendar({
               data-available={available && !loading ? "true" : undefined}
               data-today={day === minDay ? "true" : undefined}
               aria-pressed={selected}
-              aria-label={`${new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeZone: "UTC" }).format(new Date(`${day}T12:00:00Z`))}${available ? "" : ", no times available"}`}
+              aria-label={`${formatDay(day)}${available ? "" : ", no times available"}`}
               disabled={!available}
               tabIndex={selected || (!value && day === minDay) ? 0 : -1}
               onClick={() => onChange(day)}
@@ -137,8 +139,8 @@ export interface SlotOption {
   seatsLeft: number;
 }
 
-function partOfDay(iso: string, tz: string): "Morning" | "Afternoon" | "Evening" {
-  const h = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hour12: false, timeZone: tz }).format(new Date(iso)));
+function partOfDay(iso: string): "Morning" | "Afternoon" | "Evening" {
+  const h = istParts(new Date(iso)).hour;
   return h < 12 ? "Morning" : h < 17 ? "Afternoon" : "Evening";
 }
 
@@ -146,14 +148,12 @@ export function TimeSlotPicker({
   slots,
   value,
   onChange,
-  tz,
   showSeats,
   loading,
 }: {
   slots: SlotOption[] | null;
   value: string | null;
   onChange: (slot: SlotOption) => void;
-  tz: string;
   showSeats?: boolean;
   loading?: boolean;
 }) {
@@ -169,10 +169,9 @@ export function TimeSlotPicker({
   if (slots.length === 0) return <p className="muted text-sm">No times left on this day. Pick another highlighted date.</p>;
   const groups = new Map<string, SlotOption[]>();
   for (const s of slots) {
-    const g = partOfDay(s.start, tz);
+    const g = partOfDay(s.start);
     groups.set(g, [...(groups.get(g) ?? []), s]);
   }
-  const fmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: tz });
   return (
     <div>
       {["Morning", "Afternoon", "Evening"]
@@ -183,7 +182,7 @@ export function TimeSlotPicker({
             <div className="slots">
               {groups.get(g)!.map((s) => (
                 <button key={s.start} type="button" className="slot" aria-pressed={value === s.start} onClick={() => onChange(s)}>
-                  <span>{fmt.format(new Date(s.start))}</span>
+                  <span>{formatTime(new Date(s.start))}</span>
                   {showSeats && <span className="slot__seats">{s.seatsLeft} left</span>}
                 </button>
               ))}
@@ -192,18 +191,4 @@ export function TimeSlotPicker({
         ))}
     </div>
   );
-}
-
-/** A small, searchable list of IANA timezones (falls back to a curated list on older browsers). */
-export function timezoneOptions(current: string): string[] {
-  let zones: string[] = [];
-  try {
-    zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
-  } catch {
-    zones = [];
-  }
-  if (zones.length === 0) {
-    zones = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney", "UTC"];
-  }
-  return zones.includes(current) ? zones : [current, ...zones];
 }

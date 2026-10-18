@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useToast } from "@web/components/ui/overlays";
 import { ButtonLink, Field, Input } from "@web/components/ui/primitives";
+import { istMonthStart, istToday } from "@/lib/india";
 
 export type ExportKind = "payments" | "bookings" | "payouts" | "audit";
 
@@ -28,8 +29,8 @@ export function exportRangeProblem(from: string, to: string): string | null {
  */
 export function ExportControls({ kind, label = "Download CSV" }: { kind: ExportKind; label?: string }) {
   const toast = useToast();
-  const [from, setFrom] = useState(() => `${new Date().toISOString().slice(0, 7)}-01`);
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [from, setFrom] = useState(() => istMonthStart(new Date()));
+  const [to, setTo] = useState(() => istToday());
   const [busy, setBusy] = useState(false);
   const problem = exportRangeProblem(from, to);
   const href = exportUrl(kind, from, to);

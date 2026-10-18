@@ -1,6 +1,7 @@
 import { parseAnswers } from "@/lib/intake";
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
+import { istDayStart, istMonthStart } from "@/lib/india";
 import { PLATFORM_CANCEL_PREFIX } from "@/lib/refunds";
 import { aggregateEarnings, type EarningsPaymentInput, type EarningsSummary } from "@/lib/dashboard";
 import { getGoogleStatus, type GoogleConnectionStatus } from "@/lib/google-tokens";
@@ -153,7 +154,8 @@ export interface Overview {
 
 export async function getOverview(influencerId: string, emailVerified: boolean, now = new Date()): Promise<Overview> {
   const weekAhead = new Date(now.getTime() + 7 * 86_400_000);
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  // "This month" is the Indian Standard Time month: it begins at 00:00 IST on the 1st (18:30 UTC the evening before).
+  const monthStart = istDayStart(istMonthStart(now));
   const [upcoming, monthPayments, google, whatsapp, failedMessages, refunds, errored, requests] = await Promise.all([
     prisma.session.findMany({
       where: { service: { influencerId }, startTime: { lt: weekAhead }, endTime: { gte: now }, bookings: { some: { status: { in: ["PAID", "SCHEDULED"] } } } },

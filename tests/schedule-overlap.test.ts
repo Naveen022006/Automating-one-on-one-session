@@ -52,7 +52,6 @@ async function bookable(serviceId: string): Promise<BookableService> {
     influencerId,
     durationMin: durations[serviceId],
     capacity: capacities[serviceId],
-    timezone: "UTC",
     rules,
     minNoticeHours: 0,
     maxAdvanceDays: 365,

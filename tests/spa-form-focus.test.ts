@@ -72,7 +72,7 @@ test("the focus targets exist: the heading of the step a visitor lands on is foc
     { id: "svc_1", title: "Career call", description: null, durationMin: 30, priceMinor: 49900, currency: "INR", type: "ONE_TO_ONE" as const, capacity: 1, refundText: "Full refund.", intakeQuestions: [], prepNotes: null, requiresApproval: false },
     { id: "svc_2", title: "Workshop", description: null, durationMin: 60, priceMinor: 19900, currency: "INR", type: "GROUP" as const, capacity: 5, refundText: "Full refund.", intakeQuestions: [], prepNotes: null, requiresApproval: false },
   ];
-  const host = { name: "Demo Creator", photoUrl: null, slug: "demo", timezone: "Asia/Kolkata" };
+  const host = { name: "Demo Creator", photoUrl: null, slug: "demo" };
   const step1 = renderToStaticMarkup(createElement(BookingFlow, { host, services, initialServiceId: "svc_2", preview: false }));
   assert.match(step1, /<h2 id="pick-time" tabindex="-1"/);
   const step0 = renderToStaticMarkup(createElement(BookingFlow, { host, services, initialServiceId: null, preview: false }));

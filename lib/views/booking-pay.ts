@@ -9,7 +9,7 @@ import { decodeSpaParam } from "@/lib/spa/routes";
  *
  * The signed link only identifies the booking; what can be done depends on the booking's state when the page loads, so
  * the answer is a union by `state` and is always a normal 200 (an invalid link is a screen, not an HTTP error). The
- * texts that depend on the server's locale and the customer's time zone (`whenText`, `amountText`, `payByText`) are
+ * texts that depend on the server's locale (`whenText`, `amountText`, `payByText`: Indian Standard Time and rupees) are
  * formatted here, exactly as the page always did. Nothing about the customer (name, email, phone) is part of it.
  */
 export type PayView =
@@ -55,7 +55,7 @@ export async function loadPayView(token: string): Promise<PayView> {
     where: { id: bookingId },
     include: {
       payments: { select: { status: true, needsRefund: true, refundAmountMinor: true } },
-      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, timezone: true, suspendedAt: true } } } } } },
+      session: { include: { service: { include: { influencer: { select: { name: true, slug: true, suspendedAt: true } } } } } },
     },
   });
   // A booking erased on request is as good as missing here too (as in the manage view): its customer asked to be forgotten, and
@@ -63,8 +63,7 @@ export async function loadPayView(token: string): Promise<PayView> {
   if (!booking || booking.redactedAt) return { state: "not-found" };
   const { service } = booking.session;
   const host = service.influencer;
-  const tz = booking.customerTz ?? host.timezone;
-  const when = formatSessionTime(booking.session.startTime, tz);
+  const when = formatSessionTime(booking.session.startTime);
   const now = new Date();
 
   if (["PAID", "SCHEDULED", "COMPLETED"].includes(booking.status)) {
@@ -102,7 +101,7 @@ export async function loadPayView(token: string): Promise<PayView> {
     serviceTitle: service.title,
     whenText: when,
     amountText: formatMoney(service.priceMinor, service.currency),
-    payByText: formatSessionTime(booking.holdExpiresAt!, tz),
+    payByText: formatSessionTime(booking.holdExpiresAt!),
     prepNotes: service.prepNotes,
   };
 }

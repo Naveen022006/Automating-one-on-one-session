@@ -3,6 +3,8 @@ import { useState } from "react";
 import { IconPencil, IconPlus, IconTrash, IconUsers, IconVideo } from "@web/components/icons";
 import { Drawer, Switch, useToast } from "@web/components/ui/overlays";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Textarea, describedBy } from "@web/components/ui/primitives";
+import { formatMoney } from "@/lib/format";
+import { APP_CURRENCY } from "@/lib/india";
 import { MAX_QUESTIONS, type IntakeQuestion } from "@/lib/intake";
 import type { ServiceAdmin } from "@/lib/views/dashboard-types";
 import { useApi } from "./ApiProvider";
@@ -44,13 +46,8 @@ const BLANK: Omit<ServiceAdmin, "id"> = {
   requiresApproval: false,
 };
 
-function money(minor: number, currency: string) {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / 100);
-  } catch {
-    return `${(minor / 100).toFixed(2)} ${currency}`;
-  }
-}
+// Rupees with Indian digit grouping ("₹1,25,000.00"); a service saved before the product went India-only keeps its own currency's symbol.
+const money = formatMoney;
 
 interface DraftQuestion {
   id: string;
@@ -182,7 +179,10 @@ function ServiceForm({
   const [description, setDescription] = useState(initial.description ?? "");
   const [duration, setDuration] = useState(String(initial.durationMin));
   const [price, setPrice] = useState((initial.priceMinor / 100).toFixed(2));
-  const [currency, setCurrency] = useState(initial.currency);
+  // INR for every new service; an older service keeps the currency it was created in until the owner chooses "Switch to INR", which converts
+  // nothing: it changes the currency and clears the price so it has to be typed again in rupees.
+  const [switchedToInr, setSwitchedToInr] = useState(false);
+  const currency = switchedToInr ? APP_CURRENCY : initial.currency;
   const [type, setType] = useState(initial.type);
   const [capacity, setCapacity] = useState(String(initial.type === "GROUP" ? initial.capacity : 5));
   const [policy, setPolicy] = useState(initial.refundPolicy);
@@ -204,7 +204,7 @@ function ServiceForm({
     const local: Record<string, string> = {};
     if (!title.trim()) local.title = "Give the service a name.";
     if (!Number.isInteger(durationMin) || durationMin < 5 || durationMin > 480) local.duration = "Between 5 and 480 minutes.";
-    if (!Number.isFinite(priceMinor) || priceMinor < 0) local.price = "Enter a price, for example 499.";
+    if (!Number.isFinite(priceMinor) || priceMinor < 0 || (switchedToInr && price.trim() === "")) local.price = "Enter a price, for example 499.";
     if (type === "GROUP" && (!Number.isInteger(seats) || seats < 2 || seats > 1000)) local.capacity = "Between 2 and 1000 seats.";
     questions.forEach((q, i) => {
       if (q.label.trim().length < 3) local[`q${i}`] = "Write the question (at least 3 characters).";
@@ -219,7 +219,7 @@ function ServiceForm({
       description: description.trim() || (initial.id ? null : undefined),
       durationMin,
       priceMinor,
-      currency,
+      ...(initial.id && !switchedToInr ? {} : { currency: APP_CURRENCY }),
       type,
       capacity: type === "GROUP" ? seats : 1,
       refundPolicy: policy,
@@ -276,15 +276,29 @@ function ServiceForm({
             <Field id="svc-duration" label="Length (minutes)" error={errors.duration}>
               <Input {...describedBy("svc-duration", { error: errors.duration })} inputMode="numeric" value={duration} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDuration(e.target.value.replace(/\D/g, ""))} />
             </Field>
-            <Field id="svc-price" label="Price" error={errors.price}>
+            <Field id="svc-price" label={`Price (${currency})`} error={errors.price} help={currency === APP_CURRENCY ? undefined : `This service was created in ${currency}. New services are priced in rupees.`}>
               <div className="input-group">
-                <Select aria-label="Currency" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCurrency(e.target.value)} style={{ width: 96, borderRadius: "8px 0 0 8px" }}>
-                  {["INR", "USD", "EUR", "GBP", "AED", "SGD"].map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </Select>
+                <span className="input-group__addon" aria-hidden="true">
+                  {currency === APP_CURRENCY ? "₹" : currency}
+                </span>
                 <Input {...describedBy("svc-price", { error: errors.price })} inputMode="decimal" value={price} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPrice(e.target.value)} />
               </div>
+              {initial.id && initial.currency !== APP_CURRENCY && !switchedToInr && (
+                <div className="stack stack--sm" style={{ marginTop: 8 }}>
+                  <Alert tone="warning">This price is in {initial.currency}, not rupees. Switching does not convert it: you type the price again in rupees.</Alert>
+                  <div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSwitchedToInr(true);
+                        setPrice("");
+                      }}
+                    >
+                      Switch to INR
+                    </Button>
+                  </div>
+                </div>
+              )}
             </Field>
           </div>
           <fieldset className="stack stack--sm" style={{ border: 0, padding: 0, margin: 0 }}>

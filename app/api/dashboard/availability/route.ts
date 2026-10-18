@@ -4,7 +4,7 @@ import { z } from "zod";
 import { recordActivity } from "@/lib/activity";
 import { requireApiAuth } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
-import { isValidTimezone } from "@/lib/slots";
+import { APP_TIME_ZONE, AVAILABILITY_ZONE_ERROR, isIstEquivalentZone } from "@/lib/india";
 import { loadAvailabilityView } from "@/lib/views/dashboard-availability";
 import { jsonView } from "@/lib/views/http";
 
@@ -19,7 +19,8 @@ const createSchema = z.object({
   weekday: z.number().int().min(1).max(7), // ISO: 1=Mon ... 7=Sun
   startTime: z.string().regex(TIME),
   endTime: z.string().regex(TIME),
-  timezone: z.string().min(1),
+  // Old clients may still send one: only Asia/Kolkata (or its alias Asia/Calcutta) is accepted, anything else is a 400 (see POST).
+  timezone: z.string().min(1).optional(),
 });
 
 const updateSchema = z.object({
@@ -33,7 +34,7 @@ const updateSchema = z.object({
 const deleteSchema = z.object({ ruleId: z.string().min(1) });
 
 // The Availability page's data for the SPA (loadAvailabilityView is the one source): the
-// influencer's time zone, weekly rules and blocked days.
+// weekly rules (each with the zone it was saved in: IST for everything written now) and blocked days.
 export async function GET() {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
@@ -50,7 +51,11 @@ export async function POST(req: Request) {
   }
 
   const body = parsed.data;
-  if (!isValidTimezone(body.timezone)) return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
+  // Unlike the other routes, hours are NOT leniently normalised: HH:mm only means the same in IST as in a zone whose offset is always +05:30. A tab
+  // left open across the deploy (or a script) that names another zone would otherwise move bookable hours by hours.
+  if (body.timezone !== undefined && !isIstEquivalentZone(body.timezone)) {
+    return NextResponse.json({ error: AVAILABILITY_ZONE_ERROR }, { status: 400 });
+  }
   if (body.endTime <= body.startTime) {
     return NextResponse.json({ error: "endTime must be after startTime" }, { status: 400 });
   }
@@ -61,7 +66,7 @@ export async function POST(req: Request) {
       weekday: body.weekday,
       startTime: body.startTime,
       endTime: body.endTime,
-      timezone: body.timezone,
+      timezone: APP_TIME_ZONE,
     },
     select: { id: true },
   });
@@ -84,15 +89,21 @@ export async function PATCH(req: Request) {
   });
   if (!existing) return NextResponse.json({ error: "Availability rule not found" }, { status: 404 });
 
-  const timezone = body.timezone ?? existing.timezone;
-  if (!isValidTimezone(timezone)) return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
+  if (body.timezone !== undefined && !isIstEquivalentZone(body.timezone)) {
+    return NextResponse.json({ error: AVAILABILITY_ZONE_ERROR }, { status: 400 });
+  }
+  // A rule saved before the product went India-only may still carry another zone. Its times mean something else in IST, so a change
+  // must restate BOTH of them (they are then read, and saved, as IST); changing only the weekday or one end would silently shift it.
+  if (existing.timezone !== APP_TIME_ZONE && (body.startTime === undefined || body.endTime === undefined)) {
+    return NextResponse.json({ error: "These hours were saved in another time zone. Send both startTime and endTime (in IST) to re-save them." }, { status: 400 });
+  }
   const startTime = body.startTime ?? existing.startTime;
   const endTime = body.endTime ?? existing.endTime;
   if (endTime <= startTime) return NextResponse.json({ error: "endTime must be after startTime" }, { status: 400 });
 
   await prisma.availabilityRule.update({
     where: { id: existing.id },
-    data: { weekday: body.weekday ?? existing.weekday, startTime, endTime, timezone },
+    data: { weekday: body.weekday ?? existing.weekday, startTime, endTime, timezone: APP_TIME_ZONE },
   });
   await recordActivity({ influencerId, action: "availability.changed", detail: { change: "rule-updated" }, req });
   return NextResponse.json({ ok: true });

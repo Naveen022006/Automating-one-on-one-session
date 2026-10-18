@@ -1,4 +1,4 @@
-import { DateTime } from "luxon";
+import { istDate } from "@/lib/india";
 import { prisma } from "@/lib/db";
 import { activeSeatWhere } from "@/lib/holds";
 import { publicInfluencerWhere } from "@/lib/public";
@@ -16,7 +16,6 @@ export interface BookableService {
   influencerId: string;
   durationMin: number;
   capacity: number;
-  timezone: string;
   rules: Rule[];
   minNoticeHours: number;
   maxAdvanceDays: number;
@@ -43,7 +42,6 @@ export async function loadBookableService(serviceId: string, viewerInfluencerId?
     influencerId: service.influencerId,
     durationMin: service.durationMin,
     capacity: service.capacity,
-    timezone: service.influencer.timezone,
     rules: service.influencer.rules,
     minNoticeHours: service.minNoticeHours,
     maxAdvanceDays: service.maxAdvanceDays,
@@ -116,12 +114,12 @@ export async function openSlots(
     .filter((s) => s.seatsLeft > 0);
 }
 
-/** Pure: the "YYYY-MM-DD" days (in `tz`) that have at least one open slot. */
-export function daysWithSlots(slots: Pick<OpenSlot, "start">[], tz: string): string[] {
+/** Pure: the "YYYY-MM-DD" Indian Standard Time days that have at least one open slot. */
+export function daysWithSlots(slots: Pick<OpenSlot, "start">[]): string[] {
   const days = new Set<string>();
   for (const s of slots) {
-    const d = DateTime.fromISO(s.start, { zone: "utc" }).setZone(tz).toISODate();
-    if (d) days.add(d);
+    const t = new Date(s.start);
+    if (!Number.isNaN(t.getTime())) days.add(istDate(t));
   }
   return [...days].sort();
 }

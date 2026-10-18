@@ -6,9 +6,10 @@ import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardCustomersView } from "@/lib/views/dashboard-customers";
 import { GetForm } from "./GetForm";
+import { formatDate } from "@/lib/india";
 
 function day(iso: string | null) {
-  return iso ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(iso)) : "–";
+  return iso ? formatDate(new Date(iso), { weekday: false }) : "–";
 }
 
 /**

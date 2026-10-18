@@ -4,6 +4,7 @@ import { PageHead } from "@web/components/app/AppShell";
 import { EmptyState, LinkTabs, Pagination, StatusPill } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { DashboardMessagesView, MessageStatusFilter } from "@/lib/views/dashboard-messages";
+import { formatDateTime } from "@/lib/india";
 
 const CHANNEL: Record<string, string> = { WHATSAPP: "WhatsApp", SMS: "SMS", EMAIL: "Email" };
 const TEMPLATE: Record<string, string> = {
@@ -24,7 +25,7 @@ const FILTERS: { value: MessageStatusFilter; label: string }[] = [
 ];
 
 function at(iso: string) {
-  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+  return formatDateTime(new Date(iso), { weekday: false, year: false });
 }
 
 /**

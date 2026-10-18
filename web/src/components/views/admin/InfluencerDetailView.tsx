@@ -8,6 +8,7 @@ import { CreatePayoutButton, FeeForm, PayoutRowActions, PayoutStatusBadges } fro
 import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminInfluencerView } from "@/lib/views/admin-influencer";
+import { formatDate, formatDateTime } from "@/lib/india";
 
 /**
  * The admin console's Influencer page. Rendered by the SPA page from the endpoint's JSON. The payout
@@ -20,7 +21,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
   return (
     <div className="stack stack--lg">
       <Breadcrumb items={[{ label: "Influencers", href: "/admin/influencers" }, { label: i.name }]} />
-      <PageHead title={i.name} description={`${i.email} · /${i.slug} · ${i.timezone}`} />
+      <PageHead title={i.name} description={`${i.email} · /${i.slug}`} />
       <InfluencerStatusPanel influencerId={i.id} />
 
       <div className="grid grid--2">
@@ -31,7 +32,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
             <dt>Email</dt>
             <dd>{i.emailVerified ? <Badge tone="success">Verified</Badge> : <Badge tone="warning">Not verified</Badge>}</dd>
             <dt>Joined</dt>
-            <dd>{new Date(i.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</dd>
+            <dd>{formatDate(new Date(i.createdAt), { weekday: false })}</dd>
           </dl>
           <AccountHelpActions influencerId={i.id} emailVerified={i.emailVerified} emailEnabled={data.emailEnabled} />
         </Card>
@@ -123,7 +124,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
                 <tbody>
                   {payouts.map((p) => (
                     <tr key={p.id}>
-                      <td data-label="Created">{new Date(p.createdAt).toLocaleDateString("en-IN", { dateStyle: "medium" })}</td>
+                      <td data-label="Created">{formatDate(new Date(p.createdAt), { weekday: false })}</td>
                       <td data-label="Send to">{p.destination}</td>
                       <td data-label="Amount" className="num">{formatMoney(p.netMinor, p.currency)}</td>
                       <td data-label="Status">
@@ -193,7 +194,7 @@ export function InfluencerDetailView({ data }: { data: Jsonify<AdminInfluencerVi
                   <tr key={b.id}>
                     <td data-label="Session">
                       {b.serviceTitle}
-                      <div className="subtle">{new Date(b.startTime).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
+                      <div className="subtle">{formatDateTime(new Date(b.startTime), { weekday: false })}</div>
                     </td>
                     <td data-label="Customer">{b.customerName}</td>
                     <td data-label="Status"><StatusPill kind="booking" status={b.status} /></td>

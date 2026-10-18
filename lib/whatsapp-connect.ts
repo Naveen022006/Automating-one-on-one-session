@@ -1,3 +1,4 @@
+import { istDate } from "@/lib/india";
 import { TEMPLATE_SPECS, isMetaTemplateName, normalizeTemplateStatus, templateConflict, type TemplateSpec } from "@/lib/message-templates";
 import { graphBase, mockFacebookSdkUrl } from "@/lib/provider-endpoints";
 import { graphVersion } from "@/lib/whatsapp-graph-config";
@@ -308,7 +309,7 @@ export function checkTokenInfo(info: TokenInfo, now = new Date()): TokenCheck {
     if (left < MIN_TOKEN_LIFETIME_DAYS * 86_400_000) {
       return { ok: false, message: `This access token expires in ${ago(Math.max(0, left))}. Use a permanent System User token (Business settings, System users, Generate token, expiry Never).` };
     }
-    notes.push(`This access token expires on ${info.expiresAt.toISOString().slice(0, 10)}. Connect again with a new token before then, or use a permanent System User token.`);
+    notes.push(`This access token expires on ${istDate(info.expiresAt)}. Connect again with a new token before then, or use a permanent System User token.`);
   }
   return { ok: true, notes };
 }

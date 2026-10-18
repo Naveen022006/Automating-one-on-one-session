@@ -38,18 +38,16 @@ interface Loaded {
   holdExpiresAt: Date | null;
   customerName: string;
   customerEmail: string;
-  customerTz: string | null;
   redactedAt: Date | null;
-  session: { startTime: Date; service: { id: string; title: string; priceMinor: number; currency: string; influencer: { id: string; name: string; timezone: string } } };
+  session: { startTime: Date; service: { id: string; title: string; priceMinor: number; currency: string; influencer: { id: string; name: string } } };
 }
 
-function emailData(b: Pick<Loaded, "customerName" | "customerTz" | "session">): RequestEmailData {
+function emailData(b: Pick<Loaded, "customerName" | "session">): RequestEmailData {
   return {
     customerName: b.customerName,
     serviceTitle: b.session.service.title,
     influencerName: b.session.service.influencer.name,
     startTime: b.session.startTime,
-    tz: b.customerTz ?? b.session.service.influencer.timezone,
   };
 }
 
@@ -62,9 +60,8 @@ async function loadOwned(db: Pick<typeof prisma, "booking">, influencerId: strin
       holdExpiresAt: true,
       customerName: true,
       customerEmail: true,
-      customerTz: true,
       redactedAt: true,
-      session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true, timezone: true } } } } } },
+      session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true } } } } } },
     },
   });
   if (!b) throw new ApprovalError("Booking not found", 404);
@@ -82,8 +79,7 @@ export async function notifyRequestCreated(bookingId: string): Promise<void> {
         holdExpiresAt: true,
         customerName: true,
         customerEmail: true,
-        customerTz: true,
-        session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true, timezone: true } } } } } },
+        session: { select: { startTime: true, service: { select: { id: true, title: true, priceMinor: true, currency: true, influencer: { select: { id: true, name: true } } } } } },
       },
     });
     if (!b) return;
@@ -91,7 +87,7 @@ export async function notifyRequestCreated(bookingId: string): Promise<void> {
     await sendCustomerRendered(b.session.service.influencer.id, { email: b.customerEmail, name: b.customerName }, requestEmail("request-received", { ...d, decideWithinHours: REQUEST_TTL_HOURS }), "request-received");
     await alertInfluencer(b.session.service.influencer.id, {
       kind: "booking-request",
-      detail: `${b.customerName} asked to book ${b.session.service.title} on ${formatSessionTime(b.session.startTime, b.session.service.influencer.timezone)}. Approve or decline before the held time is released.`,
+      detail: `${b.customerName} asked to book ${b.session.service.title} on ${formatSessionTime(b.session.startTime)}. Approve or decline before the held time is released.`,
       bookingId: b.id,
     });
   } catch (e) {

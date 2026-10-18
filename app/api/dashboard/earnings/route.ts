@@ -5,7 +5,7 @@ import { jsonView } from "@/lib/views/http";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/dashboard/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD -> earnings summary for the range (UTC days); the CSV is
+// GET /api/dashboard/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD -> earnings summary for the range (IST days); the CSV is
 // GET /api/dashboard/earnings/export. Missing or invalid dates default to the 1st of this month and today.
 export async function GET(req: Request) {
   const auth = await requireApiAuth();

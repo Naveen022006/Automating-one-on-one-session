@@ -19,6 +19,11 @@ import { prisma } from "@/lib/db";
  *   - a booking "holds" a payment when it is PAID, SCHEDULED or COMPLETED.
  * Money is an integer in minor units; a currency is never added to another.
  *
+ * DAYS AND MONTHS ARE INDIAN STANDARD TIME (doc/14-india-localisation.md). The timestamp columns are `timestamp(3)` holding UTC wall-clock
+ * time, so a report day D covers [D 00:00 IST, D+1 00:00 IST) = [D-1 18:30 UTC, D 18:30 UTC), and a month bucket is the IST month of the
+ * stored instant (`istStart` and `istMonthOf` below). Only the grouping and the bounds depend on the zone: which payments, refunds and
+ * payouts exist, and every amount, are exactly what they were, so the reconciliation identity and the payout maths are untouched.
+ *
  * Every paid payment is in exactly one place (this is what makes the reconciliation identity hold; payoutBlocker and the approve / mark-paid check
  * refuse a flagged payment, but a payment can be flagged AFTER its payout was created or paid (a refund that failed by webhook, a duplicate found
  * later), and the report has to cope):
@@ -32,10 +37,15 @@ import { prisma } from "@/lib/db";
 /** The number of SQL statements one report runs (asserted in the test). */
 export const REPORT_QUERY_COUNT = 9;
 
-/** A day written YYYY-MM-DD (UTC), already validated by the caller. */
+/** A day written YYYY-MM-DD (an IST calendar day), already validated by the caller. */
 export type Day = string;
 
 const num = (v: bigint | number | null | undefined): number => (v == null ? 0 : Number(v));
+
+/** The UTC wall-clock instant at which the IST calendar day `day` begins, as a SQL value comparable with a `timestamp(3)` column. */
+const istStart = (day: Day) => Prisma.sql`(${day}::date::timestamp AT TIME ZONE 'Asia/Kolkata' AT TIME ZONE 'UTC')`;
+/** The IST month (`YYYY-MM`) of a `timestamp(3)` column that holds UTC wall-clock time. */
+const istMonthOf = (column: Prisma.Sql) => Prisma.sql`to_char(${column} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM')`;
 
 export interface RangeFigures {
   currency: string;
@@ -49,7 +59,7 @@ export interface RangeFigures {
 }
 
 export interface MonthFigures {
-  /** YYYY-MM, UTC. */
+  /** YYYY-MM, IST. */
   month: string;
   currency: string;
   grossMinor: number;
@@ -82,7 +92,7 @@ export interface ReportData {
   balances: BalanceFigures[];
 }
 
-/** The 12 calendar months (UTC) ending with `endMonth` (YYYY-MM): the first day of the first one, and the first day AFTER the last one. */
+/** The 12 calendar months (IST) ending with `endMonth` (YYYY-MM): the first day of the first one, and the first day AFTER the last one. */
 export function monthWindow(endMonth: string, months = 12): { start: Day; endExclusive: Day } {
   const [y, m] = endMonth.split("-").map(Number);
   const first = new Date(Date.UTC(y, m - 1 - (months - 1), 1));
@@ -100,21 +110,21 @@ type Bucket = { bucket: string | null; currency: string };
  * move the date.
  */
 async function paymentRows(start: Day, endExclusive: Day, byMonth: boolean) {
-  const bucket = byMonth ? Prisma.sql`to_char(created_at, 'YYYY-MM')` : Prisma.sql`NULL::text`;
+  const bucket = byMonth ? istMonthOf(Prisma.sql`created_at`) : Prisma.sql`NULL::text`;
   return prisma.$queryRaw<(Bucket & { gross: bigint; payments: bigint })[]>`
     SELECT ${bucket} AS bucket, currency, COALESCE(SUM(amount_minor), 0) AS gross, COUNT(*) AS payments
     FROM payments
-    WHERE status IN ('CAPTURED', 'REFUNDED') AND created_at >= ${start}::date AND created_at < ${endExclusive}::date
+    WHERE status IN ('CAPTURED', 'REFUNDED') AND created_at >= ${istStart(start)} AND created_at < ${istStart(endExclusive)}
     GROUP BY 1, currency`;
 }
 
 /** Refunds recorded in the window (by `refunds.created_at`) that are pending or processed, in the currency of their payment. */
 async function refundRows(start: Day, endExclusive: Day, byMonth: boolean) {
-  const bucket = byMonth ? Prisma.sql`to_char(r.created_at, 'YYYY-MM')` : Prisma.sql`NULL::text`;
+  const bucket = byMonth ? istMonthOf(Prisma.sql`r.created_at`) : Prisma.sql`NULL::text`;
   return prisma.$queryRaw<(Bucket & { refunds: bigint; refund_count: bigint })[]>`
     SELECT ${bucket} AS bucket, p.currency, COALESCE(SUM(r.amount_minor), 0) AS refunds, COUNT(*) AS refund_count
     FROM refunds r JOIN payments p ON p.id = r.payment_id
-    WHERE r.status IN ('pending', 'processed') AND r.created_at >= ${start}::date AND r.created_at < ${endExclusive}::date
+    WHERE r.status IN ('pending', 'processed') AND r.created_at >= ${istStart(start)} AND r.created_at < ${istStart(endExclusive)}
     GROUP BY 1, p.currency`;
 }
 
@@ -123,16 +133,16 @@ async function payoutRows(start: Day, endExclusive: Day) {
   return prisma.$queryRaw<{ currency: string; payouts: bigint; net: bigint; fees: bigint }[]>`
     SELECT currency, COUNT(*) AS payouts, COALESCE(SUM(net_minor), 0) AS net, COALESCE(SUM(fee_minor), 0) AS fees
     FROM payouts
-    WHERE status = 'PAID' AND paid_at >= ${start}::date AND paid_at < ${endExclusive}::date
+    WHERE status = 'PAID' AND paid_at >= ${istStart(start)} AND paid_at < ${istStart(endExclusive)}
     GROUP BY currency`;
 }
 
 /** The fee kept on payouts marked as paid, per month of `paid_at` (the monthly table needs nothing else of a payout). */
 async function payoutFeeRows(start: Day, endExclusive: Day) {
   return prisma.$queryRaw<{ bucket: string; currency: string; fees: bigint }[]>`
-    SELECT to_char(paid_at, 'YYYY-MM') AS bucket, currency, COALESCE(SUM(fee_minor), 0) AS fees
+    SELECT ${istMonthOf(Prisma.sql`paid_at`)} AS bucket, currency, COALESCE(SUM(fee_minor), 0) AS fees
     FROM payouts
-    WHERE status = 'PAID' AND paid_at >= ${start}::date AND paid_at < ${endExclusive}::date
+    WHERE status = 'PAID' AND paid_at >= ${istStart(start)} AND paid_at < ${istStart(endExclusive)}
     GROUP BY 1, currency`;
 }
 
@@ -251,7 +261,7 @@ export async function refundsSinceByCurrency(): Promise<{ currency: string; reco
 
 /* ---------- Everything ---------- */
 
-/** The day after `day` (YYYY-MM-DD, UTC). */
+/** The day after `day` (YYYY-MM-DD; a calendar day has no zone, so this is plain calendar arithmetic). */
 export function nextDay(day: Day): Day {
   return new Date(new Date(`${day}T00:00:00.000Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
 }

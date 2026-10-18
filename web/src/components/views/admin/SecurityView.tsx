@@ -3,6 +3,7 @@ import { TwoFactorPanel } from "@web/components/admin/TwoFactorPanel";
 import { Badge, Card } from "@web/components/ui/primitives";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminSecurityView } from "@/lib/views/admin-security";
+import { formatDateTime } from "@/lib/india";
 
 /**
  * The admin console's Security page: the only console screen open to an administrator who still has to set up two-factor
@@ -61,7 +62,7 @@ export function SecurityView({ data }: { data: Jsonify<AdminSecurityView> }) {
                   </td>
                   <td data-label="Name">{a.name}</td>
                   <td data-label="Two-factor">{a.totpEnabled ? <Badge tone="success">On</Badge> : <Badge tone={required ? "danger" : "neutral"}>Off</Badge>}</td>
-                  <td data-label="Last sign-in">{a.lastLoginAt ? new Date(a.lastLoginAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "Never"}</td>
+                  <td data-label="Last sign-in">{a.lastLoginAt ? formatDateTime(new Date(a.lastLoginAt), { weekday: false }) : "Never"}</td>
                   <td data-label="Status">{a.disabled ? <Badge tone="danger">Disabled</Badge> : <Badge tone="success">Active</Badge>}</td>
                 </tr>
               ))}

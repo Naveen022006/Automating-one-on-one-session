@@ -26,7 +26,8 @@
     "worker": "tsx worker/index.ts",
     "test": "node scripts/check-node.mjs && tsx --test --experimental-test-module-mocks tests/*.test.ts",
     "db:deploy": "prisma migrate deploy",
-    "data:cleanup-test": "tsx scripts/cleanup-test-data.ts"
+    "data:cleanup-test": "tsx scripts/cleanup-test-data.ts",
+    "data:normalise-timezones": "tsx scripts/normalise-timezones.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

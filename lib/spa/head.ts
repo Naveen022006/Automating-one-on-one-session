@@ -1,3 +1,4 @@
+import { APP_COUNTRY, APP_LOCALE_DEFAULT } from "@/lib/india";
 import { DEFAULT_DESCRIPTION, decodeSpaParam, formatTitle, type SpaMatch, type SpaRobots } from "./routes";
 
 /**
@@ -53,6 +54,8 @@ export interface ShellHead {
   retryAfterSec?: number;
 }
 
+/** Open Graph writes a locale with an underscore: en-IN -> en_IN. */
+const OG_LOCALE = APP_LOCALE_DEFAULT.replace("-", "_");
 const OG_IMAGE_WIDTH = 1200;
 const OG_IMAGE_HEIGHT = 630;
 
@@ -92,7 +95,16 @@ export async function resolveHead(match: SpaMatch, ctx: HeadContext): Promise<Sh
         robots: route.robots,
         noReferrer: false,
         share: shareFor(ctx, title, DEFAULT_DESCRIPTION, canonical),
-        jsonLd: { "@context": "https://schema.org", "@type": "Organization", name: ctx.brand, url: ctx.appUrl, email: ctx.supportEmail },
+        jsonLd: {
+          "@context": "https://schema.org",
+          "@type": "Organization",
+          name: ctx.brand,
+          url: ctx.appUrl,
+          email: ctx.supportEmail,
+          // India only (doc/14-india-localisation.md): who it serves and in which language.
+          areaServed: APP_COUNTRY,
+          knowsLanguage: APP_LOCALE_DEFAULT,
+        },
       };
     }
     case "design": {
@@ -167,6 +179,7 @@ export function renderHead(head: ShellHead, brand: string, nonce: string): strin
   if (head.share) {
     const s = head.share;
     meta(`property="og:type" content="website"`);
+    meta(`property="og:locale" content="${OG_LOCALE}"`);
     meta(`property="og:site_name" content="${escapeHtml(brand)}"`);
     meta(`property="og:title" content="${escapeHtml(s.title)}"`);
     meta(`property="og:description" content="${escapeHtml(s.description)}"`);

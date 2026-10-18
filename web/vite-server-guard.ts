@@ -22,6 +22,8 @@ import type { Plugin } from "vite";
 /** `lib/**` files browser code may import (repo-relative, forward slashes). Keep this list short. */
 export const LIB_ALLOWLIST: readonly string[] = [
   "lib/format.ts",
+  // The India-only constants and helpers (IST arithmetic and formatting, INR money, the Indian mobile parser): pure, no imports, no environment.
+  "lib/india.ts",
   "lib/intake.ts",
   "lib/brand.ts",
   "lib/refund-policy.ts",

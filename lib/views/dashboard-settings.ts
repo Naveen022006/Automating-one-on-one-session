@@ -52,13 +52,12 @@ export interface EmbeddedSignupView {
 export async function loadProfileView(influencerId: string): Promise<ProfileData> {
   const influencer = await prisma.influencer.findUniqueOrThrow({
     where: { id: influencerId },
-    select: { name: true, bio: true, photoUrl: true, timezone: true, slug: true, notifyByEmail: true },
+    select: { name: true, bio: true, photoUrl: true, slug: true, notifyByEmail: true },
   });
   return {
     name: influencer.name,
     bio: influencer.bio,
     photoUrl: influencer.photoUrl,
-    timezone: influencer.timezone,
     slug: influencer.slug,
     notifyByEmail: influencer.notifyByEmail,
   };

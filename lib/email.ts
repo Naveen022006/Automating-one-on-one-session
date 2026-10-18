@@ -1,6 +1,5 @@
 import { appUrl } from "@/lib/brand";
 import { prisma } from "@/lib/db";
-import { customerZone } from "@/lib/format";
 import { sendCustomerEmail } from "@/lib/customer-email";
 import { GMAIL_FAILED_PREFIX } from "@/lib/gmail";
 import { createMessage, discardMessage, markMessageFailed } from "@/lib/messages";
@@ -70,7 +69,7 @@ const ONCE_KINDS = new Set<EmailKind>(["booking-confirmation", "receipt"]);
 
 /**
  * Renders a customer booking email from the latest booking/session/payment and sends it, recording a Message row
- * (channel EMAIL, template = kind) for the dashboard. Times are shown in the customer's timezone.
+ * (channel EMAIL, template = kind) for the dashboard. Times are shown in Indian Standard Time (IST).
  *
  * Idempotent for the confirmation/receipt: a re-run of the create-meeting job does not email the customer twice
  * (pass `force` for a deliberate resend). Best-effort and non-throwing like lib/alerts.ts: a broken email channel
@@ -124,7 +123,6 @@ export async function sendBookingEmail(
       influencerName: influencer.name,
       durationMin: service.durationMin,
       startTime: session.startTime,
-      tz: customerZone(booking.customerTz, influencer.timezone),
       meetLink: booking.meetLink ?? session.meetLink,
       manageUrl,
       icsUrl: kind === "booking-cancelled" ? null : calendarFileUrl(booking.id, session.endTime),

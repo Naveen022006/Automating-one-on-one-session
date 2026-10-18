@@ -53,9 +53,13 @@ const at = (iso: string) => new Date(iso);
 
 /* ---------- the range rules (no database) ---------- */
 
+// DAYS AND MONTHS ARE INDIAN STANDARD TIME (doc/14-india-localisation.md). This file used to put its edge payments at the UTC midnights
+// (23:59:59.999Z on 29 February, 00:00:00.000Z on 1 June); an IST day starts at 18:30 UTC the evening before, so the same edge cases now sit
+// there: 18:29:59.999Z is the last millisecond of 29 February IST and 18:30:00.000Z on 31 May is the first millisecond of 1 June IST.
+// tests/ist-reporting.test.ts has the dedicated 18:30 UTC cases for the report, the earnings page and the exports.
 test("parseReportsRange: defaults, fall-back for odd input like the earnings page, and a bounded span", () => {
   const now = new Date("2026-10-11T15:00:00Z");
-  assert.deepEqual(parseReportsRange({}, now), { ok: true, from: "2026-10-01", to: "2026-10-11" }, "default: the 1st of the month to today (UTC)");
+  assert.deepEqual(parseReportsRange({}, now), { ok: true, from: "2026-10-01", to: "2026-10-11" }, "default: the 1st of the month to today (IST)");
   assert.deepEqual(parseReportsRange({ from: "2026-09-01", to: "2026-09-30" }, now), { ok: true, from: "2026-09-01", to: "2026-09-30" });
   assert.deepEqual(parseReportsRange({ from: "2026-10-05", to: "2026-10-05" }, now), { ok: true, from: "2026-10-05", to: "2026-10-05" }, "one day");
   // Not a real day, wrong shape, outside 2000-2100: ignored, never an error.
@@ -79,7 +83,7 @@ test("parseReportsRange: defaults, fall-back for odd input like the earnings pag
   assert.equal(MAX_REPORT_DAYS, 366);
 });
 
-test("monthWindow and nextDay: twelve UTC months across a year end, and the day after", () => {
+test("monthWindow and nextDay: twelve IST months across a year end, and the day after", () => {
   assert.deepEqual(monthWindow("2024-05"), { start: "2023-06-01", endExclusive: "2024-06-01" });
   assert.deepEqual(monthWindow("2026-01"), { start: "2025-02-01", endExclusive: "2026-02-01" });
   assert.deepEqual(monthWindow("2026-12"), { start: "2026-01-01", endExclusive: "2027-01-01" });
@@ -216,9 +220,9 @@ async function seed() {
   await a("p3", 4000, "2024-04-01T10:00:00Z", { booking: "CANCELLED", status: "REFUNDED", refunded: 4000 }); // fully refunded
   await a("p4", 6000, "2024-04-10T10:00:00Z", { booking: "CANCELLED", needsRefund: true }); // owed to the customer
   await a("p8", 2500, "2024-05-10T10:00:00Z", { booking: "CANCELLED" }); //   cancelled, no refund flagged: not payable
-  await a("p9", 7000, "2024-02-29T23:59:59.999Z"); //                           the last millisecond before the range: held
-  await a("p10", 1100, "2024-06-01T00:00:00.000Z"); //                         the first millisecond after the range: held
-  await a("p14", 1234, "2023-05-31T23:59:59.000Z", { booking: "CANCELLED", status: "REFUNDED", refunded: 1234 }); // before the 12 months
+  await a("p9", 7000, "2024-02-29T18:29:59.999Z"); //                           the last millisecond (IST) before the range: held
+  await a("p10", 1100, "2024-05-31T18:30:00.000Z"); //                         the first millisecond (IST) after the range: held
+  await a("p14", 1234, "2023-05-31T18:29:59.000Z", { booking: "CANCELLED", status: "REFUNDED", refunded: 1234 }); // before the 12 months
   await a("unpaid", 9999, "2024-04-05T10:00:00Z", { status: "CREATED", booking: "PENDING_PAYMENT" }); // never paid: counted nowhere
   await a("failed", 8888, "2024-04-06T10:00:00Z", { status: "FAILED", booking: "PENDING_PAYMENT" });
 
@@ -230,11 +234,11 @@ async function seed() {
   await refundRow("p2", 2000, "processed", at("2024-03-20T09:00:00Z"));
   await refundRow("p2", 500, "failed", at("2024-03-21T09:00:00Z"));
   await refundRow("p3", 4000, "processed", at("2024-04-02T09:00:00Z"));
-  await refundRow("p14", 1234, "processed", at("2023-05-31T23:59:59.000Z"));
+  await refundRow("p14", 1234, "processed", at("2023-05-31T18:29:59.000Z"));
 
   // Payouts, made by the payout code. Reconciling decides which payments each one takes.
   await reconcile("p12");
-  await paidPayout("po4", infA, C1, at("2024-02-29T23:59:59.999Z"));
+  await paidPayout("po4", infA, C1, at("2024-02-29T18:29:59.999Z"));
   await reconcile("p1", "p6");
   await paidPayout("po1", infA, C1, at("2024-04-20T10:00:00Z"));
   await prisma.payment.update({ where: { id: ids.p6 }, data: { refundAmountMinor: 1000, refundStatus: "pending" } });
@@ -428,9 +432,9 @@ test("the range: gross, refunds, net, payouts and fees per currency, with both e
 
   // The edges, one day at a time: the end day is included, and a day before the first payment shows none of it.
   const feb = one((await report("?from=2024-02-29&to=2024-02-29")).range, C1);
-  assert.deepEqual([feb.grossMinor, feb.paymentCount, feb.payoutsPaidCount, feb.feesEarnedMinor, feb.payoutsPaidNetMinor], [7000, 1, 1, 500, 4500], "29 February: p9 (23:59:59.999) and the payout PO4 paid at the same instant");
+  assert.deepEqual([feb.grossMinor, feb.paymentCount, feb.payoutsPaidCount, feb.feesEarnedMinor, feb.payoutsPaidNetMinor], [7000, 1, 1, 500, 4500], "29 February: p9 (23:59:59.999 IST) and the payout PO4 paid at the same instant");
   const june = one((await report("?from=2024-06-01&to=2024-06-01")).range, C1);
-  assert.deepEqual([june.grossMinor, june.paymentCount, june.refundsMinor], [1100, 1, 0], "1 June 00:00:00.000: p10");
+  assert.deepEqual([june.grossMinor, june.paymentCount, june.refundsMinor], [1100, 1, 0], "1 June 00:00:00.000 IST: p10");
   const lastDay = (await report("?from=2024-05-31&to=2024-05-31")).range.filter((r) => r.currency === C1);
   assert.deepEqual(lastDay.map((r) => r.grossMinor), [], "31 May holds nothing of this fixture");
   const empty = await report("?from=2001-01-01&to=2001-01-02");
@@ -448,7 +452,7 @@ test("the 12 months: per month and currency, newest first, the month before the 
       ["2024-05", 2500, 1, 1000, 0],
       ["2024-04", 19500, 4, 4000, 1300], // p3 4000 + p4 6000 + p5 8000 + p13 1500; PO1 paid on 20 April
       ["2024-03", 18000, 3, 2000, 0],
-      ["2024-02", 12000, 2, 0, 500], // p9 7000 (23:59:59.999 on the 29th) + p12 5000; PO4 paid then
+      ["2024-02", 12000, 2, 0, 500], // p9 7000 (23:59:59.999 IST on the 29th) + p12 5000; PO4 paid then
     ],
   );
   assert.deepEqual(months(C2).map((m) => [m.month, m.grossMinor, m.paymentCount, m.refundsMinor, m.feesEarnedMinor]), [
@@ -676,7 +680,7 @@ test("the page and the route: the title equals the route table, the endpoint and
   const view = read("web/src/components/views/admin/ReportsView.tsx");
   assert.ok(view.includes("GetForm") && view.includes('role="status"') && view.includes("aria-busy"));
   for (const imp of view.split("\n").filter((l) => /^import /.test(l) && l.includes("@/lib/"))) {
-    assert.ok(/^import type /.test(imp) || imp.includes("@/lib/format"), `only type imports (and the pure formatter) from server modules: ${imp}`);
+    assert.ok(/^import type /.test(imp) || imp.includes("@/lib/format") || imp.includes("@/lib/india"), `only type imports (and the pure formatters) from server modules: ${imp}`);
   }
 });
 

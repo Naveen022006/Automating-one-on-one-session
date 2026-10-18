@@ -1,5 +1,5 @@
 import { AppLink } from "@web/lib/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IconAlertCircle, IconCheckCircle } from "@web/components/icons";
 import { focusFirstInvalid } from "@web/components/ui/focus";
 import { Alert, Button, Checkbox, Field, Input, describedBy } from "@web/components/ui/primitives";
@@ -107,7 +107,6 @@ export function RegisterForm() {
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const origin = typeof window !== "undefined" ? window.location.host : "";
   const { formRef, focusOnError } = useFocusFirstInvalid();
@@ -140,7 +139,7 @@ export function RegisterForm() {
     if (Object.keys(local).length) return focusOnError();
     setBusy(true);
     setFormError(null);
-    const r = await post("/api/auth/register", { name, email, password, slug, timezone, acceptTerms: terms });
+    const r = await post("/api/auth/register", { name, email, password, slug, acceptTerms: terms });
     if (!r.ok) {
       setBusy(false);
       const fe = fieldErrors(r.data);

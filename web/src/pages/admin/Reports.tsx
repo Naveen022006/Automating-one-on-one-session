@@ -10,7 +10,7 @@ import { QueryGate } from "../../lib/states";
 
 /**
  * /admin/reports?from&to. The date form is a GET form (GetForm); a missing or invalid date is replaced by the server (the 1st of the month
- * to today, UTC). A range the server refuses (400: it ends before it starts, or is longer than a year) keeps the form on screen with the
+ * to today, IST). A range the server refuses (400: it ends before it starts, or is longer than a year) keeps the form on screen with the
  * server's sentence instead of the generic error.
  */
 export function Component() {

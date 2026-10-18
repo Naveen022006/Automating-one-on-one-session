@@ -3,11 +3,10 @@ import type { BlockedRow, RuleRow } from "@/lib/views/dashboard-types";
 
 /**
  * The Availability page and the onboarding wizard's hours step. Shared by GET /api/dashboard/availability and
- * loadOnboardingView. `timezone` is the influencer's own (the editor's default for new
- * hours); each rule carries the zone it was entered in.
+ * loadOnboardingView. Every hour is Indian Standard Time; a rule saved before the product went India-only carries the other zone it was
+ * entered in (`RuleRow.timezone`), which is how the page tells the influencer which hours still need re-entering.
  */
 export interface DashboardAvailabilityView {
-  timezone: string;
   rules: RuleRow[];
   /** `date` is the calendar day as YYYY-MM-DD. */
   blocked: BlockedRow[];
@@ -28,10 +27,6 @@ export async function listBlockedViews(influencerId: string): Promise<BlockedRow
 }
 
 export async function loadAvailabilityView(influencerId: string): Promise<DashboardAvailabilityView> {
-  const [influencer, rules, blocked] = await Promise.all([
-    prisma.influencer.findUniqueOrThrow({ where: { id: influencerId }, select: { timezone: true } }),
-    listRuleViews(influencerId),
-    listBlockedViews(influencerId),
-  ]);
-  return { timezone: influencer.timezone, rules, blocked };
+  const [rules, blocked] = await Promise.all([listRuleViews(influencerId), listBlockedViews(influencerId)]);
+  return { rules, blocked };
 }

@@ -146,3 +146,34 @@ test("re-running after a SENT message does not send again", { skip }, async () =
   assert.equal(outcome, "already-sent");
   assert.deepEqual(second.calls, []);
 });
+
+test("every customer message says the time in IST, whatever zone the booking row carries (confirmation, both reminders, reschedule, cancellation)", { skip }, async () => {
+  const { formatSessionTime } = await import("../lib/format");
+  for (const template of ["booking-confirmation", "reminder-24h", "reminder-15m", "reschedule", "cancellation"]) {
+    const id = await booking({ status: template === "cancellation" ? "CANCELLED" : "PAID" });
+    // A booking made before the India-only change may carry the customer's own zone: it must no longer change the text.
+    await prisma.booking.update({ where: { id }, data: { customerTz: "America/New_York" } });
+    const start = (await prisma.booking.findUniqueOrThrow({ where: { id }, include: { session: true } })).session.startTime;
+    const expected = formatSessionTime(start);
+    assert.match(expected, / IST$/);
+
+    let whatsappParams: string[] = [];
+    let smsBody = "";
+    const deps: Partial<MessagingDeps> = {
+      sendWhatsApp: async (input): Promise<SendResult> => {
+        const body = (input.components?.[0] ?? { parameters: [] }) as { parameters: { text: string }[] };
+        whatsappParams = body.parameters.map((p) => p.text);
+        throw new Error("force the SMS fallback so both texts are seen");
+      },
+      sendSMS: async (input): Promise<SendResult> => {
+        smsBody = input.body;
+        return { providerMessageId: "sms-ist" };
+      },
+      alert: async () => undefined,
+    };
+    assert.equal(await sendMessageForBooking(id, template, deps), "sent", template);
+    assert.ok(whatsappParams.includes(expected), `${template}: the WhatsApp variable is "${expected}", got ${JSON.stringify(whatsappParams)}`);
+    assert.ok(smsBody.includes(expected), `${template}: the SMS says "${expected}": ${smsBody}`);
+    assert.doesNotMatch(smsBody, /New York|EDT|EST|GMT-/);
+  }
+});

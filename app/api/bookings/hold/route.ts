@@ -16,7 +16,8 @@ import { toE164 } from "@/lib/phone";
 import { signBookingPollToken } from "@/lib/self-service";
 import { publicInfluencerWhere } from "@/lib/public";
 import { enforce, IDENTITY_RULES } from "@/lib/rate-limit";
-import { blockedDaySet, isSlotStart, isValidTimezone } from "@/lib/slots";
+import { APP_TIME_ZONE, INDIAN_MOBILE_ERROR, normaliseTimeZoneInput } from "@/lib/india";
+import { blockedDaySet, isSlotStart } from "@/lib/slots";
 
 const bodySchema = z.object({
   serviceId: z.string().regex(ID_PATTERN),
@@ -51,13 +52,15 @@ export async function POST(req: Request) {
 
   const whatsappE164 = toE164(body.whatsapp);
   if (!whatsappE164) {
-    return NextResponse.json({ error: "Enter a valid WhatsApp number with country code" }, { status: 400 });
+    return NextResponse.json({ error: INDIAN_MOBILE_ERROR }, { status: 400 });
   }
   if (!body.whatsappOptIn) {
     return NextResponse.json({ error: "WhatsApp opt-in is required to receive your meeting link" }, { status: 400 });
   }
-  if (body.tz && !isValidTimezone(body.tz)) {
-    return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
+  // Old clients still send their browser zone: a real zone is accepted and stored as IST, anything else is refused.
+  if (body.tz !== undefined) {
+    const zone = normaliseTimeZoneInput(body.tz);
+    if (!zone.ok) return NextResponse.json({ error: zone.error }, { status: 400 });
   }
 
   const service = await prisma.service.findFirst({
@@ -109,7 +112,7 @@ export async function POST(req: Request) {
       customerEmail: body.email.toLowerCase(),
       whatsappE164,
       whatsappOptIn: body.whatsappOptIn,
-      customerTz: body.tz,
+      customerTz: APP_TIME_ZONE,
       refundPolicy: service.refundPolicy,
       intakeAnswers: answered.answers,
       requestApproval: service.requiresApproval,

@@ -34,7 +34,7 @@ export function BookView({ data: profile, initialServiceId }: { data: Jsonify<Pu
         )}
         <BookingFlow
           key={profile.slug}
-          host={{ name: profile.name, photoUrl: profile.photoUrl, slug: profile.slug, timezone: profile.timezone }}
+          host={{ name: profile.name, photoUrl: profile.photoUrl, slug: profile.slug }}
           services={profile.services}
           initialServiceId={initialServiceId}
           preview={profile.preview}

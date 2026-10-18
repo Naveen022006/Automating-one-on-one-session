@@ -6,7 +6,7 @@ import type { IntakeQuestion } from "@/lib/intake";
  * import a component file. The browser imports them with `import type`, which is erased before bundling.
  */
 
-/** One weekly availability window. */
+/** One weekly availability window. `timezone` is Asia/Kolkata for everything written now; an older rule may carry the zone it was saved in. */
 export interface RuleRow {
   id: string;
   weekday: number;
@@ -69,7 +69,6 @@ export interface ProfileData {
   name: string;
   bio: string | null;
   photoUrl: string | null;
-  timezone: string;
   slug: string;
   notifyByEmail: boolean;
 }

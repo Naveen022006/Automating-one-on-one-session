@@ -80,8 +80,8 @@ function Wizard(d: OnboardingData) {
           {step === 2 && (
             <Section title="When are you available?" lede="Add weekly hours. Customers only see open times inside them.">
               <div className="stack">
-                <WeeklyHours rules={d.rules} timezone={d.profile.timezone} />
-                <BlockedDays blocked={d.blocked} timezone={d.profile.timezone} />
+                <WeeklyHours rules={d.rules} />
+                <BlockedDays blocked={d.blocked} />
               </div>
             </Section>
           )}

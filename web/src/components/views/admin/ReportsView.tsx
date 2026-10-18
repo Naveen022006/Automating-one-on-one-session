@@ -5,13 +5,13 @@ import { formatMoney } from "@/lib/format";
 import type { Jsonify } from "@/lib/jsonify";
 import type { AdminReportsView } from "@/lib/views/admin-reports";
 import { GetForm } from "../dashboard/GetForm";
+import { formatDateTime, formatMonth } from "@/lib/india";
 
 type Report = Jsonify<AdminReportsView>;
 
-/** "2026-03" as "Mar 2026" (the month is a UTC month, so the label is formatted in UTC too). */
+/** "2026-03" as "Mar 2026" (an IST month; a month has no time of day, so there is nothing to convert). */
 export function monthLabel(month: string): string {
-  const d = new Date(`${month}-01T00:00:00.000Z`);
-  return Number.isNaN(d.getTime()) ? month : d.toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" });
+  return formatMonth(month);
 }
 
 const money = (minor: number, currency: string) => <span className="money">{formatMoney(minor, currency)}</span>;
@@ -19,7 +19,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 /** What each figure means. Shown on the page, under the numbers they explain. */
 export const DEFINITIONS: { term: string; text: string }[] = [
-  { term: "Gross", text: "What customers paid: payments that were captured (including those since refunded), by the day checkout began, that is when the payment's order was created (UTC). A payment captured later by the recovery job stays on the day it began." },
+  { term: "Gross", text: "What customers paid: payments that were captured (including those since refunded), by the day checkout began, that is when the payment's order was created (IST). A payment captured later by the recovery job stays on the day it began." },
   { term: "Refunds", text: "Refunds that are pending or processed, by the day the refund was made. A refund can belong to a payment of an earlier period, so Net is a difference of two period figures, not of the same payments." },
   { term: "Platform fees", text: "The fee kept on payouts marked as sent in the period, by the day they were marked: the amount stored on each payout when it was created, with that influencer's fee or the platform default." },
   { term: "Paid out", text: "The net amount of payouts marked as sent in the period (after the platform fee)." },
@@ -89,7 +89,7 @@ export function ReportsView({ data, busy }: { data: Report; busy?: boolean }) {
           <>
             <section className="stack" aria-labelledby="balances-title">
               <h2 id="balances-title" className="section-title">Balances right now</h2>
-              <p className="subtle">As of {new Date(data.generatedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}. These do not depend on the date range.</p>
+              <p className="subtle">As of {formatDateTime(new Date(data.generatedAt), { weekday: false })}. These do not depend on the date range.</p>
               {balances.length === 0 ? (
                 <p className="muted">Nothing is held or owed right now.</p>
               ) : (
@@ -141,7 +141,7 @@ export function ReportsView({ data, busy }: { data: Report; busy?: boolean }) {
               ) : (
                 <div className="table-wrap">
                   <table className="table table--stack">
-                    <caption className="sr-only">Gross, refunds and fees by month (UTC), the 12 months up to the month of the end date</caption>
+                    <caption className="sr-only">Gross, refunds and fees by month (IST), the 12 months up to the month of the end date</caption>
                     <thead>
                       <tr>
                         <th scope="col">Month</th>

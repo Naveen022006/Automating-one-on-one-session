@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth/session";
 import { loadBookableService, openSlots } from "@/lib/availability";
 import { isEntityId } from "@/lib/http";
-import { dayBoundsUtc, isValidTimezone } from "@/lib/slots";
+import { normaliseTimeZoneInput } from "@/lib/india";
+import { dayBoundsUtc } from "@/lib/slots";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/slots?serviceId=...&date=YYYY-MM-DD[&tz=Area/City]
-// `date` is the calendar day in the customer's timezone `tz` (defaults to the influencer's).
+// `date` is an Indian Standard Time calendar day. `tz` is accepted for old clients and ignored (a name that is not a time zone is a 400).
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const serviceId = params.get("serviceId");
@@ -21,9 +22,10 @@ export async function GET(req: Request) {
   const service = await loadBookableService(serviceId, viewer?.influencerId);
   if (!service) return NextResponse.json({ error: "Service not found" }, { status: 404 });
 
-  const tz = params.get("tz") ?? service.timezone;
-  if (!isValidTimezone(tz)) return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
-  const bounds = dayBoundsUtc(date, tz);
+  const tz = params.get("tz");
+  const zone = tz === null ? null : normaliseTimeZoneInput(tz);
+  if (zone && !zone.ok) return NextResponse.json({ error: zone.error }, { status: 400 });
+  const bounds = dayBoundsUtc(date);
   if (!bounds) return NextResponse.json({ error: "Invalid date" }, { status: 400 });
 
   const owner = viewer?.influencerId === service.influencerId;

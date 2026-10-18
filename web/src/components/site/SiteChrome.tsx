@@ -1,5 +1,6 @@
 import { AppLink } from "@web/lib/link";
 import { BRAND_NAME, SUPPORT_EMAIL } from "@/lib/brand";
+import { istParts } from "@/lib/india";
 import { ButtonLink } from "@web/components/ui/primitives";
 
 export function Wordmark({ href = "/" }: { href?: string }) {
@@ -47,7 +48,7 @@ export function SiteHeader({ loggedIn }: { loggedIn?: boolean }) {
 }
 
 export function SiteFooter() {
-  const year = new Date().getFullYear();
+  const year = istParts(new Date()).year;
   return (
     <footer className="site-footer">
       <div className="container">

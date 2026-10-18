@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { addDays, formatCount, istDayStart, istIso, istToday } from "@/lib/india";
 import { parseReportDay } from "@/lib/views/dashboard-params";
 
 /**
@@ -8,7 +9,7 @@ import { parseReportDay } from "@/lib/views/dashboard-params";
  * What goes in a file is decided here, column by column, from a `select` of exactly those columns: never a spread row, so a column that
  * is added to a table later cannot leak into an export. No phone numbers, intake answers, Meet links, tokens, hashes, encrypted values
  * or full bank numbers (a payout's destination is the masked label stored with it). Money is written as decimals (minor / 100, the
- * convention of the influencer earnings export), timestamps as ISO 8601 UTC, an erased customer as "(erased)" with no e-mail.
+ * convention of the influencer earnings export), timestamps as ISO 8601 with the Indian Standard Time offset (+05:30), days as IST days, an erased customer as "(erased)" with no e-mail.
  */
 
 /** The most rows one export may hold. Over it the request is refused (an honest 400), never silently cut. */
@@ -27,7 +28,7 @@ export type ExportRow = (string | number | null)[];
 
 export class ExportTooLargeError extends Error {
   constructor(cap: number) {
-    super(`More than ${cap.toLocaleString("en-US")} rows. Choose a shorter range.`);
+    super(`More than ${formatCount(cap)} rows. Choose a shorter range.`);
   }
 }
 
@@ -37,17 +38,17 @@ export interface ExportRange {
   /** YYYY-MM-DD, both ends included. */
   from: string;
   to: string;
-  /** `from` at 00:00 UTC (inclusive) and the day after `to` at 00:00 UTC (exclusive): the bounds of `createdAt`. */
+  /** `from` at 00:00 IST (inclusive) and the day after `to` at 00:00 IST (exclusive), as instants: the bounds of `createdAt`. */
   start: Date;
   end: Date;
 }
 
 /**
- * `?from=` / `?to=` of an export. Missing: the 1st of the month of `to` (or of today) up to today (UTC). Present but not a real
+ * `?from=` / `?to=` of an export. Missing: the 1st of the month of `to` (or of today) up to today (IST). Present but not a real
  * calendar day (parseReportDay), `from` after `to`, or more than 366 days: a message for a 400.
  */
 export function parseExportRange(params: URLSearchParams, now: Date = new Date()): { ok: true; range: ExportRange } | { ok: false; error: string } {
-  const today = now.toISOString().slice(0, 10);
+  const today = istToday(now);
   const rawFrom = params.get("from");
   const rawTo = params.get("to");
   const to = rawTo === null || rawTo === "" ? today : parseReportDay(rawTo);
@@ -59,7 +60,7 @@ export function parseExportRange(params: URLSearchParams, now: Date = new Date()
   if (start.getTime() > last.getTime()) return { ok: false, error: "The start date is after the end date." };
   const days = Math.round((last.getTime() - start.getTime()) / DAY_MS) + 1;
   if (days > ADMIN_EXPORT_MAX_DAYS) return { ok: false, error: `Choose a range of at most ${ADMIN_EXPORT_MAX_DAYS} days.` };
-  return { ok: true, range: { from, to, start, end: new Date(last.getTime() + DAY_MS) } };
+  return { ok: true, range: { from, to, start: istDayStart(from), end: istDayStart(addDays(to, 1)) } };
 }
 
 export function exportFilename(kind: ExportKind, range: Pick<ExportRange, "from" | "to">): string {
@@ -67,7 +68,7 @@ export function exportFilename(kind: ExportKind, range: Pick<ExportRange, "from"
 }
 
 const money = (minor: number) => (minor / 100).toFixed(2);
-const iso = (d: Date | null | undefined) => (d ? d.toISOString() : "");
+const iso = (d: Date | null | undefined) => (d ? istIso(d) : "");
 const yesNo = (v: boolean) => (v ? "yes" : "no");
 /** An erased customer's name is replaced by a marker (the stored placeholder name is not exported). */
 const customerName = (b: { redactedAt: Date | null; customerName: string }) => (b.redactedAt ? "(erased)" : b.customerName);

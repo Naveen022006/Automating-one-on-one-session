@@ -68,7 +68,7 @@ export async function adminCancelBooking(
     select: {
       status: true,
       customerName: true,
-      session: { select: { startTime: true, service: { select: { title: true, influencer: { select: { id: true, timezone: true } } } } } },
+      session: { select: { startTime: true, service: { select: { title: true, influencer: { select: { id: true } } } } } },
     },
   });
   if (!booking?.session?.service?.influencer) return { kind: "not-found" };
@@ -99,7 +99,7 @@ export async function adminCancelBooking(
     await deps.alert(influencer.id, {
       kind: "platform-cancelled",
       title: "A booking was cancelled by the platform",
-      detail: `${booking.customerName}'s booking for ${service.title} (${formatSessionTime(startTime, influencer.timezone)}) was cancelled by the platform. Reason: ${reason}. The customer has been notified.${result.refund.eligible ? " The platform will refund the customer; you do not need to do anything." : ""}`,
+      detail: `${booking.customerName}'s booking for ${service.title} (${formatSessionTime(startTime)}) was cancelled by the platform. Reason: ${reason}. The customer has been notified.${result.refund.eligible ? " The platform will refund the customer; you do not need to do anything." : ""}`,
       bookingId,
     });
   } catch (e) {

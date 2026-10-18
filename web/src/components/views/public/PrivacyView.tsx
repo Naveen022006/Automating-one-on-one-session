@@ -10,8 +10,7 @@ export function PrivacyView() {
       <h2>Data we process</h2>
       <h3>Customers (people who book a session)</h3>
       <ul>
-        <li>Name, email address and WhatsApp number, to confirm the booking and send the meeting link and reminders.</li>
-        <li>Your time zone, so times are shown correctly.</li>
+        <li>Name, email address and Indian mobile (WhatsApp) number, to confirm the booking and send the meeting link and reminders.</li>
         <li>Payment status and reference from Razorpay. We never see or store card details.</li>
         <li>Delivery status of messages sent to you (sent, delivered, read, failed).</li>
       </ul>

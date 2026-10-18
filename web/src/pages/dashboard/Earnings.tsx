@@ -8,7 +8,7 @@ import type { Jsonify } from "../../lib/jsonify";
 import { queryKeys } from "../../lib/query";
 import { QueryGate } from "../../lib/states";
 
-/** /dashboard/earnings?from&to. The date form is a GET form (GetForm); missing dates are filled in by the server (UTC). */
+/** /dashboard/earnings?from&to. The date form is a GET form (GetForm); missing dates are filled in by the server (IST). */
 export function Component() {
   const [search] = useSearchParams();
   const from = search.get("from");

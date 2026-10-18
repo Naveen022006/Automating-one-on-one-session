@@ -6,7 +6,7 @@ import { requireApiAuth } from "@/lib/auth/session";
 import { slugProblem } from "@/lib/auth/slug";
 import { prisma } from "@/lib/db";
 import { jsonError, parseJson } from "@/lib/http";
-import { isValidTimezone } from "@/lib/slots";
+import { APP_TIME_ZONE, normaliseTimeZoneInput } from "@/lib/india";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
@@ -18,7 +18,7 @@ const schema = z.object({
   notifyByEmail: z.boolean().optional(),
 });
 
-// Profile, public slug, timezone and notification preferences of the logged-in influencer.
+// Profile, public slug and notification preferences of the logged-in influencer. `timezone` is accepted for old clients and always saved as IST.
 export async function PATCH(req: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
@@ -26,7 +26,10 @@ export async function PATCH(req: Request) {
   if (!parsed.ok) return parsed.response;
   const body = parsed.data;
 
-  if (body.timezone !== undefined && !isValidTimezone(body.timezone)) return jsonError("Choose a valid timezone.", 400, { field: "timezone" });
+  if (body.timezone !== undefined) {
+    const zone = normaliseTimeZoneInput(body.timezone);
+    if (!zone.ok) return jsonError(zone.error, 400, { field: "timezone" });
+  }
   if (body.slug !== undefined && body.slug !== auth.influencerSlug) {
     const problem = slugProblem(body.slug);
     if (problem) return jsonError(problem, 400, { field: "slug" });
@@ -45,7 +48,7 @@ export async function PATCH(req: Request) {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.bio !== undefined ? { bio: body.bio || null } : {}),
         ...(body.photoUrl !== undefined ? { photoUrl: body.photoUrl || null } : {}),
-        ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
+        ...(body.timezone !== undefined ? { timezone: APP_TIME_ZONE } : {}),
         ...(body.slug !== undefined ? { slug: body.slug } : {}),
         ...(body.notifyByEmail !== undefined ? { notifyByEmail: body.notifyByEmail } : {}),
       },
@@ -60,7 +63,7 @@ export async function PATCH(req: Request) {
     body.name !== undefined && body.name !== previous?.name ? "name" : null,
     body.bio !== undefined && (body.bio || null) !== (previous?.bio ?? null) ? "bio" : null,
     body.photoUrl !== undefined && (body.photoUrl || null) !== (previous?.photoUrl ?? null) ? "photoUrl" : null,
-    body.timezone !== undefined && body.timezone !== previous?.timezone ? "timezone" : null,
+    body.timezone !== undefined && APP_TIME_ZONE !== previous?.timezone ? "timezone" : null,
     slugChanged ? "slug" : null,
     body.notifyByEmail !== undefined && body.notifyByEmail !== previous?.notifyByEmail ? "notifyByEmail" : null,
   ].filter((f): f is string => f !== null);
