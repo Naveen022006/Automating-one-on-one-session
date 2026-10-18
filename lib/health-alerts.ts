@@ -22,6 +22,7 @@ import {
 import { reportError, reportNotice } from "@/lib/observability";
 import { within } from "@/lib/timeout";
 import type { RenderedEmail } from "@/lib/email/layout";
+import { platformEmailEnabled } from "@/lib/email/providers";
 
 /**
  * Health alerting: runs the monitor, tells the owner when a condition crosses its threshold and when it clears.
@@ -54,7 +55,9 @@ function resolveAlertDeps(o: Partial<AlertDeps>): AlertDeps {
   return {
     kv: o.kv ?? getHealthKv(),
     thresholds: o.thresholds ?? thresholdsFromEnv(),
-    emails: o.emails ?? parseAlertEmails(process.env.ADMIN_ALERT_EMAILS),
+    // With EMAIL_PROVIDER=none (doc/15) there is no one to send to: webhook and log only, instead of a send that "fails" on every run
+    // and keeps the alert from ever being marked as sent.
+    emails: o.emails ?? (platformEmailEnabled() ? parseAlertEmails(process.env.ADMIN_ALERT_EMAILS) : []),
     notice: o.notice ?? reportNotice,
     sendEmail: o.sendEmail ?? defaultSendEmail,
     healthUrl: o.healthUrl ?? `${appUrl()}/admin/health`,

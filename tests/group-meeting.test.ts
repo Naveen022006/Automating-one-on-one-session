@@ -916,3 +916,37 @@ test("S3: a revoked grant is flagged with the version it was read at; a grant re
   assert.match(String(b.lastError), /renewed/);
   mock.reset();
 });
+
+test("doc/15: the create-meeting job refreshes with the client the grant was issued with, for the booking's own influencer", async () => {
+  for (const clientKind of ["own", "platform"] as const) {
+    const seen: unknown[] = [];
+    const rec: Recorder = { inserts: [], adds: [] };
+    const tokens = okToken();
+    tokens.current = () => ({ state: "ok", refreshToken: "refresh", connectedAt: new Date("2030-01-01T00:00:00Z"), clientKind });
+    const b = paidBooking("b1", "a@example.com");
+    const { mod, emailed } = await loadMeeting([groupSession()], [b], tokens);
+    const google = { ...makeGoogle(rec), refreshAccessToken: async (_token: string, grant?: unknown) => (seen.push(grant), "access-token") };
+    await mod.createMeetingForBooking("b1", { ...depsWith(rec, emailed), google });
+    assert.deepEqual(seen, [{ influencerId: "inf1", clientKind }]);
+    mock.reset();
+  }
+});
+
+test("doc/15: a removed own Google client parks the booking with the plain reason and flags the connection, instead of failing", async () => {
+  const reason = "Your Google client was removed or is no longer valid. Save your Google client again, then reconnect.";
+  const tokens = okToken();
+  tokens.current = () => ({ state: "ok", refreshToken: "refresh", connectedAt: new Date("2030-01-01T00:00:00Z"), clientKind: "own" });
+  const b = paidBooking("b1", "a@example.com");
+  const alerts: unknown[] = [];
+  const { mod } = await loadMeeting([groupSession()], [b], tokens);
+  const google = {
+    refreshAccessToken: async () => {
+      throw new GoogleReconnectError(reason);
+    },
+  };
+  await assert.rejects(mod.createMeetingForBooking("b1", { google, sleep: async () => {}, sendBookingEmail: async () => {}, alert: async (...a: unknown[]) => void alerts.push(a) }), mod.MeetingBlockedError);
+  assert.equal(b.status, "PAID", "the customer paid: the booking waits for the influencer to reconnect");
+  assert.deepEqual(tokens.marked.map((m) => m.reason), [reason]);
+  assert.equal(alerts.length, 1, "and the influencer is told once");
+  mock.reset();
+});
