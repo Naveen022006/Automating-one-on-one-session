@@ -302,7 +302,7 @@ export async function listMessages(influencerId: string, opts: { status?: string
   const statuses = ["PENDING", "SENT", "DELIVERED", "READ", "FAILED"];
   const where = {
     booking: { session: { service: { influencerId } } },
-    channel: { in: ["WHATSAPP", "SMS", "EMAIL"] as ("WHATSAPP" | "SMS" | "EMAIL")[] },
+    channel: { in: ["WHATSAPP", "WHATSAPP_WEB", "SMS", "EMAIL"] as ("WHATSAPP" | "WHATSAPP_WEB" | "SMS" | "EMAIL")[] },
     ...(opts.status && statuses.includes(opts.status) ? { status: opts.status as "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED" } : {}),
   };
   const [total, rows] = await Promise.all([
