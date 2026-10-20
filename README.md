@@ -781,3 +781,5 @@ backups and restore drill, key rotation, Razorpay and Google go-live checklists,
   reads with the current key, then the previous one, so a rolling deploy works. Back up the key: without it those values are
   unreadable.
 - **Dependencies:** Node 22+ (`.nvmrc`); Dependabot and an advisory `npm audit` step in CI; see the audit notes in the guide.
+
+
